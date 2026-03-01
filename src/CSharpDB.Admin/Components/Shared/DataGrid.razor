@@ -70,9 +70,9 @@
                         var rowIdx = r;
                         var row = _rows[rowIdx];
                         var rowClass = GetRowClass(row);
-                        var isSelected = _selectedRows.Contains(rowIdx);
+                        var isSelected = _selectedRows.Contains(row);
                         <tr class="@rowClass @(isSelected ? "selected" : "")">
-                            <td class="row-num" @onclick="() => ToggleRowSelect(rowIdx)">
+                            <td class="row-num" @onclick="() => ToggleRowSelect(row)">
                                 @((_page - 1) * _pageSize + rowIdx + 1)
                             </td>
                             @for (int c = 0; c < Columns.Length; c++)
@@ -159,7 +159,9 @@
     [Parameter] public bool IsReadOnly { get; set; }
     [Parameter] public bool ShowFilters { get; set; } = true;
     [Parameter] public EventCallback<string> OnStatusMessage { get; set; }
+    [Parameter] public EventCallback<int> OnSelectionChanged { get; set; }
 
+    private List<DataGridRow> _allRows = new();
     private List<DataGridRow> _rows = new();
     private bool _loading;
     private int _page = 1;
@@ -168,13 +170,34 @@
     private int? _sortCol;
     private bool _sortAsc = true;
     private readonly Dictionary<int, string> _filters = new();
-    private readonly HashSet<int> _selectedRows = new();
+    private readonly HashSet<DataGridRow> _selectedRows = new();
     private EditingCell? _editingCell;
+    private string? _lastTableName;
+    private string? _lastViewName;
+    private bool _sourceInitialized;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
 
     protected override async Task OnParametersSetAsync()
     {
+        bool sourceChanged = !_sourceInitialized
+            || !string.Equals(_lastTableName, TableName, StringComparison.Ordinal)
+            || !string.Equals(_lastViewName, ViewName, StringComparison.Ordinal);
+
+        if (!sourceChanged)
+            return;
+
+        _sourceInitialized = true;
+        _lastTableName = TableName;
+        _lastViewName = ViewName;
+        _page = 1;
+        _sortCol = null;
+        _sortAsc = true;
+        _filters.Clear();
+        Columns = null;
+        ColumnTypes = null;
+        PrimaryKeyColumn = null;
+
         await LoadDataAsync();
     }
 
@@ -183,6 +206,7 @@
         _loading = true;
         _editingCell = null;
         _selectedRows.Clear();
+        await NotifySelectionChangedAsync();
         StateHasChanged();
 
         try
@@ -191,7 +215,7 @@
             {
                 var result = await DbService.BrowseTableAsync(TableName, _page, _pageSize);
                 _totalRows = result.TotalRows;
-                _rows = result.Rows.Select(r => new DataGridRow(r)).ToList();
+                _allRows = result.Rows.Select(r => new DataGridRow(r)).ToList();
 
                 if (Columns is null || Columns.Length == 0)
                 {
@@ -206,8 +230,10 @@
                 var result = await DbService.BrowseViewAsync(ViewName, _page, _pageSize);
                 _totalRows = result.TotalRows;
                 Columns = result.ColumnNames;
-                _rows = result.Rows.Select(r => new DataGridRow(r)).ToList();
+                _allRows = result.Rows.Select(r => new DataGridRow(r)).ToList();
             }
+
+            ApplyFiltersAndSort();
         }
         catch (Exception ex)
         {
@@ -230,8 +256,9 @@
             _sortCol = colIdx;
             _sortAsc = true;
         }
-        _page = 1;
-        await LoadDataAsync();
+        ApplyFiltersAndSort();
+        await NotifySelectionChangedAsync();
+        StateHasChanged();
     }
 
     // ─── Filtering ──────────────────
@@ -243,24 +270,29 @@
             _filters.Remove(colIdx);
         else
             _filters[colIdx] = value;
-        _page = 1;
-        await LoadDataAsync();
+        ApplyFiltersAndSort();
+        await NotifySelectionChangedAsync();
+        StateHasChanged();
     }
 
     // ─── Row Selection ──────────────
-    private void ToggleRowSelect(int rowIdx)
+    private async Task ToggleRowSelect(DataGridRow row)
     {
-        if (_selectedRows.Contains(rowIdx))
-            _selectedRows.Remove(rowIdx);
+        if (_selectedRows.Contains(row))
+            _selectedRows.Remove(row);
         else
-            _selectedRows.Add(rowIdx);
+            _selectedRows.Add(row);
+
+        await NotifySelectionChangedAsync();
     }
 
     // ─── Inline Editing ─────────────
     private void StartEdit(int rowIdx, int colIdx, bool isPk)
     {
-        if (IsReadOnly || isPk || _rows[rowIdx].State == RowState.Deleted) return;
-        var val = _rows[rowIdx].CurrentValues[colIdx];
+        var row = _rows[rowIdx];
+        bool pkLocked = isPk && row.State != RowState.New;
+        if (IsReadOnly || pkLocked || row.State == RowState.Deleted) return;
+        var val = row.CurrentValues[colIdx];
         _editingCell = new EditingCell
         {
             RowIndex = rowIdx,
@@ -280,6 +312,7 @@
             row.State = RowState.Modified;
 
         _editingCell = null;
+        ApplyFiltersAndSort();
     }
 
     private void HandleCellKeyDown(KeyboardEventArgs e, int rowIdx, int colIdx)
@@ -309,22 +342,35 @@
         if (Columns is null) return;
         var values = new object?[Columns.Length];
         var row = new DataGridRow(values, RowState.New);
-        _rows.Add(row);
+        _allRows.Add(row);
+        ApplyFiltersAndSort();
+
+        int rowIdx = _rows.IndexOf(row);
+        if (rowIdx >= 0 && Columns.Length > 0)
+        {
+            _editingCell = new EditingCell
+            {
+                RowIndex = rowIdx,
+                ColIndex = 0,
+                Value = string.Empty
+            };
+        }
+
+        StateHasChanged();
     }
 
-    public void DeleteSelectedRows()
+    public async Task DeleteSelectedRowsAsync()
     {
-        foreach (var idx in _selectedRows.ToList())
+        foreach (var row in _selectedRows.ToList())
         {
-            if (idx < _rows.Count)
-            {
-                if (_rows[idx].State == RowState.New)
-                    _rows.RemoveAt(idx);
-                else
-                    _rows[idx].State = RowState.Deleted;
-            }
+            if (row.State == RowState.New)
+                _allRows.Remove(row);
+            else
+                row.State = RowState.Deleted;
         }
         _selectedRows.Clear();
+        ApplyFiltersAndSort();
+        await NotifySelectionChangedAsync();
     }
 
     public async Task SaveChangesAsync()
@@ -334,7 +380,7 @@
 
         var pkColIdx = Array.IndexOf(Columns!, PrimaryKeyColumn);
 
-        foreach (var row in _rows.ToList())
+        foreach (var row in _allRows.ToList())
         {
             try
             {
@@ -386,9 +432,84 @@
         await LoadDataAsync();
     }
 
-    public bool HasPendingChanges => _rows.Any(r => r.State != RowState.Unmodified);
+    public bool HasPendingChanges => _allRows.Any(r => r.State != RowState.Unmodified);
     public bool HasSelectedRows => _selectedRows.Count > 0;
     public int SelectedRowCount => _selectedRows.Count;
+
+    private void ApplyFiltersAndSort()
+    {
+        IEnumerable<DataGridRow> query = _allRows;
+
+        foreach (var filter in _filters)
+        {
+            string needle = filter.Value;
+            if (string.IsNullOrWhiteSpace(needle))
+                continue;
+
+            int colIdx = filter.Key;
+            query = query.Where(row =>
+            {
+                if (colIdx < 0 || colIdx >= row.CurrentValues.Length)
+                    return false;
+
+                object? value = row.CurrentValues[colIdx];
+                string text = value switch
+                {
+                    null => "NULL",
+                    byte[] bytes => $"[{bytes.Length} bytes]",
+                    _ => value.ToString() ?? string.Empty
+                };
+                return text.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+
+        if (_sortCol is int sortCol)
+        {
+            query = _sortAsc
+                ? query.OrderBy(row => GetSortValue(row, sortCol), CellValueComparer.Instance)
+                : query.OrderByDescending(row => GetSortValue(row, sortCol), CellValueComparer.Instance);
+        }
+
+        _rows = query.ToList();
+        _selectedRows.RemoveWhere(row => !_rows.Contains(row));
+    }
+
+    private static object? GetSortValue(DataGridRow row, int colIdx)
+    {
+        if (colIdx < 0 || colIdx >= row.CurrentValues.Length)
+            return null;
+
+        return row.CurrentValues[colIdx];
+    }
+
+    private sealed class CellValueComparer : IComparer<object?>
+    {
+        public static readonly CellValueComparer Instance = new();
+
+        public int Compare(object? x, object? y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x is null) return -1;
+            if (y is null) return 1;
+
+            if (x is byte[] xb && y is byte[] yb)
+                return xb.Length.CompareTo(yb.Length);
+
+            if (x is IComparable cmp && x.GetType() == y.GetType())
+                return cmp.CompareTo(y);
+
+            if (double.TryParse(x.ToString(), out var dx) && double.TryParse(y.ToString(), out var dy))
+                return dx.CompareTo(dy);
+
+            return StringComparer.OrdinalIgnoreCase.Compare(x.ToString(), y.ToString());
+        }
+    }
+
+    private async Task NotifySelectionChangedAsync()
+    {
+        if (OnSelectionChanged.HasDelegate)
+            await OnSelectionChanged.InvokeAsync(_selectedRows.Count);
+    }
 
     // ─── Pagination ─────────────────
     private async Task GoToPage(int page)

@@ -20,8 +20,8 @@
             <button class="toolbar-btn" @onclick="AddRow">
                 <i class="bi bi-plus-lg"></i> Add Row
             </button>
-            <button class="toolbar-btn danger" @onclick="DeleteSelected" disabled="@(!HasSelection)">
-                <i class="bi bi-trash"></i> Delete
+            <button class="toolbar-btn danger" @onclick="DeleteSelectedAsync" disabled="@(!HasSelection)">
+                <i class="bi bi-trash"></i> Delete Rows (@_selectedRowCount)
             </button>
             <div class="toolbar-separator"></div>
             <button class="toolbar-btn primary" @onclick="SaveChanges" disabled="@(!_grid?.HasPendingChanges ?? true)">
@@ -36,6 +36,12 @@
         <button class="toolbar-btn" @onclick="Refresh">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
+        @if (!IsView)
+        {
+            <button class="toolbar-btn danger" @onclick="ConfirmDropTableAsync">
+                <i class="bi bi-trash3"></i> Drop Table
+            </button>
+        }
         <div class="toolbar-spacer"></div>
         <div class="toolbar-info">@ObjectName</div>
     </div>
@@ -45,7 +51,8 @@
         <DataGrid @ref="_grid"
                   TableName="@(IsView ? null : ObjectName)"
                   ViewName="@(IsView ? ObjectName : null)"
-                  IsReadOnly="@IsReadOnly" />
+                  IsReadOnly="@IsReadOnly"
+                  OnSelectionChanged="OnGridSelectionChanged" />
     }
     else
     {
@@ -364,7 +371,8 @@
     private DataGrid? _grid;
     private bool _showData = true;
     private bool IsReadOnly => IsView;
-    private bool HasSelection => _grid?.HasSelectedRows ?? false;
+    private int _selectedRowCount;
+    private bool HasSelection => _selectedRowCount > 0;
 
     // ─── Schema data ────────────────────
     private CSharpDB.Core.TableSchema? _schema;
@@ -458,7 +466,24 @@
 
     // ─── Data grid actions ──────────────
     private void AddRow() => _grid?.AddNewRow();
-    private void DeleteSelected() => _grid?.DeleteSelectedRows();
+    private async Task DeleteSelectedAsync()
+    {
+        if (_grid is null || _selectedRowCount <= 0)
+            return;
+
+        string label = _selectedRowCount == 1 ? "row" : "rows";
+        var confirmed = await Modal.ConfirmAsync(
+            "Delete Rows",
+            $"Mark {_selectedRowCount} selected {label} for deletion? Click Save to commit the change.",
+            "Mark for Delete",
+            isDanger: true);
+        if (!confirmed)
+            return;
+
+        await _grid.DeleteSelectedRowsAsync();
+        _selectedRowCount = _grid.SelectedRowCount;
+        Toast.Warning("Rows marked for deletion. Click Save to persist.");
+    }
     private async Task SaveChanges()
     {
         if (_grid is not null)
@@ -474,6 +499,12 @@
         if (_grid is not null)
             await _grid.LoadDataAsync();
         await LoadSchemaAsync();
+    }
+
+    private Task OnGridSelectionChanged(int count)
+    {
+        _selectedRowCount = count;
+        return InvokeAsync(StateHasChanged);
     }
 
     // ═══════════════════════════════════════
@@ -666,6 +697,28 @@
                 Toast.Success($"Dropped view '{ObjectName}'.");
             }
             catch (Exception ex) { Toast.Error(ex.Message); }
+        }
+    }
+
+    private async Task ConfirmDropTableAsync()
+    {
+        var confirmed = await Modal.ConfirmAsync(
+            "Drop Table",
+            $"Are you sure you want to drop table '{ObjectName}'? This action cannot be undone.",
+            "Drop",
+            isDanger: true);
+        if (!confirmed)
+            return;
+
+        try
+        {
+            await DbService.DropTableAsync(ObjectName);
+            Toast.Success($"Dropped table '{ObjectName}'.");
+            TabManager.CloseTabsForObject(ObjectName);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
         }
     }
 
