@@ -1,9 +1,8 @@
-using CSharpDB.Core;
-using CSharpDB.Sql;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
-using CSharpDB.Storage;
+using CSharpDB.Core;
+using CSharpDB.Sql;
 
 namespace CSharpDB.Execution;
 
@@ -14,6 +13,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
 {
     private readonly BTree _tree;
     private readonly TableSchema _schema;
+    private readonly IRecordSerializer _recordSerializer;
     private BTreeCursor? _cursor;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
@@ -29,10 +29,11 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
 
-    public TableScanOperator(BTree tree, TableSchema schema)
+    public TableScanOperator(BTree tree, TableSchema schema, IRecordSerializer? recordSerializer = null)
     {
         _tree = tree;
         _schema = schema;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -90,7 +91,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
             if (_reuseCurrentRowBuffer)
             {
                 EnsureRowBuffer(targetColumnCount);
-                int decodedCount = RecordEncoder.DecodeInto(payload, _rowBuffer!);
+                int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
                 if (decodedCount < targetColumnCount)
                     Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
 
@@ -99,7 +100,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
             else
             {
                 var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
-                int decodedCount = RecordEncoder.DecodeInto(payload, row);
+                int decodedCount = _recordSerializer.DecodeInto(payload, row);
                 if (decodedCount < targetColumnCount)
                     Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
 
@@ -148,12 +149,12 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     {
         var textBytes = _preDecodeFilterTextBytes;
         if (textBytes != null &&
-            RecordEncoder.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
+            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
         {
             return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
         }
 
-        var filterValue = RecordEncoder.DecodeColumn(payload, _preDecodeFilterColumnIndex);
+        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
     }
 }
@@ -2612,12 +2613,13 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
 {
     private readonly IOperator _outer;
     private readonly BTree _innerTableTree;
-    private readonly BTree? _innerIndexTree;
+    private readonly IIndexStore? _innerIndexStore;
     private readonly JoinType _joinType;
     private readonly int _outerKeyIndex;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly Func<DbValue[], DbValue>? _residualPredicate;
+    private readonly IRecordSerializer _recordSerializer;
     private DbValue[]? _activeOuterRow;
     private bool _activeOuterMatched;
     private bool _pendingPrimaryRowId;
@@ -2633,17 +2635,18 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
     public IndexNestedLoopJoinOperator(
         IOperator outer,
         BTree innerTableTree,
-        BTree? innerIndexTree,
+        IIndexStore? innerIndexStore,
         JoinType joinType,
         int outerKeyIndex,
         int leftColCount,
         int rightColCount,
         Expression? residualCondition,
-        TableSchema compositeSchema)
+        TableSchema compositeSchema,
+        IRecordSerializer? recordSerializer = null)
     {
         _outer = outer;
         _innerTableTree = innerTableTree;
-        _innerIndexTree = innerIndexTree;
+        _innerIndexStore = innerIndexStore;
         _joinType = joinType;
         _outerKeyIndex = outerKeyIndex;
         _leftColCount = leftColCount;
@@ -2651,6 +2654,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
         _residualPredicate = residualCondition != null
             ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
             : null;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
     }
 
@@ -2717,7 +2721,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
             _activeOuterRow = outerRow;
             _activeOuterMatched = false;
 
-            if (_innerIndexTree == null)
+            if (_innerIndexStore == null)
             {
                 _pendingPrimaryRowId = true;
                 _primaryRowId = lookupKey;
@@ -2726,7 +2730,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
             }
             else
             {
-                var indexPayload = await _innerIndexTree.FindAsync(lookupKey, ct);
+                var indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
                 _pendingPrimaryRowId = false;
                 _pendingIndexPayload = indexPayload == null
                     ? ReadOnlyMemory<byte>.Empty
@@ -2810,7 +2814,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
             ? Array.Empty<DbValue>()
             : new DbValue[_rightColCount];
 
-        int decoded = RecordEncoder.DecodeInto(payload, row);
+        int decoded = _recordSerializer.DecodeInto(payload, row);
         if (decoded < _rightColCount)
             Array.Fill(row, DbValue.Null, decoded, _rightColCount - decoded);
         return row;
@@ -3021,10 +3025,11 @@ public sealed class NestedLoopJoinOperator : IOperator
 /// </summary>
 public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport
 {
-    private readonly BTree _indexTree;
+    private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
     private readonly long _seekValue;
+    private readonly IRecordSerializer _recordSerializer;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
     private DbValue[]? _rowBuffer;
@@ -3040,16 +3045,22 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
-    internal BTree IndexTree => _indexTree;
+    internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
 
-    public IndexScanOperator(BTree indexTree, BTree tableTree, TableSchema schema, long seekValue)
+    public IndexScanOperator(
+        IIndexStore indexStore,
+        BTree tableTree,
+        TableSchema schema,
+        long seekValue,
+        IRecordSerializer? recordSerializer = null)
     {
-        _indexTree = indexTree;
+        _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
         _seekValue = seekValue;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -3075,7 +3086,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
-        var payload = await _indexTree.FindAsync(_seekValue, ct);
+        var payload = await _indexStore.FindAsync(_seekValue, ct);
         _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
 
@@ -3108,7 +3119,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
             if (_reuseCurrentRowBuffer)
             {
                 EnsureRowBuffer(targetColumnCount);
-                int decodedCount = RecordEncoder.DecodeInto(payload, _rowBuffer!);
+                int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
                 if (decodedCount < targetColumnCount)
                     Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
 
@@ -3117,7 +3128,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
             else
             {
                 var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
-                int decodedCount = RecordEncoder.DecodeInto(payload, row);
+                int decodedCount = _recordSerializer.DecodeInto(payload, row);
                 if (decodedCount < targetColumnCount)
                     Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
 
@@ -3164,12 +3175,12 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     {
         var textBytes = _preDecodeFilterTextBytes;
         if (textBytes != null &&
-            RecordEncoder.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
+            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
         {
             return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
         }
 
-        var filterValue = RecordEncoder.DecodeColumn(payload, _preDecodeFilterColumnIndex);
+        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
     }
 }
@@ -3180,10 +3191,11 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 /// </summary>
 public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport
 {
-    private readonly BTree _indexTree;
+    private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
     private readonly long _seekValue;
+    private readonly IRecordSerializer _recordSerializer;
     private bool _consumed;
     private int? _maxDecodedColumnIndex;
     private int _preDecodeFilterColumnIndex;
@@ -3196,16 +3208,22 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
-    internal BTree IndexTree => _indexTree;
+    internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
 
-    public UniqueIndexLookupOperator(BTree indexTree, BTree tableTree, TableSchema schema, long seekValue)
+    public UniqueIndexLookupOperator(
+        IIndexStore indexStore,
+        BTree tableTree,
+        TableSchema schema,
+        long seekValue,
+        IRecordSerializer? recordSerializer = null)
     {
-        _indexTree = indexTree;
+        _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
         _seekValue = seekValue;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -3240,7 +3258,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         if (_consumed) return false;
         _consumed = true;
 
-        var indexPayload = await _indexTree.FindAsync(_seekValue, ct);
+        var indexPayload = await _indexStore.FindAsync(_seekValue, ct);
         if (indexPayload == null || indexPayload.Length < 8)
             return false;
 
@@ -3257,8 +3275,8 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
 
         CurrentRowId = rowId;
         var decoded = _maxDecodedColumnIndex.HasValue
-            ? RecordEncoder.DecodeUpTo(rowPayload, _maxDecodedColumnIndex.Value)
-            : RecordEncoder.Decode(rowPayload);
+            ? _recordSerializer.DecodeUpTo(rowPayload, _maxDecodedColumnIndex.Value)
+            : _recordSerializer.Decode(rowPayload);
 
         if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
         {
@@ -3297,12 +3315,12 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     {
         var textBytes = _preDecodeFilterTextBytes;
         if (textBytes != null &&
-            RecordEncoder.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
+            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
         {
             return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
         }
 
-        var filterValue = RecordEncoder.DecodeColumn(payload, _preDecodeFilterColumnIndex);
+        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
     }
 }
@@ -3313,9 +3331,10 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
 /// </summary>
 public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport
 {
-    private readonly BTree _indexTree;
+    private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
+    private readonly IRecordSerializer _recordSerializer;
     private BTreeCursor? _cursor;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
@@ -3333,14 +3352,19 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
 
-    internal BTree IndexTree => _indexTree;
+    internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
 
-    public IndexOrderedScanOperator(BTree indexTree, BTree tableTree, TableSchema schema)
+    public IndexOrderedScanOperator(
+        IIndexStore indexStore,
+        BTree tableTree,
+        TableSchema schema,
+        IRecordSerializer? recordSerializer = null)
     {
-        _indexTree = indexTree;
+        _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -3366,7 +3390,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
 
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
-        _cursor = _indexTree.CreateCursor();
+        _cursor = _indexStore.CreateCursor();
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
         _rowBuffer = null;
@@ -3402,7 +3426,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
                 if (_reuseCurrentRowBuffer)
                 {
                     EnsureRowBuffer(targetColumnCount);
-                    int decodedCount = RecordEncoder.DecodeInto(payload, _rowBuffer!);
+                    int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
                     if (decodedCount < targetColumnCount)
                         Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
                     Current = _rowBuffer!;
@@ -3410,7 +3434,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
                 else
                 {
                     var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
-                    int decodedCount = RecordEncoder.DecodeInto(payload, row);
+                    int decodedCount = _recordSerializer.DecodeInto(payload, row);
                     if (decodedCount < targetColumnCount)
                         Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
                     Current = row;
@@ -3464,12 +3488,12 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     {
         var textBytes = _preDecodeFilterTextBytes;
         if (textBytes != null &&
-            RecordEncoder.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
+            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
         {
             return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
         }
 
-        var filterValue = RecordEncoder.DecodeColumn(payload, _preDecodeFilterColumnIndex);
+        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
     }
 }
@@ -3482,6 +3506,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
     private readonly long _seekKey;
+    private readonly IRecordSerializer _recordSerializer;
     private bool _consumed;
     private int? _maxDecodedColumnIndex;
     private int _preDecodeFilterColumnIndex;
@@ -3499,11 +3524,16 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     internal BTree TableTree => _tableTree;
     internal long SeekKey => _seekKey;
 
-    public PrimaryKeyLookupOperator(BTree tableTree, TableSchema schema, long seekKey)
+    public PrimaryKeyLookupOperator(
+        BTree tableTree,
+        TableSchema schema,
+        long seekKey,
+        IRecordSerializer? recordSerializer = null)
     {
         _tableTree = tableTree;
         _schema = schema;
         _seekKey = seekKey;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -3561,7 +3591,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
                 : _schema.Columns.Count;
             if (_rowBuffer == null || _rowBuffer.Length < targetCount)
                 _rowBuffer = new DbValue[targetCount];
-            int decoded = RecordEncoder.DecodeInto(payload, _rowBuffer.AsSpan(0, targetCount));
+            int decoded = _recordSerializer.DecodeInto(payload, _rowBuffer.AsSpan(0, targetCount));
             for (int i = decoded; i < targetCount; i++)
                 _rowBuffer[i] = DbValue.Null;
             Current = _rowBuffer;
@@ -3569,8 +3599,8 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         else
         {
             var decoded = _maxDecodedColumnIndex.HasValue
-                ? RecordEncoder.DecodeUpTo(payload, _maxDecodedColumnIndex.Value)
-                : RecordEncoder.Decode(payload);
+                ? _recordSerializer.DecodeUpTo(payload, _maxDecodedColumnIndex.Value)
+                : _recordSerializer.Decode(payload);
 
             if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
             {
@@ -3610,12 +3640,12 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     {
         var textBytes = _preDecodeFilterTextBytes;
         if (textBytes != null &&
-            RecordEncoder.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
+            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
         {
             return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
         }
 
-        var filterValue = RecordEncoder.DecodeColumn(payload, _preDecodeFilterColumnIndex);
+        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
     }
 }
@@ -3701,11 +3731,12 @@ public sealed class ScalarAggregateLookupOperator : IOperator
 
     private readonly LookupKind _lookupKind;
     private readonly BTree _tableTree;
-    private readonly BTree? _indexTree;
+    private readonly IIndexStore? _indexStore;
     private readonly long _lookupValue;
     private readonly int _columnIndex;
     private readonly AggregateKind _kind;
     private readonly bool _isDistinct;
+    private readonly IRecordSerializer _recordSerializer;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -3718,33 +3749,37 @@ public sealed class ScalarAggregateLookupOperator : IOperator
         int columnIndex,
         string functionName,
         ColumnDefinition[] outputSchema,
-        bool isDistinct = false)
+        bool isDistinct = false,
+        IRecordSerializer? recordSerializer = null)
     {
         _lookupKind = LookupKind.PrimaryKey;
         _tableTree = tableTree;
-        _indexTree = null;
+        _indexStore = null;
         _lookupValue = seekKey;
         _columnIndex = columnIndex;
         _isDistinct = isDistinct;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
 
     public ScalarAggregateLookupOperator(
-        BTree indexTree,
+        IIndexStore indexStore,
         BTree tableTree,
         long seekValue,
         int columnIndex,
         string functionName,
         ColumnDefinition[] outputSchema,
-        bool isDistinct = false)
+        bool isDistinct = false,
+        IRecordSerializer? recordSerializer = null)
     {
         _lookupKind = LookupKind.IndexEquality;
-        _indexTree = indexTree;
+        _indexStore = indexStore;
         _tableTree = tableTree;
         _lookupValue = seekValue;
         _columnIndex = columnIndex;
         _isDistinct = isDistinct;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
@@ -3765,14 +3800,14 @@ public sealed class ScalarAggregateLookupOperator : IOperator
         {
             if (_kind == AggregateKind.Count && distinctValues == null)
             {
-                if (!RecordEncoder.IsColumnNull(payload, _columnIndex))
+                if (!_recordSerializer.IsColumnNull(payload, _columnIndex))
                     count++;
                 return;
             }
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!RecordEncoder.TryDecodeNumericColumn(payload, _columnIndex, out long intVal, out double realVal, out bool isReal))
+                if (!_recordSerializer.TryDecodeNumericColumn(payload, _columnIndex, out long intVal, out double realVal, out bool isReal))
                     return;
 
                 hasAny = true;
@@ -3789,7 +3824,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator
                 return;
             }
 
-            var val = RecordEncoder.DecodeColumn(payload, _columnIndex);
+            var val = _recordSerializer.DecodeColumn(payload, _columnIndex);
             if (val.IsNull) return;
             if (distinctValues != null && !distinctValues.Add(val)) return;
 
@@ -3831,7 +3866,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator
         }
         else
         {
-            var indexPayload = await _indexTree!.FindAsync(_lookupValue, ct);
+            var indexPayload = await _indexStore!.FindAsync(_lookupValue, ct);
             if (indexPayload != null)
             {
                 int rowIdCount = indexPayload.Length / 8;
@@ -3903,6 +3938,7 @@ public sealed class ScalarAggregateTableOperator : IOperator
     private readonly AggregateKind _kind;
     private readonly bool _isDistinct;
     private readonly bool _emitOnEmptyInput;
+    private readonly IRecordSerializer _recordSerializer;
     private bool _emitted;
     private bool _hasResult;
 
@@ -3916,12 +3952,14 @@ public sealed class ScalarAggregateTableOperator : IOperator
         string functionName,
         ColumnDefinition[] outputSchema,
         bool isDistinct = false,
-        bool emitOnEmptyInput = true)
+        bool emitOnEmptyInput = true,
+        IRecordSerializer? recordSerializer = null)
     {
         _tableTree = tableTree;
         _columnIndex = columnIndex;
         _isDistinct = isDistinct;
         _emitOnEmptyInput = emitOnEmptyInput;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _kind = functionName switch
         {
             "COUNT" => AggregateKind.Count,
@@ -3955,14 +3993,14 @@ public sealed class ScalarAggregateTableOperator : IOperator
 
             if (_kind == AggregateKind.Count && distinctValues == null)
             {
-                if (!RecordEncoder.IsColumnNull(cursor.CurrentValue.Span, _columnIndex))
+                if (!_recordSerializer.IsColumnNull(cursor.CurrentValue.Span, _columnIndex))
                     count++;
                 continue;
             }
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!RecordEncoder.TryDecodeNumericColumn(
+                if (!_recordSerializer.TryDecodeNumericColumn(
                         cursor.CurrentValue.Span,
                         _columnIndex,
                         out long intVal,
@@ -3986,7 +4024,7 @@ public sealed class ScalarAggregateTableOperator : IOperator
                 continue;
             }
 
-            var val = RecordEncoder.DecodeColumn(cursor.CurrentValue.Span, _columnIndex);
+            var val = _recordSerializer.DecodeColumn(cursor.CurrentValue.Span, _columnIndex);
             if (val.IsNull) continue;
             if (distinctValues != null && !distinctValues.Add(val)) continue;
 

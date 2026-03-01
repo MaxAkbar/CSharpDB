@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CSharpDB.Core;
-using CSharpDB.Storage;
 
 namespace CSharpDB.Engine;
 
@@ -16,6 +15,7 @@ public sealed class Collection<T>
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
+    private readonly IRecordSerializer _recordSerializer;
     private readonly string _catalogTableName;
     private readonly BTree _tree;
     private readonly Func<bool> _isInTransaction;
@@ -29,12 +29,14 @@ public sealed class Collection<T>
     internal Collection(
         Pager pager,
         SchemaCatalog catalog,
+        IRecordSerializer recordSerializer,
         string catalogTableName,
         BTree tree,
         Func<bool> isInTransaction)
     {
         _pager = pager;
         _catalog = catalog;
+        _recordSerializer = recordSerializer;
         _catalogTableName = catalogTableName;
         _tree = tree;
         _isInTransaction = isInTransaction;
@@ -200,16 +202,16 @@ public sealed class Collection<T>
         return hash & 0x7FFFFFFFFFFFFFFF; // ensure positive
     }
 
-    private static byte[] EncodeDocument(string key, T document)
+    private byte[] EncodeDocument(string key, T document)
     {
         string json = JsonSerializer.Serialize(document, s_jsonOptions);
         var values = new DbValue[] { DbValue.FromText(key), DbValue.FromText(json) };
-        return RecordEncoder.Encode(values);
+        return _recordSerializer.Encode(values);
     }
 
-    private static (string key, T document) DecodeDocument(ReadOnlySpan<byte> payload)
+    private (string key, T document) DecodeDocument(ReadOnlySpan<byte> payload)
     {
-        var values = RecordEncoder.Decode(payload);
+        var values = _recordSerializer.Decode(payload);
         string storedKey = values[0].AsText;
         string json = values[1].AsText;
         T doc = JsonSerializer.Deserialize<T>(json, s_jsonOptions)!;
@@ -219,9 +221,9 @@ public sealed class Collection<T>
     /// <summary>
     /// Decode only the key from a payload (avoids deserializing the full document).
     /// </summary>
-    private static string DecodeKey(ReadOnlySpan<byte> payload)
+    private string DecodeKey(ReadOnlySpan<byte> payload)
     {
-        var values = RecordEncoder.DecodeUpTo(payload, 0);
+        var values = _recordSerializer.DecodeUpTo(payload, 0);
         return values[0].AsText;
     }
 

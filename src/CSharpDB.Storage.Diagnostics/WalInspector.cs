@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using CSharpDB.Storage;
 using CSharpDB.Storage.Diagnostics.Internal;
 
 namespace CSharpDB.Storage.Diagnostics;

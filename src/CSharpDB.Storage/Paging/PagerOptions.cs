@@ -1,0 +1,41 @@
+namespace CSharpDB.Storage.Paging;
+
+/// <summary>
+/// Configuration for Pager behavior.
+/// </summary>
+public sealed class PagerOptions
+{
+    /// <summary>
+    /// Maximum duration to wait when acquiring the single-writer lock.
+    /// </summary>
+    public TimeSpan WriterLockTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Auto-checkpoint policy used after successful commits.
+    /// </summary>
+    public ICheckpointPolicy CheckpointPolicy { get; init; } =
+        new FrameCountCheckpointPolicy(PageConstants.DefaultCheckpointThreshold);
+
+    /// <summary>
+    /// Optional maximum number of pages retained in cache.
+    /// When null, cache behavior is unbounded.
+    /// </summary>
+    public int? MaxCachedPages { get; init; }
+
+    /// <summary>
+    /// Factory used to create pager-local page cache instances.
+    /// If unset, falls back to <see cref="MaxCachedPages"/> and defaults to dictionary behavior.
+    /// </summary>
+    public Func<IPageCache>? PageCacheFactory { get; init; }
+
+    internal IPageCache CreatePageCache()
+    {
+        if (PageCacheFactory != null)
+            return PageCacheFactory();
+
+        if (MaxCachedPages is > 0)
+            return new LruPageCache(MaxCachedPages.Value);
+
+        return new DictionaryPageCache();
+    }
+}

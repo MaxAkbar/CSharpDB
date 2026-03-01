@@ -1,7 +1,6 @@
 using CSharpDB.Core;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
-using CSharpDB.Storage;
 
 namespace CSharpDB.Engine;
 
@@ -15,6 +14,7 @@ public sealed class Database : IAsyncDisposable
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
+    private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private bool _inTransaction;
@@ -29,11 +29,15 @@ public sealed class Database : IAsyncDisposable
         set => _planner.PreferSyncPointLookups = value;
     }
 
-    private Database(Pager pager, SchemaCatalog catalog)
+    private Database(
+        Pager pager,
+        SchemaCatalog catalog,
+        IRecordSerializer recordSerializer)
     {
         _pager = pager;
         _catalog = catalog;
-        _planner = new QueryPlanner(pager, catalog);
+        _recordSerializer = recordSerializer;
+        _planner = new QueryPlanner(pager, catalog, recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
     }
 
@@ -42,25 +46,24 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public static async ValueTask<Database> OpenAsync(string filePath, CancellationToken ct = default)
     {
-        bool isNew = !File.Exists(filePath);
-        var device = new FileStorageDevice(filePath);
-        var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(filePath, walIndex);
-        var pager = await Pager.CreateAsync(device, wal, walIndex, ct: ct);
+        return await OpenAsync(filePath, new DatabaseOptions(), ct);
+    }
 
-        if (isNew)
-        {
-            await pager.InitializeNewDatabaseAsync(ct);
-            await wal.OpenAsync(pager.PageCount, ct);
-        }
-        else
-        {
-            // Check for WAL → recovery + checkpoint
-            await pager.RecoverAsync(ct);
-        }
+    /// <summary>
+    /// Open an existing database file, or create a new one if it doesn't exist, using explicit composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
 
-        var catalog = await SchemaCatalog.CreateAsync(pager, ct);
-        return new Database(pager, catalog);
+        var context = await options.StorageEngineFactory.OpenAsync(filePath, options.StorageEngineOptions, ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
     }
 
     /// <summary>
@@ -161,7 +164,12 @@ public sealed class Database : IAsyncDisposable
     public ReaderSession CreateReaderSession()
     {
         var snapshot = _pager.AcquireReaderSnapshot();
-        return new ReaderSession(_pager, _catalog, snapshot, _statementCache);
+        return new ReaderSession(
+            _pager,
+            _catalog,
+            _recordSerializer,
+            snapshot,
+            _statementCache);
     }
 
     /// <summary>
@@ -245,7 +253,12 @@ public sealed class Database : IAsyncDisposable
 
         var tree = _catalog.GetTableTree(catalogName);
         var collection = new Collection<T>(
-            _pager, _catalog, catalogName, tree, () => _inTransaction);
+            _pager,
+            _catalog,
+            _recordSerializer,
+            catalogName,
+            tree,
+            () => _inTransaction);
         _collectionCache[catalogName] = collection;
         return collection;
     }
@@ -283,14 +296,21 @@ public sealed class Database : IAsyncDisposable
     {
         private readonly Pager _pager;
         private readonly SchemaCatalog _catalog;
+        private readonly IRecordSerializer _recordSerializer;
         private readonly WalSnapshot _snapshot;
         private readonly StatementCache _statementCache;
         private bool _disposed;
 
-        internal ReaderSession(Pager pager, SchemaCatalog catalog, WalSnapshot snapshot, StatementCache statementCache)
+        internal ReaderSession(
+            Pager pager,
+            SchemaCatalog catalog,
+            IRecordSerializer recordSerializer,
+            WalSnapshot snapshot,
+            StatementCache statementCache)
         {
             _pager = pager;
             _catalog = catalog;
+            _recordSerializer = recordSerializer;
             _snapshot = snapshot;
             _statementCache = statementCache;
         }
@@ -309,7 +329,7 @@ public sealed class Database : IAsyncDisposable
 
             // Create a snapshot-aware pager for reading
             var snapshotPager = _pager.CreateSnapshotReader(_snapshot);
-            var planner = new QueryPlanner(snapshotPager, _catalog);
+            var planner = new QueryPlanner(snapshotPager, _catalog, _recordSerializer);
             return await planner.ExecuteAsync(stmt, ct);
         }
 
