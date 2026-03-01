@@ -131,8 +131,6 @@ internal sealed class PageBufferManager
         Func<uint, CancellationToken, ValueTask<byte[]>> getPageAsync,
         CancellationToken ct)
     {
-        _dirtyPages.Add(pageId);
-        if (!_cache.Contains(pageId))
-            await getPageAsync(pageId, ct);
+        await getPageAsync(pageId, ct);
     }
 }

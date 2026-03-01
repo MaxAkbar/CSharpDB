@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+
 namespace CSharpDB.Storage.Integrity;
 
 /// <summary>
@@ -8,11 +11,26 @@ public sealed class AdditiveChecksumProvider : IPageChecksumProvider
     public uint Compute(ReadOnlySpan<byte> data)
     {
         uint sum = 0;
-        int i = 0;
-        for (; i + 3 < data.Length; i += 4)
-            sum += BitConverter.ToUInt32(data[i..]);
-        for (; i < data.Length; i++)
+
+        var uints = MemoryMarshal.Cast<byte, uint>(data);
+        int uintCount = uints.Length;
+        int j = 0;
+
+        if (Vector.IsHardwareAccelerated && uintCount >= Vector<uint>.Count)
+        {
+            var vsum = Vector<uint>.Zero;
+            int limit = uintCount - (uintCount % Vector<uint>.Count);
+            for (; j < limit; j += Vector<uint>.Count)
+                vsum += new Vector<uint>(uints.Slice(j));
+            sum = Vector.Sum(vsum);
+        }
+
+        for (; j < uintCount; j++)
+            sum += uints[j];
+
+        for (int i = uintCount * 4; i < data.Length; i++)
             sum += data[i];
+
         return sum;
     }
 }

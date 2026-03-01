@@ -451,7 +451,7 @@ public sealed class BTree
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        int headerBytes = ReadVarintHeaderLength(page, offset);
+        Varint.Read(page.AsSpan(offset), out int headerBytes);
         return BinaryPrimitives.ReadInt64LittleEndian(page.AsSpan(offset + headerBytes));
     }
 
@@ -600,12 +600,4 @@ public sealed class BTree
     }
 
     #endregion
-
-    private static int ReadVarintHeaderLength(byte[] page, int offset)
-    {
-        int len = 1;
-        while ((page[offset + len - 1] & 0x80) != 0 && len < 10)
-            len++;
-        return len;
-    }
 }

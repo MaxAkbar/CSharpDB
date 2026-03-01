@@ -109,8 +109,10 @@ public struct SlottedPage
 
         // Shift cell pointers to make room at `index`
         int count = CellCount;
-        for (int i = count; i > index; i--)
-            SetCellOffset(i, GetCellOffset(i - 1));
+        int srcOffset = CellPointerArrayStart + index * PageConstants.CellPointerSize;
+        int bytesToMove = (count - index) * PageConstants.CellPointerSize;
+        if (bytesToMove > 0)
+            System.Buffer.BlockCopy(_data, srcOffset, _data, srcOffset + PageConstants.CellPointerSize, bytesToMove);
 
         SetCellOffset(index, newOffset);
         CellCount = (ushort)(count + 1);
@@ -123,8 +125,10 @@ public struct SlottedPage
     public void DeleteCell(int index)
     {
         int count = CellCount;
-        for (int i = index; i < count - 1; i++)
-            SetCellOffset(i, GetCellOffset(i + 1));
+        int dstOffset = CellPointerArrayStart + index * PageConstants.CellPointerSize;
+        int bytesToMove = (count - 1 - index) * PageConstants.CellPointerSize;
+        if (bytesToMove > 0)
+            System.Buffer.BlockCopy(_data, dstOffset + PageConstants.CellPointerSize, _data, dstOffset, bytesToMove);
         CellCount = (ushort)(count - 1);
     }
 
