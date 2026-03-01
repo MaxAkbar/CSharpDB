@@ -1,16 +1,11 @@
 <Project>
-
   <PropertyGroup>
-    <Version>0.1.0-preview.1</Version>
-    <Authors>Maxim</Authors>
-    <Company>CSharpDB</Company>
+    <Authors>MaxAkbar</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/maxakbar/csharpdb</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/maxakbar/csharpdb</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/MaxAkbar/CSharpDB</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MaxAkbar/CSharpDB.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>database;embedded;sql;btree;wal;dotnet;csharp</PackageTags>
-    <Copyright>Copyright (c) 2025 Maxim</Copyright>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageTags>database;embedded;sql;dotnet;btree;wal</PackageTags>
+    <Version>1.0.0</Version>
   </PropertyGroup>
-
 </Project>
