@@ -13,6 +13,7 @@ internal sealed class PageBufferManager
     private readonly WalSnapshot? _readerSnapshot;
     private readonly bool _isSnapshotReader;
     private readonly IPageOperationInterceptor _interceptor;
+    private readonly bool _hasInterceptor;
     private readonly HashSet<uint> _dirtyPages = new();
 
     public PageBufferManager(
@@ -29,7 +30,10 @@ internal sealed class PageBufferManager
         _readerSnapshot = readerSnapshot;
         _isSnapshotReader = isSnapshotReader;
         _interceptor = interceptor;
+        _hasInterceptor = interceptor is not NoOpPageOperationInterceptor;
     }
+
+    internal bool HasInterceptor => _hasInterceptor;
 
     public IReadOnlyCollection<uint> DirtyPages => _dirtyPages;
 
@@ -41,13 +45,24 @@ internal sealed class PageBufferManager
 
     public bool TryGetDirtyPage(uint pageId, out byte[] page) => _cache.TryGet(pageId, out page);
 
-    public async ValueTask<byte[]> GetPageAsync(IStorageDevice device, uint pageId, CancellationToken ct = default)
+    public ValueTask<byte[]> GetPageAsync(IStorageDevice device, uint pageId, CancellationToken ct = default)
     {
-        await _interceptor.OnBeforeReadAsync(pageId, ct);
+        // Fast path: no interceptor + cache hit = zero async overhead
+        if (!_hasInterceptor && _cache.TryGet(pageId, out var fastCached))
+            return new ValueTask<byte[]>(fastCached);
+
+        return GetPageCoreAsync(device, pageId, ct);
+    }
+
+    private async ValueTask<byte[]> GetPageCoreAsync(IStorageDevice device, uint pageId, CancellationToken ct)
+    {
+        if (_hasInterceptor)
+            await _interceptor.OnBeforeReadAsync(pageId, ct);
 
         if (_cache.TryGet(pageId, out var cached))
         {
-            await _interceptor.OnAfterReadAsync(pageId, PageReadSource.Cache, ct);
+            if (_hasInterceptor)
+                await _interceptor.OnAfterReadAsync(pageId, PageReadSource.Cache, ct);
             return cached;
         }
 
@@ -57,7 +72,8 @@ internal sealed class PageBufferManager
             {
                 var walPage = await _wal.ReadPageAsync(walOffset, ct);
                 _cache.Set(pageId, walPage);
-                await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalSnapshot, ct);
+                if (_hasInterceptor)
+                    await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalSnapshot, ct);
                 return walPage;
             }
         }
@@ -65,14 +81,16 @@ internal sealed class PageBufferManager
         {
             var walPage = await _wal.ReadPageAsync(latestOffset, ct);
             _cache.Set(pageId, walPage);
-            await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalLatest, ct);
+            if (_hasInterceptor)
+                await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalLatest, ct);
             return walPage;
         }
 
         var buffer = new byte[PageConstants.PageSize];
         await device.ReadAsync((long)pageId * PageConstants.PageSize, buffer, ct);
         _cache.Set(pageId, buffer);
-        await _interceptor.OnAfterReadAsync(pageId, PageReadSource.StorageDevice, ct);
+        if (_hasInterceptor)
+            await _interceptor.OnAfterReadAsync(pageId, PageReadSource.StorageDevice, ct);
         return buffer;
     }
 

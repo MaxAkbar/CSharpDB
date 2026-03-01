@@ -12,10 +12,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly IWriteAheadLog _wal;
     private readonly WalIndex _walIndex;
     private readonly IPageOperationInterceptor _interceptor;
+    private readonly bool _hasInterceptor;
     private readonly PageBufferManager _buffers;
     private readonly IPageAllocator _allocator;
     private readonly TransactionCoordinator? _transactions;
     private readonly CheckpointCoordinator? _checkpoints;
+    private readonly Func<CancellationToken, ValueTask>? _checkpointAction;
 
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
@@ -49,6 +51,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
         _interceptor = _options.CreateInterceptor();
+        _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         _buffers = new PageBufferManager(
             _options.CreatePageCache(),
             _wal,
@@ -67,6 +70,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             GetPageAsync,
             MarkDirtyAsync,
             () => _isSnapshotReader);
+        _checkpointAction = RunCheckpointCoreAsync;
         CheckpointPolicy = _options.CheckpointPolicy;
 
         if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
@@ -81,6 +85,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
         _interceptor = _options.CreateInterceptor();
+        _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         _readerSnapshot = snapshot;
         _isSnapshotReader = true;
         _buffers = new PageBufferManager(
@@ -103,7 +108,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
             CheckpointThreshold = framePolicy.Threshold;
-        // No writer lock or checkpoint lock needed for readers
+        // No writer lock, checkpoint lock, or checkpoint action needed for readers
     }
 
     public static async ValueTask<Pager> CreateAsync(IStorageDevice device, IWriteAheadLog wal,
@@ -193,9 +198,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return _buffers.TryGetCachedPage(pageId);
     }
 
-    public async ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
+    public ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
     {
-        return await _buffers.GetPageAsync(_device, pageId, ct);
+        return _buffers.GetPageAsync(_device, pageId, ct);
     }
 
     public ValueTask MarkDirtyAsync(uint pageId, CancellationToken ct = default)
@@ -211,17 +216,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// Allocate a new page. Tries the freelist first, then extends the page count.
     /// In WAL mode, the DB file is NOT extended here — that happens during checkpoint.
     /// </summary>
-    public async ValueTask<uint> AllocatePageAsync(CancellationToken ct = default)
+    public ValueTask<uint> AllocatePageAsync(CancellationToken ct = default)
     {
-        return await _allocator.AllocatePageAsync(ct);
+        return _allocator.AllocatePageAsync(ct);
     }
 
     /// <summary>
     /// Free a page by adding it to the freelist.
     /// </summary>
-    public async ValueTask FreePageAsync(uint pageId, CancellationToken ct = default)
+    public ValueTask FreePageAsync(uint pageId, CancellationToken ct = default)
     {
-        await _allocator.FreePageAsync(pageId, ct);
+        return _allocator.FreePageAsync(pageId, ct);
     }
 
     public async ValueTask BeginTransactionAsync(CancellationToken ct = default)
@@ -237,58 +242,76 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction to commit.");
 
         ChangeCounter++;
-        int dirtyCount = _buffers.DirtyPages.Count + 1; // includes page 0 header update
-        bool commitSucceeded = false;
-        await _interceptor.OnCommitStartAsync(dirtyCount, ct);
 
         // Update file header in page 0
         var page0 = await GetPageAsync(0, ct);
         WriteFileHeaderTo(page0);
         _buffers.AddDirty(0);
 
-        try
+        if (_hasInterceptor)
         {
-            // Write all dirty pages to WAL
+            int dirtyCount = _buffers.DirtyPages.Count;
+            bool commitSucceeded = false;
+            await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+            try
+            {
+                // Write all dirty pages to WAL with per-page interceptor hooks
+                foreach (var pageId in _buffers.DirtyPages)
+                {
+                    if (_buffers.TryGetDirtyPage(pageId, out var data))
+                    {
+                        bool writeSucceeded = false;
+                        await _interceptor.OnBeforeWriteAsync(pageId, ct);
+                        try
+                        {
+                            await _wal.AppendFrameAsync(pageId, data, ct);
+                            writeSucceeded = true;
+                        }
+                        finally
+                        {
+                            await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
+                        }
+                    }
+                }
+
+                await CommitWalAndCheckpointAsync(ct);
+                commitSucceeded = true;
+            }
+            finally
+            {
+                await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, ct);
+            }
+        }
+        else
+        {
+            // Fast path: no interceptor — skip all lifecycle hooks and per-page try/finally
             foreach (var pageId in _buffers.DirtyPages)
             {
                 if (_buffers.TryGetDirtyPage(pageId, out var data))
-                {
-                    bool writeSucceeded = false;
-                    await _interceptor.OnBeforeWriteAsync(pageId, ct);
-                    try
-                    {
-                        await _wal.AppendFrameAsync(pageId, data, ct);
-                        writeSucceeded = true;
-                    }
-                    finally
-                    {
-                        await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
-                    }
-                }
+                    await _wal.AppendFrameAsync(pageId, data, ct);
             }
 
-            // Commit the WAL (makes frames durable and visible to new readers)
-            await _wal.CommitAsync(PageCount, ct);
-
-            _buffers.ClearDirty();
-            _transactions.CompleteCommit();
-
-            // Auto-checkpoint according to policy
-            bool shouldCheckpoint = _checkpoints!.ShouldCheckpoint(
-                CheckpointPolicy,
-                _walIndex.FrameCount,
-                CheckpointThreshold,
-                EstimateCommittedWalBytes(_walIndex.FrameCount));
-            if (shouldCheckpoint)
-            {
-                await CheckpointAsync(ct);
-            }
-
-            commitSucceeded = true;
+            await CommitWalAndCheckpointAsync(ct);
         }
-        finally
+    }
+
+    private async ValueTask CommitWalAndCheckpointAsync(CancellationToken ct)
+    {
+        // Commit the WAL (makes frames durable and visible to new readers)
+        await _wal.CommitAsync(PageCount, ct);
+
+        _buffers.ClearDirty();
+        _transactions!.CompleteCommit();
+
+        // Auto-checkpoint according to policy
+        bool shouldCheckpoint = _checkpoints!.ShouldCheckpoint(
+            CheckpointPolicy,
+            _walIndex.FrameCount,
+            CheckpointThreshold,
+            EstimateCommittedWalBytes(_walIndex.FrameCount));
+        if (shouldCheckpoint)
         {
-            await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, ct);
+            await CheckpointAsync(ct);
         }
     }
 
@@ -328,31 +351,42 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public async ValueTask RecoverAsync(CancellationToken ct = default)
     {
-        bool recoverySucceeded = false;
-        await _interceptor.OnRecoveryStartAsync(ct);
-        try
+        if (_hasInterceptor)
         {
-            // WAL recovery: open/scan the WAL file, rebuild index
-            await _wal.OpenAsync(PageCount, ct);
-
-            // If WAL has committed data, checkpoint to bring DB file up to date
-            if (_walIndex.FrameCount > 0)
+            bool recoverySucceeded = false;
+            await _interceptor.OnRecoveryStartAsync(ct);
+            try
             {
-                // Read the latest header from WAL if page 0 was committed
-                if (_walIndex.TryGetLatest(0, out long walOffset))
-                {
-                    var walPage0 = await _wal.ReadPageAsync(walOffset, ct);
-                    ReadFileHeaderFrom(walPage0);
-                }
+                await RecoverCoreAsync(ct);
+                recoverySucceeded = true;
+            }
+            finally
+            {
+                await _interceptor.OnRecoveryEndAsync(recoverySucceeded, ct);
+            }
+        }
+        else
+        {
+            await RecoverCoreAsync(ct);
+        }
+    }
 
-                await CheckpointAsync(ct);
+    private async ValueTask RecoverCoreAsync(CancellationToken ct)
+    {
+        // WAL recovery: open/scan the WAL file, rebuild index
+        await _wal.OpenAsync(PageCount, ct);
+
+        // If WAL has committed data, checkpoint to bring DB file up to date
+        if (_walIndex.FrameCount > 0)
+        {
+            // Read the latest header from WAL if page 0 was committed
+            if (_walIndex.TryGetLatest(0, out long walOffset))
+            {
+                var walPage0 = await _wal.ReadPageAsync(walOffset, ct);
+                ReadFileHeaderFrom(walPage0);
             }
 
-            recoverySucceeded = true;
-        }
-        finally
-        {
-            await _interceptor.OnRecoveryEndAsync(recoverySucceeded, ct);
+            await CheckpointAsync(ct);
         }
     }
 
@@ -363,35 +397,43 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot checkpoint on a read-only snapshot pager.");
+
         int frameCount = _walIndex.FrameCount;
-        bool checkpointSucceeded = false;
-        await _interceptor.OnCheckpointStartAsync(frameCount, ct);
-        try
+
+        if (_hasInterceptor)
         {
-            await _checkpoints!.RunCheckpointAsync(
-                frameCount,
-                async checkpointCt =>
-                {
-                    if (_walIndex.FrameCount == 0)
-                        return;
-
-                    long requiredLength = (long)PageCount * PageConstants.PageSize;
-                    if (_device.Length < requiredLength)
-                        await _device.SetLengthAsync(requiredLength, checkpointCt);
-
-                    await _wal.CheckpointAsync(_device, PageCount, checkpointCt);
-
-                    _buffers.ClearCache();
-                    if (_device.Length >= PageConstants.PageSize)
-                        await ReadFileHeaderAsync(checkpointCt);
-                },
-                ct);
-            checkpointSucceeded = true;
+            bool checkpointSucceeded = false;
+            await _interceptor.OnCheckpointStartAsync(frameCount, ct);
+            try
+            {
+                await _checkpoints!.RunCheckpointAsync(frameCount, _checkpointAction!, ct);
+                checkpointSucceeded = true;
+            }
+            finally
+            {
+                await _interceptor.OnCheckpointEndAsync(frameCount, checkpointSucceeded, ct);
+            }
         }
-        finally
+        else
         {
-            await _interceptor.OnCheckpointEndAsync(frameCount, checkpointSucceeded, ct);
+            await _checkpoints!.RunCheckpointAsync(frameCount, _checkpointAction!, ct);
         }
+    }
+
+    private async ValueTask RunCheckpointCoreAsync(CancellationToken ct)
+    {
+        if (_walIndex.FrameCount == 0)
+            return;
+
+        long requiredLength = (long)PageCount * PageConstants.PageSize;
+        if (_device.Length < requiredLength)
+            await _device.SetLengthAsync(requiredLength, ct);
+
+        await _wal.CheckpointAsync(_device, PageCount, ct);
+
+        _buffers.ClearCache();
+        if (_device.Length >= PageConstants.PageSize)
+            await ReadFileHeaderAsync(ct);
     }
 
     /// <summary>

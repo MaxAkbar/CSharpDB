@@ -5,12 +5,12 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public interface IWriteAheadLog : IAsyncDisposable
 {
-    ValueTask OpenAsync(uint currentDbPageCount, CancellationToken ct = default);
+    ValueTask OpenAsync(uint currentDbPageCount, CancellationToken cancellationToken = default);
     void BeginTransaction();
-    ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken ct = default);
-    ValueTask CommitAsync(uint newDbPageCount, CancellationToken ct = default);
-    ValueTask RollbackAsync(CancellationToken ct = default);
-    ValueTask<byte[]> ReadPageAsync(long walFrameOffset, CancellationToken ct = default);
-    ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken ct = default);
+    ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken cancellationToken = default);
+    ValueTask CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default);
+    ValueTask RollbackAsync(CancellationToken cancellationToken = default);
+    ValueTask<byte[]> ReadPageAsync(long walFrameOffset, CancellationToken cancellationToken = default);
+    ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default);
     ValueTask CloseAndDeleteAsync();
 }

@@ -52,19 +52,19 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Open an existing WAL file or create a new one.
     /// If a WAL file exists, scan it to rebuild the index (recovery).
     /// </summary>
-    public async ValueTask OpenAsync(uint currentDbPageCount, CancellationToken ct = default)
+    public async ValueTask OpenAsync(uint currentDbPageCount, CancellationToken cancellationToken = default)
     {
         if (File.Exists(_walPath))
         {
-            await RecoverAsync(ct);
+            await RecoverAsync(cancellationToken);
         }
         else
         {
-            await CreateNewAsync(currentDbPageCount, ct);
+            await CreateNewAsync(currentDbPageCount, cancellationToken);
         }
     }
 
-    private async ValueTask CreateNewAsync(uint dbPageCount, CancellationToken ct)
+    private async ValueTask CreateNewAsync(uint dbPageCount, CancellationToken cancellationToken)
     {
         _stream = new FileStream(_walPath, FileMode.Create, FileAccess.ReadWrite,
             FileShare.Read, bufferSize: 4096, useAsync: true);
@@ -80,8 +80,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BitConverter.TryWriteBytes(header.AsSpan(16), _salt1);
         BitConverter.TryWriteBytes(header.AsSpan(20), _salt2);
 
-        await _stream.WriteAsync(header, ct);
-        await _stream.FlushAsync(ct);
+        await _stream.WriteAsync(header, cancellationToken);
+        await _stream.FlushAsync(cancellationToken);
 
         _uncommittedStartOffset = _stream.Position;
         OpenReadHandle();
@@ -105,7 +105,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Append a dirty page to the WAL as an uncommitted frame.
     /// </summary>
     public async ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData,
-        CancellationToken ct = default)
+        CancellationToken cancellationToken = default)
     {
         if (_stream == null)
             throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
@@ -118,13 +118,13 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BitConverter.TryWriteBytes(frameHeader.AsSpan(8), _salt1);
         BitConverter.TryWriteBytes(frameHeader.AsSpan(12), _salt2);
 
-        uint headerCksum = _checksumProvider.Compute(frameHeader.AsSpan(0, 16));
-        uint dataCksum = _checksumProvider.Compute(pageData.Span);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(16), headerCksum);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(20), dataCksum);
+        uint headerChecksum = _checksumProvider.Compute(frameHeader.AsSpan(0, 16));
+        uint dataChecksum = _checksumProvider.Compute(pageData.Span);
+        BitConverter.TryWriteBytes(frameHeader.AsSpan(16), headerChecksum);
+        BitConverter.TryWriteBytes(frameHeader.AsSpan(20), dataChecksum);
 
-        await _stream.WriteAsync(frameHeader, ct);
-        await _stream.WriteAsync(pageData, ct);
+        await _stream.WriteAsync(frameHeader, cancellationToken);
+        await _stream.WriteAsync(pageData, cancellationToken);
 
         _uncommittedFrames.Add((pageId, frameOffset));
     }
@@ -133,7 +133,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Commit the current transaction. Marks the last frame as a commit frame,
     /// flushes to disk, then updates the in-memory WAL index.
     /// </summary>
-    public async ValueTask CommitAsync(uint newDbPageCount, CancellationToken ct = default)
+    public async ValueTask CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default)
     {
         if (_stream == null)
             throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
@@ -146,24 +146,24 @@ public sealed class WriteAheadLog : IWriteAheadLog
         // Re-read the first 16 bytes of the frame header to recalculate checksum
         _stream.Position = lastOffset;
         var lastFrameHeader = new byte[PageConstants.WalFrameHeaderSize];
-        await _stream.ReadAsync(lastFrameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), ct);
+        await _stream.ReadAsync(lastFrameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), cancellationToken);
 
         // Update dbPageCount
         BitConverter.TryWriteBytes(lastFrameHeader.AsSpan(4), newDbPageCount);
 
         // Recalculate header checksum
-        uint newHeaderCksum = _checksumProvider.Compute(lastFrameHeader.AsSpan(0, 16));
-        BitConverter.TryWriteBytes(lastFrameHeader.AsSpan(16), newHeaderCksum);
+        uint newHeaderChecksum = _checksumProvider.Compute(lastFrameHeader.AsSpan(0, 16));
+        BitConverter.TryWriteBytes(lastFrameHeader.AsSpan(16), newHeaderChecksum);
 
         // Write updated header back
         _stream.Position = lastOffset;
-        await _stream.WriteAsync(lastFrameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), ct);
+        await _stream.WriteAsync(lastFrameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), cancellationToken);
 
         // Seek to end for next writes
         _stream.Position = _stream.Length;
 
         // Flush to disk — this is the commit point
-        await _stream.FlushAsync(ct);
+        await _stream.FlushAsync(cancellationToken);
 
         // Update the in-memory WAL index
         foreach (var (pageId, walOffset) in _uncommittedFrames)
@@ -178,12 +178,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// <summary>
     /// Rollback: truncate the WAL file back to where the transaction started.
     /// </summary>
-    public async ValueTask RollbackAsync(CancellationToken ct = default)
+    public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
     {
         if (_stream == null) return;
         _stream.SetLength(_uncommittedStartOffset);
         _stream.Position = _uncommittedStartOffset;
-        await _stream.FlushAsync(ct);
+        await _stream.FlushAsync(cancellationToken);
         _uncommittedFrames.Clear();
     }
 
@@ -193,14 +193,14 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Read a page from the WAL at the given frame offset.
     /// Uses a separate read handle for thread safety with concurrent readers.
     /// </summary>
-    public async ValueTask<byte[]> ReadPageAsync(long walFrameOffset, CancellationToken ct = default)
+    public async ValueTask<byte[]> ReadPageAsync(long walFrameOffset, CancellationToken cancellationToken = default)
     {
         var page = new byte[PageConstants.PageSize];
         long dataOffset = walFrameOffset + PageConstants.WalFrameHeaderSize;
 
         if (_readHandle != null)
         {
-            await RandomAccess.ReadAsync(_readHandle, page, dataOffset, ct);
+            await RandomAccess.ReadAsync(_readHandle, page, dataOffset, cancellationToken);
         }
         else if (_stream != null)
         {
@@ -209,7 +209,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             while (bytesRead < PageConstants.PageSize)
             {
                 int read = await _stream.ReadAsync(
-                    page.AsMemory(bytesRead, PageConstants.PageSize - bytesRead), ct);
+                    page.AsMemory(bytesRead, PageConstants.PageSize - bytesRead), cancellationToken);
                 if (read == 0) break;
                 bytesRead += read;
             }
@@ -228,14 +228,14 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Scan an existing WAL file, validate frames, and rebuild the index
     /// with only committed frames.
     /// </summary>
-    private async ValueTask RecoverAsync(CancellationToken ct)
+    private async ValueTask RecoverAsync(CancellationToken cancellationToken)
     {
         _stream = new FileStream(_walPath, FileMode.Open, FileAccess.ReadWrite,
             FileShare.Read, bufferSize: 4096, useAsync: true);
 
         // Read and validate header
         var header = new byte[PageConstants.WalHeaderSize];
-        if (await _stream.ReadAsync(header, ct) != PageConstants.WalHeaderSize)
+        if (await _stream.ReadAsync(header, cancellationToken) != PageConstants.WalHeaderSize)
             throw new CSharpDbException(ErrorCode.WalError, "Invalid WAL file: header too short.");
 
         if (!header.AsSpan(0, 4).SequenceEqual(PageConstants.WalMagic))
@@ -246,17 +246,17 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         // Scan frames
         var uncommittedBatch = new List<(uint PageId, long WalOffset)>();
-        var frameHeaderBuf = new byte[PageConstants.WalFrameHeaderSize];
-        var pageDataBuf = new byte[PageConstants.PageSize];
+        var frameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
+        var pageDataBuffer = new byte[PageConstants.PageSize];
 
         while (_stream.Position + PageConstants.WalFrameSize <= _stream.Length)
         {
             long frameOffset = _stream.Position;
 
-            int hdrRead = await _stream.ReadAsync(frameHeaderBuf, ct);
-            int dataRead = await _stream.ReadAsync(pageDataBuf, ct);
+            int headerRead = await _stream.ReadAsync(frameHeaderBuffer, cancellationToken);
+            int dataRead = await _stream.ReadAsync(pageDataBuffer, cancellationToken);
 
-            if (hdrRead != PageConstants.WalFrameHeaderSize ||
+            if (headerRead != PageConstants.WalFrameHeaderSize ||
                 dataRead != PageConstants.PageSize)
             {
                 // Partial frame — truncate
@@ -265,8 +265,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
 
             // Validate salt
-            uint frameSalt1 = BitConverter.ToUInt32(frameHeaderBuf, 8);
-            uint frameSalt2 = BitConverter.ToUInt32(frameHeaderBuf, 12);
+            uint frameSalt1 = BitConverter.ToUInt32(frameHeaderBuffer, 8);
+            uint frameSalt2 = BitConverter.ToUInt32(frameHeaderBuffer, 12);
             if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
             {
                 _stream.SetLength(frameOffset);
@@ -274,30 +274,30 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
 
             // Validate checksums
-            uint expectedHeaderCksum = BitConverter.ToUInt32(frameHeaderBuf, 16);
-            uint expectedDataCksum = BitConverter.ToUInt32(frameHeaderBuf, 20);
-            uint actualHeaderCksum = _checksumProvider.Compute(frameHeaderBuf.AsSpan(0, 16));
-            uint actualDataCksum = _checksumProvider.Compute(pageDataBuf);
+            uint expectedHeaderChecksum = BitConverter.ToUInt32(frameHeaderBuffer, 16);
+            uint expectedDataChecksum = BitConverter.ToUInt32(frameHeaderBuffer, 20);
+            uint actualHeaderChecksum = _checksumProvider.Compute(frameHeaderBuffer.AsSpan(0, 16));
+            uint actualDataChecksum = _checksumProvider.Compute(pageDataBuffer);
 
-            if (expectedHeaderCksum != actualHeaderCksum ||
-                expectedDataCksum != actualDataCksum)
+            if (expectedHeaderChecksum != actualHeaderChecksum ||
+                expectedDataChecksum != actualDataChecksum)
             {
                 // Corrupt frame — truncate
                 _stream.SetLength(frameOffset);
                 break;
             }
 
-            uint pageId = BitConverter.ToUInt32(frameHeaderBuf, 0);
-            uint dbPageCount = BitConverter.ToUInt32(frameHeaderBuf, 4);
+            uint pageId = BitConverter.ToUInt32(frameHeaderBuffer, 0);
+            uint dbPageCount = BitConverter.ToUInt32(frameHeaderBuffer, 4);
 
             uncommittedBatch.Add((pageId, frameOffset));
 
             if (dbPageCount != 0)
             {
                 // Commit frame — all frames in this batch are committed
-                foreach (var (pid, off) in uncommittedBatch)
+                foreach (var (committedPageId, committedOffset) in uncommittedBatch)
                 {
-                    _index.AddCommittedFrame(pid, off);
+                    _index.AddCommittedFrame(committedPageId, committedOffset);
                 }
                 _index.AdvanceCommit();
                 uncommittedBatch.Clear();
@@ -322,7 +322,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// Checkpoint: copy all committed WAL pages to the database file, then
     /// truncate (reset) the WAL.
     /// </summary>
-    public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken ct = default)
+    public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default)
     {
         if (_stream == null) return;
 
@@ -333,17 +333,17 @@ public sealed class WriteAheadLog : IWriteAheadLog
         long requiredLength = (long)pageCount * PageConstants.PageSize;
         if (device.Length < requiredLength)
         {
-            await device.SetLengthAsync(requiredLength, ct);
+            await device.SetLengthAsync(requiredLength, cancellationToken);
         }
 
         // Read each committed page from WAL and write to DB file
         foreach (var (pageId, walOffset) in committedPages)
         {
-            var pageData = await ReadPageAsync(walOffset, ct);
-            await device.WriteAsync((long)pageId * PageConstants.PageSize, pageData, ct);
+            var pageData = await ReadPageAsync(walOffset, cancellationToken);
+            await device.WriteAsync((long)pageId * PageConstants.PageSize, pageData, cancellationToken);
         }
 
-        await device.FlushAsync(ct);
+        await device.FlushAsync(cancellationToken);
 
         // Reset WAL
         _index.Reset();
@@ -361,10 +361,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BitConverter.TryWriteBytes(header.AsSpan(12), pageCount);
         BitConverter.TryWriteBytes(header.AsSpan(16), _salt1);
         BitConverter.TryWriteBytes(header.AsSpan(20), _salt2);
-        await _stream.WriteAsync(header, ct);
+        await _stream.WriteAsync(header, cancellationToken);
 
         _stream.SetLength(PageConstants.WalHeaderSize);
-        await _stream.FlushAsync(ct);
+        await _stream.FlushAsync(cancellationToken);
         _uncommittedStartOffset = PageConstants.WalHeaderSize;
 
         OpenReadHandle();
