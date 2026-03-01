@@ -1,0 +1,48 @@
+## .NET / C#
+bin/
+obj/
+publish/
+
+## User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## VS / Rider IDE
+.vs/
+.idea/
+*.rsuser
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+## NuGet
+**/packages/
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+BenchmarkDotNet.Artifacts/
+
+## Test results
+[Tt]est[Rr]esult*/
+*.trx
+coverage*/
+*.log
+*.csv
+
+## OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+## CSharpDB runtime files
+*.db
+*.db.journal
+*.wal
+

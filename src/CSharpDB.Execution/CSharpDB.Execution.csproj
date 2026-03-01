@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+    <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Query planner, operator tree, and expression evaluator for the CSharpDB embedded database.</Description>
+  </PropertyGroup>
+
+</Project>

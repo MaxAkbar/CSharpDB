@@ -1,0 +1,45 @@
+@inject ThemeService Theme
+@inject TabManagerService TabManager
+@inject CSharpDbService DbService
+@implements IDisposable
+
+<div class="titlebar">
+    <div class="titlebar-logo">
+        <i class="bi bi-database-fill"></i>
+        <span class="titlebar-brand">CSharpDB Studio</span>
+        <span class="titlebar-dbname">@("\u2014") @DbService.DataSource</span>
+    </div>
+    <div class="titlebar-center">
+        <span class="status-dot connected"></span>
+        Connected
+    </div>
+    <div class="titlebar-actions">
+        <button class="titlebar-btn" title="Toggle Theme (Ctrl+Shift+L)" @onclick="ToggleTheme">
+            <i class="bi @(Theme.IsDark ? "bi-moon-stars" : "bi-sun")"></i>
+        </button>
+        <button class="titlebar-btn" title="Toggle Sidebar (Ctrl+B)" @onclick="ToggleSidebar">
+            <i class="bi bi-layout-sidebar-inset"></i>
+        </button>
+        <button class="titlebar-btn" title="Keyboard Shortcuts" @onclick="ShowShortcuts">
+            <i class="bi bi-keyboard"></i>
+        </button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnToggleSidebar { get; set; }
+    [Parameter] public EventCallback OnShowShortcuts { get; set; }
+
+    protected override void OnInitialized()
+    {
+        Theme.ThemeChanged += OnThemeChanged;
+    }
+
+    private async Task ToggleTheme() => await Theme.ToggleAsync();
+    private async Task ToggleSidebar() => await OnToggleSidebar.InvokeAsync();
+    private async Task ShowShortcuts() => await OnShowShortcuts.InvokeAsync();
+
+    private void OnThemeChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Theme.ThemeChanged -= OnThemeChanged;
+}

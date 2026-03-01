@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "csharpdb": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]
+    }
+  }
+}

@@ -1,0 +1,180 @@
+@inject CSharpDbService DbService
+@inject ToastService Toast
+
+<div class="query-tab">
+    <div class="toolbar">
+        <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
+            <i class="bi bi-play-fill"></i> Run
+        </button>
+        <button class="toolbar-btn" @onclick="ClearEditor">
+            <i class="bi bi-eraser"></i> Clear
+        </button>
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="FormatSql">
+            <i class="bi bi-code-slash"></i> Format
+        </button>
+        <div class="toolbar-spacer"></div>
+        @if (_elapsed is not null)
+        {
+            <div class="toolbar-info">
+                @if (_resultRows is not null)
+                {
+                    <span>@_resultRows.Count rows</span>
+                    <span class="toolbar-separator-text">|</span>
+                }
+                <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
+            </div>
+        }
+    </div>
+
+    <SqlEditor @ref="_editor"
+               @bind-Value="_sqlText"
+               OnExecute="RunQuery"
+               Height="200"
+               Placeholder="Enter SQL query..." />
+
+    <div class="grid-container">
+        @if (_loading)
+        {
+            <div class="loading-overlay">
+                <div class="spinner"></div>
+            </div>
+        }
+        else if (_error is not null)
+        {
+            <div class="query-error">
+                <i class="bi bi-exclamation-triangle"></i> @_error
+            </div>
+        }
+        else if (_resultColumns is not null && _resultRows is not null)
+        {
+            <table class="data-grid query-results">
+                <thead>
+                    <tr>
+                        <th class="row-num-header">#</th>
+                        @foreach (var col in _resultColumns)
+                        {
+                            <th>@col</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int r = 0; r < _resultRows.Count; r++)
+                    {
+                        <tr>
+                            <td class="row-num">@(r + 1)</td>
+                            @foreach (var val in _resultRows[r])
+                            {
+                                <td>
+                                    @if (val is null)
+                                    {
+                                        <span class="null-val">NULL</span>
+                                    }
+                                    else if (val is byte[] bytes)
+                                    {
+                                        <span class="blob-val">[@bytes.Length bytes]</span>
+                                    }
+                                    else
+                                    {
+                                        @val.ToString()
+                                    }
+                                </td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_nonQueryMessage is not null)
+        {
+            <div class="query-message">
+                <i class="bi bi-check-circle"></i> @_nonQueryMessage
+            </div>
+        }
+        else
+        {
+            <div class="empty-state">
+                <i class="bi bi-terminal"></i>
+                <p>Run a query to see results</p>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private SqlEditor? _editor;
+    private string _sqlText = string.Empty;
+    private bool _loading;
+    private string? _error;
+    private string[]? _resultColumns;
+    private List<object?[]>? _resultRows;
+    private string? _nonQueryMessage;
+    private TimeSpan? _elapsed;
+
+    protected override void OnParametersSet()
+    {
+        if (Tab?.SqlText is not null && string.IsNullOrEmpty(_sqlText))
+            _sqlText = Tab.SqlText;
+    }
+
+    public async Task RunQuery()
+    {
+        if (string.IsNullOrWhiteSpace(_sqlText)) return;
+
+        _loading = true;
+        _error = null;
+        _resultColumns = null;
+        _resultRows = null;
+        _nonQueryMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var result = await DbService.ExecuteSqlAsync(_sqlText.Trim());
+            _elapsed = result.Elapsed;
+
+            if (result.Error is not null)
+            {
+                _error = result.Error;
+            }
+            else if (result.IsQuery)
+            {
+                _resultColumns = result.ColumnNames;
+                _resultRows = result.Rows;
+            }
+            else
+            {
+                _nonQueryMessage = $"{result.RowsAffected} row(s) affected";
+                Toast.Success(_nonQueryMessage);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+            // Save SQL text back to tab state for preservation
+            if (Tab is not null) Tab.SqlText = _sqlText;
+            StateHasChanged();
+        }
+    }
+
+    private void ClearEditor()
+    {
+        _sqlText = string.Empty;
+        _error = null;
+        _resultColumns = null;
+        _resultRows = null;
+        _nonQueryMessage = null;
+        _elapsed = null;
+    }
+
+    private void FormatSql()
+    {
+        _sqlText = SqlFormatter.Format(_sqlText);
+    }
+}

@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
+    <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+    <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Lightweight embedded SQL database engine for .NET. Single-file storage, WAL durability, concurrent readers, and a typed Collection&lt;T&gt; NoSQL API.</Description>
+  </PropertyGroup>
+
+</Project>

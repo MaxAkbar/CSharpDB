@@ -1,0 +1,40 @@
+@inject ModalService ModalService
+@implements IDisposable
+
+@if (ModalService.IsVisible && ModalService.Current is not null)
+{
+    <div class="modal-overlay" @onclick="Cancel">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>@ModalService.Current.Title</h3>
+                <button class="modal-close" @onclick="Cancel">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>@ModalService.Current.Message</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" @onclick="Cancel">
+                    @ModalService.Current.CancelText
+                </button>
+                <button class="btn @(ModalService.Current.IsDanger ? "btn-danger" : "btn-primary")" @onclick="Confirm">
+                    @ModalService.Current.ConfirmText
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized()
+    {
+        ModalService.OnChange += OnChange;
+    }
+
+    private void Confirm() => ModalService.Respond(true);
+    private void Cancel() => ModalService.Respond(false);
+    private void OnChange() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => ModalService.OnChange -= OnChange;
+}

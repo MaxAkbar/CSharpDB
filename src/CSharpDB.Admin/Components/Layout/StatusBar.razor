@@ -1,0 +1,59 @@
+@inject CSharpDbService DbService
+@inject TabManagerService TabManager
+@implements IDisposable
+
+<div class="statusbar">
+    <div class="status-item">
+        <span class="status-dot connected"></span>
+        Connected
+    </div>
+    <div class="status-item">
+        <i class="bi bi-database"></i> @DbService.DataSource
+    </div>
+    <div class="status-item">
+        @_tableCount tables, @_viewCount views
+    </div>
+    <div class="status-spacer"></div>
+    @if (!string.IsNullOrEmpty(StatusMessage))
+    {
+        <div class="status-item">@StatusMessage</div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? StatusMessage { get; set; }
+
+    private int _tableCount;
+    private int _viewCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        DbService.SchemaChanged += OnSchemaChanged;
+        DbService.TablesChanged += OnSchemaChanged;
+        await LoadCounts();
+    }
+
+    private async void OnSchemaChanged()
+    {
+        await LoadCounts();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadCounts()
+    {
+        try
+        {
+            var tables = await DbService.GetTableNamesAsync();
+            var views = await DbService.GetViewNamesAsync();
+            _tableCount = tables.Count;
+            _viewCount = views.Count;
+        }
+        catch { /* ignore */ }
+    }
+
+    public void Dispose()
+    {
+        DbService.SchemaChanged -= OnSchemaChanged;
+        DbService.TablesChanged -= OnSchemaChanged;
+    }
+}

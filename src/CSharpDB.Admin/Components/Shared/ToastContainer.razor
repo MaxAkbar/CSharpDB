@@ -1,0 +1,74 @@
+@inject ToastService ToastService
+@implements IDisposable
+
+<div class="toast-container">
+    @foreach (var toast in ToastService.Toasts)
+    {
+        var level = toast.Level.ToString().ToLowerInvariant();
+        <div class="toast @level">
+            <i class="bi @GetIcon(toast.Level)"></i>
+            <span class="toast-msg">@toast.Message</span>
+            <button class="toast-dismiss" @onclick="() => ToastService.Dismiss(toast.Id)">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly Dictionary<string, Timer> _timers = new();
+
+    protected override void OnInitialized()
+    {
+        ToastService.OnChange += OnChange;
+    }
+
+    private void OnChange()
+    {
+        // Set auto-dismiss timers for new toasts
+        foreach (var toast in ToastService.Toasts)
+        {
+            if (!_timers.ContainsKey(toast.Id))
+            {
+                int delayMs = toast.Level == ToastLevel.Error ? 5000 : 4000;
+                var timer = new Timer(_ =>
+                {
+                    InvokeAsync(() =>
+                    {
+                        ToastService.Dismiss(toast.Id);
+                        if (_timers.Remove(toast.Id, out var t))
+                            t.Dispose();
+                    });
+                }, null, delayMs, Timeout.Infinite);
+                _timers[toast.Id] = timer;
+            }
+        }
+
+        // Clean up timers for removed toasts
+        var currentIds = ToastService.Toasts.Select(t => t.Id).ToHashSet();
+        foreach (var id in _timers.Keys.Except(currentIds).ToList())
+        {
+            if (_timers.Remove(id, out var t))
+                t.Dispose();
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetIcon(ToastLevel level) => level switch
+    {
+        ToastLevel.Success => "bi-check-circle-fill",
+        ToastLevel.Error => "bi-exclamation-triangle-fill",
+        ToastLevel.Warning => "bi-exclamation-circle-fill",
+        ToastLevel.Info => "bi-info-circle-fill",
+        _ => "bi-info-circle-fill"
+    };
+
+    public void Dispose()
+    {
+        ToastService.OnChange -= OnChange;
+        foreach (var timer in _timers.Values)
+            timer.Dispose();
+        _timers.Clear();
+    }
+}

@@ -1,0 +1,35 @@
+@inject TabManagerService TabManager
+@implements IDisposable
+
+<div class="tab-bar">
+    @foreach (var tab in TabManager.Tabs)
+    {
+        var isActive = TabManager.ActiveTab?.Id == tab.Id;
+        <div class="tab @(isActive ? "active" : "")" @onclick="() => TabManager.ActivateTab(tab.Id)">
+            <i class="bi @tab.Icon"></i>
+            <span class="tab-label">@tab.Title</span>
+            @if (tab.Closable)
+            {
+                <span class="tab-close" @onclick="() => CloseTab(tab.Id)" @onclick:stopPropagation="true" title="Close">
+                    <i class="bi bi-x"></i>
+                </span>
+            }
+        </div>
+    }
+    <button class="tab-new" title="New Query (Ctrl+N)" @onclick="NewQuery">
+        <i class="bi bi-plus"></i>
+    </button>
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        TabManager.StateChanged += OnStateChanged;
+    }
+
+    private void CloseTab(string tabId) => TabManager.CloseTab(tabId);
+    private void NewQuery() => TabManager.OpenQueryTab();
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => TabManager.StateChanged -= OnStateChanged;
+}

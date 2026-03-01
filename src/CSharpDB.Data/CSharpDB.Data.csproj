@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>ADO.NET provider for CSharpDB. Standard DbConnection, DbCommand, and DbDataReader with parameterized queries and transactions.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Data.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+  </ItemGroup>
+
+</Project>

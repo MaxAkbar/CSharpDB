@@ -1,0 +1,82 @@
+@inject IJSRuntime JS
+
+<div class="sql-editor-container" style="height: @(Height)px;">
+    <div class="sql-editor-wrapper">
+        <div class="sql-line-numbers" id="@(_lineNumId)">
+            @for (int i = 1; i <= _lineCount; i++)
+            {
+                <div>@i</div>
+            }
+        </div>
+        <div class="sql-editor-area">
+            <pre class="sql-highlight-overlay" id="@(_overlayId)" aria-hidden="true">@((MarkupString)_highlighted)</pre>
+            <textarea class="sql-editor"
+                      id="@(_editorId)"
+                      @bind="Value"
+                      @bind:event="oninput"
+                      @bind:after="OnInput"
+                      @onkeydown="HandleKeyDown"
+                      @onscroll="SyncScroll"
+                      spellcheck="false"
+                      placeholder="@Placeholder"></textarea>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public EventCallback OnExecute { get; set; }
+    [Parameter] public int Height { get; set; } = 200;
+    [Parameter] public string Placeholder { get; set; } = "Enter SQL query...";
+
+    private string _highlighted = string.Empty;
+    private int _lineCount = 1;
+    private readonly string _editorId = $"sql-editor-{Guid.NewGuid():N}";
+    private readonly string _overlayId = $"sql-overlay-{Guid.NewGuid():N}";
+    private readonly string _lineNumId = $"sql-lines-{Guid.NewGuid():N}";
+
+    protected override void OnParametersSet()
+    {
+        UpdateHighlight();
+    }
+
+    private async Task OnInput()
+    {
+        UpdateHighlight();
+        await ValueChanged.InvokeAsync(Value);
+    }
+
+    private void UpdateHighlight()
+    {
+        _highlighted = SqlHighlighter.Highlight(Value ?? string.Empty);
+        _lineCount = Math.Max(1, (Value ?? string.Empty).Split('\n').Length);
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.CtrlKey && e.Key == "Enter")
+        {
+            await OnExecute.InvokeAsync();
+        }
+        // Tab key support handled by browser default for textarea
+    }
+
+    private async Task SyncScroll()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("editorInterop.syncScroll", _editorId);
+        }
+        catch { /* circuit disconnect */ }
+    }
+
+    public async Task FocusAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("editorInterop.focus", _editorId);
+        }
+        catch { /* circuit disconnect */ }
+    }
+}

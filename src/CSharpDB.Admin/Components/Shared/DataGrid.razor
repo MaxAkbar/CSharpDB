@@ -1,0 +1,423 @@
+@inject CSharpDbService DbService
+@inject ToastService Toast
+@inject ModalService Modal
+
+<div class="grid-container">
+    @if (_loading)
+    {
+        <div class="loading-overlay">
+            <div class="spinner"></div>
+        </div>
+    }
+    else if (Columns is null || Columns.Length == 0)
+    {
+        <div class="empty-state">
+            <i class="bi bi-table"></i>
+            <p>No data to display</p>
+        </div>
+    }
+    else
+    {
+        <table class="data-grid">
+            <thead>
+                <tr>
+                    <th class="row-num-header">#</th>
+                    @for (int c = 0; c < Columns.Length; c++)
+                    {
+                        var colIdx = c;
+                        var sortIndicator = _sortCol == colIdx ? (_sortAsc ? " \u2191" : " \u2193") : "";
+                        <th @onclick="() => SortColumn(colIdx)" class="sortable">
+                            <span class="col-name">@Columns[colIdx]</span>
+                            @if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
+                            {
+                                <span class="col-type-badge @GetTypeBadgeClass(ColumnTypes[colIdx])">@ColumnTypes[colIdx]</span>
+                            }
+                            @if (PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn)
+                            {
+                                <span class="col-pk-badge">PK</span>
+                            }
+                            <span class="sort-indicator">@sortIndicator</span>
+                        </th>
+                    }
+                </tr>
+                @if (ShowFilters)
+                {
+                    <tr class="filter-row">
+                        <td class="row-num-header"></td>
+                        @for (int c = 0; c < Columns.Length; c++)
+                        {
+                            var colIdx = c;
+                            <td>
+                                <input type="text" class="filter-input" placeholder="Filter..."
+                                       value="@GetFilter(colIdx)"
+                                       @oninput="e => SetFilter(colIdx, e.Value?.ToString())" />
+                            </td>
+                        }
+                    </tr>
+                }
+            </thead>
+            <tbody>
+                @if (_rows.Count == 0)
+                {
+                    <tr>
+                        <td colspan="@(Columns.Length + 1)" class="empty-cell">No rows found</td>
+                    </tr>
+                }
+                else
+                {
+                    @for (int r = 0; r < _rows.Count; r++)
+                    {
+                        var rowIdx = r;
+                        var row = _rows[rowIdx];
+                        var rowClass = GetRowClass(row);
+                        var isSelected = _selectedRows.Contains(rowIdx);
+                        <tr class="@rowClass @(isSelected ? "selected" : "")">
+                            <td class="row-num" @onclick="() => ToggleRowSelect(rowIdx)">
+                                @((_page - 1) * _pageSize + rowIdx + 1)
+                            </td>
+                            @for (int c = 0; c < Columns.Length; c++)
+                            {
+                                var colIdx = c;
+                                var isPk = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
+                                var cellValue = row.CurrentValues[colIdx];
+                                var isEditing = _editingCell?.RowIndex == rowIdx && _editingCell?.ColIndex == colIdx;
+
+                                @if (isEditing)
+                                {
+                                    <td class="editing">
+                                        <input type="text" class="cell-edit-input"
+                                               value="@_editingCell!.Value"
+                                               @oninput="e => _editingCell!.Value = e.Value?.ToString() ?? string.Empty"
+                                               @onblur="() => CommitEdit(rowIdx, colIdx)"
+                                               @onkeydown="e => HandleCellKeyDown(e, rowIdx, colIdx)"
+                                               autofocus />
+                                    </td>
+                                }
+                                else
+                                {
+                                    <td class="@(isPk ? "pk-val" : "") @(row.IsColumnModified(colIdx) ? "modified-cell" : "")"
+                                        @ondblclick="() => StartEdit(rowIdx, colIdx, isPk)">
+                                        @if (cellValue is null)
+                                        {
+                                            <span class="null-val">NULL</span>
+                                        }
+                                        else if (cellValue is byte[] bytes)
+                                        {
+                                            <span class="blob-val">[@bytes.Length bytes]</span>
+                                        }
+                                        else
+                                        {
+                                            @cellValue.ToString()
+                                        }
+                                    </td>
+                                }
+                            }
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@if (_totalRows > 0)
+{
+    <div class="pagination-bar">
+        <div class="page-size-select">
+            <select @bind="_pageSize" @bind:after="OnPageSizeChanged">
+                <option value="10">10 rows</option>
+                <option value="25">25 rows</option>
+                <option value="50">50 rows</option>
+                <option value="100">100 rows</option>
+            </select>
+        </div>
+        <div class="page-controls">
+            <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(1)">
+                <i class="bi bi-chevron-double-left"></i>
+            </button>
+            <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
+                <i class="bi bi-chevron-left"></i>
+            </button>
+            <span class="page-info">Page @_page of @TotalPages</span>
+            <button class="page-btn" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(_page + 1)">
+                <i class="bi bi-chevron-right"></i>
+            </button>
+            <button class="page-btn" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(TotalPages)">
+                <i class="bi bi-chevron-double-right"></i>
+            </button>
+        </div>
+        <div class="row-count">@_totalRows rows</div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? TableName { get; set; }
+    [Parameter] public string? ViewName { get; set; }
+    [Parameter] public string[]? Columns { get; set; }
+    [Parameter] public string[]? ColumnTypes { get; set; }
+    [Parameter] public string? PrimaryKeyColumn { get; set; }
+    [Parameter] public bool IsReadOnly { get; set; }
+    [Parameter] public bool ShowFilters { get; set; } = true;
+    [Parameter] public EventCallback<string> OnStatusMessage { get; set; }
+
+    private List<DataGridRow> _rows = new();
+    private bool _loading;
+    private int _page = 1;
+    private int _pageSize = 25;
+    private int _totalRows;
+    private int? _sortCol;
+    private bool _sortAsc = true;
+    private readonly Dictionary<int, string> _filters = new();
+    private readonly HashSet<int> _selectedRows = new();
+    private EditingCell? _editingCell;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    public async Task LoadDataAsync()
+    {
+        _loading = true;
+        _editingCell = null;
+        _selectedRows.Clear();
+        StateHasChanged();
+
+        try
+        {
+            if (TableName is not null)
+            {
+                var result = await DbService.BrowseTableAsync(TableName, _page, _pageSize);
+                _totalRows = result.TotalRows;
+                _rows = result.Rows.Select(r => new DataGridRow(r)).ToList();
+
+                if (Columns is null || Columns.Length == 0)
+                {
+                    var schema = result.Schema;
+                    Columns = schema.Columns.Select(c => c.Name).ToArray();
+                    ColumnTypes = schema.Columns.Select(c => c.Type.ToString().ToUpperInvariant()).ToArray();
+                    PrimaryKeyColumn = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey)?.Name;
+                }
+            }
+            else if (ViewName is not null)
+            {
+                var result = await DbService.BrowseViewAsync(ViewName, _page, _pageSize);
+                _totalRows = result.TotalRows;
+                Columns = result.ColumnNames;
+                _rows = result.Rows.Select(r => new DataGridRow(r)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load data: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    // ─── Sorting ────────────────────
+    private async Task SortColumn(int colIdx)
+    {
+        if (_sortCol == colIdx)
+            _sortAsc = !_sortAsc;
+        else
+        {
+            _sortCol = colIdx;
+            _sortAsc = true;
+        }
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    // ─── Filtering ──────────────────
+    private string GetFilter(int colIdx) => _filters.TryGetValue(colIdx, out var v) ? v : string.Empty;
+
+    private async Task SetFilter(int colIdx, string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            _filters.Remove(colIdx);
+        else
+            _filters[colIdx] = value;
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    // ─── Row Selection ──────────────
+    private void ToggleRowSelect(int rowIdx)
+    {
+        if (_selectedRows.Contains(rowIdx))
+            _selectedRows.Remove(rowIdx);
+        else
+            _selectedRows.Add(rowIdx);
+    }
+
+    // ─── Inline Editing ─────────────
+    private void StartEdit(int rowIdx, int colIdx, bool isPk)
+    {
+        if (IsReadOnly || isPk || _rows[rowIdx].State == RowState.Deleted) return;
+        var val = _rows[rowIdx].CurrentValues[colIdx];
+        _editingCell = new EditingCell
+        {
+            RowIndex = rowIdx,
+            ColIndex = colIdx,
+            Value = val?.ToString() ?? string.Empty
+        };
+    }
+
+    private void CommitEdit(int rowIdx, int colIdx)
+    {
+        if (_editingCell is null) return;
+        var row = _rows[rowIdx];
+        var newValue = ParseCellValue(_editingCell.Value, colIdx);
+        row.CurrentValues[colIdx] = newValue;
+
+        if (row.State == RowState.Unmodified)
+            row.State = RowState.Modified;
+
+        _editingCell = null;
+    }
+
+    private void HandleCellKeyDown(KeyboardEventArgs e, int rowIdx, int colIdx)
+    {
+        if (e.Key == "Enter")
+            CommitEdit(rowIdx, colIdx);
+        else if (e.Key == "Escape")
+            _editingCell = null;
+    }
+
+    private object? ParseCellValue(string text, int colIdx)
+    {
+        if (string.IsNullOrEmpty(text) || text.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
+        {
+            var type = ColumnTypes[colIdx];
+            if (type == "INTEGER" && long.TryParse(text, out var l)) return l;
+            if (type == "REAL" && double.TryParse(text, out var d)) return d;
+        }
+        return text;
+    }
+
+    // ─── CRUD Actions (called from DataTab toolbar) ──
+    public void AddNewRow()
+    {
+        if (Columns is null) return;
+        var values = new object?[Columns.Length];
+        var row = new DataGridRow(values, RowState.New);
+        _rows.Add(row);
+    }
+
+    public void DeleteSelectedRows()
+    {
+        foreach (var idx in _selectedRows.ToList())
+        {
+            if (idx < _rows.Count)
+            {
+                if (_rows[idx].State == RowState.New)
+                    _rows.RemoveAt(idx);
+                else
+                    _rows[idx].State = RowState.Deleted;
+            }
+        }
+        _selectedRows.Clear();
+    }
+
+    public async Task SaveChangesAsync()
+    {
+        if (TableName is null || PrimaryKeyColumn is null) return;
+        int saved = 0, errors = 0;
+
+        var pkColIdx = Array.IndexOf(Columns!, PrimaryKeyColumn);
+
+        foreach (var row in _rows.ToList())
+        {
+            try
+            {
+                switch (row.State)
+                {
+                    case RowState.New:
+                        var insertVals = new Dictionary<string, object?>();
+                        for (int c = 0; c < Columns!.Length; c++)
+                        {
+                            if (row.CurrentValues[c] is not null)
+                                insertVals[Columns[c]] = row.CurrentValues[c];
+                        }
+                        if (insertVals.Count > 0)
+                        {
+                            await DbService.InsertRowAsync(TableName, insertVals);
+                            saved++;
+                        }
+                        break;
+
+                    case RowState.Modified:
+                        var updateVals = new Dictionary<string, object?>();
+                        for (int c = 0; c < Columns!.Length; c++)
+                            updateVals[Columns[c]] = row.CurrentValues[c];
+                        await DbService.UpdateRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!, updateVals);
+                        saved++;
+                        break;
+
+                    case RowState.Deleted:
+                        await DbService.DeleteRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!);
+                        saved++;
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                Toast.Error($"Row error: {ex.Message}");
+            }
+        }
+
+        if (saved > 0) Toast.Success($"{saved} change(s) saved");
+        if (errors > 0) Toast.Warning($"{errors} error(s) occurred");
+
+        await LoadDataAsync();
+    }
+
+    public async Task DiscardChangesAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    public bool HasPendingChanges => _rows.Any(r => r.State != RowState.Unmodified);
+    public bool HasSelectedRows => _selectedRows.Count > 0;
+    public int SelectedRowCount => _selectedRows.Count;
+
+    // ─── Pagination ─────────────────
+    private async Task GoToPage(int page)
+    {
+        _page = Math.Max(1, Math.Min(TotalPages, page));
+        await LoadDataAsync();
+    }
+
+    private async Task OnPageSizeChanged()
+    {
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    // ─── Helpers ────────────────────
+    private static string GetRowClass(DataGridRow row) => row.State switch
+    {
+        RowState.New => "new-row",
+        RowState.Modified => "modified",
+        RowState.Deleted => "deleted",
+        _ => ""
+    };
+
+    private static string GetTypeBadgeClass(string type) => type.ToUpperInvariant() switch
+    {
+        "INTEGER" or "INT" => "type-integer",
+        "TEXT" or "VARCHAR" or "CHAR" => "type-text",
+        "REAL" => "type-real",
+        "BLOB" => "type-blob",
+        _ => "type-other"
+    };
+}

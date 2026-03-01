@@ -1,0 +1,67 @@
+@inject CSharpDbService DbService
+@inject TabManagerService TabManager
+
+<div class="welcome-tab">
+    <div class="empty-state">
+        <i class="bi bi-database-fill" style="font-size: 3rem;"></i>
+        <h2>Welcome to CSharpDB Studio</h2>
+        <p class="text-secondary">Select a table from the sidebar to browse data, or open a new query tab.</p>
+
+        <div class="welcome-shortcuts">
+            <div class="shortcut-item">
+                <span class="kbd">Ctrl+N</span> New query tab
+            </div>
+            <div class="shortcut-item">
+                <span class="kbd">Ctrl+B</span> Toggle sidebar
+            </div>
+            <div class="shortcut-item">
+                <span class="kbd">Ctrl+Enter</span> Run query
+            </div>
+            <div class="shortcut-item">
+                <span class="kbd">Ctrl+Shift+L</span> Toggle theme
+            </div>
+        </div>
+    </div>
+
+    @if (_tableNames is not null && _tableNames.Count > 0)
+    {
+        <div class="welcome-tables">
+            <h3>Tables</h3>
+            <div class="welcome-table-grid">
+                @foreach (var name in _tableNames)
+                {
+                    <button class="welcome-table-card" @onclick="() => TabManager.OpenTableTab(name)">
+                        <i class="bi bi-table"></i>
+                        <span>@name</span>
+                        @if (_rowCounts.TryGetValue(name, out var count))
+                        {
+                            <span class="welcome-row-count">@count rows</span>
+                        }
+                    </button>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private IReadOnlyCollection<string>? _tableNames;
+    private readonly Dictionary<string, int> _rowCounts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _tableNames = (await DbService.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            foreach (var name in _tableNames)
+            {
+                try
+                {
+                    _rowCounts[name] = await DbService.GetRowCountAsync(name);
+                }
+                catch { /* ignore */ }
+            }
+        }
+        catch { /* ignore */ }
+    }
+}

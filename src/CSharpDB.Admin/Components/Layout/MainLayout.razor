@@ -1,0 +1,111 @@
+@inherits LayoutComponentBase
+@inject TabManagerService TabManager
+@inject ThemeService Theme
+@inject ModalService Modal
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="app-root">
+    <TitleBar OnToggleSidebar="ToggleSidebar" OnShowShortcuts="ShowShortcuts" />
+    <div class="app-container">
+        @if (_sidebarVisible)
+        {
+            <NavMenu />
+        }
+        <div class="main-panel">
+            <TabBar />
+            <div class="content-area">
+                @if (TabManager.ActiveTab is not null)
+                {
+                    @switch (TabManager.ActiveTab.Kind)
+                    {
+                        case TabKind.Welcome:
+                            <WelcomeTab />
+                            break;
+                        case TabKind.Query:
+                            <QueryTab @key="TabManager.ActiveTab.Id" Tab="TabManager.ActiveTab" />
+                            break;
+                        case TabKind.TableData:
+                            <DataTab @key="TabManager.ActiveTab.Id"
+                                     ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
+                                     IsView="false" />
+                            break;
+                        case TabKind.ViewData:
+                            <DataTab @key="TabManager.ActiveTab.Id"
+                                     ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
+                                     IsView="true" />
+                            break;
+                    }
+                }
+            </div>
+        </div>
+    </div>
+    <StatusBar />
+</div>
+
+<ToastContainer />
+<ConfirmModal />
+
+@code {
+    private bool _sidebarVisible = true;
+    private DotNetObjectReference<MainLayout>? _dotNetRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await Theme.InitializeAsync(JS);
+            _dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("keyboardInterop.init", _dotNetRef);
+            TabManager.StateChanged += OnTabChanged;
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnKeyboardShortcut(string action)
+    {
+        switch (action)
+        {
+            case "NewQuery":
+                TabManager.OpenQueryTab();
+                break;
+            case "ToggleSidebar":
+                ToggleSidebar();
+                break;
+            case "ToggleTheme":
+                await Theme.ToggleAsync();
+                break;
+            case "CloseTab":
+                if (TabManager.ActiveTab?.Closable == true)
+                    TabManager.CloseTab(TabManager.ActiveTab.Id);
+                break;
+            case "RunQuery":
+                // Handled by SqlEditor component directly
+                break;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleSidebar()
+    {
+        _sidebarVisible = !_sidebarVisible;
+        StateHasChanged();
+    }
+
+    private async Task ShowShortcuts()
+    {
+        await Modal.ConfirmAsync(
+            "Keyboard Shortcuts",
+            "Ctrl+N \u2014 New query tab\nCtrl+B \u2014 Toggle sidebar\nCtrl+Enter \u2014 Run query\nCtrl+Shift+L \u2014 Toggle theme\nCtrl+W \u2014 Close tab\nDouble-click \u2014 Edit cell",
+            "OK");
+    }
+
+    private void OnTabChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        TabManager.StateChanged -= OnTabChanged;
+        try { _ = JS.InvokeVoidAsync("keyboardInterop.dispose"); } catch { }
+        _dotNetRef?.Dispose();
+    }
+}

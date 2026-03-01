@@ -1,0 +1,227 @@
+@inject CSharpDbService DbService
+@inject TabManagerService TabManager
+@inject IJSRuntime JS
+@implements IDisposable
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <span>Object Explorer</span>
+        <button class="sidebar-collapse-btn" title="Collapse All" @onclick="CollapseAll">
+            <i class="bi bi-arrows-collapse"></i>
+        </button>
+    </div>
+
+    <div class="sidebar-search">
+        <i class="bi bi-search"></i>
+        <input type="text" placeholder="Filter objects..." @bind="_searchQuery" @bind:event="oninput" />
+    </div>
+
+    <div class="tree-container">
+        @* Tables *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("tables")'>
+                <i class="bi @(_expandedGroups.Contains("tables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-table icon-table"></i>
+                <span>Tables</span>
+                <span class="group-count">@(_tableNames?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("tables") && _tableNames is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var name in FilterItems(_tableNames))
+                    {
+                        <div class="tree-item @(IsActive("table", name) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableTab(name)">
+                            <i class="bi bi-table icon-table"></i>
+                            <span class="item-label">@name</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* Views *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("views")'>
+                <i class="bi @(_expandedGroups.Contains("views") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-eye icon-view"></i>
+                <span>Views</span>
+                <span class="group-count">@(_viewNames?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("views") && _viewNames is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var name in FilterItems(_viewNames))
+                    {
+                        <div class="tree-item @(IsActive("view", name) ? "active" : "")"
+                             @onclick="() => TabManager.OpenViewTab(name)">
+                            <i class="bi bi-eye icon-view"></i>
+                            <span class="item-label">@name</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* Indexes *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("indexes")'>
+                <i class="bi @(_expandedGroups.Contains("indexes") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-lightning icon-index"></i>
+                <span>Indexes</span>
+                <span class="group-count">@(_indexes?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("indexes") && _indexes is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var idx in FilterIndexes())
+                    {
+                        <div class="tree-item @(IsActiveSchema("table", idx.TableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableSchemaTab(idx.TableName)">
+                            <i class="bi bi-lightning icon-index"></i>
+                            <span class="item-label">@idx.IndexName</span>
+                            <span class="item-hint">@idx.TableName</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* Triggers *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("triggers")'>
+                <i class="bi @(_expandedGroups.Contains("triggers") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-lightning-charge icon-trigger"></i>
+                <span>Triggers</span>
+                <span class="group-count">@(_triggers?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("triggers") && _triggers is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var trig in FilterTriggers())
+                    {
+                        <div class="tree-item @(IsActiveSchema("table", trig.TableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableSchemaTab(trig.TableName)">
+                            <i class="bi bi-lightning-charge icon-trigger"></i>
+                            <span class="item-label">@trig.TriggerName</span>
+                            <span class="item-hint">@trig.TableName</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="sidebar-footer">
+        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query">
+            <i class="bi bi-plus"></i> New Query
+        </button>
+    </div>
+
+    <div class="sidebar-resize" @onmousedown="StartResize" @onmousedown:preventDefault></div>
+</aside>
+
+@code {
+    private IReadOnlyCollection<string>? _tableNames;
+    private IReadOnlyCollection<string>? _viewNames;
+    private IReadOnlyList<CSharpDB.Core.IndexSchema>? _indexes;
+    private IReadOnlyList<CSharpDB.Core.TriggerSchema>? _triggers;
+    private string _searchQuery = string.Empty;
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "views" };
+
+    protected override async Task OnInitializedAsync()
+    {
+        DbService.TablesChanged += OnSchemaChanged;
+        DbService.SchemaChanged += OnSchemaChanged;
+        TabManager.StateChanged += OnTabChanged;
+        await LoadObjects();
+    }
+
+    private async void OnSchemaChanged()
+    {
+        await LoadObjects();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void OnTabChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task LoadObjects()
+    {
+        try
+        {
+            _tableNames = (await DbService.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _viewNames = (await DbService.GetViewNamesAsync()).OrderBy(n => n).ToList();
+            _indexes = (await DbService.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
+            _triggers = (await DbService.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
+        }
+        catch
+        {
+            _tableNames = null;
+            _viewNames = null;
+            _indexes = null;
+            _triggers = null;
+        }
+    }
+
+    private void ToggleGroup(string group)
+    {
+        if (!_expandedGroups.Remove(group))
+            _expandedGroups.Add(group);
+    }
+
+    private void CollapseAll() => _expandedGroups.Clear();
+
+    private IEnumerable<string> FilterItems(IReadOnlyCollection<string> items)
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return items;
+        return items.Where(n => n.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private IEnumerable<CSharpDB.Core.IndexSchema> FilterIndexes()
+    {
+        if (_indexes is null) return Enumerable.Empty<CSharpDB.Core.IndexSchema>();
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return _indexes;
+        return _indexes.Where(i => i.IndexName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                                 || i.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private IEnumerable<CSharpDB.Core.TriggerSchema> FilterTriggers()
+    {
+        if (_triggers is null) return Enumerable.Empty<CSharpDB.Core.TriggerSchema>();
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return _triggers;
+        return _triggers.Where(t => t.TriggerName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                                  || t.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsActive(string type, string name)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab is null) return false;
+        return activeTab.Id == $"{type}:{name}";
+    }
+
+    private bool IsActiveSchema(string type, string name)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab is null) return false;
+        return activeTab.Id == $"{type}:{name}";
+    }
+
+    private async Task StartResize(MouseEventArgs e)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("resizeInterop.startResize",
+                new { clientX = e.ClientX });
+        }
+        catch { }
+    }
+
+    public void Dispose()
+    {
+        DbService.TablesChanged -= OnSchemaChanged;
+        DbService.SchemaChanged -= OnSchemaChanged;
+        TabManager.StateChanged -= OnTabChanged;
+    }
+}

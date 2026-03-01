@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+  </ItemGroup>
+
+</Project>

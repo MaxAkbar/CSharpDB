@@ -1,0 +1,683 @@
+@inject CSharpDbService DbService
+@inject TabManagerService TabManager
+@inject ToastService Toast
+@inject ModalService Modal
+
+<div class="data-tab">
+    <div class="toolbar">
+        <div class="view-switcher">
+            <button class="@(_showData ? "active" : "")" @onclick='() => SwitchView(true)'>
+                <i class="bi bi-grid-3x3"></i> Data
+            </button>
+            <button class="@(!_showData ? "active" : "")" @onclick='() => SwitchView(false)'>
+                <i class="bi bi-file-earmark-code"></i> Schema
+            </button>
+        </div>
+
+        @if (_showData && !IsReadOnly)
+        {
+            <div class="toolbar-separator"></div>
+            <button class="toolbar-btn" @onclick="AddRow">
+                <i class="bi bi-plus-lg"></i> Add Row
+            </button>
+            <button class="toolbar-btn danger" @onclick="DeleteSelected" disabled="@(!HasSelection)">
+                <i class="bi bi-trash"></i> Delete
+            </button>
+            <div class="toolbar-separator"></div>
+            <button class="toolbar-btn primary" @onclick="SaveChanges" disabled="@(!_grid?.HasPendingChanges ?? true)">
+                <i class="bi bi-check-lg"></i> Save
+            </button>
+            <button class="toolbar-btn" @onclick="DiscardChanges" disabled="@(!_grid?.HasPendingChanges ?? true)">
+                <i class="bi bi-x-lg"></i> Discard
+            </button>
+        }
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="Refresh">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">@ObjectName</div>
+    </div>
+
+    @if (_showData)
+    {
+        <DataGrid @ref="_grid"
+                  TableName="@(IsView ? null : ObjectName)"
+                  ViewName="@(IsView ? ObjectName : null)"
+                  IsReadOnly="@IsReadOnly" />
+    }
+    else
+    {
+        <div class="schema-panel">
+            @if (!IsView)
+            {
+                @* ═══ TABLE SCHEMA ═══ *@
+
+                @* ─── Columns ─── *@
+                @if (_schema is not null)
+                {
+                    <div class="schema-section">
+                        <h3>Columns</h3>
+                        <table class="schema-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Primary Key</th>
+                                    <th>Nullable</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var col in _schema.Columns)
+                                {
+                                    <tr>
+                                        <td class="@(col.IsPrimaryKey ? "pk-val" : "")">@col.Name</td>
+                                        <td><span class="col-type-badge @GetTypeBadgeClass(col.Type.ToString())">@col.Type.ToString().ToUpperInvariant()</span></td>
+                                        <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
+                                        <td>@(col.Nullable ? "Yes" : "No")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @* ─── Alter Table ─── *@
+                    <div class="schema-section">
+                        <div class="schema-section-toggle" @onclick="() => _showAlterTable = !_showAlterTable">
+                            <i class="bi @(_showAlterTable ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                            <h3>Alter Table</h3>
+                        </div>
+                        @if (_showAlterTable)
+                        {
+                            <div class="schema-edit-form">
+                                <div class="schema-edit-grid cols-2">
+                                    <div class="schema-field">
+                                        <label>Operation</label>
+                                        <select class="schema-input" value="@_tableOperation" @onchange="OnTableOperationChanged">
+                                            <option value="@TableOp.AddColumn">Add Column</option>
+                                            <option value="@TableOp.DropColumn">Drop Column</option>
+                                            <option value="@TableOp.RenameColumn">Rename Column</option>
+                                            <option value="@TableOp.RenameTable">Rename Table</option>
+                                        </select>
+                                    </div>
+
+                                    @if (_tableOperation == TableOp.AddColumn)
+                                    {
+                                        <div class="schema-field">
+                                            <label>Column Name</label>
+                                            <input class="schema-input mono" placeholder="column_name" @bind="_addColName" />
+                                        </div>
+                                        <div class="schema-field">
+                                            <label>Type</label>
+                                            <select class="schema-input" value="@_addColType" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.DbType>(e.Value?.ToString(), out var t)) _addColType = t; }">
+                                                <option value="@CSharpDB.Core.DbType.Integer">INTEGER</option>
+                                                <option value="@CSharpDB.Core.DbType.Real">REAL</option>
+                                                <option value="@CSharpDB.Core.DbType.Text">TEXT</option>
+                                                <option value="@CSharpDB.Core.DbType.Blob">BLOB</option>
+                                            </select>
+                                        </div>
+                                        <div class="schema-field">
+                                            <label class="schema-check"><input type="checkbox" @bind="_addColNotNull" /> NOT NULL</label>
+                                        </div>
+                                    }
+                                    else if (_tableOperation == TableOp.DropColumn)
+                                    {
+                                        <div class="schema-field">
+                                            <label>Column</label>
+                                            <select class="schema-input mono" @bind="_dropColName">
+                                                @foreach (var col in _schema.Columns)
+                                                {
+                                                    <option value="@col.Name">@col.Name</option>
+                                                }
+                                            </select>
+                                        </div>
+                                    }
+                                    else if (_tableOperation == TableOp.RenameColumn)
+                                    {
+                                        <div class="schema-field">
+                                            <label>Old Name</label>
+                                            <select class="schema-input mono" @bind="_renameOldCol">
+                                                @foreach (var col in _schema.Columns)
+                                                {
+                                                    <option value="@col.Name">@col.Name</option>
+                                                }
+                                            </select>
+                                        </div>
+                                        <div class="schema-field">
+                                            <label>New Name</label>
+                                            <input class="schema-input mono" placeholder="new_name" @bind="_renameNewCol" />
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="schema-field">
+                                            <label>New Table Name</label>
+                                            <input class="schema-input mono" placeholder="new_table_name" @bind="_newTableName" />
+                                        </div>
+                                    }
+                                </div>
+                                <div class="schema-edit-actions">
+                                    <button class="toolbar-btn primary" @onclick="ApplyAlterTableAsync" disabled="@_submitting">
+                                        @if (_submitting) { <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> }
+                                        <i class="bi bi-hammer"></i> Apply
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @* ─── Indexes ─── *@
+                <div class="schema-section">
+                    <h3>Indexes</h3>
+                    @if (_indexes is not null && _indexes.Count > 0)
+                    {
+                        <table class="schema-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Columns</th>
+                                    <th>Unique</th>
+                                    <th style="width:80px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var idx in _indexes)
+                                {
+                                    var key = $"idx:{idx.IndexName}";
+                                    <tr>
+                                        <td class="mono-cell">@idx.IndexName</td>
+                                        <td class="mono-cell">@string.Join(", ", idx.Columns)</td>
+                                        <td>@(idx.IsUnique ? "Yes" : "No")</td>
+                                        <td>
+                                            @if (_confirmDrop == key)
+                                            {
+                                                <div class="schema-inline-confirm">
+                                                    <span>Drop?</span>
+                                                    <button class="schema-icon-btn danger" @onclick="() => DropIndexAsync(idx.IndexName)"><i class="bi bi-check-lg"></i></button>
+                                                    <button class="schema-icon-btn" @onclick="() => _confirmDrop = null"><i class="bi bi-x-lg"></i></button>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <div class="schema-inline-confirm">
+                                                    <button class="schema-icon-btn" @onclick="() => StartIndexEdit(idx)"><i class="bi bi-pencil"></i></button>
+                                                    <button class="schema-icon-btn danger" @onclick="() => _confirmDrop = key"><i class="bi bi-trash"></i></button>
+                                                </div>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    else
+                    {
+                        <p class="schema-empty">No indexes on this table.</p>
+                    }
+
+                    <div class="schema-edit-form schema-edit-compact">
+                        <div class="schema-edit-grid cols-3">
+                            <div class="schema-field">
+                                <label>@(_editingIdxName is null ? "New Index" : $"Editing: {_editingIdxName}")</label>
+                                <input class="schema-input mono" placeholder="index_name" @bind="_idxName" />
+                            </div>
+                            <div class="schema-field">
+                                <label>Column</label>
+                                <select class="schema-input mono" @bind="_idxColumn">
+                                    @if (_schema is not null)
+                                    {
+                                        @foreach (var col in _schema.Columns)
+                                        {
+                                            <option value="@col.Name">@col.Name</option>
+                                        }
+                                    }
+                                </select>
+                            </div>
+                            <div class="schema-field">
+                                <label class="schema-check"><input type="checkbox" @bind="_idxUnique" /> UNIQUE</label>
+                            </div>
+                        </div>
+                        <div class="schema-edit-actions">
+                            <button class="toolbar-btn primary" @onclick="SaveIndexAsync" disabled="@_submitting">
+                                <i class="bi bi-check-lg"></i> @(_editingIdxName is null ? "Create" : "Save")
+                            </button>
+                            @if (_editingIdxName is not null)
+                            {
+                                <button class="toolbar-btn" @onclick="CancelIndexEdit"><i class="bi bi-x-lg"></i> Cancel</button>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                @* ─── Triggers ─── *@
+                <div class="schema-section">
+                    <h3>Triggers</h3>
+                    @if (_triggers is not null && _triggers.Count > 0)
+                    {
+                        @foreach (var trig in _triggers)
+                        {
+                            var key = $"trig:{trig.TriggerName}";
+                            <div class="trigger-item">
+                                <div class="trigger-item-header">
+                                    <strong>@trig.TriggerName</strong>
+                                    <span class="text-secondary">@trig.Timing @trig.Event</span>
+                                    <div class="trigger-item-actions">
+                                        @if (_confirmDrop == key)
+                                        {
+                                            <span class="confirm-label">Drop?</span>
+                                            <button class="schema-icon-btn danger" @onclick="() => DropTriggerAsync(trig.TriggerName)"><i class="bi bi-check-lg"></i></button>
+                                            <button class="schema-icon-btn" @onclick="() => _confirmDrop = null"><i class="bi bi-x-lg"></i></button>
+                                        }
+                                        else
+                                        {
+                                            <button class="schema-icon-btn" @onclick="() => StartTriggerEdit(trig)"><i class="bi bi-pencil"></i></button>
+                                            <button class="schema-icon-btn danger" @onclick="() => _confirmDrop = key"><i class="bi bi-trash"></i></button>
+                                        }
+                                    </div>
+                                </div>
+                                <pre class="sql-definition">@trig.BodySql</pre>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <p class="schema-empty">No triggers on this table.</p>
+                    }
+
+                    <div class="schema-edit-form schema-edit-compact">
+                        <div class="schema-edit-grid cols-3">
+                            <div class="schema-field">
+                                <label>@(_editingTrigName is null ? "New Trigger" : $"Editing: {_editingTrigName}")</label>
+                                <input class="schema-input mono" placeholder="trigger_name" @bind="_trigName" />
+                            </div>
+                            <div class="schema-field">
+                                <label>Timing</label>
+                                <select class="schema-input" value="@_trigTiming" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.TriggerTiming>(e.Value?.ToString(), out var t)) _trigTiming = t; }">
+                                    <option value="@CSharpDB.Core.TriggerTiming.Before">BEFORE</option>
+                                    <option value="@CSharpDB.Core.TriggerTiming.After">AFTER</option>
+                                </select>
+                            </div>
+                            <div class="schema-field">
+                                <label>Event</label>
+                                <select class="schema-input" value="@_trigEvent" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.TriggerEvent>(e.Value?.ToString(), out var t)) _trigEvent = t; }">
+                                    <option value="@CSharpDB.Core.TriggerEvent.Insert">INSERT</option>
+                                    <option value="@CSharpDB.Core.TriggerEvent.Update">UPDATE</option>
+                                    <option value="@CSharpDB.Core.TriggerEvent.Delete">DELETE</option>
+                                </select>
+                            </div>
+                        </div>
+                        <textarea class="schema-textarea" @bind="_trigBody" @bind:event="oninput" placeholder="Trigger body (statements only; BEGIN/END added automatically)..."></textarea>
+                        <div class="schema-edit-actions">
+                            <button class="toolbar-btn primary" @onclick="SaveTriggerAsync" disabled="@_submitting">
+                                <i class="bi bi-check-lg"></i> @(_editingTrigName is null ? "Create" : "Save")
+                            </button>
+                            @if (_editingTrigName is not null)
+                            {
+                                <button class="toolbar-btn" @onclick="CancelTriggerEdit"><i class="bi bi-x-lg"></i> Cancel</button>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                @* ═══ VIEW SCHEMA ═══ *@
+                <div class="schema-section">
+                    <h3>View Definition</h3>
+                    @if (!_editingView)
+                    {
+                        @if (_viewSql is not null)
+                        {
+                            <pre class="sql-definition">@_viewSql</pre>
+                        }
+                        <div class="schema-edit-actions" style="margin-top:10px;">
+                            <button class="toolbar-btn" @onclick="StartViewEdit"><i class="bi bi-pencil"></i> Edit</button>
+                            <button class="toolbar-btn danger" @onclick="ConfirmDropView"><i class="bi bi-trash"></i> Drop View</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="schema-field">
+                            <label>View Name</label>
+                            <input class="schema-input mono" @bind="_editViewName" />
+                        </div>
+                        <textarea class="schema-textarea" style="min-height:140px;margin-top:8px;" @bind="_editViewSql" @bind:event="oninput" placeholder="SELECT ..."></textarea>
+                        <div class="schema-edit-actions" style="margin-top:10px;">
+                            <button class="toolbar-btn primary" @onclick="SaveViewAsync" disabled="@_submitting">
+                                <i class="bi bi-check-lg"></i> Save
+                            </button>
+                            <button class="toolbar-btn" @onclick="CancelViewEdit"><i class="bi bi-x-lg"></i> Cancel</button>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string ObjectName { get; set; } = string.Empty;
+    [Parameter] public bool IsView { get; set; }
+
+    private DataGrid? _grid;
+    private bool _showData = true;
+    private bool IsReadOnly => IsView;
+    private bool HasSelection => _grid?.HasSelectedRows ?? false;
+
+    // ─── Schema data ────────────────────
+    private CSharpDB.Core.TableSchema? _schema;
+    private string? _viewSql;
+    private IReadOnlyCollection<CSharpDB.Core.IndexSchema>? _indexes;
+    private IReadOnlyCollection<CSharpDB.Core.TriggerSchema>? _triggers;
+
+    // ─── Alter table state ──────────────
+    private bool _showAlterTable;
+    private bool _submitting;
+    private TableOp _tableOperation = TableOp.AddColumn;
+    private string _addColName = string.Empty;
+    private CSharpDB.Core.DbType _addColType = CSharpDB.Core.DbType.Text;
+    private bool _addColNotNull;
+    private string _dropColName = string.Empty;
+    private string _renameOldCol = string.Empty;
+    private string _renameNewCol = string.Empty;
+    private string _newTableName = string.Empty;
+
+    // ─── Index editing state ────────────
+    private string? _editingIdxName;
+    private string _idxName = string.Empty;
+    private string _idxColumn = string.Empty;
+    private bool _idxUnique;
+
+    // ─── Trigger editing state ──────────
+    private string? _editingTrigName;
+    private string _trigName = string.Empty;
+    private CSharpDB.Core.TriggerTiming _trigTiming = CSharpDB.Core.TriggerTiming.After;
+    private CSharpDB.Core.TriggerEvent _trigEvent = CSharpDB.Core.TriggerEvent.Insert;
+    private string _trigBody = string.Empty;
+
+    // ─── View editing state ─────────────
+    private bool _editingView;
+    private string _editViewName = string.Empty;
+    private string _editViewSql = string.Empty;
+
+    // ─── Confirmation state ─────────────
+    private string? _confirmDrop;
+
+    // ─── Lifecycle ──────────────────────
+    protected override async Task OnParametersSetAsync()
+    {
+        // Check if navigation requested schema view (e.g. clicking an index/trigger in sidebar)
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab?.State.TryGetValue("ShowSchema", out var ss) == true && ss is true)
+        {
+            _showData = false;
+            activeTab.State.Remove("ShowSchema");
+        }
+
+        await LoadSchemaAsync();
+    }
+
+    private async Task LoadSchemaAsync()
+    {
+        try
+        {
+            if (!IsView)
+            {
+                _schema = await DbService.GetTableSchemaAsync(ObjectName);
+                var allIndexes = await DbService.GetIndexesAsync();
+                _indexes = allIndexes.Where(i => i.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
+                var allTriggers = await DbService.GetTriggersAsync();
+                _triggers = allTriggers.Where(t => t.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                // Sync dropdown defaults
+                if (_schema is not null && _schema.Columns.Count > 0)
+                {
+                    if (string.IsNullOrEmpty(_dropColName))
+                        _dropColName = _schema.Columns[0].Name;
+                    if (string.IsNullOrEmpty(_renameOldCol))
+                        _renameOldCol = _schema.Columns[0].Name;
+                    if (string.IsNullOrEmpty(_idxColumn))
+                        _idxColumn = _schema.Columns[0].Name;
+                }
+            }
+            else
+            {
+                _viewSql = await DbService.GetViewSqlAsync(ObjectName);
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load schema: {ex.Message}");
+        }
+    }
+
+    // ─── View switching ─────────────────
+    private void SwitchView(bool showData) => _showData = showData;
+
+    // ─── Data grid actions ──────────────
+    private void AddRow() => _grid?.AddNewRow();
+    private void DeleteSelected() => _grid?.DeleteSelectedRows();
+    private async Task SaveChanges()
+    {
+        if (_grid is not null)
+            await _grid.SaveChangesAsync();
+    }
+    private async Task DiscardChanges()
+    {
+        if (_grid is not null)
+            await _grid.DiscardChangesAsync();
+    }
+    private async Task Refresh()
+    {
+        if (_grid is not null)
+            await _grid.LoadDataAsync();
+        await LoadSchemaAsync();
+    }
+
+    // ═══════════════════════════════════════
+    // ALTER TABLE
+    // ═══════════════════════════════════════
+
+    private void OnTableOperationChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<TableOp>(e.Value?.ToString(), out var op))
+            _tableOperation = op;
+    }
+
+    private async Task ApplyAlterTableAsync()
+    {
+        _submitting = true;
+        try
+        {
+            switch (_tableOperation)
+            {
+                case TableOp.AddColumn:
+                    await DbService.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull);
+                    Toast.Success($"Added column '{_addColName}'.");
+                    _addColName = string.Empty;
+                    break;
+                case TableOp.DropColumn:
+                    await DbService.DropColumnAsync(ObjectName, _dropColName);
+                    Toast.Success($"Dropped column '{_dropColName}'.");
+                    break;
+                case TableOp.RenameColumn:
+                    await DbService.RenameColumnAsync(ObjectName, _renameOldCol, _renameNewCol);
+                    Toast.Success($"Renamed '{_renameOldCol}' → '{_renameNewCol}'.");
+                    _renameNewCol = string.Empty;
+                    break;
+                case TableOp.RenameTable:
+                    await DbService.RenameTableAsync(ObjectName, _newTableName);
+                    Toast.Success($"Renamed table → '{_newTableName}'.");
+                    _newTableName = string.Empty;
+                    break;
+            }
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+        finally { _submitting = false; }
+    }
+
+    // ═══════════════════════════════════════
+    // INDEXES
+    // ═══════════════════════════════════════
+
+    private void StartIndexEdit(CSharpDB.Core.IndexSchema idx)
+    {
+        _editingIdxName = idx.IndexName;
+        _idxName = idx.IndexName;
+        _idxColumn = idx.Columns.FirstOrDefault() ?? string.Empty;
+        _idxUnique = idx.IsUnique;
+    }
+
+    private void CancelIndexEdit()
+    {
+        _editingIdxName = null;
+        _idxName = string.Empty;
+        _idxUnique = false;
+    }
+
+    private async Task SaveIndexAsync()
+    {
+        _submitting = true;
+        try
+        {
+            if (_editingIdxName is null)
+            {
+                await DbService.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique);
+                Toast.Success($"Created index '{_idxName}'.");
+            }
+            else
+            {
+                await DbService.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique);
+                Toast.Success($"Updated index '{_editingIdxName}'.");
+            }
+            CancelIndexEdit();
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+        finally { _submitting = false; }
+    }
+
+    private async Task DropIndexAsync(string indexName)
+    {
+        _confirmDrop = null;
+        try
+        {
+            await DbService.DropIndexAsync(indexName);
+            Toast.Success($"Dropped index '{indexName}'.");
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    // ═══════════════════════════════════════
+    // TRIGGERS
+    // ═══════════════════════════════════════
+
+    private void StartTriggerEdit(CSharpDB.Core.TriggerSchema trig)
+    {
+        _editingTrigName = trig.TriggerName;
+        _trigName = trig.TriggerName;
+        _trigTiming = trig.Timing;
+        _trigEvent = trig.Event;
+        _trigBody = trig.BodySql;
+    }
+
+    private void CancelTriggerEdit()
+    {
+        _editingTrigName = null;
+        _trigName = string.Empty;
+        _trigTiming = CSharpDB.Core.TriggerTiming.After;
+        _trigEvent = CSharpDB.Core.TriggerEvent.Insert;
+        _trigBody = string.Empty;
+    }
+
+    private async Task SaveTriggerAsync()
+    {
+        _submitting = true;
+        try
+        {
+            if (_editingTrigName is null)
+            {
+                await DbService.CreateTriggerAsync(_trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                Toast.Success($"Created trigger '{_trigName}'.");
+            }
+            else
+            {
+                await DbService.UpdateTriggerAsync(_editingTrigName, _trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                Toast.Success($"Updated trigger '{_editingTrigName}'.");
+            }
+            CancelTriggerEdit();
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+        finally { _submitting = false; }
+    }
+
+    private async Task DropTriggerAsync(string triggerName)
+    {
+        _confirmDrop = null;
+        try
+        {
+            await DbService.DropTriggerAsync(triggerName);
+            Toast.Success($"Dropped trigger '{triggerName}'.");
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    // ═══════════════════════════════════════
+    // VIEW EDITING
+    // ═══════════════════════════════════════
+
+    private void StartViewEdit()
+    {
+        _editingView = true;
+        _editViewName = ObjectName;
+        _editViewSql = _viewSql ?? string.Empty;
+    }
+
+    private void CancelViewEdit() => _editingView = false;
+
+    private async Task SaveViewAsync()
+    {
+        _submitting = true;
+        try
+        {
+            await DbService.UpdateViewAsync(ObjectName, _editViewName, _editViewSql);
+            Toast.Success($"Updated view '{ObjectName}'.");
+            _editingView = false;
+            await LoadSchemaAsync();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+        finally { _submitting = false; }
+    }
+
+    private async Task ConfirmDropView()
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop View", $"Are you sure you want to drop view '{ObjectName}'? This action cannot be undone.", "Drop", isDanger: true);
+        if (confirmed)
+        {
+            try
+            {
+                await DbService.DropViewAsync(ObjectName);
+                Toast.Success($"Dropped view '{ObjectName}'.");
+            }
+            catch (Exception ex) { Toast.Error(ex.Message); }
+        }
+    }
+
+    // ─── Helpers ─────────────────────────
+    private static string GetTypeBadgeClass(string type) => type.ToUpperInvariant() switch
+    {
+        "INTEGER" or "INT" => "type-integer",
+        "TEXT" or "VARCHAR" or "CHAR" => "type-text",
+        "REAL" => "type-real",
+        "BLOB" => "type-blob",
+        _ => "type-other"
+    };
+
+    private enum TableOp { AddColumn, DropColumn, RenameColumn, RenameTable }
+}
