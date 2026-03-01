@@ -594,4 +594,5 @@ await using (var db = await Database.OpenAsync("persistent.db"))
 - [REST API Reference](rest-api.md) — Use CSharpDB over HTTP from any language
 - [MCP Server Reference](mcp-server.md) — Connect AI assistants to your database
 - [CLI Reference](cli.md) — Interactive REPL with meta-commands
+- [FAQ](faq.md) — Common setup and troubleshooting answers
 - [Roadmap](roadmap.md) — Planned features and project direction

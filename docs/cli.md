@@ -178,4 +178,5 @@ Snapshot mode disabled.
 
 - [Getting Started Tutorial](getting-started.md) — C# API walkthrough with code examples
 - [REST API Reference](rest-api.md) — HTTP endpoint documentation
+- [FAQ](faq.md) — Common setup and troubleshooting answers
 - [Sample Datasets](../samples/README.md) — SQL scripts to load test data

@@ -302,6 +302,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Highlights:
 | [REST API Reference](docs/rest-api.md) | All 30 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
+| [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full benchmark results and comparison with 11 other databases |
 | [Sample Datasets](samples/README.md) | Ready-to-run SQL scripts for testing |
