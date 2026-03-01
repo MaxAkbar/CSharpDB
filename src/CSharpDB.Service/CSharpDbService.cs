@@ -4,6 +4,7 @@ using System.Globalization;
 using CSharpDB.Service.Models;
 using CSharpDB.Core;
 using CSharpDB.Data;
+using CSharpDB.Sql;
 using Microsoft.Extensions.Configuration;
 
 namespace CSharpDB.Service;
@@ -584,54 +585,12 @@ public sealed class CSharpDbService : IAsyncDisposable
         try
         {
             var sw = Stopwatch.StartNew();
-            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
-            cmd.CommandText = sql;
-
+            IReadOnlyList<string> statements;
             try
             {
-                await using var reader = await cmd.ExecuteReaderAsync();
-                sw.Stop();
-
-                // Check if this is a query with results
-                if (reader.FieldCount > 0)
-                {
-                    var colNames = new string[reader.FieldCount];
-                    for (int i = 0; i < reader.FieldCount; i++)
-                        colNames[i] = reader.GetName(i);
-
-                    var rows = new List<object?[]>();
-                    while (await reader.ReadAsync())
-                    {
-                        var row = new object?[reader.FieldCount];
-                        for (int i = 0; i < reader.FieldCount; i++)
-                            row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                        rows.Add(row);
-                    }
-
-                    return new SqlExecutionResult
-                    {
-                        IsQuery = true,
-                        ColumnNames = colNames,
-                        Rows = rows,
-                        RowsAffected = rows.Count,
-                        Elapsed = sw.Elapsed,
-                    };
-                }
-
-                var nonQueryResult = new SqlExecutionResult
-                {
-                    IsQuery = false,
-                    RowsAffected = reader.RecordsAffected,
-                    Elapsed = sw.Elapsed,
-                };
-
-                // If the SQL might have changed table structure, notify listeners.
-                if (LooksLikeSchemaMutation(sql))
-                    NotifySchemaChanged(tablesMayHaveChanged: LooksLikeTableMutation(sql));
-
-                return nonQueryResult;
+                statements = SplitSqlStatements(sql);
             }
-            catch (DbException ex)
+            catch (CSharpDbException ex)
             {
                 sw.Stop();
                 return new SqlExecutionResult
@@ -640,6 +599,93 @@ public sealed class CSharpDbService : IAsyncDisposable
                     Elapsed = sw.Elapsed,
                 };
             }
+
+            if (statements.Count == 0)
+            {
+                sw.Stop();
+                return new SqlExecutionResult
+                {
+                    IsQuery = false,
+                    RowsAffected = 0,
+                    Elapsed = sw.Elapsed,
+                };
+            }
+
+            SqlExecutionResult? lastResult = null;
+            int totalRowsAffected = 0;
+            bool schemaMutated = false;
+            bool tableMutated = false;
+
+            for (int i = 0; i < statements.Count; i++)
+            {
+                string statement = statements[i];
+
+                try
+                {
+                    var singleResult = await ExecuteSingleStatementAsync(statement);
+                    lastResult = singleResult;
+
+                    if (!singleResult.IsQuery)
+                        totalRowsAffected += singleResult.RowsAffected;
+
+                    if (LooksLikeSchemaMutation(statement))
+                    {
+                        schemaMutated = true;
+                        tableMutated |= LooksLikeTableMutation(statement);
+                    }
+                }
+                catch (DbException ex)
+                {
+                    sw.Stop();
+
+                    if (schemaMutated)
+                        NotifySchemaChanged(tablesMayHaveChanged: tableMutated);
+
+                    string error = statements.Count > 1
+                        ? $"Statement {i + 1} failed: {ex.Message}"
+                        : ex.Message;
+
+                    return new SqlExecutionResult
+                    {
+                        Error = error,
+                        Elapsed = sw.Elapsed,
+                    };
+                }
+            }
+
+            sw.Stop();
+
+            if (schemaMutated)
+                NotifySchemaChanged(tablesMayHaveChanged: tableMutated);
+
+            if (lastResult is null)
+            {
+                return new SqlExecutionResult
+                {
+                    IsQuery = false,
+                    RowsAffected = 0,
+                    Elapsed = sw.Elapsed,
+                };
+            }
+
+            if (lastResult.IsQuery)
+            {
+                return new SqlExecutionResult
+                {
+                    IsQuery = true,
+                    ColumnNames = lastResult.ColumnNames,
+                    Rows = lastResult.Rows,
+                    RowsAffected = lastResult.RowsAffected,
+                    Elapsed = sw.Elapsed,
+                };
+            }
+
+            return new SqlExecutionResult
+            {
+                IsQuery = false,
+                RowsAffected = totalRowsAffected,
+                Elapsed = sw.Elapsed,
+            };
         }
         finally { _lock.Release(); }
     }
@@ -727,6 +773,126 @@ public sealed class CSharpDbService : IAsyncDisposable
         using var cmd = (CSharpDbCommand)_connection.CreateCommand();
         cmd.CommandText = sql;
         await cmd.ExecuteNonQueryAsync();
+    }
+
+    private async Task<SqlExecutionResult> ExecuteSingleStatementAsync(string sql)
+    {
+        using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+        cmd.CommandText = sql;
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (reader.FieldCount > 0)
+        {
+            var colNames = new string[reader.FieldCount];
+            for (int i = 0; i < reader.FieldCount; i++)
+                colNames[i] = reader.GetName(i);
+
+            var rows = new List<object?[]>();
+            while (await reader.ReadAsync())
+            {
+                var row = new object?[reader.FieldCount];
+                for (int i = 0; i < reader.FieldCount; i++)
+                    row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                rows.Add(row);
+            }
+
+            return new SqlExecutionResult
+            {
+                IsQuery = true,
+                ColumnNames = colNames,
+                Rows = rows,
+                RowsAffected = rows.Count,
+            };
+        }
+
+        return new SqlExecutionResult
+        {
+            IsQuery = false,
+            RowsAffected = reader.RecordsAffected,
+        };
+    }
+
+    private static IReadOnlyList<string> SplitSqlStatements(string sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return Array.Empty<string>();
+
+        var statements = new List<string>();
+        var tokens = new Tokenizer(sql).Tokenize();
+
+        int statementStart = 0;
+        bool atStatementStart = true;
+        bool createSeen = false;
+        bool createTrigger = false;
+        int triggerBeginDepth = 0;
+
+        foreach (var token in tokens)
+        {
+            if (token.Type == TokenType.Eof)
+                break;
+
+            if (atStatementStart)
+            {
+                if (token.Type == TokenType.Semicolon)
+                {
+                    statementStart = token.Position + 1;
+                    continue;
+                }
+
+                atStatementStart = false;
+                createSeen = token.Type == TokenType.Create;
+                createTrigger = false;
+                triggerBeginDepth = 0;
+            }
+            else if (createSeen && !createTrigger && token.Type == TokenType.Trigger)
+            {
+                createTrigger = true;
+            }
+
+            if (createTrigger)
+            {
+                if (token.Type == TokenType.Begin)
+                    triggerBeginDepth++;
+                else if (token.Type == TokenType.End && triggerBeginDepth > 0)
+                    triggerBeginDepth--;
+            }
+
+            if (token.Type == TokenType.Semicolon)
+            {
+                bool isStatementTerminator = !createTrigger || triggerBeginDepth == 0;
+                if (!isStatementTerminator)
+                    continue;
+
+                int statementEnd = token.Position + 1;
+                if (statementEnd > statementStart)
+                {
+                    string statement = sql[statementStart..statementEnd].Trim();
+                    if (statement.Length > 0)
+                        statements.Add(statement);
+                }
+
+                statementStart = statementEnd;
+                atStatementStart = true;
+                createSeen = false;
+                createTrigger = false;
+                triggerBeginDepth = 0;
+            }
+        }
+
+        if (statementStart < sql.Length)
+        {
+            string remainder = sql[statementStart..];
+            var remainderTokens = new Tokenizer(remainder).Tokenize();
+            bool hasSql = remainderTokens.Any(t => t.Type is not (TokenType.Eof or TokenType.Semicolon));
+            if (hasSql)
+            {
+                string trimmed = remainder.Trim();
+                if (trimmed.Length > 0)
+                    statements.Add(trimmed);
+            }
+        }
+
+        return statements;
     }
 
     private static bool LooksLikeSchemaMutation(string sql)

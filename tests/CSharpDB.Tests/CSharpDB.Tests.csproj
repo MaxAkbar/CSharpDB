@@ -13,6 +13,7 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.0-preview.*" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
   </ItemGroup>
 
@@ -26,6 +27,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Execution\CSharpDB.Execution.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Service\CSharpDB.Service.csproj" />
   </ItemGroup>
 
 </Project>
