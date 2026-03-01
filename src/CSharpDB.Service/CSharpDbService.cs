@@ -5,6 +5,7 @@ using CSharpDB.Service.Models;
 using CSharpDB.Core;
 using CSharpDB.Data;
 using CSharpDB.Sql;
+using CSharpDB.Storage.Diagnostics;
 using Microsoft.Extensions.Configuration;
 
 namespace CSharpDB.Service;
@@ -690,6 +691,62 @@ public sealed class CSharpDbService : IAsyncDisposable
         finally { _lock.Release(); }
     }
 
+    // ─── Storage Diagnostics (read-only) ───────────────────────────
+
+    public async Task<DatabaseInspectReport> InspectStorageAsync(
+        string? databasePath = null,
+        bool includePages = false)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string dbPath = ResolveDatabasePath(databasePath);
+            return await DatabaseInspector.InspectAsync(
+                dbPath,
+                new DatabaseInspectOptions { IncludePages = includePages });
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<WalInspectReport> CheckWalAsync(string? databasePath = null)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string dbPath = ResolveDatabasePath(databasePath);
+            return await WalInspector.InspectAsync(dbPath);
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<PageInspectReport> InspectPageAsync(
+        uint pageId,
+        bool includeHex = false,
+        string? databasePath = null)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string dbPath = ResolveDatabasePath(databasePath);
+            return await DatabaseInspector.InspectPageAsync(dbPath, pageId, includeHex);
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<IndexInspectReport> CheckIndexesAsync(
+        string? databasePath = null,
+        string? indexName = null,
+        int? sampleSize = null)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string dbPath = ResolveDatabasePath(databasePath);
+            return await IndexInspector.CheckAsync(dbPath, indexName, sampleSize);
+        }
+        finally { _lock.Release(); }
+    }
+
     // ─── Row count ─────────────────────────────────────────────────
 
     public async Task<int> GetRowCountAsync(string tableName)
@@ -909,6 +966,14 @@ public sealed class CSharpDbService : IAsyncDisposable
         return upper.StartsWith("CREATE TABLE", StringComparison.Ordinal)
             || upper.StartsWith("DROP TABLE", StringComparison.Ordinal)
             || upper.StartsWith("ALTER TABLE", StringComparison.Ordinal);
+    }
+
+    private string ResolveDatabasePath(string? databasePath)
+    {
+        string path = string.IsNullOrWhiteSpace(databasePath)
+            ? DataSource
+            : databasePath.Trim();
+        return Path.GetFullPath(path);
     }
 
     public async ValueTask DisposeAsync()

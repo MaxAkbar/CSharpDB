@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Read-only storage diagnostics toolkit for CSharpDB database and WAL files.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
+    <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -29,7 +29,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **REST API** | ASP.NET Core Minimal API with 30 endpoints, OpenAPI/Scalar UI |
+| **REST API** | ASP.NET Core Minimal API with 34 endpoints, OpenAPI/Scalar UI |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
 | **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode |
@@ -299,9 +299,10 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Highlights:
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
-| [REST API Reference](docs/rest-api.md) | All 30 API endpoints with request/response examples |
+| [REST API Reference](docs/rest-api.md) | All 34 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
+| [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full benchmark results and comparison with 11 other databases |

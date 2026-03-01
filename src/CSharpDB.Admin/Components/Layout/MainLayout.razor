@@ -35,6 +35,9 @@
                                      ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
                                      IsView="true" />
                             break;
+                        case TabKind.Storage:
+                            <StorageTab @key="TabManager.ActiveTab.Id" />
+                            break;
                     }
                 }
             </div>

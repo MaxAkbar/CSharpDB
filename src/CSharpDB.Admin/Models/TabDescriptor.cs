@@ -5,7 +5,8 @@ public enum TabKind
     Welcome,
     Query,
     TableData,
-    ViewData
+    ViewData,
+    Storage
 }
 
 public sealed class TabDescriptor

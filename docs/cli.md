@@ -8,9 +8,20 @@ The CSharpDB CLI (`CSharpDB.Cli`) is an interactive REPL for working with CSharp
 # Open or create a database
 dotnet run --project src/CSharpDB.Cli -- mydata.db
 
-# Without arguments, creates an in-memory database
+# Without arguments, uses csharpdb.db in the current directory
 dotnet run --project src/CSharpDB.Cli
 ```
+
+The CLI also supports command mode (non-REPL) for storage diagnostics:
+
+```bash
+dotnet run --project src/CSharpDB.Cli -- inspect mydata.db
+dotnet run --project src/CSharpDB.Cli -- inspect-page mydata.db 5 --hex
+dotnet run --project src/CSharpDB.Cli -- check-wal mydata.db
+dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json
+```
+
+If the first argument is one of `inspect`, `inspect-page`, `check-wal`, or `check-indexes`, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.
 
 ## Interactive Usage
 
@@ -99,6 +110,26 @@ SELECT * FROM sys.triggers;
 ```
 
 Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`.
+
+---
+
+## Storage Inspector Commands
+
+These commands are read-only and return deterministic exit codes for automation:
+
+- `0`: no warnings/errors
+- `1`: warnings present, no errors
+- `2`: errors present
+- `64`: invalid CLI usage
+
+| Command | Description |
+|---------|-------------|
+| `inspect <dbfile> [--json] [--out <file>] [--include-pages]` | Full DB file/header/page integrity scan |
+| `inspect-page <dbfile> <pageId> [--json] [--hex]` | Inspect one page and optionally include hex dump |
+| `check-wal <dbfile> [--json]` | Validate WAL header/frames/salts/checksums |
+| `check-indexes <dbfile> [--index <name>] [--sample <n>] [--json]` | Validate index catalog/root/table/column consistency |
+
+See [Storage Inspector](storage-inspector.md) for full rule IDs and JSON contract details.
 
 ---
 

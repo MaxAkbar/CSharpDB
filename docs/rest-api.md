@@ -51,6 +51,46 @@ Returns a summary of the database.
 
 ---
 
+### Storage Inspection
+
+Read-only physical diagnostics endpoints for `.db` and `.wal` inspection.
+
+#### `GET /api/inspect`
+
+Run a full database file inspection.
+
+**Query parameters:**
+- `includePages` (default: `false`) — include per-page decoded details in the response
+- `path` (optional) — override database path for this request
+
+#### `GET /api/inspect/wal`
+
+Inspect WAL header/frame/checksum state.
+
+**Query parameters:**
+- `path` (optional) — override database path for this request
+
+#### `GET /api/inspect/page/{id}`
+
+Inspect a single page by page id.
+
+**Query parameters:**
+- `hex` (default: `false`) — include page hex dump
+- `path` (optional) — override database path for this request
+
+#### `GET /api/inspect/indexes`
+
+Validate index metadata and root tree reachability.
+
+**Query parameters:**
+- `index` (optional) — check one index by name
+- `sample` (optional) — sample size hint for future index validation passes
+- `path` (optional) — override database path for this request
+
+Responses follow the diagnostics models documented in [Storage Inspector](storage-inspector.md).
+
+---
+
 ### Tables
 
 #### `GET /api/tables`
