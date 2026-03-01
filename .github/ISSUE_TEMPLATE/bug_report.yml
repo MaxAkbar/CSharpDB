@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a reproducible problem in CSharpDB
+title: "[Bug]: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this issue.
+        Please include enough detail to reproduce the behavior.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A short, clear description of the bug.
+      placeholder: "Running SELECT ... returns an unexpected error."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide exact steps and sample SQL/code when possible.
+      placeholder: |
+        1. Open database ...
+        2. Execute SQL ...
+        3. Observe error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "The query should return 10 rows."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / stack trace
+      description: Paste any exception message, stack trace, or failing output.
+      render: text
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part is affected?
+      options:
+        - SQL Engine
+        - Storage / WAL
+        - Admin UI
+        - CLI
+        - REST API
+        - ADO.NET Provider
+        - MCP Server
+        - Docs
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, commit SHA, or branch.
+      placeholder: "v1.0.0 or 1a2b3c4"
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS + .NET version.
+      placeholder: "Windows 11, .NET 10.0.x"
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I included clear reproduction steps.
+          required: true
+

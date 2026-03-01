@@ -1,0 +1,73 @@
+name: Feature request
+description: Suggest an enhancement or new capability
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first, then your proposed solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user problem are you trying to solve?
+      placeholder: "I cannot currently ... and this makes ... difficult."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API/behavior you want.
+      placeholder: "Add support for ... with syntax ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other approaches.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: Estimated impact if implemented.
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - SQL Engine
+        - Storage / WAL
+        - Admin UI
+        - CLI
+        - REST API
+        - ADO.NET Provider
+        - MCP Server
+        - Docs
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+

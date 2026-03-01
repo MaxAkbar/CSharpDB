@@ -1,0 +1,28 @@
+name: Documentation
+description: Report missing, unclear, or incorrect documentation
+title: "[Docs]: "
+labels:
+  - documentation
+  - needs-triage
+body:
+  - type: textarea
+    id: issue
+    attributes:
+      label: What should be improved?
+      description: Describe what is unclear, missing, or incorrect.
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File path or URL (if known).
+      placeholder: "README.md, docs/getting-started.md, ..."
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested change
+      description: If you already know the wording/structure you want, include it here.
+

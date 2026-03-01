@@ -1,0 +1,42 @@
+name: Question
+description: Ask about usage, behavior, or design choices
+title: "[Question]: "
+labels:
+  - question
+  - needs-triage
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What is your question?
+      description: Be as specific as possible.
+      placeholder: "How do I ...?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you building, and what have you already tried?
+      placeholder: "I tried ... and read ..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - SQL Engine
+        - Storage / WAL
+        - Admin UI
+        - CLI
+        - REST API
+        - ADO.NET Provider
+        - MCP Server
+        - Docs
+        - Other
+    validations:
+      required: true
+
