@@ -25,7 +25,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes |
+| **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **REST API** | ASP.NET Core Minimal API with 30 endpoints, OpenAPI/Scalar UI |
@@ -213,6 +213,20 @@ CSharpDB.slnx
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
 | **Expressions** | `=`, `<>`, `<`, `>`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
+
+### System Catalog Queries
+
+Use SQL to inspect schema metadata:
+
+```sql
+SELECT * FROM sys.tables ORDER BY table_name;
+SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
+SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.views;
+SELECT * FROM sys.triggers;
+```
+
+Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`.
 
 ## Building and Testing
 

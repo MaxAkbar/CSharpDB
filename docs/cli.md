@@ -86,6 +86,20 @@ All meta-commands start with a dot (`.`). They are case-insensitive.
 | `.help` | Show a list of all available commands |
 | `.quit` / `.exit` | Exit the REPL |
 
+## SQL Introspection (`sys.*`)
+
+You can query metadata with SQL in addition to dot-commands:
+
+```sql
+SELECT * FROM sys.tables ORDER BY table_name;
+SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
+SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.views;
+SELECT * FROM sys.triggers;
+```
+
+Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`.
+
 ---
 
 ## Examples

@@ -181,6 +181,28 @@ await using var result = await db.ExecuteAsync(
     "SELECT name, price FROM products WHERE price > 5.0");
 ```
 
+### System catalog metadata (`sys.*`)
+
+You can inspect tables, columns, indexes, views, and triggers with SQL:
+
+```csharp
+await using var tables = await db.ExecuteAsync(
+    "SELECT table_name, column_count, primary_key_column FROM sys.tables ORDER BY table_name");
+
+await using var columns = await db.ExecuteAsync(
+    "SELECT column_name, data_type, is_nullable FROM sys.columns " +
+    "WHERE table_name = 'products' ORDER BY ordinal_position");
+```
+
+Catalog sources:
+- `sys.tables`
+- `sys.columns`
+- `sys.indexes`
+- `sys.views`
+- `sys.triggers`
+
+Underscored aliases are also available (`sys_tables`, `sys_columns`, etc.).
+
 ---
 
 ## 5. Aggregate Functions

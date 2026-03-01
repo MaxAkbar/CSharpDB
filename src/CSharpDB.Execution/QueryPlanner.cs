@@ -857,7 +857,9 @@ public sealed class QueryPlanner
 
         // Try index-based scan for simple equality WHERE on a single table
         Expression? remainingWhere = stmt.Where;
-        if (stmt.From is SimpleTableRef simpleRef && !_catalog.IsView(simpleRef.TableName))
+        if (stmt.From is SimpleTableRef simpleRef &&
+            !_catalog.IsView(simpleRef.TableName) &&
+            !IsSystemCatalogTable(simpleRef.TableName))
         {
             if (stmt.Where != null)
             {
@@ -1020,6 +1022,8 @@ public sealed class QueryPlanner
             return false;
         if (_catalog.IsView(simpleRef.TableName))
             return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
 
         // Must have a WHERE clause
         if (stmt.Where == null)
@@ -1101,6 +1105,8 @@ public sealed class QueryPlanner
 
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
 
         if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
             return false;
@@ -1152,6 +1158,8 @@ public sealed class QueryPlanner
         result = null!;
 
         if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
             return false;
 
         if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
@@ -1212,6 +1220,8 @@ public sealed class QueryPlanner
         result = null!;
 
         if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
             return false;
 
         if (stmt.Where == null || stmt.GroupBy != null || stmt.Having != null)
@@ -1297,6 +1307,8 @@ public sealed class QueryPlanner
         result = null!;
 
         if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
             return false;
 
         if (stmt.Where != null || stmt.Having != null)
@@ -1497,6 +1509,9 @@ public sealed class QueryPlanner
 
                 return (cteOp, cteSchema);
             }
+
+            if (TryBuildSystemCatalogSource(simple, out var systemSource))
+                return systemSource;
 
             // Check if this is a view
             var viewSql = _catalog.GetViewSql(simple.TableName);
@@ -1743,6 +1758,8 @@ public sealed class QueryPlanner
 
         if (_catalog.IsView(rightSimple.TableName))
             return false;
+        if (IsSystemCatalogTable(rightSimple.TableName))
+            return false;
 
         if (_cteData != null && _cteData.ContainsKey(rightSimple.TableName))
             return false;
@@ -1857,6 +1874,8 @@ public sealed class QueryPlanner
         if (tableRef is SimpleTableRef simple)
         {
             if (_catalog.IsView(simple.TableName))
+                return false;
+            if (IsSystemCatalogTable(simple.TableName))
                 return false;
             if (_cteData != null && _cteData.ContainsKey(simple.TableName))
                 return false;
@@ -3009,6 +3028,245 @@ public sealed class QueryPlanner
                 QualifiedMappingsFingerprint != null
                     ? StringComparer.Ordinal.GetHashCode(QualifiedMappingsFingerprint)
                     : 0);
+    }
+
+    private static bool IsSystemCatalogTable(string tableName) =>
+        TryNormalizeSystemCatalogTableName(tableName, out _);
+
+    private static bool TryNormalizeSystemCatalogTableName(string tableName, out string normalized)
+    {
+        if (string.Equals(tableName, "sys.tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_tables", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.tables";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.columns";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.indexes";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.views";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_triggers", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.triggers";
+            return true;
+        }
+
+        normalized = string.Empty;
+        return false;
+    }
+
+    private bool TryBuildSystemCatalogSource(SimpleTableRef tableRef, out (IOperator op, TableSchema schema) source)
+    {
+        source = default;
+        if (!TryNormalizeSystemCatalogTableName(tableRef.TableName, out string normalized))
+            return false;
+
+        ColumnDefinition[] columns;
+        List<DbValue[]> rows;
+
+        switch (normalized)
+        {
+            case "sys.tables":
+                columns =
+                [
+                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
+                    new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
+                ];
+                rows = BuildSystemTablesRows();
+                break;
+
+            case "sys.columns":
+                columns =
+                [
+                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+                    new ColumnDefinition { Name = "data_type", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
+                    new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
+                ];
+                rows = BuildSystemColumnsRows();
+                break;
+
+            case "sys.indexes":
+                columns =
+                [
+                    new ColumnDefinition { Name = "index_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+                    new ColumnDefinition { Name = "is_unique", Type = DbType.Integer, Nullable = false },
+                ];
+                rows = BuildSystemIndexesRows();
+                break;
+
+            case "sys.views":
+                columns =
+                [
+                    new ColumnDefinition { Name = "view_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "sql", Type = DbType.Text, Nullable = false },
+                ];
+                rows = BuildSystemViewsRows();
+                break;
+
+            case "sys.triggers":
+                columns =
+                [
+                    new ColumnDefinition { Name = "trigger_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "timing", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "event", Type = DbType.Text, Nullable = false },
+                    new ColumnDefinition { Name = "body_sql", Type = DbType.Text, Nullable = false },
+                ];
+                rows = BuildSystemTriggersRows();
+                break;
+
+            default:
+                return false;
+        }
+
+        var op = new MaterializedOperator(rows, columns);
+        string alias = tableRef.Alias ?? tableRef.TableName;
+        var qualified = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < columns.Length; i++)
+            qualified[$"{alias}.{columns[i].Name}"] = i;
+
+        var schema = new TableSchema
+        {
+            TableName = normalized,
+            Columns = columns,
+            QualifiedMappings = qualified,
+        };
+
+        source = (op, schema);
+        return true;
+    }
+
+    private List<DbValue[]> BuildSystemTablesRows()
+    {
+        var rows = new List<DbValue[]>();
+        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            var schema = _catalog.GetTable(tableName);
+            if (schema == null)
+                continue;
+
+            string? pkName = schema.PrimaryKeyColumnIndex >= 0
+                ? schema.Columns[schema.PrimaryKeyColumnIndex].Name
+                : null;
+
+            rows.Add(
+            [
+                DbValue.FromText(tableName),
+                DbValue.FromInteger(schema.Columns.Count),
+                pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemColumnsRows()
+    {
+        var rows = new List<DbValue[]>();
+        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            var schema = _catalog.GetTable(tableName);
+            if (schema == null)
+                continue;
+
+            for (int i = 0; i < schema.Columns.Count; i++)
+            {
+                var col = schema.Columns[i];
+                rows.Add(
+                [
+                    DbValue.FromText(tableName),
+                    DbValue.FromText(col.Name),
+                    DbValue.FromInteger(i + 1),
+                    DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
+                    DbValue.FromInteger(col.Nullable ? 1 : 0),
+                    DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
+                ]);
+            }
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemIndexesRows()
+    {
+        var rows = new List<DbValue[]>();
+        foreach (var index in _catalog.GetIndexes()
+                     .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
+        {
+            for (int i = 0; i < index.Columns.Count; i++)
+            {
+                rows.Add(
+                [
+                    DbValue.FromText(index.IndexName),
+                    DbValue.FromText(index.TableName),
+                    DbValue.FromText(index.Columns[i]),
+                    DbValue.FromInteger(i + 1),
+                    DbValue.FromInteger(index.IsUnique ? 1 : 0),
+                ]);
+            }
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemViewsRows()
+    {
+        var rows = new List<DbValue[]>();
+        foreach (string viewName in _catalog.GetViewNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(viewName),
+                DbValue.FromText(_catalog.GetViewSql(viewName) ?? string.Empty),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemTriggersRows()
+    {
+        var rows = new List<DbValue[]>();
+        foreach (var trigger in _catalog.GetTriggers().OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(trigger.TriggerName),
+                DbValue.FromText(trigger.TableName),
+                DbValue.FromText(trigger.Timing.ToString().ToUpperInvariant()),
+                DbValue.FromText(trigger.Event.ToString().ToUpperInvariant()),
+                DbValue.FromText(trigger.BodySql),
+            ]);
+        }
+
+        return rows;
     }
 
     private ColumnDefinition[] BuildAggregateOutputSchema(List<SelectColumn> columns, TableSchema schema)

@@ -75,6 +75,18 @@ public class ParserTests
     }
 
     [Fact]
+    public void TryParseSimpleSelect_ParsesMultipartTableName()
+    {
+        bool parsed = Parser.TryParseSimpleSelect(
+            "SELECT table_name FROM sys.tables WHERE table_name = 'users'",
+            out var stmt);
+
+        Assert.True(parsed);
+        var select = Assert.IsType<SelectStatement>(stmt);
+        Assert.Equal("sys.tables", Assert.IsType<SimpleTableRef>(select.From).TableName);
+    }
+
+    [Fact]
     public void TryParseSimpleSelect_ParsesConjunctiveEqualityWithEscapedString()
     {
         bool parsed = Parser.TryParseSimpleSelect(
@@ -388,6 +400,15 @@ public class ParserTests
         var simple = Assert.IsType<SimpleTableRef>(select.From);
         Assert.Equal("users", simple.TableName);
         Assert.Equal("u", simple.Alias);
+    }
+
+    [Fact]
+    public void Parse_MultipartTableName()
+    {
+        var stmt = Parser.Parse("SELECT * FROM sys.tables");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var simple = Assert.IsType<SimpleTableRef>(select.From);
+        Assert.Equal("sys.tables", simple.TableName);
     }
 
     [Fact]

@@ -80,7 +80,7 @@ public sealed class Parser
             if (!TryReadKeyword("FROM"))
                 return false;
 
-            if (!TryReadIdentifier(out string tableName))
+            if (!TryReadMultipartIdentifier(out string tableName))
                 return false;
 
             Expression? where = null;
@@ -340,6 +340,28 @@ public sealed class Parser
                 _pos++;
 
             identifier = _text.Slice(start, _pos - start).ToString();
+            return true;
+        }
+
+        private bool TryReadMultipartIdentifier(out string identifier)
+        {
+            if (!TryReadIdentifier(out identifier))
+                return false;
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (_pos >= _text.Length || _text[_pos] != '.')
+                    break;
+
+                _pos++; // consume '.'
+
+                if (!TryReadIdentifier(out string part))
+                    return false;
+
+                identifier = $"{identifier}.{part}";
+            }
+
             return true;
         }
 
@@ -1008,6 +1030,10 @@ public sealed class Parser
     private SimpleTableRef ParseSimpleTableRef()
     {
         string tableName = ExpectIdentifier();
+        while (TryConsume(TokenType.Dot))
+        {
+            tableName = $"{tableName}.{ExpectIdentifier()}";
+        }
         string? alias = null;
 
         // Check for alias: FROM users AS u  or  FROM users u
