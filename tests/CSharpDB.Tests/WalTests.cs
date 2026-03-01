@@ -15,7 +15,8 @@ public class WalTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _db = await Database.OpenAsync(_dbPath);
+        var ct = TestContext.Current.CancellationToken;
+        _db = await Database.OpenAsync(_dbPath, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -28,12 +29,13 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task Commit_PersistsThroughWal()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'hello')");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'world')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'hello')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'world')", ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT * FROM t ORDER BY id");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT * FROM t ORDER BY id", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Equal(2, rows.Count);
         Assert.Equal("hello", rows[0][1].AsText);
         Assert.Equal("world", rows[1][1].AsText);
@@ -42,15 +44,16 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task Rollback_DiscardsChanges()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'keep')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'keep')", ct);
 
-        await _db.BeginTransactionAsync();
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'discard')");
-        await _db.RollbackAsync();
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'discard')", ct);
+        await _db.RollbackAsync(ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT * FROM t");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT * FROM t", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Single(rows);
         Assert.Equal("keep", rows[0][1].AsText);
     }
@@ -58,15 +61,16 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task CrashRecovery_CommittedDataSurvives()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'survived')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'survived')", ct);
 
         // Close and reopen
         await _db.DisposeAsync();
-        _db = await Database.OpenAsync(_dbPath);
+        _db = await Database.OpenAsync(_dbPath, ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT * FROM t");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT * FROM t", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Single(rows);
         Assert.Equal("survived", rows[0][1].AsText);
     }
@@ -74,18 +78,19 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task CrashRecovery_UncommittedDataLost()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'committed')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'committed')", ct);
 
         // Start a transaction but don't commit — dispose will rollback
-        await _db.BeginTransactionAsync();
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'uncommitted')");
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'uncommitted')", ct);
         await _db.DisposeAsync();
 
-        _db = await Database.OpenAsync(_dbPath);
+        _db = await Database.OpenAsync(_dbPath, ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT * FROM t");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT * FROM t", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Single(rows);
         Assert.Equal("committed", rows[0][1].AsText);
     }
@@ -93,41 +98,43 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task ConcurrentReader_SeesSnapshotWhileWriterModifies()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
 
         // Take a reader snapshot
         using var reader = _db.CreateReaderSession();
 
         // Writer modifies data
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'new')");
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'new')", ct);
 
         // Reader should still see original data only (snapshot isolation)
-        await using var readerResult = await reader.ExecuteReadAsync("SELECT * FROM t");
-        var readerRows = await readerResult.ToListAsync();
+        await using var readerResult = await reader.ExecuteReadAsync("SELECT * FROM t", ct);
+        var readerRows = await readerResult.ToListAsync(ct);
         Assert.Single(readerRows);
         Assert.Equal("original", readerRows[0][1].AsText);
 
         // Main database sees both rows
-        await using var mainResult = await _db.ExecuteAsync("SELECT * FROM t");
-        var mainRows = await mainResult.ToListAsync();
+        await using var mainResult = await _db.ExecuteAsync("SELECT * FROM t", ct);
+        var mainRows = await mainResult.ToListAsync(ct);
         Assert.Equal(2, mainRows.Count);
     }
 
     [Fact]
     public async Task MultipleReaders_DontBlockEachOther()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'data')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'data')", ct);
 
         using var reader1 = _db.CreateReaderSession();
         using var reader2 = _db.CreateReaderSession();
 
-        await using var r1 = await reader1.ExecuteReadAsync("SELECT * FROM t");
-        await using var r2 = await reader2.ExecuteReadAsync("SELECT * FROM t");
+        await using var r1 = await reader1.ExecuteReadAsync("SELECT * FROM t", ct);
+        await using var r2 = await reader2.ExecuteReadAsync("SELECT * FROM t", ct);
 
-        var rows1 = await r1.ToListAsync();
-        var rows2 = await r2.ToListAsync();
+        var rows1 = await r1.ToListAsync(ct);
+        var rows2 = await r2.ToListAsync(ct);
 
         Assert.Single(rows1);
         Assert.Single(rows2);
@@ -136,44 +143,47 @@ public class WalTests : IAsyncLifetime
     [Fact]
     public async Task Checkpoint_CopiesDataToDbFile()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
         for (int i = 0; i < 10; i++)
-            await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, 'row{i}')");
+            await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, 'row{i}')", ct);
 
         // Manual checkpoint
-        await _db.CheckpointAsync();
+        await _db.CheckpointAsync(ct);
 
         // Data should still be accessible
-        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Equal(10L, rows[0][0].AsInteger);
     }
 
     [Fact]
     public async Task ManyInserts_AutoCheckpointDoesNotCorrupt()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
         for (int i = 0; i < 100; i++)
-            await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, 'row{i}')");
+            await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, 'row{i}')", ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Equal(100L, rows[0][0].AsInteger);
     }
 
     [Fact]
     public async Task Persistence_CloseAndReopen()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'hello')");
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'world')");
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'hello')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'world')", ct);
 
         // Close and reopen
         await _db.DisposeAsync();
-        _db = await Database.OpenAsync(_dbPath);
+        _db = await Database.OpenAsync(_dbPath, ct);
 
-        await using var result = await _db.ExecuteAsync("SELECT * FROM t ORDER BY id");
-        var rows = await result.ToListAsync();
+        await using var result = await _db.ExecuteAsync("SELECT * FROM t ORDER BY id", ct);
+        var rows = await result.ToListAsync(ct);
         Assert.Equal(2, rows.Count);
         Assert.Equal("hello", rows[0][1].AsText);
         Assert.Equal("world", rows[1][1].AsText);

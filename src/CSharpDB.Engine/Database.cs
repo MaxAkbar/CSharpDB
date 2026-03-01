@@ -46,7 +46,7 @@ public sealed class Database : IAsyncDisposable
         var device = new FileStorageDevice(filePath);
         var walIndex = new WalIndex();
         var wal = new WriteAheadLog(filePath, walIndex);
-        var pager = await Pager.CreateAsync(device, wal, walIndex, ct);
+        var pager = await Pager.CreateAsync(device, wal, walIndex, ct: ct);
 
         if (isNew)
         {

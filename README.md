@@ -243,7 +243,9 @@ Requires [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 
 ```bash
 dotnet build
-dotnet test
+dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj --
+dotnet run --project tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj --
+dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --
 ```
 
 ## Performance Highlights

@@ -11,7 +11,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly IStorageDevice _device;
     private readonly WriteAheadLog _wal;
     private readonly WalIndex _walIndex;
-    private readonly Dictionary<uint, byte[]> _cache = new();
+    private readonly IPageCache _cache;
     private readonly HashSet<uint> _dirtyPages = new();
     private bool _inTransaction;
 
@@ -30,34 +30,57 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public uint FreelistHead { get; set; }
     public uint ChangeCounter { get; private set; }
 
-    // Auto-checkpoint threshold
+    // Configurable behavior
+    private readonly PagerOptions _options;
+
+    /// <summary>
+    /// Legacy threshold property preserved for compatibility.
+    /// Prefer configuring <see cref="CheckpointPolicy"/> via <see cref="PagerOptions"/>.
+    /// </summary>
     public int CheckpointThreshold { get; set; } = PageConstants.DefaultCheckpointThreshold;
 
+    /// <summary>
+    /// Auto-checkpoint policy used after commits.
+    /// </summary>
+    public ICheckpointPolicy CheckpointPolicy { get; set; }
+
     /// <summary>Primary constructor for writer pager.</summary>
-    private Pager(IStorageDevice device, WriteAheadLog wal, WalIndex walIndex)
+    private Pager(IStorageDevice device, WriteAheadLog wal, WalIndex walIndex, PagerOptions? options = null)
     {
         _device = device;
         _wal = wal;
         _walIndex = walIndex;
+        _options = options ?? new PagerOptions();
+        _cache = _options.PageCacheFactory();
         _writerLock = new SemaphoreSlim(1, 1);
         _checkpointLock = new SemaphoreSlim(1, 1);
+        CheckpointPolicy = _options.CheckpointPolicy;
+
+        if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
+            CheckpointThreshold = framePolicy.Threshold;
     }
 
     /// <summary>Constructor for read-only snapshot pager.</summary>
-    private Pager(IStorageDevice device, WriteAheadLog wal, WalIndex walIndex, WalSnapshot snapshot)
+    private Pager(IStorageDevice device, WriteAheadLog wal, WalIndex walIndex, WalSnapshot snapshot, PagerOptions? options = null)
     {
         _device = device;
         _wal = wal;
         _walIndex = walIndex;
+        _options = options ?? new PagerOptions();
+        _cache = _options.PageCacheFactory();
         _readerSnapshot = snapshot;
         _isSnapshotReader = true;
+        CheckpointPolicy = _options.CheckpointPolicy;
+
+        if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
+            CheckpointThreshold = framePolicy.Threshold;
         // No writer lock or checkpoint lock needed for readers
     }
 
     public static async ValueTask<Pager> CreateAsync(IStorageDevice device, WriteAheadLog wal,
-        WalIndex walIndex, CancellationToken ct = default)
+        WalIndex walIndex, PagerOptions? options = null, CancellationToken ct = default)
     {
-        var pager = new Pager(device, wal, walIndex);
+        var pager = new Pager(device, wal, walIndex, options);
         if (device.Length >= PageConstants.PageSize)
             await pager.ReadFileHeaderAsync(ct);
         return pager;
@@ -69,7 +92,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public Pager CreateSnapshotReader(WalSnapshot snapshot)
     {
-        var reader = new Pager(_device, _wal, _walIndex, snapshot);
+        var reader = new Pager(_device, _wal, _walIndex, snapshot, _options);
         // Copy header state so schema catalog can be loaded
         reader.PageCount = PageCount;
         reader.SchemaRootPage = SchemaRootPage;
@@ -94,7 +117,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         await _device.SetLengthAsync(PageConstants.PageSize, ct);
         await _device.WriteAsync(0, page0, ct);
         await _device.FlushAsync(ct);
-        _cache[0] = page0;
+        _cache.Set(0, page0);
     }
 
     private async ValueTask ReadFileHeaderAsync(CancellationToken ct = default)
@@ -138,13 +161,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public byte[]? TryGetCachedPage(uint pageId)
     {
-        _cache.TryGetValue(pageId, out var page);
+        _cache.TryGet(pageId, out var page);
         return page;
     }
 
     public async ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
     {
-        if (_cache.TryGetValue(pageId, out var cached))
+        if (_cache.TryGet(pageId, out var cached))
             return cached;
 
         // Check WAL for the page
@@ -154,7 +177,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             if (_readerSnapshot.TryGet(pageId, out long walOffset))
             {
                 var walPage = await _wal.ReadPageAsync(walOffset, ct);
-                _cache[pageId] = walPage;
+                _cache.Set(pageId, walPage);
                 return walPage;
             }
         }
@@ -162,14 +185,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             // Writer or main pager: use latest WAL index
             var walPage = await _wal.ReadPageAsync(latestOffset, ct);
-            _cache[pageId] = walPage;
+            _cache.Set(pageId, walPage);
             return walPage;
         }
 
         // Fall through: read from DB file
         var buffer = new byte[PageConstants.PageSize];
         await _device.ReadAsync((long)pageId * PageConstants.PageSize, buffer, ct);
-        _cache[pageId] = buffer;
+        _cache.Set(pageId, buffer);
         return buffer;
     }
 
@@ -185,7 +208,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _dirtyPages.Add(pageId);
 
         // Ensure the page is in cache
-        if (!_cache.ContainsKey(pageId))
+        if (!_cache.Contains(pageId))
         {
             // Need to read it synchronously into cache — but since callers
             // always call GetPageAsync before modifying, it should be cached already.
@@ -199,7 +222,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private async ValueTask EnsurePageInCacheAsync(uint pageId, CancellationToken ct)
     {
         _dirtyPages.Add(pageId);
-        if (!_cache.ContainsKey(pageId))
+        if (!_cache.Contains(pageId))
         {
             await GetPageAsync(pageId, ct);
         }
@@ -230,7 +253,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         uint newPageId = PageCount;
         PageCount++;
         var newPage = new byte[PageConstants.PageSize];
-        _cache[newPageId] = newPage;
+        _cache.Set(newPageId, newPage);
         await MarkDirtyAsync(newPageId, ct);
         return newPageId;
     }
@@ -260,7 +283,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             throw new CSharpDbException(ErrorCode.Unknown, "Nested transactions are not supported.");
 
         // Acquire writer lock
-        if (!await _writerLock!.WaitAsync(TimeSpan.FromSeconds(5), ct))
+        if (!await _writerLock!.WaitAsync(_options.WriterLockTimeout, ct))
             throw new CSharpDbException(ErrorCode.Busy, "Could not acquire write lock (database is busy).");
 
         _wal.BeginTransaction();
@@ -282,7 +305,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // Write all dirty pages to WAL
         foreach (var pageId in _dirtyPages)
         {
-            if (_cache.TryGetValue(pageId, out var data))
+            if (_cache.TryGet(pageId, out var data))
                 await _wal.AppendFrameAsync(pageId, data, ct);
         }
 
@@ -295,8 +318,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // Release writer lock
         _writerLock!.Release();
 
-        // Auto-checkpoint if threshold reached
-        if (_walIndex.FrameCount >= CheckpointThreshold)
+        // Auto-checkpoint according to policy
+        var checkpointContext = new PagerCheckpointContext(
+            _walIndex.FrameCount,
+            Volatile.Read(ref _activeReaderCount));
+
+        bool shouldCheckpoint = CheckpointPolicy is FrameCountCheckpointPolicy
+            ? checkpointContext.CommittedFrameCount >= CheckpointThreshold &&
+              checkpointContext.ActiveReaderCount == 0
+            : CheckpointPolicy.ShouldCheckpoint(checkpointContext);
+
+        if (shouldCheckpoint)
         {
             await CheckpointAsync(ct);
         }

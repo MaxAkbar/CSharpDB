@@ -7,6 +7,7 @@ namespace CSharpDB.Data.Tests;
 public class ConnectionTests : IDisposable
 {
     private readonly string _dbPath;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     public ConnectionTests()
     {
@@ -25,7 +26,7 @@ public class ConnectionTests : IDisposable
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
         Assert.Equal(ConnectionState.Closed, conn.State);
 
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
         Assert.Equal(ConnectionState.Open, conn.State);
         Assert.True(File.Exists(_dbPath));
     }
@@ -34,7 +35,7 @@ public class ConnectionTests : IDisposable
     public async Task CloseAsync_SetsStateToClosed()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
         await conn.CloseAsync();
         Assert.Equal(ConnectionState.Closed, conn.State);
     }
@@ -43,15 +44,15 @@ public class ConnectionTests : IDisposable
     public async Task OpenAsync_WhenAlreadyOpen_Throws()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => conn.OpenAsync());
+        await conn.OpenAsync(Ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => conn.OpenAsync(Ct));
     }
 
     [Fact]
     public async Task OpenAsync_WithEmptyDataSource_Throws()
     {
         await using var conn = new CSharpDbConnection("Data Source=");
-        await Assert.ThrowsAsync<InvalidOperationException>(() => conn.OpenAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => conn.OpenAsync(Ct));
     }
 
     [Fact]
@@ -72,7 +73,7 @@ public class ConnectionTests : IDisposable
     public async Task CreateCommand_ReturnsCommandWithConnection()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
         using var cmd = conn.CreateCommand();
         Assert.NotNull(cmd);
         Assert.Same(conn, cmd.Connection);
@@ -82,13 +83,13 @@ public class ConnectionTests : IDisposable
     public async Task GetTableNames_ReturnsCreatedTables()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
 
         using var cmd = (CSharpDbCommand)conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE alpha (id INTEGER);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "CREATE TABLE beta (id INTEGER);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
 
         var names = conn.GetTableNames();
         Assert.Contains("alpha", names);
@@ -100,11 +101,11 @@ public class ConnectionTests : IDisposable
     public async Task GetTableSchema_ReturnsColumns()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
 
         using var cmd = (CSharpDbCommand)conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
 
         var schema = conn.GetTableSchema("users");
         Assert.NotNull(schema);
@@ -121,7 +122,8 @@ public class ConnectionTests : IDisposable
     public async Task GetTableSchema_NonExistent_ReturnsNull()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await conn.OpenAsync();
+        await conn.OpenAsync(Ct);
         Assert.Null(conn.GetTableSchema("nonexistent"));
     }
 }
+
