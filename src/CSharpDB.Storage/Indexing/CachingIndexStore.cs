@@ -4,7 +4,7 @@ namespace CSharpDB.Storage.Indexing;
 /// Decorates an index store with a bounded in-memory cache for key lookups.
 /// Write operations remain delegated to the inner store.
 /// </summary>
-public sealed class CachingIndexStore : IIndexStore, IBTreeIndexStore
+public sealed class CachingIndexStore : IIndexStore
 {
     private readonly IIndexStore _inner;
     private readonly int _capacity;
@@ -30,8 +30,6 @@ public sealed class CachingIndexStore : IIndexStore, IBTreeIndexStore
     }
 
     public uint RootPageId => _inner.RootPageId;
-    public BTree Tree => (_inner as IBTreeIndexStore)?.Tree
-        ?? throw new InvalidOperationException("The wrapped index store is not BTree-backed.");
 
     public async ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
     {

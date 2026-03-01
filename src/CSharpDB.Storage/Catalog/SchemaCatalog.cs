@@ -51,6 +51,9 @@ public sealed class SchemaCatalog
     public ValueTask PersistRootPageChangesAsync(string tableName, CancellationToken ct = default) =>
         _service.PersistRootPageChangesAsync(tableName, ct);
 
+    public ValueTask PersistAllRootPageChangesAsync(CancellationToken ct = default) =>
+        _service.PersistAllRootPageChangesAsync(ct);
+
     public ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default) =>
         _service.CreateTableAsync(schema, ct);
 
@@ -70,10 +73,6 @@ public sealed class SchemaCatalog
 
     public IReadOnlyList<IndexSchema> GetIndexesForTable(string tableName) =>
         _service.GetIndexesForTable(tableName);
-
-    public BTree GetIndexTree(string indexName) => _service.GetIndexTree(indexName);
-
-    public BTree GetIndexTree(string indexName, Pager pager) => _service.GetIndexTree(indexName, pager);
 
     public IIndexStore GetIndexStore(string indexName) => _service.GetIndexStore(indexName);
 

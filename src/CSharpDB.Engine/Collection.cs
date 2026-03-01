@@ -66,7 +66,6 @@ public sealed class Collection<T>
                 {
                     // Empty slot: insert here
                     await _tree.InsertAsync(probeHash, newPayload, ct);
-                    await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
                     return;
                 }
 
@@ -76,7 +75,6 @@ public sealed class Collection<T>
                     // Upsert: delete old entry and insert new
                     await _tree.DeleteAsync(probeHash, ct);
                     await _tree.InsertAsync(probeHash, newPayload, ct);
-                    await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
                     return;
                 }
                 // Collision with different key: continue probing
@@ -137,7 +135,6 @@ public sealed class Collection<T>
                 if (storedKey == key)
                 {
                     await _tree.DeleteAsync(probeHash, ct);
-                    await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
                     deleted = true;
                     return;
                 }
@@ -243,6 +240,7 @@ public sealed class Collection<T>
         try
         {
             await action();
+            await _catalog.PersistAllRootPageChangesAsync(ct);
             await _pager.CommitAsync(ct);
         }
         catch

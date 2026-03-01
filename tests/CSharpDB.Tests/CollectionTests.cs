@@ -318,4 +318,29 @@ public class CollectionTests : IAsyncLifetime
         Assert.NotNull(result);
         Assert.Equal("Alice", result!.Name);
     }
+
+    [Fact]
+    public async Task ExplicitTransaction_PersistsCollectionRootsOnCommit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 0; i < 400; i++)
+        {
+            await users.PutAsync(
+                $"u:{i}",
+                new User($"User{i}", 20 + (i % 40), $"u{i}@example.com"),
+                ct);
+        }
+        await _db.CommitAsync(ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(400, await reopened.CountAsync(ct));
+        Assert.Equal("User0", (await reopened.GetAsync("u:0", ct))!.Name);
+        Assert.Equal("User399", (await reopened.GetAsync("u:399", ct))!.Name);
+    }
 }

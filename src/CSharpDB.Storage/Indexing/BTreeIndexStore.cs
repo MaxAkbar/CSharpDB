@@ -3,7 +3,7 @@ namespace CSharpDB.Storage.Indexing;
 /// <summary>
 /// IIndexStore adapter backed by BTree.
 /// </summary>
-public sealed class BTreeIndexStore : IIndexStore, IBTreeIndexStore
+public sealed class BTreeIndexStore : IIndexStore
 {
     private readonly BTree _tree;
 
@@ -13,8 +13,6 @@ public sealed class BTreeIndexStore : IIndexStore, IBTreeIndexStore
     }
 
     public uint RootPageId => _tree.RootPageId;
-
-    public BTree Tree => _tree;
 
     public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default) =>
         _tree.FindAsync(key, ct);

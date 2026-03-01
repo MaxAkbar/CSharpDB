@@ -100,7 +100,7 @@ public sealed class Database : IAsyncDisposable
             if (needsTransaction && !_inTransaction)
             {
                 // Auto-commit
-                await _pager.CommitAsync(ct);
+                await CommitWithCatalogSyncAsync(ct);
             }
 
             return result;
@@ -133,7 +133,7 @@ public sealed class Database : IAsyncDisposable
     {
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
-        await _pager.CommitAsync(ct);
+        await CommitWithCatalogSyncAsync(ct);
         _inTransaction = false;
     }
 
@@ -242,7 +242,7 @@ public sealed class Database : IAsyncDisposable
                     await _catalog.CreateTableAsync(schema, ct);
                 }
 
-                if (needsTx) await _pager.CommitAsync(ct);
+                if (needsTx) await CommitWithCatalogSyncAsync(ct);
             }
             catch
             {
@@ -278,6 +278,12 @@ public sealed class Database : IAsyncDisposable
         _statementCache.GetOrAdd(
             sql,
             static s => Parser.TryParseSimpleSelect(s, out var stmt) ? stmt : Parser.Parse(s));
+
+    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
+    {
+        await _catalog.PersistAllRootPageChangesAsync(ct);
+        await _pager.CommitAsync(ct);
+    }
 
     public async ValueTask DisposeAsync()
     {

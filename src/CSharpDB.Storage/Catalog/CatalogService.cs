@@ -249,6 +249,18 @@ internal sealed class CatalogService
             await PersistIndexRootPageChangeAsync(idx.IndexName, ct);
     }
 
+    /// <summary>
+    /// Persist root-page changes for all currently tracked table and index trees.
+    /// </summary>
+    public async ValueTask PersistAllRootPageChangesAsync(CancellationToken ct = default)
+    {
+        foreach (var tableName in _tableTrees.Keys)
+            await PersistTableRootPageChangeAsync(tableName, ct);
+
+        foreach (var indexName in _indexStores.Keys)
+            await PersistIndexRootPageChangeAsync(indexName, ct);
+    }
+
     public async ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default)
     {
         if (_cache.ContainsKey(schema.TableName))
@@ -364,20 +376,6 @@ internal sealed class CatalogService
             return indexes;
 
         return Array.Empty<IndexSchema>();
-    }
-
-    public BTree GetIndexTree(string indexName)
-    {
-        return GetBTreeIndexStore(GetIndexStore(indexName), indexName).Tree;
-    }
-
-    /// <summary>
-    /// Get the B+tree for an index, using a specified pager.
-    /// Used by snapshot readers to route reads through a snapshot pager.
-    /// </summary>
-    public BTree GetIndexTree(string indexName, Pager pager)
-    {
-        return GetBTreeIndexStore(GetIndexStore(indexName, pager), indexName).Tree;
     }
 
     /// <summary>
@@ -595,14 +593,5 @@ internal sealed class CatalogService
         _indexRootPages[indexName] = currentRootPage;
     }
 
-    private static IBTreeIndexStore GetBTreeIndexStore(IIndexStore store, string indexName)
-    {
-        if (store is IBTreeIndexStore btreeStore)
-            return btreeStore;
-
-        throw new CSharpDbException(
-            ErrorCode.Unknown,
-            $"Index '{indexName}' does not expose a BTree instance.");
-    }
 }
 

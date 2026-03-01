@@ -34,6 +34,24 @@ public sealed class StorageEngineOptionsBuilder
         return this;
     }
 
+    public StorageEngineOptionsBuilder UseMaxWalBytesWhenReadersActive(long maxWalBytes)
+    {
+        if (maxWalBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxWalBytes), "Value must be greater than zero.");
+
+        _pagerOptions = new PagerOptions
+        {
+            WriterLockTimeout = _pagerOptions.WriterLockTimeout,
+            CheckpointPolicy = _pagerOptions.CheckpointPolicy,
+            MaxCachedPages = _pagerOptions.MaxCachedPages,
+            PageCacheFactory = _pagerOptions.PageCacheFactory,
+            Interceptors = _pagerOptions.Interceptors,
+            MaxWalBytesWhenReadersActive = maxWalBytes,
+        };
+
+        return this;
+    }
+
     public StorageEngineOptionsBuilder UseSerializerProvider(ISerializerProvider serializerProvider)
     {
         ArgumentNullException.ThrowIfNull(serializerProvider);

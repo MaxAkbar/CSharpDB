@@ -34,6 +34,12 @@ public sealed class PagerOptions
     public IReadOnlyList<IPageOperationInterceptor> Interceptors { get; init; } =
         Array.Empty<IPageOperationInterceptor>();
 
+    /// <summary>
+    /// Optional WAL growth cap (in bytes) enforced only while snapshot readers are active.
+    /// When set, commits that would grow committed WAL bytes beyond this limit fail with <see cref="CSharpDB.Core.ErrorCode.Busy"/>.
+    /// </summary>
+    public long? MaxWalBytesWhenReadersActive { get; init; }
+
     internal IPageCache CreatePageCache()
     {
         if (PageCacheFactory != null)

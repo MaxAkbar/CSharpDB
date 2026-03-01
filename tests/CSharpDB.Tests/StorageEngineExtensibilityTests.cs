@@ -3,6 +3,7 @@ using CSharpDB.Engine;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Integrity;
 using CSharpDB.Storage.Indexing;
+using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
@@ -149,6 +150,72 @@ public sealed class StorageEngineExtensibilityTests
         Assert.IsType<CachingBTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
     }
 
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_SetsReaderWalBackpressureLimit()
+    {
+        const long walLimit = 128 * 1024;
+
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseMaxWalBytesWhenReadersActive(walLimit));
+
+        Assert.Equal(walLimit, options.StorageEngineOptions.PagerOptions.MaxWalBytesWhenReadersActive);
+    }
+
+    [Fact]
+    public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndOrderedRangeScan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+        var indexProvider = new InMemoryIndexProvider();
+
+        try
+        {
+            var options = new DatabaseOptions
+            {
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    IndexProvider = indexProvider,
+                }
+            };
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (2, 20)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (3, 30)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (4, 40)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (5, 50)", ct);
+                await db.ExecuteAsync("CREATE INDEX idx_t_v ON t(v)", ct);
+
+                await using (var eq = await db.ExecuteAsync("SELECT id FROM t WHERE v = 30", ct))
+                {
+                    var rows = await eq.ToListAsync(ct);
+                    var row = Assert.Single(rows);
+                    Assert.Equal(3, row[0].AsInteger);
+                }
+
+                await using (var ordered = await db.ExecuteAsync(
+                                 "SELECT v FROM t WHERE v >= 20 AND v < 50 ORDER BY v LIMIT 10",
+                                 ct))
+                {
+                    var rows = await ordered.ToListAsync(ct);
+                    Assert.Equal(3, rows.Count);
+                    Assert.Equal(20, rows[0][0].AsInteger);
+                    Assert.Equal(30, rows[1][0].AsInteger);
+                    Assert.Equal(40, rows[2][0].AsInteger);
+                }
+            }
+
+            Assert.True(indexProvider.CreateCursorCallCount > 0);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static string NewTempDbPath() =>
         Path.Combine(Path.GetTempPath(), $"csharpdb_ext_test_{Guid.NewGuid():N}.db");
 
@@ -278,5 +345,148 @@ public sealed class StorageEngineExtensibilityTests
         }
 
         public IIndexCursor CreateCursor(IndexScanRange range) => throw new NotSupportedException();
+    }
+
+    private sealed class InMemoryIndexProvider : IIndexProvider
+    {
+        private readonly ConcurrentDictionary<uint, InMemoryIndexData> _byRootPage = new();
+        private int _createCursorCallCount;
+
+        public int CreateCursorCallCount => Volatile.Read(ref _createCursorCallCount);
+
+        public IIndexStore CreateIndexStore(Pager pager, uint rootPageId)
+        {
+            var data = _byRootPage.GetOrAdd(rootPageId, static _ => new InMemoryIndexData());
+            return new InMemoryIndexStore(rootPageId, data, () => Interlocked.Increment(ref _createCursorCallCount));
+        }
+    }
+
+    private sealed class InMemoryIndexData
+    {
+        public object Gate { get; } = new();
+        public SortedDictionary<long, byte[]> Entries { get; } = new();
+    }
+
+    private sealed class InMemoryIndexStore : IIndexStore
+    {
+        private readonly uint _rootPageId;
+        private readonly InMemoryIndexData _data;
+        private readonly Action _onCreateCursor;
+
+        public InMemoryIndexStore(uint rootPageId, InMemoryIndexData data, Action onCreateCursor)
+        {
+            _rootPageId = rootPageId;
+            _data = data;
+            _onCreateCursor = onCreateCursor;
+        }
+
+        public uint RootPageId => _rootPageId;
+
+        public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
+        {
+            lock (_data.Gate)
+            {
+                if (!_data.Entries.TryGetValue(key, out var payload))
+                    return ValueTask.FromResult<byte[]?>(null);
+
+                return ValueTask.FromResult<byte[]?>(payload.ToArray());
+            }
+        }
+
+        public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        {
+            lock (_data.Gate)
+            {
+                _data.Entries[key] = payload.ToArray();
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
+        {
+            bool removed;
+            lock (_data.Gate)
+            {
+                removed = _data.Entries.Remove(key);
+            }
+
+            return ValueTask.FromResult(removed);
+        }
+
+        public IIndexCursor CreateCursor(IndexScanRange range)
+        {
+            _onCreateCursor();
+
+            List<KeyValuePair<long, byte[]>> entries;
+            lock (_data.Gate)
+            {
+                entries = _data.Entries
+                    .Where(kvp => IsInRange(kvp.Key, range))
+                    .Select(kvp => new KeyValuePair<long, byte[]>(kvp.Key, kvp.Value.ToArray()))
+                    .ToList();
+            }
+
+            return new InMemoryIndexCursor(entries);
+        }
+
+        private static bool IsInRange(long key, IndexScanRange range)
+        {
+            if (range.LowerBound.HasValue)
+            {
+                if (range.LowerInclusive)
+                {
+                    if (key < range.LowerBound.Value)
+                        return false;
+                }
+                else if (key <= range.LowerBound.Value)
+                {
+                    return false;
+                }
+            }
+
+            if (range.UpperBound.HasValue)
+            {
+                if (range.UpperInclusive)
+                {
+                    if (key > range.UpperBound.Value)
+                        return false;
+                }
+                else if (key >= range.UpperBound.Value)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    private sealed class InMemoryIndexCursor : IIndexCursor
+    {
+        private readonly IReadOnlyList<KeyValuePair<long, byte[]>> _entries;
+        private int _index = -1;
+
+        public InMemoryIndexCursor(IReadOnlyList<KeyValuePair<long, byte[]>> entries)
+        {
+            _entries = entries;
+        }
+
+        public long CurrentKey { get; private set; }
+
+        public ReadOnlyMemory<byte> CurrentValue { get; private set; } = ReadOnlyMemory<byte>.Empty;
+
+        public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+        {
+            int next = _index + 1;
+            if (next >= _entries.Count)
+                return ValueTask.FromResult(false);
+
+            _index = next;
+            var item = _entries[_index];
+            CurrentKey = item.Key;
+            CurrentValue = item.Value;
+            return ValueTask.FromResult(true);
+        }
     }
 }

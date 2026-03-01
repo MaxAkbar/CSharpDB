@@ -7,6 +7,7 @@ internal sealed class CheckpointCoordinator : IDisposable
 {
     private readonly SemaphoreSlim _checkpointLock = new(1, 1);
     private int _activeReaderCount;
+    private int _deferredCheckpointRequested;
 
     public int ActiveReaderCount => Volatile.Read(ref _activeReaderCount);
 
@@ -18,7 +19,12 @@ internal sealed class CheckpointCoordinator : IDisposable
 
     public void ReleaseReaderSnapshot()
     {
-        Interlocked.Decrement(ref _activeReaderCount);
+        int activeCount = Interlocked.Decrement(ref _activeReaderCount);
+        if (activeCount < 0)
+        {
+            Interlocked.Exchange(ref _activeReaderCount, 0);
+            return;
+        }
     }
 
     public bool ShouldCheckpoint(
@@ -32,10 +38,33 @@ internal sealed class CheckpointCoordinator : IDisposable
             ActiveReaderCount,
             estimatedWalBytes);
 
-        return policy is FrameCountCheckpointPolicy
+        bool shouldCheckpoint = policy is FrameCountCheckpointPolicy
             ? context.CommittedFrameCount >= legacyThreshold &&
               context.ActiveReaderCount == 0
             : policy.ShouldCheckpoint(context);
+
+        if (!shouldCheckpoint &&
+            context.ActiveReaderCount > 0 &&
+            policy is FrameCountCheckpointPolicy &&
+            context.CommittedFrameCount >= legacyThreshold)
+        {
+            Volatile.Write(ref _deferredCheckpointRequested, 1);
+        }
+
+        return shouldCheckpoint;
+    }
+
+    public bool TryConsumeDeferredCheckpointRequest()
+    {
+        if (ActiveReaderCount != 0)
+            return false;
+
+        return Interlocked.Exchange(ref _deferredCheckpointRequested, 0) == 1;
+    }
+
+    public void ClearDeferredCheckpointRequest()
+    {
+        Interlocked.Exchange(ref _deferredCheckpointRequested, 0);
     }
 
     public async ValueTask RunCheckpointAsync(
@@ -43,13 +72,20 @@ internal sealed class CheckpointCoordinator : IDisposable
         Func<CancellationToken, ValueTask> checkpointAction,
         CancellationToken ct = default)
     {
-        if (committedFrameCount == 0 || ActiveReaderCount > 0)
+        if (committedFrameCount == 0)
             return;
+
+        if (ActiveReaderCount > 0)
+        {
+            Volatile.Write(ref _deferredCheckpointRequested, 1);
+            return;
+        }
 
         await _checkpointLock.WaitAsync(ct);
         try
         {
             await checkpointAction(ct);
+            Interlocked.Exchange(ref _deferredCheckpointRequested, 0);
         }
         finally
         {

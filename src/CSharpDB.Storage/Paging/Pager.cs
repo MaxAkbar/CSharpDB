@@ -50,6 +50,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _wal = wal;
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
+        ValidateOptions(_options);
         _interceptor = _options.CreateInterceptor();
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         _buffers = new PageBufferManager(
@@ -84,6 +85,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _wal = wal;
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
+        ValidateOptions(_options);
         _interceptor = _options.CreateInterceptor();
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         _readerSnapshot = snapshot;
@@ -247,14 +249,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         var page0 = await GetPageAsync(0, ct);
         WriteFileHeaderTo(page0);
         _buffers.AddDirty(0);
+        int dirtyCount = _buffers.DirtyPages.Count;
 
         if (_hasInterceptor)
         {
-            int dirtyCount = _buffers.DirtyPages.Count;
             bool commitSucceeded = false;
             await _interceptor.OnCommitStartAsync(dirtyCount, ct);
             try
             {
+                EnforceReaderWalBackpressure(dirtyCount);
+
                 // Write all dirty pages to WAL with per-page interceptor hooks
                 foreach (var pageId in _buffers.DirtyPages)
                 {
@@ -284,6 +288,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         else
         {
+            EnforceReaderWalBackpressure(dirtyCount);
+
             // Fast path: no interceptor — skip all lifecycle hooks and per-page try/finally
             foreach (var pageId in _buffers.DirtyPages)
             {
@@ -309,6 +315,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _walIndex.FrameCount,
             CheckpointThreshold,
             EstimateCommittedWalBytes(_walIndex.FrameCount));
+        if (!shouldCheckpoint)
+            shouldCheckpoint = _checkpoints.TryConsumeDeferredCheckpointRequest();
+        else
+            _checkpoints.ClearDeferredCheckpointRequest();
+
         if (shouldCheckpoint)
         {
             await CheckpointAsync(ct);
@@ -500,5 +511,38 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (frameCount <= 0)
             return PageConstants.WalHeaderSize;
         return PageConstants.WalHeaderSize + (long)frameCount * PageConstants.WalFrameSize;
+    }
+
+    private static void ValidateOptions(PagerOptions options)
+    {
+        if (options.MaxWalBytesWhenReadersActive is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.MaxWalBytesWhenReadersActive),
+                options.MaxWalBytesWhenReadersActive,
+                "MaxWalBytesWhenReadersActive must be greater than zero when configured.");
+        }
+    }
+
+    private void EnforceReaderWalBackpressure(int dirtyPageCount)
+    {
+        if (dirtyPageCount <= 0)
+            return;
+
+        long? limitBytes = _options.MaxWalBytesWhenReadersActive;
+        if (!limitBytes.HasValue)
+            return;
+
+        int activeReaders = _checkpoints?.ActiveReaderCount ?? 0;
+        if (activeReaders <= 0)
+            return;
+
+        long projectedBytes = EstimateCommittedWalBytes(_walIndex.FrameCount + dirtyPageCount);
+        if (projectedBytes <= limitBytes.Value)
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.Busy,
+            $"WAL growth limit exceeded while snapshot readers are active (activeReaders={activeReaders}, projectedWalBytes={projectedBytes}, limitBytes={limitBytes.Value}).");
     }
 }
