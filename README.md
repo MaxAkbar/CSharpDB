@@ -34,6 +34,14 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
 
+## Admin UI Preview
+
+See the product first, then dive into the API and internals:
+
+| Querying Metadata | Table Data View | Table Schema View |
+|---|---|---|
+| ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
+
 ## Quick Start
 
 ### Engine API
