@@ -2,7 +2,7 @@
 
 A lightweight, embedded SQL database engine written from scratch in C#. Single-file storage, WAL-based crash recovery, concurrent readers, async-first API, zero external dependencies.
 
-[![.NET 10](https://img.shields.io/badge/.NET-10%20Preview-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
