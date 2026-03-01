@@ -13,5 +13,6 @@ public interface ICheckpointPolicy
 /// </summary>
 public readonly record struct PagerCheckpointContext(
     int CommittedFrameCount,
-    int ActiveReaderCount);
+    int ActiveReaderCount,
+    long EstimatedWalBytes = 0);
 

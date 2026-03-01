@@ -3,7 +3,7 @@ namespace CSharpDB.Storage.Indexing;
 /// <summary>
 /// IIndexStore adapter backed by BTree.
 /// </summary>
-public sealed class BTreeIndexStore : IIndexStore
+public sealed class BTreeIndexStore : IIndexStore, IBTreeIndexStore
 {
     private readonly BTree _tree;
 
@@ -25,5 +25,47 @@ public sealed class BTreeIndexStore : IIndexStore
     public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default) =>
         _tree.DeleteAsync(key, ct);
 
-    public BTreeCursor CreateCursor() => _tree.CreateCursor();
+    public IIndexCursor CreateCursor(IndexScanRange range)
+    {
+        if (!TryNormalizeRange(range, out long? startKeyInclusive, out long? upperBoundInclusive))
+            return EmptyIndexCursor.Instance;
+
+        IIndexCursor cursor = new BTreeIndexCursor(_tree.CreateCursor(), startKeyInclusive);
+        if (upperBoundInclusive.HasValue)
+            cursor = new UpperBoundIndexCursor(cursor, upperBoundInclusive.Value);
+
+        return cursor;
+    }
+
+    private static bool TryNormalizeRange(
+        IndexScanRange range,
+        out long? startKeyInclusive,
+        out long? upperBoundInclusive)
+    {
+        startKeyInclusive = range.LowerBound;
+        upperBoundInclusive = range.UpperBound;
+
+        if (startKeyInclusive.HasValue && !range.LowerInclusive)
+        {
+            if (startKeyInclusive.Value == long.MaxValue)
+                return false;
+            startKeyInclusive = startKeyInclusive.Value + 1;
+        }
+
+        if (upperBoundInclusive.HasValue && !range.UpperInclusive)
+        {
+            if (upperBoundInclusive.Value == long.MinValue)
+                return false;
+            upperBoundInclusive = upperBoundInclusive.Value - 1;
+        }
+
+        if (startKeyInclusive.HasValue &&
+            upperBoundInclusive.HasValue &&
+            startKeyInclusive.Value > upperBoundInclusive.Value)
+        {
+            return false;
+        }
+
+        return true;
+    }
 }

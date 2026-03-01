@@ -28,6 +28,12 @@ public sealed class PagerOptions
     /// </summary>
     public Func<IPageCache>? PageCacheFactory { get; init; }
 
+    /// <summary>
+    /// Optional lifecycle interceptors for page/transaction/checkpoint/recovery events.
+    /// </summary>
+    public IReadOnlyList<IPageOperationInterceptor> Interceptors { get; init; } =
+        Array.Empty<IPageOperationInterceptor>();
+
     internal IPageCache CreatePageCache()
     {
         if (PageCacheFactory != null)
@@ -37,5 +43,14 @@ public sealed class PagerOptions
             return new LruPageCache(MaxCachedPages.Value);
 
         return new DictionaryPageCache();
+    }
+
+    internal IPageOperationInterceptor CreateInterceptor()
+    {
+        if (Interceptors.Count == 0)
+            return NoOpPageOperationInterceptor.Instance;
+        if (Interceptors.Count == 1)
+            return Interceptors[0];
+        return new CompositePageOperationInterceptor(Interceptors);
     }
 }

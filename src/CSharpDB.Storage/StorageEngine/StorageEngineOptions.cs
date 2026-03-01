@@ -24,4 +24,9 @@ public sealed class StorageEngineOptions
     /// Catalog payload codec used by schema metadata storage.
     /// </summary>
     public ICatalogStore CatalogStore { get; init; } = new CatalogStore();
+
+    /// <summary>
+    /// Checksum provider used by WAL frame/header verification.
+    /// </summary>
+    public IPageChecksumProvider ChecksumProvider { get; init; } = new AdditiveChecksumProvider();
 }

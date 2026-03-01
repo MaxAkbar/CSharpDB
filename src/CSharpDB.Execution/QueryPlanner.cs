@@ -873,10 +873,11 @@ public sealed class QueryPlanner
             }
 
             if (!hasAggregates &&
-                TryBuildIndexOrderedScan(stmt, simpleRef, schema, op, out var orderedSource))
+                TryBuildIndexOrderedScan(stmt, simpleRef, schema, op, remainingWhere, out var orderedSource, out var orderedRemainingWhere))
             {
                 if (orderedSource != null)
                     op = orderedSource;
+                remainingWhere = orderedRemainingWhere;
 
                 sourceProvidesRequestedOrder = stmt.OrderBy is { Count: > 0 };
             }
@@ -2362,14 +2363,17 @@ public sealed class QueryPlanner
         SimpleTableRef tableRef,
         TableSchema schema,
         IOperator currentSource,
-        out IOperator? replacementSource)
+        Expression? where,
+        out IOperator? replacementSource,
+        out Expression? remainingWhere)
     {
         replacementSource = null;
+        remainingWhere = where;
 
         if (stmt.OrderBy is not { Count: 1 })
             return false;
 
-        if (stmt.Where != null)
+        if (currentSource is not TableScanOperator)
             return false;
 
         if (_cteData != null && _cteData.ContainsKey(tableRef.TableName))
@@ -2412,6 +2416,8 @@ public sealed class QueryPlanner
         if (orderColumn.Nullable)
             return false;
 
+        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere);
+
         var indexes = _catalog.GetIndexesForTable(tableRef.TableName);
         foreach (var idx in indexes)
         {
@@ -2423,11 +2429,183 @@ public sealed class QueryPlanner
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName, _pager);
             var tableTree = _catalog.GetTableTree(tableRef.TableName, _pager);
-            replacementSource = new IndexOrderedScanOperator(indexStore, tableTree, schema, _recordSerializer);
+            replacementSource = new IndexOrderedScanOperator(indexStore, tableTree, schema, scanRange, _recordSerializer);
             return true;
         }
 
         return false;
+    }
+
+    private static void ExtractOrderedIndexRange(
+        Expression? where,
+        TableSchema schema,
+        int orderColumnIndex,
+        out IndexScanRange range,
+        out Expression? remaining)
+    {
+        if (where == null)
+        {
+            range = IndexScanRange.All;
+            remaining = null;
+            return;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(where, conjuncts);
+
+        var residualTerms = new List<Expression>(conjuncts.Count);
+        long? lowerBound = null;
+        bool lowerInclusive = true;
+        long? upperBound = null;
+        bool upperInclusive = true;
+
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractOrderedIndexRangeTerm(conjuncts[i], schema, orderColumnIndex, out var term))
+            {
+                residualTerms.Add(conjuncts[i]);
+                continue;
+            }
+
+            switch (term.Kind)
+            {
+                case RangeTermKind.Equal:
+                    ApplyLowerBound(ref lowerBound, ref lowerInclusive, term.Value, inclusive: true);
+                    ApplyUpperBound(ref upperBound, ref upperInclusive, term.Value, inclusive: true);
+                    break;
+                case RangeTermKind.Lower:
+                    ApplyLowerBound(ref lowerBound, ref lowerInclusive, term.Value, term.Inclusive);
+                    break;
+                case RangeTermKind.Upper:
+                    ApplyUpperBound(ref upperBound, ref upperInclusive, term.Value, term.Inclusive);
+                    break;
+            }
+        }
+
+        if (!IsRangeSatisfiable(lowerBound, lowerInclusive, upperBound, upperInclusive))
+        {
+            range = new IndexScanRange(long.MaxValue, true, long.MinValue, true);
+            remaining = null;
+            return;
+        }
+
+        range = new IndexScanRange(lowerBound, lowerInclusive, upperBound, upperInclusive);
+        remaining = CombineConjuncts(residualTerms);
+    }
+
+    private enum RangeTermKind
+    {
+        Lower,
+        Upper,
+        Equal,
+    }
+
+    private readonly record struct IndexRangeTerm(
+        RangeTermKind Kind,
+        long Value,
+        bool Inclusive);
+
+    private static bool TryExtractOrderedIndexRangeTerm(
+        Expression expression,
+        TableSchema schema,
+        int orderColumnIndex,
+        out IndexRangeTerm term)
+    {
+        term = default;
+
+        if (expression is not BinaryExpression bin)
+            return false;
+
+        BinaryOp op = bin.Op;
+        if (op is not BinaryOp.Equals and
+            not BinaryOp.LessThan and
+            not BinaryOp.LessOrEqual and
+            not BinaryOp.GreaterThan and
+            not BinaryOp.GreaterOrEqual)
+        {
+            return false;
+        }
+
+        if (TryExtractColumnIntegerLiteralPair(bin.Left, bin.Right, schema, out int leftColumnIndex, out long leftValue))
+        {
+            if (leftColumnIndex != orderColumnIndex)
+                return false;
+
+            return TryClassifyRangeTerm(op, leftValue, out term);
+        }
+
+        if (TryExtractColumnIntegerLiteralPair(bin.Right, bin.Left, schema, out int rightColumnIndex, out long rightValue))
+        {
+            if (rightColumnIndex != orderColumnIndex)
+                return false;
+
+            return TryClassifyRangeTerm(ReverseComparison(op), rightValue, out term);
+        }
+
+        return false;
+    }
+
+    private static bool TryClassifyRangeTerm(BinaryOp op, long value, out IndexRangeTerm term)
+    {
+        term = op switch
+        {
+            BinaryOp.Equals => new IndexRangeTerm(RangeTermKind.Equal, value, Inclusive: true),
+            BinaryOp.GreaterThan => new IndexRangeTerm(RangeTermKind.Lower, value, Inclusive: false),
+            BinaryOp.GreaterOrEqual => new IndexRangeTerm(RangeTermKind.Lower, value, Inclusive: true),
+            BinaryOp.LessThan => new IndexRangeTerm(RangeTermKind.Upper, value, Inclusive: false),
+            BinaryOp.LessOrEqual => new IndexRangeTerm(RangeTermKind.Upper, value, Inclusive: true),
+            _ => default,
+        };
+
+        return op is BinaryOp.Equals or
+            BinaryOp.GreaterThan or
+            BinaryOp.GreaterOrEqual or
+            BinaryOp.LessThan or
+            BinaryOp.LessOrEqual;
+    }
+
+    private static void ApplyLowerBound(ref long? existingBound, ref bool existingInclusive, long candidateValue, bool inclusive)
+    {
+        if (!existingBound.HasValue || candidateValue > existingBound.Value)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        if (candidateValue == existingBound.Value)
+            existingInclusive &= inclusive;
+    }
+
+    private static void ApplyUpperBound(ref long? existingBound, ref bool existingInclusive, long candidateValue, bool inclusive)
+    {
+        if (!existingBound.HasValue || candidateValue < existingBound.Value)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        if (candidateValue == existingBound.Value)
+            existingInclusive &= inclusive;
+    }
+
+    private static bool IsRangeSatisfiable(
+        long? lowerBound,
+        bool lowerInclusive,
+        long? upperBound,
+        bool upperInclusive)
+    {
+        if (!lowerBound.HasValue || !upperBound.HasValue)
+            return true;
+
+        if (lowerBound.Value < upperBound.Value)
+            return true;
+
+        if (lowerBound.Value > upperBound.Value)
+            return false;
+
+        return lowerInclusive && upperInclusive;
     }
 
     private static bool TryPushDownSimplePreDecodeFilter(

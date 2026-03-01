@@ -23,6 +23,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private FileStream? _stream;
     private SafeFileHandle? _readHandle; // separate read handle for concurrent reads
     private readonly WalIndex _index;
+    private readonly IPageChecksumProvider _checksumProvider;
 
     // WAL header fields
     private uint _salt1;
@@ -32,10 +33,14 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly List<(uint PageId, long WalOffset)> _uncommittedFrames = new();
     private long _uncommittedStartOffset;
 
-    public WriteAheadLog(string databasePath, WalIndex index)
+    public WriteAheadLog(
+        string databasePath,
+        WalIndex index,
+        IPageChecksumProvider? checksumProvider = null)
     {
         _walPath = databasePath + ".wal";
         _index = index;
+        _checksumProvider = checksumProvider ?? new AdditiveChecksumProvider();
     }
 
     public WalIndex Index => _index;
@@ -113,8 +118,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BitConverter.TryWriteBytes(frameHeader.AsSpan(8), _salt1);
         BitConverter.TryWriteBytes(frameHeader.AsSpan(12), _salt2);
 
-        uint headerCksum = SimpleChecksum(frameHeader.AsSpan(0, 16));
-        uint dataCksum = SimpleChecksum(pageData.Span);
+        uint headerCksum = _checksumProvider.Compute(frameHeader.AsSpan(0, 16));
+        uint dataCksum = _checksumProvider.Compute(pageData.Span);
         BitConverter.TryWriteBytes(frameHeader.AsSpan(16), headerCksum);
         BitConverter.TryWriteBytes(frameHeader.AsSpan(20), dataCksum);
 
@@ -147,7 +152,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BitConverter.TryWriteBytes(lastFrameHeader.AsSpan(4), newDbPageCount);
 
         // Recalculate header checksum
-        uint newHeaderCksum = SimpleChecksum(lastFrameHeader.AsSpan(0, 16));
+        uint newHeaderCksum = _checksumProvider.Compute(lastFrameHeader.AsSpan(0, 16));
         BitConverter.TryWriteBytes(lastFrameHeader.AsSpan(16), newHeaderCksum);
 
         // Write updated header back
@@ -271,8 +276,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
             // Validate checksums
             uint expectedHeaderCksum = BitConverter.ToUInt32(frameHeaderBuf, 16);
             uint expectedDataCksum = BitConverter.ToUInt32(frameHeaderBuf, 20);
-            uint actualHeaderCksum = SimpleChecksum(frameHeaderBuf.AsSpan(0, 16));
-            uint actualDataCksum = SimpleChecksum(pageDataBuf);
+            uint actualHeaderCksum = _checksumProvider.Compute(frameHeaderBuf.AsSpan(0, 16));
+            uint actualDataCksum = _checksumProvider.Compute(pageDataBuf);
 
             if (expectedHeaderCksum != actualHeaderCksum ||
                 expectedDataCksum != actualDataCksum)
@@ -415,25 +420,5 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _readHandle.Dispose();
             _readHandle = null;
         }
-    }
-
-    // ============ Checksum ============
-
-    /// <summary>
-    /// Simple additive checksum for detecting torn writes / corruption.
-    /// </summary>
-    internal static uint SimpleChecksum(ReadOnlySpan<byte> data)
-    {
-        uint sum = 0;
-        int i = 0;
-        for (; i + 3 < data.Length; i += 4)
-        {
-            sum += BitConverter.ToUInt32(data[i..]);
-        }
-        for (; i < data.Length; i++)
-        {
-            sum += data[i];
-        }
-        return sum;
     }
 }

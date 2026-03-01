@@ -3334,8 +3334,9 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
+    private readonly IndexScanRange _scanRange;
     private readonly IRecordSerializer _recordSerializer;
-    private BTreeCursor? _cursor;
+    private IIndexCursor? _cursor;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
     private DbValue[]? _rowBuffer;
@@ -3359,11 +3360,13 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
         IIndexStore indexStore,
         BTree tableTree,
         TableSchema schema,
+        IndexScanRange scanRange,
         IRecordSerializer? recordSerializer = null)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
+        _scanRange = scanRange;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
@@ -3390,7 +3393,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
 
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
-        _cursor = _indexStore.CreateCursor();
+        _cursor = _indexStore.CreateCursor(_scanRange);
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
         _rowBuffer = null;

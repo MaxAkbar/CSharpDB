@@ -24,11 +24,13 @@ internal sealed class CheckpointCoordinator : IDisposable
     public bool ShouldCheckpoint(
         ICheckpointPolicy policy,
         int committedFrameCount,
-        int legacyThreshold)
+        int legacyThreshold,
+        long estimatedWalBytes)
     {
         var context = new PagerCheckpointContext(
             committedFrameCount,
-            ActiveReaderCount);
+            ActiveReaderCount,
+            estimatedWalBytes);
 
         return policy is FrameCountCheckpointPolicy
             ? context.CommittedFrameCount >= legacyThreshold &&

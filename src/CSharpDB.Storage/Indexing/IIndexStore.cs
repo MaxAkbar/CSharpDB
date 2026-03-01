@@ -6,10 +6,9 @@ namespace CSharpDB.Storage.Indexing;
 public interface IIndexStore
 {
     uint RootPageId { get; }
-    BTree Tree { get; }
 
     ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default);
     ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default);
     ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default);
-    BTreeCursor CreateCursor();
+    IIndexCursor CreateCursor(IndexScanRange range);
 }

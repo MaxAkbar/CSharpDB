@@ -3,6 +3,7 @@ global using CSharpDB.Storage.Caching;
 global using CSharpDB.Storage.Catalog;
 global using CSharpDB.Storage.Checkpointing;
 global using CSharpDB.Storage.Device;
+global using CSharpDB.Storage.Integrity;
 global using CSharpDB.Storage.Indexing;
 global using CSharpDB.Storage.Paging;
 global using CSharpDB.Storage.Serialization;
