@@ -8,12 +8,13 @@ public sealed class QueryResult : IAsyncDisposable
     private bool _opened;
 
     // Sync fast path: pre-materialized single-row result (bypasses operator pipeline)
+    private readonly bool _hasSyncLookupResult;
     private readonly DbValue[]? _syncRow;
     private bool _syncRowConsumed;
 
     public ColumnDefinition[] Schema { get; }
     public int RowsAffected { get; }
-    public bool IsQuery => _operator != null || _syncRow != null;
+    public bool IsQuery => _operator != null || _hasSyncLookupResult;
 
     /// <summary>
     /// For SELECT queries.
@@ -21,6 +22,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(IOperator op)
     {
         _operator = op;
+        _hasSyncLookupResult = false;
         Schema = op.OutputSchema;
         RowsAffected = 0;
     }
@@ -31,6 +33,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(int rowsAffected)
     {
         _operator = null;
+        _hasSyncLookupResult = false;
         Schema = Array.Empty<ColumnDefinition>();
         RowsAffected = rowsAffected;
     }
@@ -41,6 +44,7 @@ public sealed class QueryResult : IAsyncDisposable
     private QueryResult(DbValue[]? syncRow, ColumnDefinition[] schema)
     {
         _operator = null;
+        _hasSyncLookupResult = true;
         _syncRow = syncRow;
         _syncRowConsumed = syncRow == null; // if no row, already consumed
         Schema = schema;
@@ -57,12 +61,13 @@ public sealed class QueryResult : IAsyncDisposable
     public async IAsyncEnumerable<DbValue[]> GetRowsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
         // Sync fast path: yield the pre-materialized row
-        if (_syncRow != null)
+        if (_hasSyncLookupResult)
         {
             if (!_syncRowConsumed)
             {
                 _syncRowConsumed = true;
-                yield return _syncRow;
+                if (_syncRow != null)
+                    yield return _syncRow;
             }
             yield break;
         }
@@ -80,10 +85,11 @@ public sealed class QueryResult : IAsyncDisposable
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
         // Sync fast path
-        if (_syncRow != null)
+        if (_hasSyncLookupResult)
         {
             if (_syncRowConsumed) return false;
             _syncRowConsumed = true;
+            if (_syncRow == null) return false;
             return true;
         }
 
@@ -100,7 +106,13 @@ public sealed class QueryResult : IAsyncDisposable
     {
         get
         {
-            if (_syncRow != null) return _syncRow;
+            if (_hasSyncLookupResult)
+            {
+                if (_syncRow == null)
+                    throw new InvalidOperationException("No active query row.");
+
+                return _syncRow;
+            }
             if (_operator == null)
                 throw new InvalidOperationException("No active query result.");
             return _operator.Current;
@@ -112,9 +124,33 @@ public sealed class QueryResult : IAsyncDisposable
     /// </summary>
     public async ValueTask<List<DbValue[]>> ToListAsync(CancellationToken ct = default)
     {
+        if (_hasSyncLookupResult)
+        {
+            if (_syncRowConsumed || _syncRow == null)
+                return new List<DbValue[]>(0);
+
+            _syncRowConsumed = true;
+            return new List<DbValue[]>(1) { _syncRow };
+        }
+
+        if (_operator == null)
+            return new List<DbValue[]>(0);
+
+        EnsureMaterializedRowOwnership();
+        if (!_opened)
+        {
+            await _operator.OpenAsync(ct);
+            _opened = true;
+        }
+
+        bool cloneRows = _operator.ReusesCurrentRowBuffer;
         var list = new List<DbValue[]>();
-        await foreach (var row in GetRowsAsync(ct))
-            list.Add(row);
+        while (await _operator.MoveNextAsync(ct))
+        {
+            var row = _operator.Current;
+            list.Add(cloneRows ? (DbValue[])row.Clone() : row);
+        }
+
         return list;
     }
 

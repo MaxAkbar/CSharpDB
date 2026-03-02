@@ -80,6 +80,8 @@ public sealed class QueryPlanner
     private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
     private List<DbValue[]>? _systemTablesRowsCache;
     private List<DbValue[]>? _systemColumnsRowsCache;
@@ -142,6 +144,8 @@ public sealed class QueryPlanner
         _nextRowIdCache.Clear();
         _compiledExpressionCache.Clear();
         _qualifiedMappingFingerprintCache.Clear();
+        _tableSchemaArrayCache.Clear();
+        _singleColumnOutputSchemaCache.Clear();
         _requiresQualifiedMappingCache.Clear();
         _systemTablesRowsCache = null;
         _systemColumnsRowsCache = null;
@@ -921,6 +925,9 @@ public sealed class QueryPlanner
         // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
         if (TryFastPkLookup(stmt, out var fastResult))
             return fastResult;
+        // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
+        if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+            return fastIndexedResult;
 
         if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
             return systemCountResult;
@@ -1144,7 +1151,7 @@ public sealed class QueryPlanner
             if (tableTree.TryFindCached(lookupValue, out var payload))
             {
                 var row = payload != null ? _recordSerializer.Decode(payload) : null;
-                var schemaArray = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
+                var schemaArray = GetSchemaColumnsArray(schema);
                 result = QueryResult.FromSyncLookup(row, schemaArray);
                 return true;
             }
@@ -1160,6 +1167,39 @@ public sealed class QueryPlanner
             if (residualWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(residualWhere, schema));
             result = new QueryResult(op);
+            return true;
+        }
+
+        if (residualWhere == null &&
+            TryResolveUnaliasedPrimaryKeyProjectionCount(stmt.Columns, schema, pkIdx, out int projectedPkCount))
+        {
+            ColumnDefinition[] pkOutputCols = projectedPkCount == 1
+                ? GetSingleColumnOutputSchema(schema, pkIdx)
+                : BuildRepeatedColumnOutputSchema(schema.Columns[pkIdx], projectedPkCount);
+
+            if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
+            {
+                DbValue[]? row = null;
+                if (payload != null)
+                {
+                    var keyValue = DbValue.FromInteger(lookupValue);
+                    if (projectedPkCount == 1)
+                    {
+                        row = [keyValue];
+                    }
+                    else
+                    {
+                        row = new DbValue[projectedPkCount];
+                        Array.Fill(row, keyValue);
+                    }
+                }
+
+                result = QueryResult.FromSyncLookup(row, pkOutputCols);
+                return true;
+            }
+
+            IOperator projectedOp = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, pkOutputCols);
+            result = new QueryResult(projectedOp);
             return true;
         }
 
@@ -2685,6 +2725,79 @@ public sealed class QueryPlanner
         return false;
     }
 
+    /// <summary>
+    /// Fast path for simple secondary-index equality lookups:
+    /// SELECT * / columns FROM table WHERE indexed_col = literal [AND ...].
+    /// Bypasses BuildFromOperator and broad planner setup.
+    /// </summary>
+    private bool TryFastIndexedLookup(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (_catalog.IsView(simpleRef.TableName))
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+
+        if (stmt.Where == null)
+            return false;
+
+        if (stmt.GroupBy != null || stmt.Having != null)
+            return false;
+        if (stmt.OrderBy is { Count: > 0 })
+            return false;
+        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+
+        var schema = _catalog.GetTable(simpleRef.TableName);
+        if (schema == null)
+            return false;
+
+        var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
+        if (indexOp == null)
+            return false;
+
+        IOperator op = indexOp;
+        if (remainingWhere != null && TryPushDownSimplePreDecodeFilter(op, remainingWhere, schema, out var pushedWhere))
+            remainingWhere = pushedWhere;
+
+        if (stmt.Columns.Any(c => c.IsStar))
+        {
+            if (remainingWhere != null)
+                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+            result = new QueryResult(op);
+            return true;
+        }
+
+        if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
+        {
+            int maxCol = -1;
+            for (int i = 0; i < columnIndices.Length; i++)
+                if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
+
+            if (remainingWhere != null &&
+                !TryAccumulateMaxReferencedColumn(remainingWhere, schema, ref maxCol))
+            {
+                return false;
+            }
+
+            if (maxCol >= 0)
+                TrySetDecodedColumnUpperBound(op, maxCol);
+
+            if (remainingWhere != null)
+                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+
+            op = new ProjectionOperator(op, columnIndices, outputCols, schema);
+            result = new QueryResult(op);
+            return true;
+        }
+
+        // Expression projections fall back to the general path.
+        return false;
+    }
+
     private static void ExtractOrderedIndexRange(
         Expression? where,
         TableSchema schema,
@@ -3349,6 +3462,65 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private static bool TryResolveUnaliasedPrimaryKeyProjectionCount(
+        IReadOnlyList<SelectColumn> columns,
+        TableSchema schema,
+        int primaryKeyIndex,
+        out int projectedColumnCount)
+    {
+        projectedColumnCount = 0;
+
+        if (primaryKeyIndex < 0 || columns.Count == 0)
+            return false;
+
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var column = columns[i];
+            if (column.IsStar || column.Alias != null || column.Expression is not ColumnRefExpression colRef)
+                return false;
+
+            int sourceIndex = colRef.TableAlias != null
+                ? schema.GetQualifiedColumnIndex(colRef.TableAlias, colRef.ColumnName)
+                : schema.GetColumnIndex(colRef.ColumnName);
+            if (sourceIndex != primaryKeyIndex)
+                return false;
+        }
+
+        projectedColumnCount = columns.Count;
+        return true;
+    }
+
+    private ColumnDefinition[] GetSchemaColumnsArray(TableSchema schema)
+    {
+        if (schema.Columns is ColumnDefinition[] columnsArray)
+            return columnsArray;
+
+        if (_tableSchemaArrayCache.TryGetValue(schema, out var cached))
+            return cached;
+
+        var created = schema.Columns.ToArray();
+        _tableSchemaArrayCache[schema] = created;
+        return created;
+    }
+
+    private ColumnDefinition[] GetSingleColumnOutputSchema(TableSchema schema, int columnIndex)
+    {
+        var key = (schema, columnIndex);
+        if (_singleColumnOutputSchemaCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var created = new[] { schema.Columns[columnIndex] };
+        _singleColumnOutputSchemaCache[key] = created;
+        return created;
+    }
+
+    private static ColumnDefinition[] BuildRepeatedColumnOutputSchema(ColumnDefinition column, int count)
+    {
+        var output = new ColumnDefinition[count];
+        Array.Fill(output, column);
+        return output;
     }
 
     private static bool IsPrimaryKeyOnlyProjection(int[] columnIndices, int primaryKeyIndex)
