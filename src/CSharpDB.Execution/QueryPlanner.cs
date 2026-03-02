@@ -88,6 +88,8 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemIndexesRowsCache;
     private List<DbValue[]>? _systemViewsRowsCache;
     private List<DbValue[]>? _systemTriggersRowsCache;
+    private long? _systemColumnsCountCache;
+    private long? _systemIndexesCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
     private long _observedSchemaVersion;
 
@@ -152,6 +154,8 @@ public sealed class QueryPlanner
         _systemIndexesRowsCache = null;
         _systemViewsRowsCache = null;
         _systemTriggersRowsCache = null;
+        _systemColumnsCountCache = null;
+        _systemIndexesCountCache = null;
 
         _observedSchemaVersion = currentVersion;
     }
@@ -928,6 +932,9 @@ public sealed class QueryPlanner
         // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
         if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
             return fastIndexedResult;
+        // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
+        if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+            return fastTableScanResult;
 
         if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
             return systemCountResult;
@@ -1429,6 +1436,9 @@ public sealed class QueryPlanner
 
     private long CountSystemColumns()
     {
+        if (_systemColumnsCountCache.HasValue)
+            return _systemColumnsCountCache.Value;
+
         long count = 0;
         foreach (string tableName in _catalog.GetTableNames())
         {
@@ -1436,14 +1446,21 @@ public sealed class QueryPlanner
             if (schema != null)
                 count += schema.Columns.Count;
         }
+
+        _systemColumnsCountCache = count;
         return count;
     }
 
     private long CountSystemIndexes()
     {
+        if (_systemIndexesCountCache.HasValue)
+            return _systemIndexesCountCache.Value;
+
         long count = 0;
         foreach (var index in _catalog.GetIndexes())
             count += index.Columns.Count;
+
+        _systemIndexesCountCache = count;
         return count;
     }
 
@@ -2798,6 +2815,82 @@ public sealed class QueryPlanner
         return false;
     }
 
+    /// <summary>
+    /// Fast path for simple single-table scans:
+    /// SELECT * / columns FROM table [WHERE ...].
+    /// Bypasses BuildFromOperator and broad planner setup when no ordering/grouping/windowing clauses are present.
+    /// </summary>
+    private bool TryFastSimpleTableScan(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (_catalog.IsView(simpleRef.TableName))
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
+            return false;
+
+        if (stmt.GroupBy != null || stmt.Having != null)
+            return false;
+        if (stmt.OrderBy is { Count: > 0 })
+            return false;
+        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+
+        var schema = _catalog.GetTable(simpleRef.TableName);
+        if (schema == null)
+            return false;
+
+        var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
+        var scanOp = new TableScanOperator(tableTree, schema, _recordSerializer);
+        IOperator op = scanOp;
+        var remainingWhere = stmt.Where;
+
+        if (remainingWhere != null &&
+            TryPushDownSimplePreDecodeFilter(scanOp, remainingWhere, schema, out var pushedWhere))
+        {
+            remainingWhere = pushedWhere;
+        }
+
+        if (stmt.Columns.Any(c => c.IsStar))
+        {
+            if (remainingWhere != null)
+                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+
+            result = new QueryResult(op);
+            return true;
+        }
+
+        if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
+        {
+            int maxCol = -1;
+            for (int i = 0; i < columnIndices.Length; i++)
+                if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
+
+            if (remainingWhere != null &&
+                !TryAccumulateMaxReferencedColumn(remainingWhere, schema, ref maxCol))
+            {
+                return false;
+            }
+
+            if (maxCol >= 0)
+                scanOp.SetDecodedColumnUpperBound(maxCol);
+
+            if (remainingWhere != null)
+                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+
+            op = new ProjectionOperator(op, columnIndices, outputCols, schema);
+            result = new QueryResult(op);
+            return true;
+        }
+
+        // Expression projections fall back to the general path.
+        return false;
+    }
+
     private static void ExtractOrderedIndexRange(
         Expression? where,
         TableSchema schema,
@@ -2981,15 +3074,99 @@ public sealed class QueryPlanner
         if (op is not IPreDecodeFilterSupport preDecodeFilterTarget)
             return false;
 
-        if (where is not BinaryExpression bin || !IsPushdownComparison(bin.Op))
+        if (TryExtractPushdownPredicate(where, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal, out var residual))
+        {
+            preDecodeFilterTarget.SetPreDecodeFilter(columnIndex, opToApply, literal);
+            remaining = residual;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractPushdownPredicate(
+        Expression where,
+        TableSchema schema,
+        out int columnIndex,
+        out BinaryOp opToApply,
+        out DbValue literal,
+        out Expression? remaining)
+    {
+        columnIndex = -1;
+        opToApply = BinaryOp.Equals;
+        literal = DbValue.Null;
+        remaining = where;
+
+        if (where is BinaryExpression singleBin &&
+            IsPushdownComparison(singleBin.Op) &&
+            TryGetPushdownOperands(singleBin, schema, out columnIndex, out opToApply, out literal))
+        {
+            remaining = null;
+            return true;
+        }
+
+        if (where is not BinaryExpression { Op: BinaryOp.And })
             return false;
 
-        if (!TryGetPushdownOperands(bin, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal))
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(where, conjuncts);
+
+        int selectedConjunctIndex = -1;
+        int selectedRank = int.MaxValue;
+
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (conjuncts[i] is not BinaryExpression bin || !IsPushdownComparison(bin.Op))
+                continue;
+
+            if (!TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
+                continue;
+
+            int candidateRank = GetPushdownComparisonRank(candidateOp);
+            if (candidateRank >= selectedRank)
+                continue;
+
+            selectedConjunctIndex = i;
+            selectedRank = candidateRank;
+            columnIndex = candidateColumnIndex;
+            opToApply = candidateOp;
+            literal = candidateLiteral;
+
+            if (candidateRank == 0)
+                break;
+        }
+
+        if (selectedConjunctIndex < 0)
             return false;
 
-        preDecodeFilterTarget.SetPreDecodeFilter(columnIndex, opToApply, literal);
-        remaining = null;
+        if (conjuncts.Count == 1)
+        {
+            remaining = null;
+            return true;
+        }
+
+        var residualTerms = new List<Expression>(conjuncts.Count - 1);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (i == selectedConjunctIndex)
+                continue;
+
+            residualTerms.Add(conjuncts[i]);
+        }
+
+        remaining = CombineConjuncts(residualTerms);
         return true;
+    }
+
+    private static int GetPushdownComparisonRank(BinaryOp op)
+    {
+        return op switch
+        {
+            BinaryOp.Equals => 0,
+            BinaryOp.LessThan or BinaryOp.GreaterThan or BinaryOp.LessOrEqual or BinaryOp.GreaterOrEqual => 1,
+            BinaryOp.NotEquals => 2,
+            _ => 3,
+        };
     }
 
     private static bool IsPushdownComparison(BinaryOp op)

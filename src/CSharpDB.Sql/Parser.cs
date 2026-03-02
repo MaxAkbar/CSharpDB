@@ -16,6 +16,9 @@ public sealed class Parser
 
     public static Statement Parse(string sql)
     {
+        if (TryParseSimpleSelect(sql, out var simpleSelect))
+            return simpleSelect;
+
         var tokenizer = new Tokenizer(sql);
         var tokens = tokenizer.Tokenize();
         var parser = new Parser(tokens);

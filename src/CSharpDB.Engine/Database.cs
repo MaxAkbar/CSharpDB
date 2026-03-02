@@ -378,8 +378,8 @@ public sealed class Database : IAsyncDisposable
         private readonly int _capacity;
         private readonly Dictionary<string, Statement> _map = new(StringComparer.Ordinal);
         private readonly Queue<string> _insertionOrder = new();
-        private readonly Queue<string> _recentMissOrder = new();
-        private readonly HashSet<string> _recentMissSet = new(StringComparer.Ordinal);
+        private readonly int[] _recentMissHashes;
+        private int _recentMissHashCursor;
         private string? _lastSql;
         private Statement? _lastStatement;
         private readonly object _gate = new();
@@ -387,6 +387,9 @@ public sealed class Database : IAsyncDisposable
         internal StatementCache(int capacity)
         {
             _capacity = capacity > 0 ? capacity : 0;
+            int fingerprintWindowSize = _capacity <= 0 ? 0 : Math.Min(_capacity, 64);
+            _recentMissHashes = new int[fingerprintWindowSize];
+            _recentMissHashCursor = 0;
         }
 
         internal Statement GetOrAdd(string sql, Func<string, Statement> parse)
@@ -454,17 +457,20 @@ public sealed class Database : IAsyncDisposable
 
         private bool ShouldPromoteSelectAtCapacity(string sql)
         {
-            if (_recentMissSet.Remove(sql))
+            if (_recentMissHashes.Length == 0)
                 return true;
 
-            _recentMissSet.Add(sql);
-            _recentMissOrder.Enqueue(sql);
-
-            while (_recentMissOrder.Count > _capacity)
+            int hash = StringComparer.Ordinal.GetHashCode(sql);
+            for (int i = 0; i < _recentMissHashes.Length; i++)
             {
-                string candidate = _recentMissOrder.Dequeue();
-                _recentMissSet.Remove(candidate);
+                if (_recentMissHashes[i] == hash)
+                    return true;
             }
+
+            _recentMissHashes[_recentMissHashCursor] = hash;
+            _recentMissHashCursor++;
+            if (_recentMissHashCursor >= _recentMissHashes.Length)
+                _recentMissHashCursor = 0;
 
             return false;
         }
@@ -488,8 +494,8 @@ public sealed class Database : IAsyncDisposable
             {
                 _map.Clear();
                 _insertionOrder.Clear();
-                _recentMissOrder.Clear();
-                _recentMissSet.Clear();
+                Array.Clear(_recentMissHashes);
+                _recentMissHashCursor = 0;
                 _lastSql = null;
                 _lastStatement = null;
             }
