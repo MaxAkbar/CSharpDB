@@ -373,7 +373,7 @@ public sealed class OffsetOperator : IOperator, IRowBufferReuseController
 /// <summary>
 /// Limit operator — caps the number of output rows.
 /// </summary>
-public sealed class LimitOperator : IOperator, IRowBufferReuseController
+public sealed class LimitOperator : IOperator, IRowBufferReuseController, IEstimatedRowCountProvider
 {
     private readonly IOperator _source;
     private readonly int _limit;
@@ -382,6 +382,7 @@ public sealed class LimitOperator : IOperator, IRowBufferReuseController
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
     public DbValue[] Current => _source.Current;
+    public int? EstimatedRowCount => _limit >= 0 ? _limit : 0;
 
     public LimitOperator(IOperator source, int limit)
     {
@@ -1072,7 +1073,7 @@ public sealed class HashAggregateOperator : IOperator
 /// without materializing all source rows.
 /// Used for aggregate queries that do not have GROUP BY.
 /// </summary>
-public sealed class ScalarAggregateOperator : IOperator
+public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly IOperator _source;
     private readonly List<SelectColumn> _selectColumns;
@@ -1088,6 +1089,7 @@ public sealed class ScalarAggregateOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
 
     public ScalarAggregateOperator(
         IOperator source,
@@ -2023,7 +2025,7 @@ public sealed class SortOperator : IOperator
 /// Keeps only the best N rows in memory and does a final in-memory sort
 /// over that bounded set.
 /// </summary>
-public sealed class TopNSortOperator : IOperator
+public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly struct CompiledSortClause
     {
@@ -2074,6 +2076,7 @@ public sealed class TopNSortOperator : IOperator
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _topN;
 
     public TopNSortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema, int topN)
     {
@@ -2264,7 +2267,7 @@ public sealed class TopNSortOperator : IOperator
 /// Hash-join operator for equi-joins (with optional residual predicate).
 /// Supports INNER, LEFT OUTER, and RIGHT OUTER joins.
 /// </summary>
-public sealed class HashJoinOperator : IOperator
+public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 {
     private readonly IOperator _left;
     private readonly IOperator _right;
@@ -2289,8 +2292,9 @@ public sealed class HashJoinOperator : IOperator
     private bool _activeProbeMatched;
     private bool _probeExhausted;
     private int _rightOuterEmitIndex;
+    private int[]? _projectionColumnIndices;
 
-    public ColumnDefinition[] OutputSchema { get; }
+    public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
 
@@ -2389,7 +2393,7 @@ public sealed class HashJoinOperator : IOperator
 
                 if (_buildRightSide && !_activeProbeMatched && _joinType == JoinType.LeftOuter)
                 {
-                    Current = CombineWithNulls(_activeProbeRow, _rightColCount, padRight: true);
+                    Current = CreateLeftOuterRowFromProbe(_activeProbeRow);
                     ClearActiveProbeState();
                     return true;
                 }
@@ -2443,6 +2447,26 @@ public sealed class HashJoinOperator : IOperator
         await _right.DisposeAsync();
     }
 
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        if (columnIndices == null)
+            throw new ArgumentNullException(nameof(columnIndices));
+        if (outputSchema == null)
+            throw new ArgumentNullException(nameof(outputSchema));
+
+        int compositeColumnCount = _leftColCount + _rightColCount;
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (columnIndex < 0 || columnIndex >= compositeColumnCount)
+                return false;
+        }
+
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        return true;
+    }
+
     private IOperator BuildSource => _buildRightSide ? _right : _left;
     private IOperator ProbeSource => _buildRightSide ? _left : _right;
     private int[] BuildKeyIndices => _buildRightSide ? _rightKeyIndices : _leftKeyIndices;
@@ -2488,7 +2512,7 @@ public sealed class HashJoinOperator : IOperator
             if (_matchedRightRows != null && _matchedRightRows.Contains(rightRow))
                 continue;
 
-            row = CombineWithNulls(rightRow, _leftColCount, padRight: false);
+            row = CreateRightOuterRowFromBuild(rightRow);
             return true;
         }
 
@@ -2536,9 +2560,50 @@ public sealed class HashJoinOperator : IOperator
     private DbValue[] CombineProbeAndBuildRows(DbValue[] probeRow, DbValue[] buildRow)
     {
         // Output row layout is always [left | right] regardless of build side.
-        return _buildRightSide
-            ? CombineRows(probeRow, buildRow)
-            : CombineRows(buildRow, probeRow);
+        var leftRow = _buildRightSide ? probeRow : buildRow;
+        var rightRow = _buildRightSide ? buildRow : probeRow;
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projection);
+    }
+
+    private DbValue[] CreateLeftOuterRowFromProbe(DbValue[] probeRow)
+    {
+        if (_buildRightSide)
+        {
+            var projection = _projectionColumnIndices;
+            return projection == null
+                ? CombineWithNulls(probeRow, _rightColCount, padRight: true)
+                : ProjectLeftWithNullRight(probeRow, projection);
+        }
+
+        // Swapped build side is only used for INNER joins, so this is defensive.
+        var leftRow = Array.Empty<DbValue>();
+        var rightRow = probeRow;
+        var projected = _projectionColumnIndices;
+        return projected == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projected);
+    }
+
+    private DbValue[] CreateRightOuterRowFromBuild(DbValue[] buildRow)
+    {
+        if (_buildRightSide)
+        {
+            var projection = _projectionColumnIndices;
+            return projection == null
+                ? CombineWithNulls(buildRow, _leftColCount, padRight: false)
+                : ProjectNullLeftWithRight(buildRow, projection);
+        }
+
+        // Swapped build side is only used for INNER joins, so this is defensive.
+        var leftRow = buildRow;
+        var rightRow = Array.Empty<DbValue>();
+        var projected = _projectionColumnIndices;
+        return projected == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projected);
     }
 
     private static DbValue ExtractSingleJoinKey(DbValue[] row, int keyIndex)
@@ -2588,6 +2653,82 @@ public sealed class HashJoinOperator : IOperator
         return combined;
     }
 
+    private DbValue[] ProjectLeftWithNullRight(DbValue[] leftRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                projected[i] = DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectNullLeftWithRight(DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectRows(DbValue[] leftRow, DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
     private readonly struct HashJoinKey
     {
         public readonly DbValue[] Values;
@@ -2634,7 +2775,7 @@ public sealed class HashJoinOperator : IOperator
 /// Uses a right-side PRIMARY KEY or unique single-column index for lookup joins.
 /// Supports INNER and LEFT OUTER joins.
 /// </summary>
-public sealed class IndexNestedLoopJoinOperator : IOperator
+public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdownTarget
 {
     private readonly IOperator _outer;
     private readonly BTree _innerTableTree;
@@ -2653,8 +2794,9 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
     private int _pendingIndexOffset;
     private DbValue[]? _rightRowBuffer;
     private DbValue[]? _residualRowBuffer;
+    private int[]? _projectionColumnIndices;
 
-    public ColumnDefinition[] OutputSchema { get; }
+    public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
 
@@ -2714,7 +2856,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
                     if (!PassesResidual(_activeOuterRow, rightRow))
                         continue;
 
-                    var combined = CombineRows(_activeOuterRow, rightRow);
+                    var combined = CreateMatchedRow(_activeOuterRow, rightRow);
                     _activeOuterMatched = true;
                     Current = combined;
                     return true;
@@ -2722,7 +2864,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
 
                 if (!_activeOuterMatched && _joinType == JoinType.LeftOuter)
                 {
-                    Current = CombineWithNulls(_activeOuterRow, _rightColCount, padRight: true);
+                    Current = CreateLeftOuterRow(_activeOuterRow);
                     ResetActiveOuterState();
                     return true;
                 }
@@ -2740,7 +2882,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
             {
                 if (_joinType == JoinType.LeftOuter)
                 {
-                    Current = CombineWithNulls(outerRow, _rightColCount, padRight: true);
+                    Current = CreateLeftOuterRow(outerRow);
                     return true;
                 }
 
@@ -2770,6 +2912,26 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
     }
 
     public ValueTask DisposeAsync() => _outer.DisposeAsync();
+
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        if (columnIndices == null)
+            throw new ArgumentNullException(nameof(columnIndices));
+        if (outputSchema == null)
+            throw new ArgumentNullException(nameof(outputSchema));
+
+        int compositeColumnCount = _leftColCount + _rightColCount;
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (columnIndex < 0 || columnIndex >= compositeColumnCount)
+                return false;
+        }
+
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        return true;
+    }
 
     private static bool TryConvertLookupKey(DbValue value, out long key)
     {
@@ -2855,6 +3017,22 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
         return row;
     }
 
+    private DbValue[] CreateMatchedRow(DbValue[] leftRow, DbValue[] rightRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projection);
+    }
+
+    private DbValue[] CreateLeftOuterRow(DbValue[] leftRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineWithNulls(leftRow, _rightColCount, padRight: true)
+            : ProjectLeftWithNullRight(leftRow, projection);
+    }
+
     private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)
     {
         var combined = new DbValue[left.Length + right.Length];
@@ -2884,13 +3062,64 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
         }
         return combined;
     }
+
+    private DbValue[] ProjectLeftWithNullRight(DbValue[] leftRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                projected[i] = DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectRows(DbValue[] leftRow, DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
 }
 
 /// <summary>
 /// Nested-loop join operator — materializes both sides and computes the join.
 /// Supports INNER, LEFT OUTER, RIGHT OUTER, and CROSS joins.
 /// </summary>
-public sealed class NestedLoopJoinOperator : IOperator
+public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarget
 {
     private readonly IOperator _left;
     private readonly IOperator _right;
@@ -2898,10 +3127,11 @@ public sealed class NestedLoopJoinOperator : IOperator
     private readonly Func<DbValue[], DbValue>? _conditionEvaluator;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
+    private int[]? _projectionColumnIndices;
     private List<DbValue[]>? _results;
     private int _index;
 
-    public ColumnDefinition[] OutputSchema { get; }
+    public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
 
@@ -2961,6 +3191,26 @@ public sealed class NestedLoopJoinOperator : IOperator
         await _right.DisposeAsync();
     }
 
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        if (columnIndices == null)
+            throw new ArgumentNullException(nameof(columnIndices));
+        if (outputSchema == null)
+            throw new ArgumentNullException(nameof(outputSchema));
+
+        int compositeColumnCount = _leftColCount + _rightColCount;
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (columnIndex < 0 || columnIndex >= compositeColumnCount)
+                return false;
+        }
+
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        return true;
+    }
+
     private List<DbValue[]> ComputeJoin(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
     {
         var results = new List<DbValue[]>();
@@ -2973,7 +3223,7 @@ public sealed class NestedLoopJoinOperator : IOperator
             case JoinType.Cross:
                 foreach (var left in leftRows)
                     foreach (var right in rightRows)
-                        results.Add(CombineRows(left, right));
+                        results.Add(CreateMatchedRow(left, right));
                 break;
 
             case JoinType.Inner:
@@ -2984,7 +3234,7 @@ public sealed class NestedLoopJoinOperator : IOperator
                         if (!PassesCondition(left, right, conditionBuffer))
                             continue;
 
-                        results.Add(CombineRows(left, right));
+                        results.Add(CreateMatchedRow(left, right));
                     }
                 }
                 break;
@@ -2998,11 +3248,11 @@ public sealed class NestedLoopJoinOperator : IOperator
                         if (!PassesCondition(left, right, conditionBuffer))
                             continue;
 
-                        results.Add(CombineRows(left, right));
+                        results.Add(CreateMatchedRow(left, right));
                         matched = true;
                     }
                     if (!matched)
-                        results.Add(CombineWithNulls(left, _rightColCount, padRight: true));
+                        results.Add(CreateLeftOuterRow(left));
                 }
                 break;
 
@@ -3016,7 +3266,7 @@ public sealed class NestedLoopJoinOperator : IOperator
                         if (!PassesCondition(left, right, conditionBuffer))
                             continue;
 
-                        results.Add(CombineRows(left, right));
+                        results.Add(CreateMatchedRow(left, right));
                         rightMatched[ri] = true;
                     }
                 }
@@ -3024,7 +3274,7 @@ public sealed class NestedLoopJoinOperator : IOperator
                 for (int ri = 0; ri < rightRows.Count; ri++)
                 {
                     if (!rightMatched[ri])
-                        results.Add(CombineWithNulls(rightRows[ri], _leftColCount, padRight: false));
+                        results.Add(CreateRightOuterRow(rightRows[ri]));
                 }
                 break;
         }
@@ -3041,6 +3291,30 @@ public sealed class NestedLoopJoinOperator : IOperator
         left.CopyTo(combined, 0);
         right.CopyTo(combined, left.Length);
         return _conditionEvaluator(combined).IsTruthy;
+    }
+
+    private DbValue[] CreateMatchedRow(DbValue[] leftRow, DbValue[] rightRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projection);
+    }
+
+    private DbValue[] CreateLeftOuterRow(DbValue[] leftRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineWithNulls(leftRow, _rightColCount, padRight: true)
+            : ProjectLeftWithNullRight(leftRow, projection);
+    }
+
+    private DbValue[] CreateRightOuterRow(DbValue[] rightRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineWithNulls(rightRow, _leftColCount, padRight: false)
+            : ProjectNullLeftWithRight(rightRow, projection);
     }
 
     private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)
@@ -3071,6 +3345,82 @@ public sealed class NestedLoopJoinOperator : IOperator
             dataRow.CopyTo(combined, nullCount);
         }
         return combined;
+    }
+
+    private DbValue[] ProjectLeftWithNullRight(DbValue[] leftRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                projected[i] = DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectNullLeftWithRight(DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectRows(DbValue[] leftRow, DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
     }
 }
 
@@ -3304,7 +3654,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 /// Unique-index lookup operator — performs a direct secondary-index equality lookup
 /// and resolves exactly one rowid from the index payload.
 /// </summary>
-public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport
+public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport, IEstimatedRowCountProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -3322,6 +3672,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
     public long CurrentRowId { get; private set; }
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
@@ -3638,7 +3989,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
 /// <summary>
 /// Primary-key lookup operator — performs a direct B+tree key lookup against the table.
 /// </summary>
-public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSupport, IRowBufferReuseController
+public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSupport, IRowBufferReuseController, IEstimatedRowCountProvider
 {
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
@@ -3657,6 +4008,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
     public long CurrentRowId { get; private set; }
     internal BTree TableTree => _tableTree;
     internal long SeekKey => _seekKey;
@@ -3802,7 +4154,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
 /// Primary-key lookup projection fast path.
 /// Verifies row existence via table key lookup and returns one row where every projected value is the PK key.
 /// </summary>
-public sealed class PrimaryKeyProjectionLookupOperator : IOperator
+public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly BTree _tableTree;
     private readonly long _seekKey;
@@ -3812,6 +4164,7 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
 
     public PrimaryKeyProjectionLookupOperator(BTree tableTree, long seekKey, ColumnDefinition[] outputSchema)
     {
@@ -3874,7 +4227,7 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator
 /// Scalar SUM/AVG/COUNT/MIN/MAX fast path for point/range lookups from PK or a single-column index equality lookup.
 /// Avoids generic operator-pipeline overhead by aggregating directly on payloads.
 /// </summary>
-public sealed class ScalarAggregateLookupOperator : IOperator
+public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCountProvider
 {
     private enum AggregateKind
     {
@@ -3904,6 +4257,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
 
     public ScalarAggregateLookupOperator(
         BTree tableTree,
@@ -4084,7 +4438,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator
 /// Scans the table B+tree directly and decodes only the target column.
 /// Produces exactly one row.
 /// </summary>
-public sealed class ScalarAggregateTableOperator : IOperator
+public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCountProvider
 {
     private enum AggregateKind
     {
@@ -4107,6 +4461,7 @@ public sealed class ScalarAggregateTableOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
 
     public ScalarAggregateTableOperator(
         BTree tableTree,
@@ -4249,7 +4604,7 @@ public sealed class ScalarAggregateTableOperator : IOperator
 /// COUNT(*) fast path for a single table with no filters.
 /// Produces exactly one row with the table entry count.
 /// </summary>
-public sealed class CountStarTableOperator : IOperator
+public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly BTree _tableTree;
     private bool _emitted;
@@ -4257,6 +4612,7 @@ public sealed class CountStarTableOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
 
     public CountStarTableOperator(BTree tableTree, ColumnDefinition[] outputSchema)
     {
@@ -4287,7 +4643,7 @@ public sealed class CountStarTableOperator : IOperator
 /// <summary>
 /// Yields pre-materialized rows. Used for CTEs whose results have been computed upfront.
 /// </summary>
-public sealed class MaterializedOperator : IOperator
+public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly List<DbValue[]> _rows;
     private int _index;
@@ -4295,6 +4651,7 @@ public sealed class MaterializedOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _rows.Count;
 
     public MaterializedOperator(List<DbValue[]> rows, ColumnDefinition[] outputSchema)
     {

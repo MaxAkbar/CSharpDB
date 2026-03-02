@@ -26,3 +26,13 @@ internal interface IPreDecodeFilterSupport
 {
     void SetPreDecodeFilter(int columnIndex, CSharpDB.Sql.BinaryOp op, DbValue literal);
 }
+
+internal interface IEstimatedRowCountProvider
+{
+    int? EstimatedRowCount { get; }
+}
+
+internal interface IProjectionPushdownTarget
+{
+    bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema);
+}

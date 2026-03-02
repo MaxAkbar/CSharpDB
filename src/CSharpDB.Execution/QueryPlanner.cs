@@ -1049,6 +1049,10 @@ public sealed class QueryPlanner
                     {
                         op = new PrimaryKeyProjectionLookupOperator(pkLookup.TableTree, pkLookup.SeekKey, outputCols);
                     }
+                    else if (TryPushDownColumnProjection(op, columnIndices, outputCols))
+                    {
+                        // Join operators can project directly, avoiding full composite row materialization.
+                    }
                     else
                     {
                         op = new ProjectionOperator(op, columnIndices, outputCols, schema);
@@ -1108,6 +1112,17 @@ public sealed class QueryPlanner
             return new TopNSortOperator(source, orderBy, schema, topN.Value);
 
         return new SortOperator(source, orderBy, schema);
+    }
+
+    private static bool TryPushDownColumnProjection(
+        IOperator op,
+        int[] columnIndices,
+        ColumnDefinition[] outputCols)
+    {
+        if (op is IProjectionPushdownTarget pushdownTarget)
+            return pushdownTarget.TrySetOutputProjection(columnIndices, outputCols);
+
+        return false;
     }
 
     public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)

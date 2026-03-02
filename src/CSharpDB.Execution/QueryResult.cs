@@ -142,7 +142,17 @@ public sealed class QueryResult : IAsyncDisposable
         }
 
         bool cloneRows = _operator.ReusesCurrentRowBuffer;
-        var list = new List<DbValue[]>();
+        int initialCapacity = 0;
+        if (_operator is IEstimatedRowCountProvider estimated &&
+            estimated.EstimatedRowCount is int rowCount &&
+            rowCount > 0)
+        {
+            initialCapacity = rowCount;
+        }
+
+        var list = initialCapacity > 0
+            ? new List<DbValue[]>(initialCapacity)
+            : new List<DbValue[]>();
         while (await _operator.MoveNextAsync(ct))
         {
             var row = _operator.Current;

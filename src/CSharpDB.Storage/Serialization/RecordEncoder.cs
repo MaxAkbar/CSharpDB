@@ -16,6 +16,9 @@ namespace CSharpDB.Storage.Serialization;
 public static class RecordEncoder
 {
     private static readonly Encoding Utf8 = Encoding.UTF8;
+    private const int TextCacheCapacity = 64;
+    private const int MaxCachedTextByteLength = 16;
+    [ThreadStatic] private static TextCacheEntry[]? s_textCache;
 
     public static byte[] Encode(ReadOnlySpan<DbValue> values)
     {
@@ -94,7 +97,7 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    string text = Utf8.GetString(buffer.Slice(pos, len));
+                    string text = DecodeText(buffer.Slice(pos, len));
                     values[i] = DbValue.FromText(text);
                     pos += len;
                     break;
@@ -103,7 +106,9 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    byte[] blob = buffer.Slice(pos, len).ToArray();
+                    byte[] blob = len == 0
+                        ? Array.Empty<byte>()
+                        : buffer.Slice(pos, len).ToArray();
                     values[i] = DbValue.FromBlob(blob);
                     pos += len;
                     break;
@@ -150,7 +155,7 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    destination[i] = DbValue.FromText(Utf8.GetString(buffer.Slice(pos, len)));
+                    destination[i] = DbValue.FromText(DecodeText(buffer.Slice(pos, len)));
                     pos += len;
                     break;
                 }
@@ -158,7 +163,9 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    destination[i] = DbValue.FromBlob(buffer.Slice(pos, len).ToArray());
+                    destination[i] = DbValue.FromBlob(len == 0
+                        ? Array.Empty<byte>()
+                        : buffer.Slice(pos, len).ToArray());
                     pos += len;
                     break;
                 }
@@ -207,7 +214,7 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    values[i] = DbValue.FromText(Utf8.GetString(buffer.Slice(pos, len)));
+                    values[i] = DbValue.FromText(DecodeText(buffer.Slice(pos, len)));
                     pos += len;
                     break;
                 }
@@ -215,7 +222,9 @@ public static class RecordEncoder
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
                     pos += lb;
-                    values[i] = DbValue.FromBlob(buffer.Slice(pos, len).ToArray());
+                    values[i] = DbValue.FromBlob(len == 0
+                        ? Array.Empty<byte>()
+                        : buffer.Slice(pos, len).ToArray());
                     pos += len;
                     break;
                 }
@@ -265,14 +274,16 @@ public static class RecordEncoder
             {
                 int len = (int)Varint.Read(buffer[pos..], out int lb);
                 pos += lb;
-                string text = Utf8.GetString(buffer.Slice(pos, len));
+                string text = DecodeText(buffer.Slice(pos, len));
                 return DbValue.FromText(text);
             }
             case DbType.Blob:
             {
                 int len = (int)Varint.Read(buffer[pos..], out int lb);
                 pos += lb;
-                byte[] blob = buffer.Slice(pos, len).ToArray();
+                byte[] blob = len == 0
+                    ? Array.Empty<byte>()
+                    : buffer.Slice(pos, len).ToArray();
                 return DbValue.FromBlob(blob);
             }
             default:
@@ -413,6 +424,79 @@ public static class RecordEncoder
                 return;
             }
         }
+    }
+
+    private static string DecodeText(ReadOnlySpan<byte> utf8)
+    {
+        if (utf8.IsEmpty)
+            return string.Empty;
+
+        if (CanUseTextCache(utf8))
+            return DecodeTextCached(utf8);
+
+        return Utf8.GetString(utf8);
+    }
+
+    private static string DecodeTextCached(ReadOnlySpan<byte> utf8)
+    {
+        var cache = s_textCache ??= new TextCacheEntry[TextCacheCapacity];
+        int hash = ComputeHash(utf8);
+        int slot = hash & (TextCacheCapacity - 1);
+        ref var entry = ref cache[slot];
+
+        var cachedUtf8 = entry.Utf8;
+        if (entry.Hash == hash &&
+            cachedUtf8 != null &&
+            cachedUtf8.Length == utf8.Length &&
+            cachedUtf8.AsSpan().SequenceEqual(utf8))
+        {
+            return entry.Text!;
+        }
+
+        string text = Utf8.GetString(utf8);
+        entry.Hash = hash;
+        entry.Text = text;
+        entry.Utf8 = utf8.ToArray();
+        return text;
+    }
+
+    private static bool CanUseTextCache(ReadOnlySpan<byte> utf8)
+    {
+        if ((uint)utf8.Length > MaxCachedTextByteLength)
+            return false;
+
+        // Constrain caching to very small ASCII TitleCase tokens (for repeated enum-like values).
+        // This avoids miss-heavy cache churn on high-cardinality text columns.
+        byte first = utf8[0];
+        if (first < (byte)'A' || first > (byte)'Z')
+            return false;
+
+        for (int i = 1; i < utf8.Length; i++)
+        {
+            byte b = utf8[i];
+            if (b < (byte)'a' || b > (byte)'z')
+                return false;
+        }
+
+        return true;
+    }
+
+    private static int ComputeHash(ReadOnlySpan<byte> utf8)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            for (int i = 0; i < utf8.Length; i++)
+                hash = (hash ^ utf8[i]) * 16777619;
+            return (int)hash;
+        }
+    }
+
+    private struct TextCacheEntry
+    {
+        public int Hash;
+        public string? Text;
+        public byte[]? Utf8;
     }
 
     private static int ValueDataSize(DbValue v)
