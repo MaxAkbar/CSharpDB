@@ -11,6 +11,56 @@ namespace CSharpDB.Execution;
 /// </summary>
 public sealed class QueryPlanner
 {
+    private static readonly ColumnDefinition[] SystemTablesColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
+    ];
+
+    private static readonly ColumnDefinition[] SystemColumnsColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "data_type", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemIndexesColumns =
+    [
+        new ColumnDefinition { Name = "index_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "is_unique", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemViewsColumns =
+    [
+        new ColumnDefinition { Name = "view_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "sql", Type = DbType.Text, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemTriggersColumns =
+    [
+        new ColumnDefinition { Name = "trigger_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "timing", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "event", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "body_sql", Type = DbType.Text, Nullable = false },
+    ];
+    private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
+    [
+        new ColumnDefinition
+        {
+            Name = "COUNT(*)",
+            Type = DbType.Integer,
+            Nullable = false,
+        },
+    ];
+
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly IRecordSerializer _recordSerializer;
@@ -31,6 +81,13 @@ public sealed class QueryPlanner
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
+    private List<DbValue[]>? _systemTablesRowsCache;
+    private List<DbValue[]>? _systemColumnsRowsCache;
+    private List<DbValue[]>? _systemIndexesRowsCache;
+    private List<DbValue[]>? _systemViewsRowsCache;
+    private List<DbValue[]>? _systemTriggersRowsCache;
+    private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
+    private long _observedSchemaVersion;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
 
@@ -48,10 +105,13 @@ public sealed class QueryPlanner
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _observedSchemaVersion = catalog.SchemaVersion;
     }
 
     public async ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
     {
+        InvalidateSchemaSensitiveCachesIfNeeded();
+
         return stmt switch
         {
             CreateTableStatement create => await ExecuteCreateTableAsync(create, ct),
@@ -70,6 +130,26 @@ public sealed class QueryPlanner
             DropTriggerStatement dropTrig => await ExecuteDropTriggerAsync(dropTrig, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
+    }
+
+    private void InvalidateSchemaSensitiveCachesIfNeeded()
+    {
+        long currentVersion = _catalog.SchemaVersion;
+        if (currentVersion == _observedSchemaVersion)
+            return;
+
+        _triggerBodyCache.Clear();
+        _nextRowIdCache.Clear();
+        _compiledExpressionCache.Clear();
+        _qualifiedMappingFingerprintCache.Clear();
+        _requiresQualifiedMappingCache.Clear();
+        _systemTablesRowsCache = null;
+        _systemColumnsRowsCache = null;
+        _systemIndexesRowsCache = null;
+        _systemViewsRowsCache = null;
+        _systemTriggersRowsCache = null;
+
+        _observedSchemaVersion = currentVersion;
     }
 
     #region DDL — Tables
@@ -842,6 +922,8 @@ public sealed class QueryPlanner
         if (TryFastPkLookup(stmt, out var fastResult))
             return fastResult;
 
+        if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+            return systemCountResult;
         if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
             return countResult;
         if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
@@ -1156,6 +1238,83 @@ public sealed class QueryPlanner
 
         result = new QueryResult(new CountStarTableOperator(tree, outputSchema));
         return true;
+    }
+
+    private bool TryBuildSimpleSystemCatalogCountStarQuery(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (!TryNormalizeSystemCatalogTableName(simpleRef.TableName, out string normalized))
+            return false;
+
+        if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
+            return false;
+
+        if (stmt.OrderBy is { Count: > 0 })
+            return false;
+
+        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+
+        if (stmt.Columns.Count != 1 || stmt.Columns[0].IsStar)
+            return false;
+
+        if (stmt.Columns[0].Expression is not FunctionCallExpression func)
+            return false;
+
+        if (!func.IsStarArg || func.IsDistinct || func.Arguments.Count != 0)
+            return false;
+
+        if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        long count = normalized switch
+        {
+            "sys.tables" => _catalog.GetTableNames().Count,
+            "sys.columns" => CountSystemColumns(),
+            "sys.indexes" => CountSystemIndexes(),
+            "sys.views" => _catalog.GetViewNames().Count,
+            "sys.triggers" => _catalog.GetTriggers().Count,
+            _ => 0,
+        };
+
+        var row = new[] { DbValue.FromInteger(count) };
+        var outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
+            ? new[]
+            {
+                new ColumnDefinition
+                {
+                    Name = alias,
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+            }
+            : DefaultCountStarOutputSchema;
+
+        result = QueryResult.FromSyncLookup(row, outputSchema);
+        return true;
+    }
+
+    private long CountSystemColumns()
+    {
+        long count = 0;
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            var schema = _catalog.GetTable(tableName);
+            if (schema != null)
+                count += schema.Columns.Count;
+        }
+        return count;
+    }
+
+    private long CountSystemIndexes()
+    {
+        long count = 0;
+        foreach (var index in _catalog.GetIndexes())
+            count += index.Columns.Count;
+        return count;
     }
 
     private bool TryBuildSimpleScalarAggregateColumnQuery(SelectStatement stmt, out QueryResult result)
@@ -3274,58 +3433,27 @@ public sealed class QueryPlanner
         switch (normalized)
         {
             case "sys.tables":
-                columns =
-                [
-                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
-                    new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
-                ];
+                columns = SystemTablesColumns;
                 rows = BuildSystemTablesRows();
                 break;
 
             case "sys.columns":
-                columns =
-                [
-                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
-                    new ColumnDefinition { Name = "data_type", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
-                    new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
-                ];
+                columns = SystemColumnsColumns;
                 rows = BuildSystemColumnsRows();
                 break;
 
             case "sys.indexes":
-                columns =
-                [
-                    new ColumnDefinition { Name = "index_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
-                    new ColumnDefinition { Name = "is_unique", Type = DbType.Integer, Nullable = false },
-                ];
+                columns = SystemIndexesColumns;
                 rows = BuildSystemIndexesRows();
                 break;
 
             case "sys.views":
-                columns =
-                [
-                    new ColumnDefinition { Name = "view_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "sql", Type = DbType.Text, Nullable = false },
-                ];
+                columns = SystemViewsColumns;
                 rows = BuildSystemViewsRows();
                 break;
 
             case "sys.triggers":
-                columns =
-                [
-                    new ColumnDefinition { Name = "trigger_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "timing", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "event", Type = DbType.Text, Nullable = false },
-                    new ColumnDefinition { Name = "body_sql", Type = DbType.Text, Nullable = false },
-                ];
+                columns = SystemTriggersColumns;
                 rows = BuildSystemTriggersRows();
                 break;
 
@@ -3334,26 +3462,46 @@ public sealed class QueryPlanner
         }
 
         var op = new MaterializedOperator(rows, columns);
-        string alias = tableRef.Alias ?? tableRef.TableName;
-        var qualified = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < columns.Length; i++)
-            qualified[$"{alias}.{columns[i].Name}"] = i;
-
-        var schema = new TableSchema
-        {
-            TableName = normalized,
-            Columns = columns,
-            QualifiedMappings = qualified,
-        };
-
+        var schema = GetOrCreateSystemCatalogSchema(normalized, tableRef.TableName, tableRef.Alias, columns);
         source = (op, schema);
         return true;
     }
 
+    private TableSchema GetOrCreateSystemCatalogSchema(
+        string normalizedName,
+        string tableNameToken,
+        string? alias,
+        ColumnDefinition[] columns)
+    {
+        if (alias is null && _systemCatalogSchemaCache.TryGetValue(tableNameToken, out var cached))
+            return cached;
+
+        string qualifier = alias ?? tableNameToken;
+        var qualified = new Dictionary<string, int>(columns.Length, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < columns.Length; i++)
+            qualified[$"{qualifier}.{columns[i].Name}"] = i;
+
+        var schema = new TableSchema
+        {
+            TableName = normalizedName,
+            Columns = columns,
+            QualifiedMappings = qualified,
+        };
+
+        if (alias is null)
+            _systemCatalogSchemaCache[tableNameToken] = schema;
+
+        return schema;
+    }
+
     private List<DbValue[]> BuildSystemTablesRows()
     {
-        var rows = new List<DbValue[]>();
-        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        if (_systemTablesRowsCache != null)
+            return _systemTablesRowsCache;
+
+        var tableNames = _catalog.GetTableNames();
+        var rows = new List<DbValue[]>(tableNames.Count);
+        foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
             var schema = _catalog.GetTable(tableName);
             if (schema == null)
@@ -3371,13 +3519,18 @@ public sealed class QueryPlanner
             ]);
         }
 
+        _systemTablesRowsCache = rows;
         return rows;
     }
 
     private List<DbValue[]> BuildSystemColumnsRows()
     {
-        var rows = new List<DbValue[]>();
-        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        if (_systemColumnsRowsCache != null)
+            return _systemColumnsRowsCache;
+
+        var tableNames = _catalog.GetTableNames();
+        var rows = new List<DbValue[]>(tableNames.Count * 4);
+        foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
             var schema = _catalog.GetTable(tableName);
             if (schema == null)
@@ -3398,13 +3551,18 @@ public sealed class QueryPlanner
             }
         }
 
+        _systemColumnsRowsCache = rows;
         return rows;
     }
 
     private List<DbValue[]> BuildSystemIndexesRows()
     {
-        var rows = new List<DbValue[]>();
-        foreach (var index in _catalog.GetIndexes()
+        if (_systemIndexesRowsCache != null)
+            return _systemIndexesRowsCache;
+
+        var indexes = _catalog.GetIndexes();
+        var rows = new List<DbValue[]>(indexes.Count * 2);
+        foreach (var index in indexes
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
@@ -3421,13 +3579,18 @@ public sealed class QueryPlanner
             }
         }
 
+        _systemIndexesRowsCache = rows;
         return rows;
     }
 
     private List<DbValue[]> BuildSystemViewsRows()
     {
-        var rows = new List<DbValue[]>();
-        foreach (string viewName in _catalog.GetViewNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        if (_systemViewsRowsCache != null)
+            return _systemViewsRowsCache;
+
+        var viewNames = _catalog.GetViewNames();
+        var rows = new List<DbValue[]>(viewNames.Count);
+        foreach (string viewName in viewNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
             rows.Add(
             [
@@ -3436,13 +3599,18 @@ public sealed class QueryPlanner
             ]);
         }
 
+        _systemViewsRowsCache = rows;
         return rows;
     }
 
     private List<DbValue[]> BuildSystemTriggersRows()
     {
-        var rows = new List<DbValue[]>();
-        foreach (var trigger in _catalog.GetTriggers().OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
+        if (_systemTriggersRowsCache != null)
+            return _systemTriggersRowsCache;
+
+        var triggers = _catalog.GetTriggers();
+        var rows = new List<DbValue[]>(triggers.Count);
+        foreach (var trigger in triggers.OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
         {
             rows.Add(
             [
@@ -3454,6 +3622,7 @@ public sealed class QueryPlanner
             ]);
         }
 
+        _systemTriggersRowsCache = rows;
         return rows;
     }
 

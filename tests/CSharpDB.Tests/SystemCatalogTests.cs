@@ -116,4 +116,102 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         var columnCountRows = await columnCount.ToListAsync(ct);
         Assert.Equal(2L, Assert.Single(columnCountRows)[0].AsInteger);
     }
+
+    [Fact]
+    public async Task SystemCatalog_SchemaVersion_AdvancesOnDdlOnly()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        long v0 = _db.SchemaVersion;
+
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        long v1 = _db.SchemaVersion;
+        Assert.True(v1 > v0);
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+        long afterInsert = _db.SchemaVersion;
+        Assert.Equal(v1, afterInsert);
+
+        await _db.ExecuteAsync("ALTER TABLE t ADD COLUMN extra TEXT", ct);
+        long v2 = _db.SchemaVersion;
+        Assert.True(v2 > v1);
+
+        await _db.ExecuteAsync("CREATE INDEX idx_t_extra ON t(id)", ct);
+        long v3 = _db.SchemaVersion;
+        Assert.True(v3 > v2);
+
+        await _db.ExecuteAsync("DROP INDEX idx_t_extra", ct);
+        long v4 = _db.SchemaVersion;
+        Assert.True(v4 > v3);
+
+        await _db.ExecuteAsync("CREATE VIEW t_view AS SELECT id FROM t", ct);
+        long v5 = _db.SchemaVersion;
+        Assert.True(v5 > v4);
+
+        await _db.ExecuteAsync("DROP VIEW t_view", ct);
+        long v6 = _db.SchemaVersion;
+        Assert.True(v6 > v5);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_MetadataCollections_ReflectDdlUpdates()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE audit (id INTEGER)", ct);
+
+        Assert.Empty(_db.GetIndexes());
+        Assert.DoesNotContain(_db.GetViewNames(), n => string.Equals(n, "v_t", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(_db.GetTriggers(), t => string.Equals(t.TriggerName, "trg_t", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("CREATE INDEX idx_t_val ON t(val)", ct);
+        Assert.Contains(_db.GetIndexes(), i => string.Equals(i.IndexName, "idx_t_val", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("DROP INDEX idx_t_val", ct);
+        Assert.DoesNotContain(_db.GetIndexes(), i => string.Equals(i.IndexName, "idx_t_val", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("CREATE VIEW v_t AS SELECT id FROM t", ct);
+        Assert.Contains(_db.GetViewNames(), n => string.Equals(n, "v_t", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("DROP VIEW v_t", ct);
+        Assert.DoesNotContain(_db.GetViewNames(), n => string.Equals(n, "v_t", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync(
+            "CREATE TRIGGER trg_t AFTER INSERT ON t BEGIN INSERT INTO audit VALUES (NEW.id); END",
+            ct);
+        Assert.Contains(_db.GetTriggers(), t => string.Equals(t.TriggerName, "trg_t", StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("DROP TRIGGER trg_t", ct);
+        Assert.DoesNotContain(_db.GetTriggers(), t => string.Equals(t.TriggerName, "trg_t", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task SystemCatalog_CountStar_UsesCurrentMetadata()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE audit (id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_t_val ON t(val)", ct);
+        await _db.ExecuteAsync("CREATE VIEW v_t AS SELECT id FROM t", ct);
+        await _db.ExecuteAsync(
+            "CREATE TRIGGER trg_t AFTER INSERT ON t BEGIN INSERT INTO audit VALUES (NEW.id); END",
+            ct);
+
+        await using var tableCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.tables", ct);
+        Assert.Equal(2L, Assert.Single(await tableCountResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var columnCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_columns", ct);
+        Assert.Equal(3L, Assert.Single(await columnCountResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var indexCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.indexes", ct);
+        Assert.Equal(1L, Assert.Single(await indexCountResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var viewCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.views", ct);
+        Assert.Equal(1L, Assert.Single(await viewCountResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var triggerCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_triggers", ct);
+        Assert.Equal(1L, Assert.Single(await triggerCountResult.ToListAsync(ct))[0].AsInteger);
+    }
 }

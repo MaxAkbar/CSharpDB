@@ -39,6 +39,20 @@ dotnet run -c Release -- --all
 
 Results are written to CSV in `bin/Release/net10.0/results/`.
 
+### Capture Baseline Snapshot
+
+Use the helper script to run a repeatable subset of benchmarks and archive fresh artifacts (CSV/log + metadata) into a timestamped folder.
+
+```bash
+# Run micro + macro + stress + scaling, then snapshot outputs
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1
+
+# Skip the long micro run (macro/stress/scaling only)
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1 -SkipMicro
+```
+
+Snapshots are written to `tests/CSharpDB.Benchmarks/baselines/<utc-timestamp>/`.
+
 ---
 
 ## Benchmark Results
@@ -475,6 +489,9 @@ tests/CSharpDB.Benchmarks/
     IndexBenchmarks.cs                Index overhead + speedup
     WalBenchmarks.cs                  WAL commit/checkpoint
     ParserBenchmarks.cs               SQL parser throughput
+    SqlTextStabilityBenchmarks.cs     Parser/cache behavior under SQL text churn
+    SystemCatalogBenchmarks.cs        sys.* query and metadata API overhead
+    TriggerDispatchBenchmarks.cs      Trigger lookup/dispatch overhead
     AdoNetBenchmarks.cs               ADO.NET provider overhead
     RecordSizeBenchmarks.cs           Payload size impact
   Macro/                              Sustained workload benchmarks

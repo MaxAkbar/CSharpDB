@@ -17,6 +17,7 @@ public sealed class Database : IAsyncDisposable
     private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
+    private long _observedSchemaVersion;
     private bool _inTransaction;
 
     /// <summary>
@@ -39,6 +40,7 @@ public sealed class Database : IAsyncDisposable
         _recordSerializer = recordSerializer;
         _planner = new QueryPlanner(pager, catalog, recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
+        _observedSchemaVersion = catalog.SchemaVersion;
     }
 
     /// <summary>
@@ -71,6 +73,7 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public async ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
+        InvalidateCachesIfSchemaChanged();
         var stmt = ParseCached(sql);
         return await ExecuteStatementAsync(stmt, ct);
     }
@@ -202,6 +205,12 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public IReadOnlyCollection<TriggerSchema> GetTriggers() => _catalog.GetTriggers();
 
+    /// <summary>
+    /// Monotonic in-process token that advances on schema mutations (DDL).
+    /// Useful for cache invalidation.
+    /// </summary>
+    public long SchemaVersion => _catalog.SchemaVersion;
+
     // ============ Document Collection API ============
 
     private const string CollectionPrefix = "_col_";
@@ -213,6 +222,7 @@ public sealed class Database : IAsyncDisposable
     public async ValueTask<Collection<T>> GetCollectionAsync<T>(string name, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        InvalidateCachesIfSchemaChanged();
 
         string catalogName = $"{CollectionPrefix}{name}";
 
@@ -278,6 +288,17 @@ public sealed class Database : IAsyncDisposable
         _statementCache.GetOrAdd(
             sql,
             static s => Parser.TryParseSimpleSelect(s, out var stmt) ? stmt : Parser.Parse(s));
+
+    private void InvalidateCachesIfSchemaChanged()
+    {
+        long currentVersion = _catalog.SchemaVersion;
+        if (currentVersion == _observedSchemaVersion)
+            return;
+
+        _statementCache.Clear();
+        _collectionCache.Clear();
+        _observedSchemaVersion = currentVersion;
+    }
 
     private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
     {
@@ -356,6 +377,9 @@ public sealed class Database : IAsyncDisposable
     {
         private readonly int _capacity;
         private readonly Dictionary<string, Statement> _map = new(StringComparer.Ordinal);
+        private readonly Queue<string> _insertionOrder = new();
+        private readonly Queue<string> _recentMissOrder = new();
+        private readonly HashSet<string> _recentMissSet = new(StringComparer.Ordinal);
         private string? _lastSql;
         private Statement? _lastStatement;
         private readonly object _gate = new();
@@ -410,14 +434,64 @@ public sealed class Database : IAsyncDisposable
 
                 if (_map.Count < _capacity)
                 {
-                    // Keep the cache bounded and avoid miss-time churn once full.
-                    // Ad-hoc one-off SQL still benefits from the last-statement fast slot.
                     _map[sql] = parsed;
+                    _insertionOrder.Enqueue(sql);
+                }
+                else if (parsed is SelectStatement && ShouldPromoteSelectAtCapacity(sql))
+                {
+                    // Only promote SELECT statements that show short-term reuse.
+                    // This avoids steady eviction churn on one-off/high-cardinality SQL.
+                    EvictOldestEntry();
+                    _map[sql] = parsed;
+                    _insertionOrder.Enqueue(sql);
                 }
 
                 _lastSql = sql;
                 _lastStatement = statementToReturn;
                 return statementToReturn;
+            }
+        }
+
+        private bool ShouldPromoteSelectAtCapacity(string sql)
+        {
+            if (_recentMissSet.Remove(sql))
+                return true;
+
+            _recentMissSet.Add(sql);
+            _recentMissOrder.Enqueue(sql);
+
+            while (_recentMissOrder.Count > _capacity)
+            {
+                string candidate = _recentMissOrder.Dequeue();
+                _recentMissSet.Remove(candidate);
+            }
+
+            return false;
+        }
+
+        private void EvictOldestEntry()
+        {
+            while (_insertionOrder.Count > 0)
+            {
+                string candidate = _insertionOrder.Dequeue();
+                if (_map.Remove(candidate))
+                    return;
+            }
+        }
+
+        internal void Clear()
+        {
+            if (_capacity == 0)
+                return;
+
+            lock (_gate)
+            {
+                _map.Clear();
+                _insertionOrder.Clear();
+                _recentMissOrder.Clear();
+                _recentMissSet.Clear();
+                _lastSql = null;
+                _lastStatement = null;
             }
         }
     }

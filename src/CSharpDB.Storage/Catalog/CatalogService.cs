@@ -18,6 +18,13 @@ internal sealed class CatalogService
     private readonly ICatalogStore _catalogStore;
     private readonly CatalogCache _cacheState = new();
     private BTree? _catalogTree;
+    private long _schemaVersion;
+    private IndexSchema[] _indexesSnapshot = Array.Empty<IndexSchema>();
+    private string[] _viewNamesSnapshot = Array.Empty<string>();
+    private TriggerSchema[] _triggersSnapshot = Array.Empty<TriggerSchema>();
+    private bool _indexesSnapshotDirty = true;
+    private bool _viewNamesSnapshotDirty = true;
+    private bool _triggersSnapshotDirty = true;
     private Dictionary<string, TableSchema> _cache => _cacheState.Tables;
     private Dictionary<string, uint> _tableRootPages => _cacheState.TableRootPages;
     private Dictionary<string, BTree> _tableTrees => _cacheState.TableTrees;
@@ -36,6 +43,7 @@ internal sealed class CatalogService
     // Trigger catalog
     private BTree? _triggerCatalogTree;
     private Dictionary<string, TriggerSchema> _triggerCache => _cacheState.Triggers;
+    private Dictionary<string, TriggerSchema[]> _triggersByTable => _cacheState.TriggersByTable;
 
     private CatalogService(
         Pager pager,
@@ -90,6 +98,8 @@ internal sealed class CatalogService
 
         return catalog;
     }
+
+    public long SchemaVersion => Volatile.Read(ref _schemaVersion);
 
     private async ValueTask EnsureCatalogTreeAsync(CancellationToken ct = default)
     {
@@ -216,6 +226,7 @@ internal sealed class CatalogService
             {
                 var triggerSchema = _schemaSerializer.DeserializeTrigger(trigCursor.CurrentValue.Span);
                 _triggerCache[triggerSchema.TriggerName] = triggerSchema;
+                AddTriggerToTableCache(triggerSchema);
             }
         }
     }
@@ -282,6 +293,7 @@ internal sealed class CatalogService
         _cache[schema.TableName] = schema;
         _tableRootPages[schema.TableName] = tableRootPage;
         _tableTrees[schema.TableName] = new BTree(_pager, tableRootPage);
+        IncrementSchemaVersion();
     }
 
     public async ValueTask DropTableAsync(string tableName, CancellationToken ct = default)
@@ -301,6 +313,7 @@ internal sealed class CatalogService
         _cache.Remove(tableName);
         _tableRootPages.Remove(tableName);
         _tableTrees.Remove(tableName);
+        IncrementSchemaVersion();
     }
 
     /// <summary>
@@ -331,6 +344,8 @@ internal sealed class CatalogService
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
             _tableTrees[newSchema.TableName] = existingTree;
+
+        IncrementSchemaVersion();
     }
 
     /// <summary>
@@ -368,7 +383,16 @@ internal sealed class CatalogService
         return schema;
     }
 
-    public IReadOnlyCollection<IndexSchema> GetIndexes() => _indexCache.Values.ToArray();
+    public IReadOnlyCollection<IndexSchema> GetIndexes()
+    {
+        if (_indexesSnapshotDirty)
+        {
+            _indexesSnapshot = _indexCache.Values.ToArray();
+            _indexesSnapshotDirty = false;
+        }
+
+        return _indexesSnapshot;
+    }
 
     public IReadOnlyList<IndexSchema> GetIndexesForTable(string tableName)
     {
@@ -430,6 +454,8 @@ internal sealed class CatalogService
         _indexRootPages[schema.IndexName] = indexRootPage;
         _indexStores[schema.IndexName] = _indexProvider.CreateIndexStore(_pager, indexRootPage);
         AddIndexToTableCache(schema);
+        _indexesSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     public async ValueTask DropIndexAsync(string indexName, CancellationToken ct = default)
@@ -444,6 +470,8 @@ internal sealed class CatalogService
         _indexRootPages.Remove(indexName);
         _indexStores.Remove(indexName);
         RemoveIndexFromTableCache(schema);
+        _indexesSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     // ============ VIEW operations ============
@@ -454,7 +482,16 @@ internal sealed class CatalogService
         return sql;
     }
 
-    public IReadOnlyCollection<string> GetViewNames() => _viewCache.Keys.ToArray();
+    public IReadOnlyCollection<string> GetViewNames()
+    {
+        if (_viewNamesSnapshotDirty)
+        {
+            _viewNamesSnapshot = _viewCache.Keys.ToArray();
+            _viewNamesSnapshotDirty = false;
+        }
+
+        return _viewNamesSnapshot;
+    }
 
     public bool IsView(string name) => _viewCache.ContainsKey(name);
 
@@ -475,6 +512,8 @@ internal sealed class CatalogService
         await _viewCatalogTree!.InsertAsync(key, payload, ct);
 
         _viewCache[viewName] = sql;
+        _viewNamesSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     public async ValueTask DropViewAsync(string viewName, CancellationToken ct = default)
@@ -486,6 +525,8 @@ internal sealed class CatalogService
         await _viewCatalogTree!.DeleteAsync(key, ct);
 
         _viewCache.Remove(viewName);
+        _viewNamesSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     // ============ TRIGGER operations ============
@@ -496,17 +537,23 @@ internal sealed class CatalogService
         return schema;
     }
 
-    public IReadOnlyCollection<TriggerSchema> GetTriggers() => _triggerCache.Values.ToArray();
+    public IReadOnlyCollection<TriggerSchema> GetTriggers()
+    {
+        if (_triggersSnapshotDirty)
+        {
+            _triggersSnapshot = _triggerCache.Values.ToArray();
+            _triggersSnapshotDirty = false;
+        }
+
+        return _triggersSnapshot;
+    }
 
     public IReadOnlyList<TriggerSchema> GetTriggersForTable(string tableName)
     {
-        var result = new List<TriggerSchema>();
-        foreach (var trig in _triggerCache.Values)
-        {
-            if (string.Equals(trig.TableName, tableName, StringComparison.OrdinalIgnoreCase))
-                result.Add(trig);
-        }
-        return result;
+        if (_triggersByTable.TryGetValue(tableName, out var triggers))
+            return triggers;
+
+        return Array.Empty<TriggerSchema>();
     }
 
     public async ValueTask CreateTriggerAsync(TriggerSchema schema, CancellationToken ct = default)
@@ -521,17 +568,23 @@ internal sealed class CatalogService
         await _triggerCatalogTree!.InsertAsync(key, payload, ct);
 
         _triggerCache[schema.TriggerName] = schema;
+        AddTriggerToTableCache(schema);
+        _triggersSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     public async ValueTask DropTriggerAsync(string triggerName, CancellationToken ct = default)
     {
-        if (!_triggerCache.ContainsKey(triggerName))
+        if (!_triggerCache.TryGetValue(triggerName, out var schema))
             throw new CSharpDbException(ErrorCode.TriggerNotFound, $"Trigger '{triggerName}' not found.");
 
         long key = _schemaSerializer.TriggerNameToKey(triggerName);
         await _triggerCatalogTree!.DeleteAsync(key, ct);
 
         _triggerCache.Remove(triggerName);
+        RemoveTriggerFromTableCache(schema);
+        _triggersSnapshotDirty = true;
+        IncrementSchemaVersion();
     }
 
     // ============ Helpers ============
@@ -544,6 +597,21 @@ internal sealed class CatalogService
     private void RemoveIndexFromTableCache(IndexSchema schema)
     {
         _cacheState.RemoveIndexFromTable(schema);
+    }
+
+    private void AddTriggerToTableCache(TriggerSchema schema)
+    {
+        _cacheState.AddTriggerToTable(schema);
+    }
+
+    private void RemoveTriggerFromTableCache(TriggerSchema schema)
+    {
+        _cacheState.RemoveTriggerFromTable(schema);
+    }
+
+    private void IncrementSchemaVersion()
+    {
+        Interlocked.Increment(ref _schemaVersion);
     }
 
     private async ValueTask PersistTableRootPageChangeAsync(string tableName, CancellationToken ct)

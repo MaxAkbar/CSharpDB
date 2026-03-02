@@ -42,6 +42,8 @@ public sealed class SchemaCatalog
         return new SchemaCatalog(service);
     }
 
+    public long SchemaVersion => _service.SchemaVersion;
+
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
 
     public uint GetTableRootPage(string tableName) => _service.GetTableRootPage(tableName);
