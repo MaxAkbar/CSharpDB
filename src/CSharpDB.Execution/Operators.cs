@@ -176,6 +176,21 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
             padded[i] = DbValue.Null;
         return padded;
     }
+
+    internal async ValueTask<DbValue[]?> DecodeFullRowByRowIdAsync(long rowId, CancellationToken ct = default)
+    {
+        byte[]? payload;
+        if (_tree.TryFindCached(rowId, out var cachedPayload))
+        {
+            payload = cachedPayload;
+        }
+        else
+        {
+            payload = await _tree.FindAsync(rowId, ct);
+        }
+
+        return payload == null ? null : DecodeFullRow(payload);
+    }
 }
 
 /// <summary>
@@ -2084,15 +2099,27 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         }
     }
 
-    private readonly struct PayloadRankedRow
+    private readonly struct RowIdRankedRow
     {
         public readonly RankedRow Ranked;
-        public readonly byte[] Payload;
+        public readonly long RowId;
 
-        public PayloadRankedRow(RankedRow ranked, byte[] payload)
+        public RowIdRankedRow(RankedRow ranked, long rowId)
         {
             Ranked = ranked;
-            Payload = payload;
+            RowId = rowId;
+        }
+    }
+
+    private readonly struct SingleKeyRowIdRankedRow
+    {
+        public readonly DbValue Key;
+        public readonly long RowId;
+
+        public SingleKeyRowIdRankedRow(DbValue key, long rowId)
+        {
+            Key = key;
+            RowId = rowId;
         }
     }
 
@@ -2211,21 +2238,57 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         tableScan.SetDecodedColumnUpperBound(maxOrderByColumnIndex);
 
         await _source.OpenAsync(ct);
+
+        if (_compiledOrderBy.Length == 1)
+        {
+            var clause = _compiledOrderBy[0];
+            var singleKeyHeap = new List<SingleKeyRowIdRankedRow>(_topN);
+
+            while (await _source.MoveNextAsync(ct))
+            {
+                var candidate = new SingleKeyRowIdRankedRow(
+                    clause.EvaluateRow(_source.Current),
+                    tableScan.CurrentRowId);
+
+                if (singleKeyHeap.Count < _topN)
+                {
+                    HeapPushSingleKeyRowId(singleKeyHeap, candidate);
+                    continue;
+                }
+
+                // Root stores the current worst row among the retained set.
+                // Replace only when the new row is strictly better.
+                if (CompareSingleKeyRowIdRankedRows(candidate, singleKeyHeap[0]) < 0)
+                {
+                    singleKeyHeap[0] = candidate;
+                    HeapSiftDownSingleKeyRowId(singleKeyHeap, 0);
+                }
+            }
+
+            singleKeyHeap.Sort(CompareSingleKeyRowIdRankedRows);
+            _sortedRows!.Capacity = singleKeyHeap.Count;
+            for (int i = 0; i < singleKeyHeap.Count; i++)
+            {
+                var fullRow = await tableScan.DecodeFullRowByRowIdAsync(singleKeyHeap[i].RowId, ct);
+                if (fullRow != null)
+                    _sortedRows.Add(fullRow);
+            }
+
+            return true;
+        }
+
         bool sourceReusesCurrentRowBuffer = _source.ReusesCurrentRowBuffer;
-        var heap = new List<PayloadRankedRow>(_topN);
+        var heap = new List<RowIdRankedRow>(_topN);
 
         while (await _source.MoveNextAsync(ct))
         {
             var rankedRow = BuildRankedRow(_source.Current);
+            long rowId = tableScan.CurrentRowId;
 
             if (heap.Count < _topN)
             {
-                var payload = tableScan.CurrentPayload;
-                if (payload.IsEmpty)
-                    continue;
-
                 var owned = EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer);
-                HeapPushPayload(heap, new PayloadRankedRow(owned, payload.ToArray()));
+                HeapPushRowId(heap, new RowIdRankedRow(owned, rowId));
                 continue;
             }
 
@@ -2233,20 +2296,20 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
             // Replace only when the new row is strictly better.
             if (CompareRankedRows(rankedRow, heap[0].Ranked) < 0)
             {
-                var payload = tableScan.CurrentPayload;
-                if (payload.IsEmpty)
-                    continue;
-
                 var owned = EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer);
-                heap[0] = new PayloadRankedRow(owned, payload.ToArray());
-                HeapSiftDownPayload(heap, 0);
+                heap[0] = new RowIdRankedRow(owned, rowId);
+                HeapSiftDownRowId(heap, 0);
             }
         }
 
-        heap.Sort(ComparePayloadRankedRows);
+        heap.Sort(CompareRowIdRankedRows);
         _sortedRows!.Capacity = heap.Count;
         for (int i = 0; i < heap.Count; i++)
-            _sortedRows.Add(tableScan.DecodeFullRow(heap[i].Payload));
+        {
+            var fullRow = await tableScan.DecodeFullRowByRowIdAsync(heap[i].RowId, ct);
+            if (fullRow != null)
+                _sortedRows.Add(fullRow);
+        }
 
         return true;
     }
@@ -2287,9 +2350,18 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         return 0;
     }
 
-    private int ComparePayloadRankedRows(PayloadRankedRow left, PayloadRankedRow right)
+    private int CompareRowIdRankedRows(RowIdRankedRow left, RowIdRankedRow right)
     {
         return CompareRankedRows(left.Ranked, right.Ranked);
+    }
+
+    private int CompareSingleKeyRowIdRankedRows(SingleKeyRowIdRankedRow left, SingleKeyRowIdRankedRow right)
+    {
+        int cmp = DbValue.Compare(left.Key, right.Key);
+        if (cmp == 0)
+            return 0;
+
+        return cmp * _compiledOrderBy[0].Direction;
     }
 
     private void HeapPush(List<RankedRow> heap, RankedRow value)
@@ -2334,19 +2406,19 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         }
     }
 
-    private void HeapPushPayload(List<PayloadRankedRow> heap, PayloadRankedRow value)
+    private void HeapPushRowId(List<RowIdRankedRow> heap, RowIdRankedRow value)
     {
         heap.Add(value);
-        HeapSiftUpPayload(heap, heap.Count - 1);
+        HeapSiftUpRowId(heap, heap.Count - 1);
     }
 
-    private void HeapSiftUpPayload(List<PayloadRankedRow> heap, int index)
+    private void HeapSiftUpRowId(List<RowIdRankedRow> heap, int index)
     {
         while (index > 0)
         {
             int parent = (index - 1) >> 1;
             // Max-heap by ORDER BY rank: "larger" means worse.
-            if (ComparePayloadRankedRows(heap[index], heap[parent]) <= 0)
+            if (CompareRowIdRankedRows(heap[index], heap[parent]) <= 0)
                 break;
 
             (heap[parent], heap[index]) = (heap[index], heap[parent]);
@@ -2354,7 +2426,7 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         }
     }
 
-    private void HeapSiftDownPayload(List<PayloadRankedRow> heap, int index)
+    private void HeapSiftDownRowId(List<RowIdRankedRow> heap, int index)
     {
         int count = heap.Count;
         while (true)
@@ -2365,10 +2437,52 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
 
             int right = left + 1;
             int largest = left;
-            if (right < count && ComparePayloadRankedRows(heap[right], heap[left]) > 0)
+            if (right < count && CompareRowIdRankedRows(heap[right], heap[left]) > 0)
                 largest = right;
 
-            if (ComparePayloadRankedRows(heap[largest], heap[index]) <= 0)
+            if (CompareRowIdRankedRows(heap[largest], heap[index]) <= 0)
+                return;
+
+            (heap[index], heap[largest]) = (heap[largest], heap[index]);
+            index = largest;
+        }
+    }
+
+    private void HeapPushSingleKeyRowId(List<SingleKeyRowIdRankedRow> heap, SingleKeyRowIdRankedRow value)
+    {
+        heap.Add(value);
+        HeapSiftUpSingleKeyRowId(heap, heap.Count - 1);
+    }
+
+    private void HeapSiftUpSingleKeyRowId(List<SingleKeyRowIdRankedRow> heap, int index)
+    {
+        while (index > 0)
+        {
+            int parent = (index - 1) >> 1;
+            // Max-heap by ORDER BY rank: "larger" means worse.
+            if (CompareSingleKeyRowIdRankedRows(heap[index], heap[parent]) <= 0)
+                break;
+
+            (heap[parent], heap[index]) = (heap[index], heap[parent]);
+            index = parent;
+        }
+    }
+
+    private void HeapSiftDownSingleKeyRowId(List<SingleKeyRowIdRankedRow> heap, int index)
+    {
+        int count = heap.Count;
+        while (true)
+        {
+            int left = (index << 1) + 1;
+            if (left >= count)
+                return;
+
+            int right = left + 1;
+            int largest = left;
+            if (right < count && CompareSingleKeyRowIdRankedRows(heap[right], heap[left]) > 0)
+                largest = right;
+
+            if (CompareSingleKeyRowIdRankedRows(heap[largest], heap[index]) <= 0)
                 return;
 
             (heap[index], heap[largest]) = (heap[largest], heap[index]);
@@ -2617,7 +2731,78 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 
         _projectionColumnIndices = (int[])columnIndices.Clone();
         OutputSchema = outputSchema;
+        TryApplyDecodeBoundPushdown();
         return true;
+    }
+
+    private void TryApplyDecodeBoundPushdown()
+    {
+        if (_projectionColumnIndices == null)
+            return;
+
+        // Residual predicates are evaluated on full combined rows; keep full decode in that case.
+        if (_residualPredicate != null)
+            return;
+
+        int maxLeftColumnIndex = -1;
+        int maxRightColumnIndex = -1;
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            int projectionIndex = _projectionColumnIndices[i];
+            if (projectionIndex < _leftColCount)
+            {
+                if (projectionIndex > maxLeftColumnIndex)
+                    maxLeftColumnIndex = projectionIndex;
+            }
+            else
+            {
+                int rightIndex = projectionIndex - _leftColCount;
+                if (rightIndex > maxRightColumnIndex)
+                    maxRightColumnIndex = rightIndex;
+            }
+        }
+
+        for (int i = 0; i < _leftKeyIndices.Length; i++)
+        {
+            int keyIndex = _leftKeyIndices[i];
+            if (keyIndex > maxLeftColumnIndex)
+                maxLeftColumnIndex = keyIndex;
+        }
+
+        for (int i = 0; i < _rightKeyIndices.Length; i++)
+        {
+            int keyIndex = _rightKeyIndices[i];
+            if (keyIndex > maxRightColumnIndex)
+                maxRightColumnIndex = keyIndex;
+        }
+
+        TrySetDecodedColumnUpperBound(_left, maxLeftColumnIndex);
+        TrySetDecodedColumnUpperBound(_right, maxRightColumnIndex);
+    }
+
+    private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
+    {
+        if (maxColumnIndex < 0)
+            return;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+        }
     }
 
     private IOperator BuildSource => _buildRightSide ? _right : _left;
@@ -2948,6 +3133,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
     private DbValue[]? _rightRowBuffer;
     private DbValue[]? _residualRowBuffer;
     private int[]? _projectionColumnIndices;
+    private int? _maxDecodedRightColumnIndex;
 
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
@@ -2986,7 +3172,12 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 
         await _outer.OpenAsync(ct);
         Current = Array.Empty<DbValue>();
-        _rightRowBuffer = _rightColCount == 0 ? Array.Empty<DbValue>() : new DbValue[_rightColCount];
+        int decodedRightColumnCount = _maxDecodedRightColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
+            : _rightColCount;
+        _rightRowBuffer = decodedRightColumnCount == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[decodedRightColumnCount];
         _residualRowBuffer = _residualPredicate == null
             ? null
             : new DbValue[_leftColCount + _rightColCount];
@@ -3083,7 +3274,64 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 
         _projectionColumnIndices = (int[])columnIndices.Clone();
         OutputSchema = outputSchema;
+        TryApplyDecodeBoundPushdown();
         return true;
+    }
+
+    private void TryApplyDecodeBoundPushdown()
+    {
+        if (_projectionColumnIndices == null)
+            return;
+
+        // Residual predicates are evaluated on full combined rows; keep full decode in that case.
+        if (_residualPredicate != null)
+            return;
+
+        int maxOuterColumnIndex = _outerKeyIndex;
+        int maxRightColumnIndex = -1;
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            int projectionIndex = _projectionColumnIndices[i];
+            if (projectionIndex < _leftColCount)
+            {
+                if (projectionIndex > maxOuterColumnIndex)
+                    maxOuterColumnIndex = projectionIndex;
+            }
+            else
+            {
+                int rightIndex = projectionIndex - _leftColCount;
+                if (rightIndex > maxRightColumnIndex)
+                    maxRightColumnIndex = rightIndex;
+            }
+        }
+
+        _maxDecodedRightColumnIndex = maxRightColumnIndex;
+        TrySetDecodedColumnUpperBound(_outer, maxOuterColumnIndex);
+    }
+
+    private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
+    {
+        if (maxColumnIndex < 0)
+            return;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+        }
     }
 
     private static bool TryConvertLookupKey(DbValue value, out long key)
@@ -3160,13 +3408,21 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 
     private DbValue[] DecodeRightRowIntoBuffer(byte[] payload)
     {
-        var row = _rightRowBuffer ??= _rightColCount == 0
-            ? Array.Empty<DbValue>()
-            : new DbValue[_rightColCount];
+        var row = _rightRowBuffer;
+        if (row == null)
+        {
+            int decodedRightColumnCount = _maxDecodedRightColumnIndex.HasValue
+                ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
+                : _rightColCount;
+            row = decodedRightColumnCount == 0
+                ? Array.Empty<DbValue>()
+                : new DbValue[decodedRightColumnCount];
+            _rightRowBuffer = row;
+        }
 
         int decoded = _recordSerializer.DecodeInto(payload, row);
-        if (decoded < _rightColCount)
-            Array.Fill(row, DbValue.Null, decoded, _rightColCount - decoded);
+        if (decoded < row.Length)
+            Array.Fill(row, DbValue.Null, decoded, row.Length - decoded);
         return row;
     }
 
@@ -3281,8 +3537,16 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private int[]? _projectionColumnIndices;
-    private List<DbValue[]>? _results;
-    private int _index;
+    private List<DbValue[]>? _rightRows;
+    private DbValue[]? _currentLeftRow;
+    private int _currentRightIndex;
+    private bool _currentLeftMatched;
+    private bool _leftExhausted;
+    private bool[]? _rightMatched;
+    private int _rightOuterEmitIndex;
+    private DbValue[]? _conditionBuffer;
+    private List<DbValue[]>? _precomputedRows;
+    private int _precomputedIndex;
 
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
@@ -3315,27 +3579,120 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
         await _left.OpenAsync(ct);
         await _right.OpenAsync(ct);
 
-        // Materialize both sides
-        var leftRows = new List<DbValue[]>();
-        bool cloneLeftRows = _left.ReusesCurrentRowBuffer;
-        while (await _left.MoveNextAsync(ct))
-            leftRows.Add(cloneLeftRows ? (DbValue[])_left.Current.Clone() : _left.Current);
-
+        // Materialize right side once; left side is streamed.
         var rightRows = new List<DbValue[]>();
         bool cloneRightRows = _right.ReusesCurrentRowBuffer;
         while (await _right.MoveNextAsync(ct))
             rightRows.Add(cloneRightRows ? (DbValue[])_right.Current.Clone() : _right.Current);
 
-        _results = ComputeJoin(leftRows, rightRows);
-        _index = -1;
+        _rightRows = rightRows;
+        _rightMatched = _joinType == JoinType.RightOuter
+            ? new bool[rightRows.Count]
+            : null;
+        _precomputedRows = null;
+        _precomputedIndex = -1;
+        _currentLeftRow = null;
+        _currentRightIndex = 0;
+        _currentLeftMatched = false;
+        _leftExhausted = false;
+        _rightOuterEmitIndex = 0;
+        _conditionBuffer = _conditionEvaluator == null
+            ? null
+            : new DbValue[_leftColCount + _rightColCount];
+
+        if (_joinType == JoinType.Cross)
+        {
+            var results = rightRows.Count == 0
+                ? new List<DbValue[]>()
+                : new List<DbValue[]>(rightRows.Count * 4);
+            while (await _left.MoveNextAsync(ct))
+            {
+                var leftRow = _left.Current;
+                for (int ri = 0; ri < rightRows.Count; ri++)
+                    results.Add(CreateMatchedRow(leftRow, rightRows[ri]));
+            }
+
+            _precomputedRows = results;
+            _rightRows = null;
+            _leftExhausted = true;
+        }
+
+        Current = Array.Empty<DbValue>();
     }
 
-    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
-        _index++;
-        if (_index >= _results!.Count) return ValueTask.FromResult(false);
-        Current = _results[_index];
-        return ValueTask.FromResult(true);
+        if (_precomputedRows != null)
+        {
+            _precomputedIndex++;
+            if (_precomputedIndex >= _precomputedRows.Count)
+                return false;
+
+            Current = _precomputedRows[_precomputedIndex];
+            return true;
+        }
+
+        var rightRows = _rightRows ?? throw new InvalidOperationException("Operator is not open.");
+
+        while (true)
+        {
+            if (_currentLeftRow == null && !_leftExhausted)
+            {
+                if (await _left.MoveNextAsync(ct))
+                {
+                    _currentLeftRow = _left.Current;
+                    _currentRightIndex = 0;
+                    _currentLeftMatched = false;
+                }
+                else
+                {
+                    _leftExhausted = true;
+                }
+            }
+
+            if (_currentLeftRow != null)
+            {
+                while (_currentRightIndex < rightRows.Count)
+                {
+                    int rightIndex = _currentRightIndex++;
+                    var rightRow = rightRows[rightIndex];
+                    if (!PassesCondition(_currentLeftRow, rightRow))
+                        continue;
+
+                    _currentLeftMatched = true;
+                    if (_joinType == JoinType.RightOuter)
+                        _rightMatched?[rightIndex] = true;
+
+                    Current = CreateMatchedRow(_currentLeftRow, rightRow);
+                    return true;
+                }
+
+                if (_joinType == JoinType.LeftOuter && !_currentLeftMatched)
+                {
+                    Current = CreateLeftOuterRow(_currentLeftRow);
+                    _currentLeftRow = null;
+                    return true;
+                }
+
+                _currentLeftRow = null;
+                continue;
+            }
+
+            if (_joinType == JoinType.RightOuter && _rightMatched != null)
+            {
+                while (_rightOuterEmitIndex < rightRows.Count)
+                {
+                    int rightIndex = _rightOuterEmitIndex++;
+                    if (_rightMatched[rightIndex])
+                        continue;
+
+                    Current = CreateRightOuterRow(rightRows[rightIndex]);
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -3361,90 +3718,77 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
 
         _projectionColumnIndices = (int[])columnIndices.Clone();
         OutputSchema = outputSchema;
+        TryApplyDecodeBoundPushdown();
         return true;
     }
 
-    private List<DbValue[]> ComputeJoin(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
+    private void TryApplyDecodeBoundPushdown()
     {
-        var results = new List<DbValue[]>();
-        var conditionBuffer = _conditionEvaluator == null
-            ? null
-            : new DbValue[_leftColCount + _rightColCount];
+        if (_projectionColumnIndices == null)
+            return;
 
-        switch (_joinType)
+        // Join conditions can reference arbitrary columns; keep full decode when condition is present.
+        if (_conditionEvaluator != null)
+            return;
+
+        int maxLeftColumnIndex = -1;
+        int maxRightColumnIndex = -1;
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
         {
-            case JoinType.Cross:
-                foreach (var left in leftRows)
-                    foreach (var right in rightRows)
-                        results.Add(CreateMatchedRow(left, right));
-                break;
-
-            case JoinType.Inner:
-                foreach (var left in leftRows)
-                {
-                    foreach (var right in rightRows)
-                    {
-                        if (!PassesCondition(left, right, conditionBuffer))
-                            continue;
-
-                        results.Add(CreateMatchedRow(left, right));
-                    }
-                }
-                break;
-
-            case JoinType.LeftOuter:
-                foreach (var left in leftRows)
-                {
-                    bool matched = false;
-                    foreach (var right in rightRows)
-                    {
-                        if (!PassesCondition(left, right, conditionBuffer))
-                            continue;
-
-                        results.Add(CreateMatchedRow(left, right));
-                        matched = true;
-                    }
-                    if (!matched)
-                        results.Add(CreateLeftOuterRow(left));
-                }
-                break;
-
-            case JoinType.RightOuter:
-                var rightMatched = new bool[rightRows.Count];
-                foreach (var left in leftRows)
-                {
-                    for (int ri = 0; ri < rightRows.Count; ri++)
-                    {
-                        var right = rightRows[ri];
-                        if (!PassesCondition(left, right, conditionBuffer))
-                            continue;
-
-                        results.Add(CreateMatchedRow(left, right));
-                        rightMatched[ri] = true;
-                    }
-                }
-                // Emit unmatched right rows with NULLs on the left
-                for (int ri = 0; ri < rightRows.Count; ri++)
-                {
-                    if (!rightMatched[ri])
-                        results.Add(CreateRightOuterRow(rightRows[ri]));
-                }
-                break;
+            int projectionIndex = _projectionColumnIndices[i];
+            if (projectionIndex < _leftColCount)
+            {
+                if (projectionIndex > maxLeftColumnIndex)
+                    maxLeftColumnIndex = projectionIndex;
+            }
+            else
+            {
+                int rightIndex = projectionIndex - _leftColCount;
+                if (rightIndex > maxRightColumnIndex)
+                    maxRightColumnIndex = rightIndex;
+            }
         }
 
-        return results;
+        TrySetDecodedColumnUpperBound(_left, maxLeftColumnIndex);
+        TrySetDecodedColumnUpperBound(_right, maxRightColumnIndex);
     }
 
-    private bool PassesCondition(DbValue[] left, DbValue[] right, DbValue[]? buffer)
+    private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
+    {
+        if (maxColumnIndex < 0)
+            return;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+        }
+    }
+
+    private bool PassesCondition(DbValue[] left, DbValue[] right)
     {
         if (_conditionEvaluator == null)
             return true;
 
-        var combined = buffer!;
+        var combined = _conditionBuffer ??= new DbValue[_leftColCount + _rightColCount];
         left.CopyTo(combined, 0);
         right.CopyTo(combined, left.Length);
         return _conditionEvaluator(combined).IsTruthy;
     }
+
 
     private DbValue[] CreateMatchedRow(DbValue[] leftRow, DbValue[] rightRow)
     {
