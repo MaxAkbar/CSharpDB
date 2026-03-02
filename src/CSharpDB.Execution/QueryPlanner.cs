@@ -92,10 +92,10 @@ public sealed class QueryPlanner
     private const int MaxCompiledExpressionCacheEntries = 4096;
 
     /// <summary>
-    /// When true, simple PK equality lookups (SELECT * WHERE pk = N) will try a synchronous
+    /// When true, simple PK equality lookups (SELECT * / PK-only projection WHERE pk = N) will try a synchronous
     /// cache-only path first, bypassing the async operator pipeline. Falls back to async on cache miss.
     /// </summary>
-    public bool PreferSyncPointLookups { get; set; }
+    public bool PreferSyncPointLookups { get; set; } = true;
 
     public QueryPlanner(
         Pager pager,
@@ -1136,21 +1136,23 @@ public sealed class QueryPlanner
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
+        bool selectStar = stmt.Columns.Any(c => c.IsStar);
 
         // Sync fast path: try cache-only lookup to bypass the async operator pipeline
-        if (PreferSyncPointLookups && residualWhere == null && stmt.Columns.Any(c => c.IsStar))
+        if (PreferSyncPointLookups && residualWhere == null && selectStar)
         {
             if (tableTree.TryFindCached(lookupValue, out var payload))
             {
                 var row = payload != null ? _recordSerializer.Decode(payload) : null;
-                result = QueryResult.FromSyncLookup(row, schema.Columns.ToArray());
+                var schemaArray = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
+                result = QueryResult.FromSyncLookup(row, schemaArray);
                 return true;
             }
             // Cache miss — fall through to create operator (existing async path)
         }
 
         // SELECT * — just PrimaryKeyLookupOperator
-        if (stmt.Columns.Any(c => c.IsStar))
+        if (selectStar)
         {
             IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
             if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
@@ -1167,6 +1169,21 @@ public sealed class QueryPlanner
             // PK-only projection with no residual filter: skip row decode entirely.
             if (residualWhere == null && IsPrimaryKeyOnlyProjection(columnIndices, pkIdx))
             {
+                if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
+                {
+                    DbValue[]? row = null;
+                    if (payload != null)
+                    {
+                        row = new DbValue[outputCols.Length];
+                        var keyValue = DbValue.FromInteger(lookupValue);
+                        for (int i = 0; i < row.Length; i++)
+                            row[i] = keyValue;
+                    }
+
+                    result = QueryResult.FromSyncLookup(row, outputCols);
+                    return true;
+                }
+
                 IOperator op = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols);
                 result = new QueryResult(op);
                 return true;

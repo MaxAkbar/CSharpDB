@@ -4,7 +4,7 @@ namespace CSharpDB.Storage.Indexing;
 /// Decorates an index store with a bounded in-memory cache for key lookups.
 /// Write operations remain delegated to the inner store.
 /// </summary>
-public sealed class CachingIndexStore : IIndexStore
+public sealed class CachingIndexStore : IIndexStore, ICacheAwareIndexStore
 {
     private readonly IIndexStore _inner;
     private readonly int _capacity;
@@ -55,6 +55,21 @@ public sealed class CachingIndexStore : IIndexStore
     }
 
     public IIndexCursor CreateCursor(IndexScanRange range) => _inner.CreateCursor(range);
+
+    public bool TryFindCached(long key, out byte[]? payload)
+    {
+        if (TryGetCached(key, out payload))
+            return true;
+
+        if (_inner is ICacheAwareIndexStore innerCache && innerCache.TryFindCached(key, out payload))
+        {
+            Cache(key, payload);
+            return true;
+        }
+
+        payload = null;
+        return false;
+    }
 
     private bool TryGetCached(long key, out byte[]? payload)
     {

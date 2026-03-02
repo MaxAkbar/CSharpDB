@@ -3084,7 +3084,22 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         _hasPreDecodeFilter = true;
     }
 
-    public async ValueTask OpenAsync(CancellationToken ct = default)
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_indexStore is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(_seekValue, out var cachedPayload))
+        {
+            _rowIdPayload = cachedPayload ?? ReadOnlyMemory<byte>.Empty;
+            _rowIdPayloadOffset = 0;
+            _rowBuffer = null;
+            Current = Array.Empty<DbValue>();
+            return ValueTask.CompletedTask;
+        }
+
+        return OpenUncachedAsync(ct);
+    }
+
+    private async ValueTask OpenUncachedAsync(CancellationToken ct)
     {
         var payload = await _indexStore.FindAsync(_seekValue, ct);
         _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
@@ -3094,47 +3109,65 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         Current = Array.Empty<DbValue>();
     }
 
-    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
         while (true)
         {
             if (_rowIdPayloadOffset + 8 > _rowIdPayload.Length)
-                return false;
+                return ValueTask.FromResult(false);
 
             long rowId = BinaryPrimitives.ReadInt64LittleEndian(
                 _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
             _rowIdPayloadOffset += 8;
             CurrentRowId = rowId;
 
+            if (_tableTree.TryFindCached(rowId, out var cachedPayload))
+            {
+                if (cachedPayload == null)
+                    continue; // deleted row
+
+                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayload))
+                    continue;
+
+                PopulateCurrentFromPayload(cachedPayload);
+                return ValueTask.FromResult(true);
+            }
+
+            return MoveNextUncachedAsync(rowId, ct);
+        }
+    }
+
+    private async ValueTask<bool> MoveNextUncachedAsync(long rowId, CancellationToken ct)
+    {
+        while (true)
+        {
             var payload = await _tableTree.FindAsync(rowId, ct);
-            if (payload == null) continue; // Skip deleted rows
-
-            if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
-                continue;
-
-            int targetColumnCount = _maxDecodedColumnIndex.HasValue
-                ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
-                : _schema.Columns.Count;
-
-            if (_reuseCurrentRowBuffer)
+            if (payload != null &&
+                (!_hasPreDecodeFilter || EvaluatePreDecodeFilter(payload)))
             {
-                EnsureRowBuffer(targetColumnCount);
-                int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
-                if (decodedCount < targetColumnCount)
-                    Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
-
-                Current = _rowBuffer!;
+                PopulateCurrentFromPayload(payload);
+                return true;
             }
-            else
+
+            if (_rowIdPayloadOffset + 8 > _rowIdPayload.Length)
+                return false;
+
+            rowId = BinaryPrimitives.ReadInt64LittleEndian(
+                _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
+            _rowIdPayloadOffset += 8;
+            CurrentRowId = rowId;
+
+            if (_tableTree.TryFindCached(rowId, out var cachedPayload))
             {
-                var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
-                int decodedCount = _recordSerializer.DecodeInto(payload, row);
-                if (decodedCount < targetColumnCount)
-                    Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
+                if (cachedPayload == null)
+                    continue;
 
-                Current = row;
+                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayload))
+                    continue;
+
+                PopulateCurrentFromPayload(cachedPayload);
+                return true;
             }
-            return true;
         }
     }
 
@@ -3154,6 +3187,32 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     {
         if (_rowBuffer == null || _rowBuffer.Length != columnCount)
             _rowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+    }
+
+    private void PopulateCurrentFromPayload(ReadOnlySpan<byte> payload)
+    {
+        int targetColumnCount = _maxDecodedColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
+            : _schema.Columns.Count;
+
+        if (_reuseCurrentRowBuffer)
+        {
+            EnsureRowBuffer(targetColumnCount);
+            int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
+            if (decodedCount < targetColumnCount)
+                Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
+
+            Current = _rowBuffer!;
+        }
+        else
+        {
+            var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+            int decodedCount = _recordSerializer.DecodeInto(payload, row);
+            if (decodedCount < targetColumnCount)
+                Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
+
+            Current = row;
+        }
     }
 
     private bool EvaluatePreDecodeFilter(DbValue value)
@@ -3258,12 +3317,31 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         if (_consumed) return false;
         _consumed = true;
 
-        var indexPayload = await _indexStore.FindAsync(_seekValue, ct);
+        byte[]? indexPayload;
+        if (_indexStore is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(_seekValue, out var cachedIndexPayload))
+        {
+            indexPayload = cachedIndexPayload;
+        }
+        else
+        {
+            indexPayload = await _indexStore.FindAsync(_seekValue, ct);
+        }
+
         if (indexPayload == null || indexPayload.Length < 8)
             return false;
 
         long rowId = BinaryPrimitives.ReadInt64LittleEndian(indexPayload.AsSpan(0, 8));
-        var rowPayload = await _tableTree.FindAsync(rowId, ct);
+        byte[]? rowPayload;
+        if (_tableTree.TryFindCached(rowId, out var cachedRowPayload))
+        {
+            rowPayload = cachedRowPayload;
+        }
+        else
+        {
+            rowPayload = await _tableTree.FindAsync(rowId, ct);
+        }
+
         if (rowPayload == null)
             return false;
 
@@ -3571,19 +3649,30 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
-        if (_consumed) return false;
+        if (_consumed) return ValueTask.FromResult(false);
         _consumed = true;
 
-        var payload = await _tableTree.FindAsync(_seekKey, ct);
-        if (payload == null) return false;
+        if (_tableTree.TryFindCached(_seekKey, out var cachedPayload))
+            return ValueTask.FromResult(EmitFromPayload(cachedPayload));
 
-        if (_hasPreDecodeFilter)
-        {
-            if (!EvaluatePreDecodeFilter(payload))
-                return false;
-        }
+        return MoveNextUncachedAsync(ct);
+    }
+
+    private async ValueTask<bool> MoveNextUncachedAsync(CancellationToken ct)
+    {
+        var payload = await _tableTree.FindAsync(_seekKey, ct);
+        return EmitFromPayload(payload);
+    }
+
+    private bool EmitFromPayload(byte[]? payload)
+    {
+        if (payload == null)
+            return false;
+
+        if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
+            return false;
 
         CurrentRowId = _seekKey;
 
@@ -3694,11 +3783,25 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
-        if (_consumed) return false;
+        if (_consumed) return ValueTask.FromResult(false);
         _consumed = true;
 
+        if (_tableTree.TryFindCached(_seekKey, out var cachedPayload))
+        {
+            if (cachedPayload == null)
+                return ValueTask.FromResult(false);
+
+            Current = _projectedRow;
+            return ValueTask.FromResult(true);
+        }
+
+        return MoveNextUncachedAsync(ct);
+    }
+
+    private async ValueTask<bool> MoveNextUncachedAsync(CancellationToken ct)
+    {
         // Preserve semantics by checking that the row actually exists.
         var payload = await _tableTree.FindAsync(_seekKey, ct);
         if (payload == null)

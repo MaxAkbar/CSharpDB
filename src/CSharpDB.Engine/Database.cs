@@ -22,7 +22,7 @@ public sealed class Database : IAsyncDisposable
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * WHERE pk = N) use a synchronous
-    /// cache-only fast path, bypassing the async operator pipeline. Defaults to false.
+    /// cache-only fast path, bypassing the async operator pipeline. Defaults to true.
     /// </summary>
     public bool PreferSyncPointLookups
     {
