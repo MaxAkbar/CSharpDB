@@ -48,7 +48,7 @@ Advanced features and fundamental architecture enhancements.
 | **Memory-mapped I/O (mmap)** | Zero-copy read path to eliminate per-page `byte[]` allocation and GC pressure | Planned |
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Planned |
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
-| **Collection secondary indexes** | Secondary B+tree indexes on JSON paths for the Collection API | Planned |
+| **Collection optimization & indexing** | Separate storage path, direct binary hydration, expression-based field indexes | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **Cost-based query optimizer** | Statistics-driven join ordering and index selection | Planned |
 | **Async I/O batching** | Group multiple page writes into fewer system calls during batch operations | Planned |
@@ -104,4 +104,5 @@ Major features already implemented:
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
+- [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities
