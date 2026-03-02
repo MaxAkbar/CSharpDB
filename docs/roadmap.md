@@ -34,6 +34,7 @@ SQL feature parity and ecosystem expansion.
 | **NuGet package** | Publish `CSharpDB.Engine`, `CSharpDB.Data`, and `CSharpDB.Service` as NuGet packages | Planned |
 | **Connection pooling** | Pool `CSharpDbConnection` instances to amortize open/close cost | Planned |
 | **Admin dashboard improvements** | Schema editing, SQL editor with syntax highlighting, query history | In progress |
+| **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Planned |
 
 ---
 
@@ -88,7 +89,7 @@ Major features already implemented:
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
 - Document Collection API (NoSQL) with typed Put/Get/Delete/Scan/Find
 - Interactive CLI with meta-commands and file execution
-- REST API with 30 endpoints and OpenAPI/Scalar documentation
+- REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
 - Comprehensive benchmark suite (micro, macro, stress, scaling)
 
@@ -100,4 +101,5 @@ Major features already implemented:
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Backup/Export/Import Plan](backup-export-import/README.md) — Planned tooling for diagnostics, backups, import/export, and reclaim
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
+- [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities
