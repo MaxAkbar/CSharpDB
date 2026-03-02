@@ -2084,9 +2084,6 @@ public sealed class TopNSortOperator : IOperator
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
-        if (_source is IRowBufferReuseController controller)
-            controller.SetReuseCurrentRowBuffer(false);
-
         await _source.OpenAsync(ct);
         _sortedRows = new List<DbValue[]>();
 
@@ -2096,18 +2093,17 @@ public sealed class TopNSortOperator : IOperator
             return;
         }
 
-        bool cloneRows = _source.ReusesCurrentRowBuffer;
+        bool sourceReusesCurrentRowBuffer = _source.ReusesCurrentRowBuffer;
         var heap = new List<RankedRow>(_topN);
 
         while (await _source.MoveNextAsync(ct))
         {
             var row = _source.Current;
-            var ownedRow = cloneRows ? (DbValue[])row.Clone() : row;
-            var rankedRow = BuildRankedRow(ownedRow);
+            var rankedRow = BuildRankedRow(row);
 
             if (heap.Count < _topN)
             {
-                HeapPush(heap, rankedRow);
+                HeapPush(heap, EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer));
                 continue;
             }
 
@@ -2115,7 +2111,7 @@ public sealed class TopNSortOperator : IOperator
             // Replace only when the new row is strictly better.
             if (CompareRankedRows(rankedRow, heap[0]) < 0)
             {
-                heap[0] = rankedRow;
+                heap[0] = EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer);
                 HeapSiftDown(heap, 0);
             }
         }
@@ -2224,6 +2220,14 @@ public sealed class TopNSortOperator : IOperator
         }
     }
 
+    private static RankedRow EnsureOwnedRow(RankedRow row, bool sourceReusesCurrentRowBuffer)
+    {
+        if (!sourceReusesCurrentRowBuffer)
+            return row;
+
+        return new RankedRow((DbValue[])row.Row.Clone(), row.Keys);
+    }
+
     private static CompiledSortClause[] CompileOrderBy(List<OrderByClause> orderBy, TableSchema schema, out int precomputedKeyCount)
     {
         precomputedKeyCount = 0;
@@ -2325,6 +2329,11 @@ public sealed class HashJoinOperator : IOperator
         if (!_buildRightSide && _joinType != JoinType.Inner)
             throw new CSharpDbException(ErrorCode.Unknown, "Swapped hash build side is supported for INNER JOIN only.");
 
+        if (_left is IRowBufferReuseController leftController)
+            leftController.SetReuseCurrentRowBuffer(false);
+        if (_right is IRowBufferReuseController rightController)
+            rightController.SetReuseCurrentRowBuffer(false);
+
         await _left.OpenAsync(ct);
         await _right.OpenAsync(ct);
 
@@ -2390,10 +2399,7 @@ public sealed class HashJoinOperator : IOperator
                 var probeSource = ProbeSource;
                 if (await probeSource.MoveNextAsync(ct))
                 {
-                    var probeCurrent = probeSource.Current;
-                    var probeRow = probeSource.ReusesCurrentRowBuffer
-                        ? (DbValue[])probeCurrent.Clone()
-                        : probeCurrent;
+                    var probeRow = probeSource.Current;
 
                     _activeProbeRow = probeRow;
                     _activeProbeMatched = false;
@@ -2660,6 +2666,9 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
+        if (_outer is IRowBufferReuseController outerController)
+            outerController.SetReuseCurrentRowBuffer(false);
+
         await _outer.OpenAsync(ct);
         Current = Array.Empty<DbValue>();
         _rightRowBuffer = _rightColCount == 0 ? Array.Empty<DbValue>() : new DbValue[_rightColCount];
@@ -2702,10 +2711,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
             if (!await _outer.MoveNextAsync(ct))
                 return false;
 
-            var outerCurrent = _outer.Current;
-            var outerRow = _outer.ReusesCurrentRowBuffer
-                ? (DbValue[])outerCurrent.Clone()
-                : outerCurrent;
+            var outerRow = _outer.Current;
             var keyValue = _outerKeyIndex < outerRow.Length ? outerRow[_outerKeyIndex] : DbValue.Null;
             if (!TryConvertLookupKey(keyValue, out long lookupKey))
             {
@@ -2889,17 +2895,24 @@ public sealed class NestedLoopJoinOperator : IOperator
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
+        if (_left is IRowBufferReuseController leftController)
+            leftController.SetReuseCurrentRowBuffer(false);
+        if (_right is IRowBufferReuseController rightController)
+            rightController.SetReuseCurrentRowBuffer(false);
+
         await _left.OpenAsync(ct);
         await _right.OpenAsync(ct);
 
         // Materialize both sides
         var leftRows = new List<DbValue[]>();
+        bool cloneLeftRows = _left.ReusesCurrentRowBuffer;
         while (await _left.MoveNextAsync(ct))
-            leftRows.Add((DbValue[])_left.Current.Clone());
+            leftRows.Add(cloneLeftRows ? (DbValue[])_left.Current.Clone() : _left.Current);
 
         var rightRows = new List<DbValue[]>();
+        bool cloneRightRows = _right.ReusesCurrentRowBuffer;
         while (await _right.MoveNextAsync(ct))
-            rightRows.Add((DbValue[])_right.Current.Clone());
+            rightRows.Add(cloneRightRows ? (DbValue[])_right.Current.Clone() : _right.Current);
 
         _results = ComputeJoin(leftRows, rightRows);
         _index = -1;
