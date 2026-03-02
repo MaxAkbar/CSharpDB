@@ -8,7 +8,10 @@ public readonly record struct SimplePrimaryKeyLookupSql(
     bool SelectStar,
     string ProjectionColumn,
     string PredicateColumn,
-    long LookupValue);
+    long LookupValue,
+    bool HasResidualPredicate = false,
+    string ResidualPredicateColumn = "",
+    DbValue ResidualPredicateLiteral = default);
 
 public sealed class Parser
 {
@@ -45,7 +48,7 @@ public sealed class Parser
 
     /// <summary>
     /// Fast-path parser for a narrow point-lookup shape:
-    /// SELECT *|column FROM table WHERE column = integer-literal [;]
+    /// SELECT *|column FROM table WHERE column = integer-literal [AND column = literal] [;]
     /// Produces lightweight metadata for direct planner execution.
     /// </summary>
     public static bool TryParseSimplePrimaryKeyLookup(string sql, out SimplePrimaryKeyLookupSql lookup)
@@ -468,6 +471,24 @@ public sealed class Parser
             if (!TryReadIntegerLiteral(out long lookupValue))
                 return false;
 
+            bool hasResidual = false;
+            string residualColumn = string.Empty;
+            DbValue residualLiteral = default;
+            if (TryReadKeyword("AND"))
+            {
+                if (!TryReadIdentifier(out residualColumn))
+                    return false;
+
+                SkipWhitespace();
+                if (!TryConsumeChar('='))
+                    return false;
+
+                if (!TryReadSimpleLiteral(out residualLiteral))
+                    return false;
+
+                hasResidual = true;
+            }
+
             if (!TryConsumeOptionalSemicolonAndRequireEnd())
                 return false;
 
@@ -476,8 +497,70 @@ public sealed class Parser
                 selectStar,
                 projectionColumn,
                 predicateColumn,
-                lookupValue);
+                lookupValue,
+                hasResidual,
+                residualColumn,
+                residualLiteral);
             return true;
+        }
+
+        private bool TryReadSimpleLiteral(out DbValue literal)
+        {
+            literal = default;
+            SkipWhitespace();
+
+            if (_pos >= _text.Length)
+                return false;
+
+            if (_text[_pos] == '\'')
+            {
+                if (!TryReadStringLiteral(out string textValue))
+                    return false;
+
+                literal = DbValue.FromText(textValue);
+                return true;
+            }
+
+            if (TryReadKeyword("NULL"))
+            {
+                literal = DbValue.Null;
+                return true;
+            }
+
+            if (!TryReadIntegerLiteral(out long intValue))
+                return false;
+
+            literal = DbValue.FromInteger(intValue);
+            return true;
+        }
+
+        private bool TryReadStringLiteral(out string value)
+        {
+            value = string.Empty;
+            if (!TryConsumeChar('\''))
+                return false;
+
+            var sb = new System.Text.StringBuilder();
+            while (_pos < _text.Length)
+            {
+                char c = _text[_pos++];
+                if (c == '\'')
+                {
+                    if (_pos < _text.Length && _text[_pos] == '\'')
+                    {
+                        sb.Append('\'');
+                        _pos++;
+                        continue;
+                    }
+
+                    value = sb.ToString();
+                    return true;
+                }
+
+                sb.Append(c);
+            }
+
+            return false;
         }
 
         private bool TryReadIntegerLiteral(out long value)

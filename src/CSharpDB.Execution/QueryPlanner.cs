@@ -1125,27 +1125,69 @@ public sealed class QueryPlanner
         if (schema == null)
             return false;
 
-        int pkIdx = schema.PrimaryKeyColumnIndex;
-        if (pkIdx < 0 || pkIdx >= schema.Columns.Count || schema.Columns[pkIdx].Type != DbType.Integer)
+        int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
+        if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
+            return false;
+        if (schema.Columns[predicateColumnIndex].Type != DbType.Integer)
             return false;
 
-        int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
-        if (predicateColumnIndex != pkIdx)
-            return false;
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        bool hasIntegerPk = pkIdx >= 0 &&
+            pkIdx < schema.Columns.Count &&
+            schema.Columns[pkIdx].Type == DbType.Integer;
+        bool isPrimaryKeyLookup = hasIntegerPk && predicateColumnIndex == pkIdx;
 
         long lookupValue = lookup.LookupValue;
         var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
+        IOperator lookupOp;
+
+        if (isPrimaryKeyLookup)
+        {
+            lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+        }
+        else
+        {
+            var indexes = _catalog.GetIndexesForTable(lookup.TableName);
+            var matchedIndex = FindLookupIndexForColumn(indexes, schema.Columns[predicateColumnIndex].Name);
+            if (matchedIndex == null)
+                return false;
+
+            var indexStore = _catalog.GetIndexStore(matchedIndex.IndexName, _pager);
+            lookupOp = matchedIndex.IsUnique
+                ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
+                : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
+        }
+
+        bool hasResidual = lookup.HasResidualPredicate;
+        int residualColumnIndex = -1;
+        if (hasResidual)
+        {
+            residualColumnIndex = schema.GetColumnIndex(lookup.ResidualPredicateColumn);
+            if (residualColumnIndex < 0 || residualColumnIndex >= schema.Columns.Count)
+                return false;
+
+            if (lookupOp is not IPreDecodeFilterSupport preDecodeFilterTarget)
+                return false;
+
+            preDecodeFilterTarget.SetPreDecodeFilter(
+                residualColumnIndex,
+                BinaryOp.Equals,
+                lookup.ResidualPredicateLiteral);
+        }
 
         if (lookup.SelectStar)
         {
-            if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
+            if (isPrimaryKeyLookup &&
+                !hasResidual &&
+                PreferSyncPointLookups &&
+                tableTree.TryFindCached(lookupValue, out var payload))
             {
                 var row = payload != null ? _recordSerializer.Decode(payload) : null;
                 result = QueryResult.FromSyncLookup(row, GetSchemaColumnsArray(schema));
                 return true;
             }
 
-            result = new QueryResult(new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer));
+            result = new QueryResult(lookupOp);
             return true;
         }
 
@@ -1153,7 +1195,7 @@ public sealed class QueryPlanner
         if (projectionColumnIndex < 0)
             return false;
 
-        if (projectionColumnIndex == pkIdx)
+        if (isPrimaryKeyLookup && !hasResidual && projectionColumnIndex == pkIdx)
         {
             var outputCols = GetSingleColumnOutputSchema(schema, pkIdx);
             if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
@@ -1170,8 +1212,11 @@ public sealed class QueryPlanner
             return true;
         }
 
-        var lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
-        lookupOp.SetDecodedColumnUpperBound(projectionColumnIndex);
+        int maxDecodedColumn = projectionColumnIndex;
+        if (residualColumnIndex > maxDecodedColumn)
+            maxDecodedColumn = residualColumnIndex;
+        if (maxDecodedColumn >= 0)
+            TrySetDecodedColumnUpperBound(lookupOp, maxDecodedColumn);
 
         var output = GetSingleColumnOutputSchema(schema, projectionColumnIndex);
         IOperator op = new ProjectionOperator(lookupOp, new[] { projectionColumnIndex }, output, schema);

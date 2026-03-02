@@ -77,11 +77,13 @@ public sealed class Database : IAsyncDisposable
         if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
             return ExecuteStatementAsync(cachedStmt, ct);
 
-        if (bypassParse &&
-            Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup) &&
-            _planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+        if (bypassParse)
         {
-            return ValueTask.FromResult(fastResult);
+            if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
+            {
+                if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+                    return ValueTask.FromResult(fastResult);
+            }
         }
 
         var stmt = ParseCached(sql);
@@ -584,4 +586,5 @@ public sealed class Database : IAsyncDisposable
             }
         }
     }
+
 }
