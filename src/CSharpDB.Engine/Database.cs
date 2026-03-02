@@ -71,36 +71,48 @@ public sealed class Database : IAsyncDisposable
     /// <summary>
     /// Execute a SQL statement. Returns a QueryResult with rows (for SELECT) or affected count (for DML/DDL).
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
         InvalidateCachesIfSchemaChanged();
+        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
+            return ExecuteStatementAsync(cachedStmt, ct);
+
+        if (bypassParse &&
+            Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup) &&
+            _planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+        {
+            return ValueTask.FromResult(fastResult);
+        }
+
         var stmt = ParseCached(sql);
-        return await ExecuteStatementAsync(stmt, ct);
+        return ExecuteStatementAsync(stmt, ct);
     }
 
     /// <summary>
     /// Execute a pre-parsed SQL statement. Used by prepared command paths
     /// to bypass SQL text parsing on repeated executions.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+        => ExecuteStatementAsync(statement, ct);
+
+    private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        return await ExecuteStatementAsync(statement, ct);
+        if (stmt is SelectStatement)
+            return _planner.ExecuteAsync(stmt, ct);
+
+        return ExecuteWriteStatementAsync(stmt, ct);
     }
 
-    private async ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
+    private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        bool needsTransaction = stmt is not SelectStatement;
-
-        if (needsTransaction && !_inTransaction)
-        {
+        if (!_inTransaction)
             await _pager.BeginTransactionAsync(ct);
-        }
 
         try
         {
             var result = await _planner.ExecuteAsync(stmt, ct);
 
-            if (needsTransaction && !_inTransaction)
+            if (!_inTransaction)
             {
                 // Auto-commit
                 await CommitWithCatalogSyncAsync(ct);
@@ -110,10 +122,8 @@ public sealed class Database : IAsyncDisposable
         }
         catch
         {
-            if (needsTransaction && !_inTransaction)
-            {
+            if (!_inTransaction)
                 await _pager.RollbackAsync(ct);
-            }
             throw;
         }
     }
@@ -379,7 +389,9 @@ public sealed class Database : IAsyncDisposable
         private readonly Dictionary<string, Statement> _map = new(StringComparer.Ordinal);
         private readonly Queue<string> _insertionOrder = new();
         private readonly int[] _recentMissHashes;
+        private readonly Dictionary<int, int> _recentMissHashCounts;
         private int _recentMissHashCursor;
+        private int _recentMissHashCount;
         private string? _lastSql;
         private Statement? _lastStatement;
         private readonly object _gate = new();
@@ -387,9 +399,52 @@ public sealed class Database : IAsyncDisposable
         internal StatementCache(int capacity)
         {
             _capacity = capacity > 0 ? capacity : 0;
-            int fingerprintWindowSize = _capacity <= 0 ? 0 : Math.Min(_capacity, 64);
+            int fingerprintWindowSize = _capacity <= 0 ? 0 : _capacity;
             _recentMissHashes = new int[fingerprintWindowSize];
+            _recentMissHashCounts = fingerprintWindowSize > 0
+                ? new Dictionary<int, int>(fingerprintWindowSize)
+                : new Dictionary<int, int>(0);
             _recentMissHashCursor = 0;
+            _recentMissHashCount = 0;
+        }
+
+        internal bool TryGetOrMarkBypass(string sql, out Statement statement, out bool bypassParse)
+        {
+            statement = null!;
+            bypassParse = false;
+            if (_capacity == 0)
+                return false;
+
+            lock (_gate)
+            {
+                if (_lastSql != null &&
+                    string.Equals(_lastSql, sql, StringComparison.Ordinal) &&
+                    _lastStatement != null)
+                {
+                    statement = _lastStatement;
+                    return true;
+                }
+
+                if (_map.TryGetValue(sql, out var hitNode))
+                {
+                    _lastSql = sql;
+                    _lastStatement = hitNode;
+                    statement = hitNode;
+                    return true;
+                }
+
+                if (_recentMissHashes.Length > 0 && _map.Count >= _capacity)
+                {
+                    int hash = StringComparer.Ordinal.GetHashCode(sql);
+                    if (!HasRecentMissHash(hash))
+                    {
+                        RecordRecentMissHash(hash);
+                        bypassParse = true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         internal Statement GetOrAdd(string sql, Func<string, Statement> parse)
@@ -461,18 +516,44 @@ public sealed class Database : IAsyncDisposable
                 return true;
 
             int hash = StringComparer.Ordinal.GetHashCode(sql);
-            for (int i = 0; i < _recentMissHashes.Length; i++)
+            if (HasRecentMissHash(hash))
+                return true;
+
+            RecordRecentMissHash(hash);
+
+            return false;
+        }
+
+        private bool HasRecentMissHash(int hash) => _recentMissHashCounts.ContainsKey(hash);
+
+        private void RecordRecentMissHash(int hash)
+        {
+            if (_recentMissHashes.Length == 0)
+                return;
+
+            if (_recentMissHashCount == _recentMissHashes.Length)
             {
-                if (_recentMissHashes[i] == hash)
-                    return true;
+                int evicted = _recentMissHashes[_recentMissHashCursor];
+                if (_recentMissHashCounts.TryGetValue(evicted, out int evictedCount))
+                {
+                    if (evictedCount <= 1)
+                        _recentMissHashCounts.Remove(evicted);
+                    else
+                        _recentMissHashCounts[evicted] = evictedCount - 1;
+                }
+            }
+            else
+            {
+                _recentMissHashCount++;
             }
 
             _recentMissHashes[_recentMissHashCursor] = hash;
+            _recentMissHashCounts.TryGetValue(hash, out int currentCount);
+            _recentMissHashCounts[hash] = currentCount + 1;
+
             _recentMissHashCursor++;
             if (_recentMissHashCursor >= _recentMissHashes.Length)
                 _recentMissHashCursor = 0;
-
-            return false;
         }
 
         private void EvictOldestEntry()
@@ -495,7 +576,9 @@ public sealed class Database : IAsyncDisposable
                 _map.Clear();
                 _insertionOrder.Clear();
                 Array.Clear(_recentMissHashes);
+                _recentMissHashCounts.Clear();
                 _recentMissHashCursor = 0;
+                _recentMissHashCount = 0;
                 _lastSql = null;
                 _lastStatement = null;
             }

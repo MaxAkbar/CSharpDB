@@ -112,26 +112,26 @@ public sealed class QueryPlanner
         _observedSchemaVersion = catalog.SchemaVersion;
     }
 
-    public async ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
     {
         InvalidateSchemaSensitiveCachesIfNeeded();
 
         return stmt switch
         {
-            CreateTableStatement create => await ExecuteCreateTableAsync(create, ct),
-            DropTableStatement drop => await ExecuteDropTableAsync(drop, ct),
-            InsertStatement insert => await ExecuteInsertAsync(insert, ct),
-            SelectStatement select => ExecuteSelect(select),
-            DeleteStatement delete => await ExecuteDeleteAsync(delete, ct),
-            UpdateStatement update => await ExecuteUpdateAsync(update, ct),
-            AlterTableStatement alter => await ExecuteAlterTableAsync(alter, ct),
-            CreateIndexStatement createIdx => await ExecuteCreateIndexAsync(createIdx, ct),
-            DropIndexStatement dropIdx => await ExecuteDropIndexAsync(dropIdx, ct),
-            CreateViewStatement createView => await ExecuteCreateViewAsync(createView, ct),
-            DropViewStatement dropView => await ExecuteDropViewAsync(dropView, ct),
-            WithStatement with => await ExecuteWithAsync(with, ct),
-            CreateTriggerStatement createTrig => await ExecuteCreateTriggerAsync(createTrig, ct),
-            DropTriggerStatement dropTrig => await ExecuteDropTriggerAsync(dropTrig, ct),
+            CreateTableStatement create => ExecuteCreateTableAsync(create, ct),
+            DropTableStatement drop => ExecuteDropTableAsync(drop, ct),
+            InsertStatement insert => ExecuteInsertAsync(insert, ct),
+            SelectStatement select => ValueTask.FromResult(ExecuteSelect(select)),
+            DeleteStatement delete => ExecuteDeleteAsync(delete, ct),
+            UpdateStatement update => ExecuteUpdateAsync(update, ct),
+            AlterTableStatement alter => ExecuteAlterTableAsync(alter, ct),
+            CreateIndexStatement createIdx => ExecuteCreateIndexAsync(createIdx, ct),
+            DropIndexStatement dropIdx => ExecuteDropIndexAsync(dropIdx, ct),
+            CreateViewStatement createView => ExecuteCreateViewAsync(createView, ct),
+            DropViewStatement dropView => ExecuteDropViewAsync(dropView, ct),
+            WithStatement with => ExecuteWithAsync(with, ct),
+            CreateTriggerStatement createTrig => ExecuteCreateTriggerAsync(createTrig, ct),
+            DropTriggerStatement dropTrig => ExecuteDropTriggerAsync(dropTrig, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
     }
@@ -1108,6 +1108,75 @@ public sealed class QueryPlanner
             return new TopNSortOperator(source, orderBy, schema, topN.Value);
 
         return new SortOperator(source, orderBy, schema);
+    }
+
+    public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)
+    {
+        result = null!;
+
+        if (_catalog.IsView(lookup.TableName))
+            return false;
+        if (IsSystemCatalogTable(lookup.TableName))
+            return false;
+        if (_cteData != null && _cteData.ContainsKey(lookup.TableName))
+            return false;
+
+        var schema = _catalog.GetTable(lookup.TableName);
+        if (schema == null)
+            return false;
+
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        if (pkIdx < 0 || pkIdx >= schema.Columns.Count || schema.Columns[pkIdx].Type != DbType.Integer)
+            return false;
+
+        int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
+        if (predicateColumnIndex != pkIdx)
+            return false;
+
+        long lookupValue = lookup.LookupValue;
+        var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
+
+        if (lookup.SelectStar)
+        {
+            if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
+            {
+                var row = payload != null ? _recordSerializer.Decode(payload) : null;
+                result = QueryResult.FromSyncLookup(row, GetSchemaColumnsArray(schema));
+                return true;
+            }
+
+            result = new QueryResult(new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer));
+            return true;
+        }
+
+        int projectionColumnIndex = schema.GetColumnIndex(lookup.ProjectionColumn);
+        if (projectionColumnIndex < 0)
+            return false;
+
+        if (projectionColumnIndex == pkIdx)
+        {
+            var outputCols = GetSingleColumnOutputSchema(schema, pkIdx);
+            if (PreferSyncPointLookups && tableTree.TryFindCached(lookupValue, out var payload))
+            {
+                DbValue[]? row = null;
+                if (payload != null)
+                    row = new[] { DbValue.FromInteger(lookupValue) };
+
+                result = QueryResult.FromSyncLookup(row, outputCols);
+                return true;
+            }
+
+            result = new QueryResult(new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols));
+            return true;
+        }
+
+        var lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+        lookupOp.SetDecodedColumnUpperBound(projectionColumnIndex);
+
+        var output = GetSingleColumnOutputSchema(schema, projectionColumnIndex);
+        IOperator op = new ProjectionOperator(lookupOp, new[] { projectionColumnIndex }, output, schema);
+        result = new QueryResult(op);
+        return true;
     }
 
     /// <summary>
