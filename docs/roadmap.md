@@ -31,6 +31,7 @@ SQL feature parity and ecosystem expansion.
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
+| **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish `CSharpDB.Engine`, `CSharpDB.Data`, and `CSharpDB.Service` as NuGet packages | Planned |
 | **Connection pooling** | Pool `CSharpDbConnection` instances to amortize open/close cost | Planned |
 | **Admin dashboard improvements** | Schema editing, SQL editor with syntax highlighting, query history | In progress |
@@ -102,4 +103,5 @@ Major features already implemented:
 - [Backup/Export/Import Plan](backup-export-import/README.md) — Planned tooling for diagnostics, backups, import/export, and reclaim
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
+- [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities
