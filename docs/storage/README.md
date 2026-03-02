@@ -91,25 +91,25 @@ A low-level, high-performance storage engine for .NET 10 built on top of `Random
 ## Architecture Overview
 
 ```
-┌────────────────────────────────────────────────────┐
-│                   Application                       │
+┌──────────────────────────────────────────────────────┐
+│                   Application                        │
 │          (SQL Engine / Collection API)               │
-├────────────────────────────────────────────────────┤
+├──────────────────────────────────────────────────────┤
 │                 SchemaCatalog                        │
 │    Tables ─ Indexes ─ Views ─ Triggers               │
-├──────────────┬───────────────┬─────────────────────┤
-│    BTree     │  IndexStore   │  RecordEncoder       │
-│  (data)      │  (secondary)  │  (row format)        │
-├──────────────┴───────────────┴─────────────────────┤
+├──────────────┬───────────────┬───────────────────────┤
+│    BTree     │  IndexStore   │  RecordEncoder        │
+│  (data)      │  (secondary)  │  (row format)         │
+├──────────────┴───────────────┴───────────────────────┤
 │                    Pager                             │
 │   PageCache ─ DirtyTracking ─ PageAllocator          │
-├──────────────────────┬─────────────────────────────┤
-│   WriteAheadLog      │   CheckpointCoordinator      │
-│   (WAL + WalIndex)   │   (policy-driven)            │
-├──────────────────────┴─────────────────────────────┤
+├──────────────────────┬───────────────────────────────┤
+│   WriteAheadLog      │   CheckpointCoordinator       │
+│   (WAL + WalIndex)   │   (policy-driven)             │
+├──────────────────────┴───────────────────────────────┤
 │              IStorageDevice                          │
 │         (FileStorageDevice / memory)                 │
-└────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────┘
 ```
 
 **Page Layout:**
