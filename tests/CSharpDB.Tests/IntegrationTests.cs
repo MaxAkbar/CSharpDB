@@ -235,6 +235,33 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Select_OrderBy_WithLimit_SelectStarPreservesAllColumns()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE sorted_star (id INTEGER PRIMARY KEY, val INTEGER, name TEXT, category TEXT)",
+            TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_star VALUES (1, 30, 'thirty', 'A')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_star VALUES (2, 10, 'ten', 'B')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_star VALUES (3, 20, 'twenty', 'C')", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT * FROM sorted_star ORDER BY val ASC LIMIT 2",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(4, rows[0].Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(10L, rows[0][1].AsInteger);
+        Assert.Equal("ten", rows[0][2].AsText);
+        Assert.Equal("B", rows[0][3].AsText);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(20L, rows[1][1].AsInteger);
+        Assert.Equal("twenty", rows[1][2].AsText);
+        Assert.Equal("C", rows[1][3].AsText);
+    }
+
+    [Fact]
     public async Task Select_OrderByExpression_WithLimit()
     {
         await _db.ExecuteAsync("CREATE TABLE sorted_expr (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);

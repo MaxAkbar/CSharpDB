@@ -15,6 +15,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     private readonly TableSchema _schema;
     private readonly IRecordSerializer _recordSerializer;
     private BTreeCursor? _cursor;
+    private ReadOnlyMemory<byte> _currentPayload;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private int? _maxDecodedColumnIndex;
@@ -28,6 +29,8 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
+    internal ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
+    internal int? DecodedColumnUpperBound => _maxDecodedColumnIndex;
 
     public TableScanOperator(BTree tree, TableSchema schema, IRecordSerializer? recordSerializer = null)
     {
@@ -65,6 +68,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
         _cursor = _tree.CreateCursor();
+        _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
@@ -76,7 +80,8 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
 
         while (await _cursor.MoveNextAsync(ct))
         {
-            var payload = _cursor.CurrentValue.Span;
+            _currentPayload = _cursor.CurrentValue;
+            var payload = _currentPayload.Span;
             if (_hasPreDecodeFilter)
             {
                 if (!EvaluatePreDecodeFilter(payload))
@@ -109,6 +114,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
             return true;
         }
 
+        _currentPayload = ReadOnlyMemory<byte>.Empty;
         return false;
     }
 
@@ -156,6 +162,19 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
 
         var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
         return EvaluatePreDecodeFilter(filterValue);
+    }
+
+    internal DbValue[] DecodeFullRow(ReadOnlySpan<byte> payload)
+    {
+        var decoded = _recordSerializer.Decode(payload);
+        if (decoded.Length >= _schema.Columns.Count)
+            return decoded;
+
+        var padded = new DbValue[_schema.Columns.Count];
+        decoded.CopyTo(padded, 0);
+        for (int i = decoded.Length; i < padded.Length; i++)
+            padded[i] = DbValue.Null;
+        return padded;
     }
 }
 
@@ -2065,6 +2084,18 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         }
     }
 
+    private readonly struct PayloadRankedRow
+    {
+        public readonly RankedRow Ranked;
+        public readonly byte[] Payload;
+
+        public PayloadRankedRow(RankedRow ranked, byte[] payload)
+        {
+            Ranked = ranked;
+            Payload = payload;
+        }
+    }
+
     private readonly IOperator _source;
     private readonly CompiledSortClause[] _compiledOrderBy;
     private readonly int _precomputedKeyCount;
@@ -2087,14 +2118,22 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
-        await _source.OpenAsync(ct);
         _sortedRows = new List<DbValue[]>();
 
         if (_topN == 0)
         {
+            await _source.OpenAsync(ct);
             _index = -1;
             return;
         }
+
+        if (await TryOpenWithTableScanLateMaterializationAsync(ct))
+        {
+            _index = -1;
+            return;
+        }
+
+        await _source.OpenAsync(ct);
 
         bool sourceReusesCurrentRowBuffer = _source.ReusesCurrentRowBuffer;
         var heap = new List<RankedRow>(_topN);
@@ -2145,6 +2184,73 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         return _source.DisposeAsync();
     }
 
+    private async ValueTask<bool> TryOpenWithTableScanLateMaterializationAsync(CancellationToken ct)
+    {
+        if (_source is not TableScanOperator tableScan)
+            return false;
+        if (_precomputedKeyCount != 0)
+            return false;
+        if (tableScan.DecodedColumnUpperBound.HasValue)
+            return false;
+
+        int maxOrderByColumnIndex = -1;
+        for (int i = 0; i < _compiledOrderBy.Length; i++)
+        {
+            int columnIndex = _compiledOrderBy[i].ColumnIndex;
+            if (columnIndex < 0)
+                return false;
+
+            if (columnIndex > maxOrderByColumnIndex)
+                maxOrderByColumnIndex = columnIndex;
+        }
+
+        if (maxOrderByColumnIndex < 0)
+            return false;
+
+        // Decode only ORDER BY columns while scanning. Full row decode happens only for retained Top N rows.
+        tableScan.SetDecodedColumnUpperBound(maxOrderByColumnIndex);
+
+        await _source.OpenAsync(ct);
+        bool sourceReusesCurrentRowBuffer = _source.ReusesCurrentRowBuffer;
+        var heap = new List<PayloadRankedRow>(_topN);
+
+        while (await _source.MoveNextAsync(ct))
+        {
+            var rankedRow = BuildRankedRow(_source.Current);
+
+            if (heap.Count < _topN)
+            {
+                var payload = tableScan.CurrentPayload;
+                if (payload.IsEmpty)
+                    continue;
+
+                var owned = EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer);
+                HeapPushPayload(heap, new PayloadRankedRow(owned, payload.ToArray()));
+                continue;
+            }
+
+            // Root stores the current worst row among the retained set.
+            // Replace only when the new row is strictly better.
+            if (CompareRankedRows(rankedRow, heap[0].Ranked) < 0)
+            {
+                var payload = tableScan.CurrentPayload;
+                if (payload.IsEmpty)
+                    continue;
+
+                var owned = EnsureOwnedRow(rankedRow, sourceReusesCurrentRowBuffer);
+                heap[0] = new PayloadRankedRow(owned, payload.ToArray());
+                HeapSiftDownPayload(heap, 0);
+            }
+        }
+
+        heap.Sort(ComparePayloadRankedRows);
+        _sortedRows!.Capacity = heap.Count;
+        for (int i = 0; i < heap.Count; i++)
+            _sortedRows.Add(tableScan.DecodeFullRow(heap[i].Payload));
+
+        return true;
+    }
+
     private RankedRow BuildRankedRow(DbValue[] row)
     {
         if (_precomputedKeyCount == 0)
@@ -2179,6 +2285,11 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         }
 
         return 0;
+    }
+
+    private int ComparePayloadRankedRows(PayloadRankedRow left, PayloadRankedRow right)
+    {
+        return CompareRankedRows(left.Ranked, right.Ranked);
     }
 
     private void HeapPush(List<RankedRow> heap, RankedRow value)
@@ -2216,6 +2327,48 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
                 largest = right;
 
             if (CompareRankedRows(heap[largest], heap[index]) <= 0)
+                return;
+
+            (heap[index], heap[largest]) = (heap[largest], heap[index]);
+            index = largest;
+        }
+    }
+
+    private void HeapPushPayload(List<PayloadRankedRow> heap, PayloadRankedRow value)
+    {
+        heap.Add(value);
+        HeapSiftUpPayload(heap, heap.Count - 1);
+    }
+
+    private void HeapSiftUpPayload(List<PayloadRankedRow> heap, int index)
+    {
+        while (index > 0)
+        {
+            int parent = (index - 1) >> 1;
+            // Max-heap by ORDER BY rank: "larger" means worse.
+            if (ComparePayloadRankedRows(heap[index], heap[parent]) <= 0)
+                break;
+
+            (heap[parent], heap[index]) = (heap[index], heap[parent]);
+            index = parent;
+        }
+    }
+
+    private void HeapSiftDownPayload(List<PayloadRankedRow> heap, int index)
+    {
+        int count = heap.Count;
+        while (true)
+        {
+            int left = (index << 1) + 1;
+            if (left >= count)
+                return;
+
+            int right = left + 1;
+            int largest = left;
+            if (right < count && ComparePayloadRankedRows(heap[right], heap[left]) > 0)
+                largest = right;
+
+            if (ComparePayloadRankedRows(heap[largest], heap[index]) <= 0)
                 return;
 
             (heap[index], heap[largest]) = (heap[largest], heap[index]);
