@@ -73,7 +73,6 @@ public sealed class QueryResult : IAsyncDisposable
         }
 
         if (_operator == null) yield break;
-        EnsureMaterializedRowOwnership();
         bool cloneRows = _operator.ReusesCurrentRowBuffer;
         while (await MoveNextAsync(ct))
         {
@@ -136,7 +135,6 @@ public sealed class QueryResult : IAsyncDisposable
         if (_operator == null)
             return new List<DbValue[]>(0);
 
-        EnsureMaterializedRowOwnership();
         if (!_opened)
         {
             await _operator.OpenAsync(ct);
@@ -152,14 +150,6 @@ public sealed class QueryResult : IAsyncDisposable
         }
 
         return list;
-    }
-
-    private void EnsureMaterializedRowOwnership()
-    {
-        if (_opened || _operator is not IRowBufferReuseController controller)
-            return;
-
-        controller.SetReuseCurrentRowBuffer(false);
     }
 
     public ValueTask DisposeAsync() => _operator?.DisposeAsync() ?? ValueTask.CompletedTask;

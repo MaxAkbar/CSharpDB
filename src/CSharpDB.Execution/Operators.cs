@@ -2283,6 +2283,7 @@ public sealed class HashJoinOperator : IOperator
     private List<DbValue[]>? _allRightRows;
     private HashSet<DbValue[]>? _matchedRightRows;
     private DbValue[]? _activeProbeRow;
+    private DbValue[]? _residualRowBuffer;
     private List<DbValue[]>? _activeBuildMatches;
     private int _activeBuildMatchIndex;
     private bool _activeProbeMatched;
@@ -2347,6 +2348,9 @@ public sealed class HashJoinOperator : IOperator
         _matchedRightRows = _buildRightSide && _joinType == JoinType.RightOuter
             ? new HashSet<DbValue[]>(ReferenceEqualityComparer.Instance)
             : null;
+        _residualRowBuffer = _residualPredicate == null
+            ? null
+            : new DbValue[_leftColCount + _rightColCount];
 
         var buildSource = BuildSource;
         while (await buildSource.MoveNextAsync(ct))
@@ -2371,10 +2375,10 @@ public sealed class HashJoinOperator : IOperator
                 while (_activeBuildMatches != null && _activeBuildMatchIndex < _activeBuildMatches.Count)
                 {
                     var buildMatch = _activeBuildMatches[_activeBuildMatchIndex++];
-                    var combined = CombineProbeAndBuildRows(_activeProbeRow, buildMatch);
-                    if (!PassesResidual(combined))
+                    if (!PassesResidual(_activeProbeRow, buildMatch))
                         continue;
 
+                    var combined = CombineProbeAndBuildRows(_activeProbeRow, buildMatch);
                     _activeProbeMatched = true;
                     if (_buildRightSide && _joinType == JoinType.RightOuter)
                         _matchedRightRows?.Add(buildMatch);
@@ -2509,9 +2513,24 @@ public sealed class HashJoinOperator : IOperator
         _activeProbeMatched = false;
     }
 
-    private bool PassesResidual(DbValue[] combined)
+    private bool PassesResidual(DbValue[] probeRow, DbValue[] buildRow)
     {
-        return _residualPredicate == null || _residualPredicate(combined).IsTruthy;
+        if (_residualPredicate == null)
+            return true;
+
+        var combined = _residualRowBuffer ??= new DbValue[_leftColCount + _rightColCount];
+        if (_buildRightSide)
+        {
+            probeRow.CopyTo(combined, 0);
+            buildRow.CopyTo(combined, probeRow.Length);
+        }
+        else
+        {
+            buildRow.CopyTo(combined, 0);
+            probeRow.CopyTo(combined, buildRow.Length);
+        }
+
+        return _residualPredicate(combined).IsTruthy;
     }
 
     private DbValue[] CombineProbeAndBuildRows(DbValue[] probeRow, DbValue[] buildRow)
@@ -2633,6 +2652,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
     private ReadOnlyMemory<byte> _pendingIndexPayload;
     private int _pendingIndexOffset;
     private DbValue[]? _rightRowBuffer;
+    private DbValue[]? _residualRowBuffer;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
@@ -2672,6 +2692,9 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
         await _outer.OpenAsync(ct);
         Current = Array.Empty<DbValue>();
         _rightRowBuffer = _rightColCount == 0 ? Array.Empty<DbValue>() : new DbValue[_rightColCount];
+        _residualRowBuffer = _residualPredicate == null
+            ? null
+            : new DbValue[_leftColCount + _rightColCount];
         ResetActiveOuterState();
     }
 
@@ -2688,10 +2711,10 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
                         continue;
 
                     var rightRow = DecodeRightRowIntoBuffer(payload);
-                    var combined = CombineRows(_activeOuterRow, rightRow);
-                    if (!PassesResidual(combined))
+                    if (!PassesResidual(_activeOuterRow, rightRow))
                         continue;
 
+                    var combined = CombineRows(_activeOuterRow, rightRow);
                     _activeOuterMatched = true;
                     Current = combined;
                     return true;
@@ -2778,9 +2801,15 @@ public sealed class IndexNestedLoopJoinOperator : IOperator
         return false;
     }
 
-    private bool PassesResidual(DbValue[] row)
+    private bool PassesResidual(DbValue[] leftRow, DbValue[] rightRow)
     {
-        return _residualPredicate == null || _residualPredicate(row).IsTruthy;
+        if (_residualPredicate == null)
+            return true;
+
+        var combined = _residualRowBuffer ??= new DbValue[_leftColCount + _rightColCount];
+        leftRow.CopyTo(combined, 0);
+        rightRow.CopyTo(combined, leftRow.Length);
+        return _residualPredicate(combined).IsTruthy;
     }
 
     private bool TryReadPendingRowId(out long rowId)
@@ -2866,8 +2895,7 @@ public sealed class NestedLoopJoinOperator : IOperator
     private readonly IOperator _left;
     private readonly IOperator _right;
     private readonly JoinType _joinType;
-    private readonly Expression? _condition;
-    private readonly TableSchema _compositeSchema;
+    private readonly Func<DbValue[], DbValue>? _conditionEvaluator;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private List<DbValue[]>? _results;
@@ -2886,8 +2914,9 @@ public sealed class NestedLoopJoinOperator : IOperator
         _left = left;
         _right = right;
         _joinType = joinType;
-        _condition = condition;
-        _compositeSchema = compositeSchema;
+        _conditionEvaluator = condition != null
+            ? ExpressionCompiler.Compile(condition, compositeSchema)
+            : null;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
@@ -2935,6 +2964,9 @@ public sealed class NestedLoopJoinOperator : IOperator
     private List<DbValue[]> ComputeJoin(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
     {
         var results = new List<DbValue[]>();
+        var conditionBuffer = _conditionEvaluator == null
+            ? null
+            : new DbValue[_leftColCount + _rightColCount];
 
         switch (_joinType)
         {
@@ -2949,9 +2981,10 @@ public sealed class NestedLoopJoinOperator : IOperator
                 {
                     foreach (var right in rightRows)
                     {
-                        var combined = CombineRows(left, right);
-                        if (_condition == null || ExpressionEvaluator.Evaluate(_condition, combined, _compositeSchema).IsTruthy)
-                            results.Add(combined);
+                        if (!PassesCondition(left, right, conditionBuffer))
+                            continue;
+
+                        results.Add(CombineRows(left, right));
                     }
                 }
                 break;
@@ -2962,12 +2995,11 @@ public sealed class NestedLoopJoinOperator : IOperator
                     bool matched = false;
                     foreach (var right in rightRows)
                     {
-                        var combined = CombineRows(left, right);
-                        if (_condition == null || ExpressionEvaluator.Evaluate(_condition, combined, _compositeSchema).IsTruthy)
-                        {
-                            results.Add(combined);
-                            matched = true;
-                        }
+                        if (!PassesCondition(left, right, conditionBuffer))
+                            continue;
+
+                        results.Add(CombineRows(left, right));
+                        matched = true;
                     }
                     if (!matched)
                         results.Add(CombineWithNulls(left, _rightColCount, padRight: true));
@@ -2980,12 +3012,12 @@ public sealed class NestedLoopJoinOperator : IOperator
                 {
                     for (int ri = 0; ri < rightRows.Count; ri++)
                     {
-                        var combined = CombineRows(left, rightRows[ri]);
-                        if (_condition == null || ExpressionEvaluator.Evaluate(_condition, combined, _compositeSchema).IsTruthy)
-                        {
-                            results.Add(combined);
-                            rightMatched[ri] = true;
-                        }
+                        var right = rightRows[ri];
+                        if (!PassesCondition(left, right, conditionBuffer))
+                            continue;
+
+                        results.Add(CombineRows(left, right));
+                        rightMatched[ri] = true;
                     }
                 }
                 // Emit unmatched right rows with NULLs on the left
@@ -2998,6 +3030,17 @@ public sealed class NestedLoopJoinOperator : IOperator
         }
 
         return results;
+    }
+
+    private bool PassesCondition(DbValue[] left, DbValue[] right, DbValue[]? buffer)
+    {
+        if (_conditionEvaluator == null)
+            return true;
+
+        var combined = buffer!;
+        left.CopyTo(combined, 0);
+        right.CopyTo(combined, left.Length);
+        return _conditionEvaluator(combined).IsTruthy;
     }
 
     private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)
