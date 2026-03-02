@@ -375,6 +375,38 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PrimaryKeyLookup_WithResidualFilter_RemainsCorrect()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE pk_lookup_residual (id INTEGER PRIMARY KEY, code INTEGER, state TEXT)",
+            TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO pk_lookup_residual VALUES (1, 100, 'active')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO pk_lookup_residual VALUES (2, 200, 'inactive')", TestContext.Current.CancellationToken);
+
+        await using var hitResult = await _db.ExecuteAsync(
+            "SELECT id FROM pk_lookup_residual WHERE id = 1 AND state = 'active'",
+            TestContext.Current.CancellationToken);
+        var hitRows = await hitResult.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Single(hitRows);
+        Assert.Equal(1L, hitRows[0][0].AsInteger);
+
+        await using var starResult = await _db.ExecuteAsync(
+            "SELECT * FROM pk_lookup_residual WHERE id = 1 AND state = 'active'",
+            TestContext.Current.CancellationToken);
+        var starRows = await starResult.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Single(starRows);
+        Assert.Equal(1L, starRows[0][0].AsInteger);
+        Assert.Equal(100L, starRows[0][1].AsInteger);
+        Assert.Equal("active", starRows[0][2].AsText);
+
+        await using var missResult = await _db.ExecuteAsync(
+            "SELECT id FROM pk_lookup_residual WHERE id = 1 AND state = 'inactive'",
+            TestContext.Current.CancellationToken);
+        var missRows = await missResult.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(missRows);
+    }
+
+    [Fact]
     public async Task SelectProjection_UsesIndexOrder_WithCorrectRows()
     {
         await _db.ExecuteAsync("CREATE TABLE ordered_lookup (id INTEGER PRIMARY KEY, sort_key INTEGER, payload TEXT)", TestContext.Current.CancellationToken);

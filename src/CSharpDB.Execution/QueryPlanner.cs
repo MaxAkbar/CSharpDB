@@ -1097,7 +1097,7 @@ public sealed class QueryPlanner
     }
 
     /// <summary>
-    /// Fast path for simple PK equality lookups: SELECT * / columns FROM table WHERE pk = literal.
+    /// Fast path for simple PK lookups: SELECT * / columns FROM table WHERE pk = literal [AND ...].
     /// Bypasses BuildFromOperator, TryBuildIndexScan, and aggregate checks entirely.
     /// </summary>
     private bool TryFastPkLookup(SelectStatement stmt, out QueryResult result)
@@ -1132,16 +1132,13 @@ public sealed class QueryPlanner
         if (pkIdx < 0 || pkIdx >= schema.Columns.Count || schema.Columns[pkIdx].Type != DbType.Integer)
             return false;
 
-        // WHERE must be a simple pk = integer_literal
-        if (!TryExtractIntegerEqualityLookupTerm(stmt.Where, schema, out int columnIndex, out long lookupValue))
-            return false;
-        if (columnIndex != pkIdx)
+        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, schema, pkIdx, out long lookupValue, out var residualWhere))
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
 
         // Sync fast path: try cache-only lookup to bypass the async operator pipeline
-        if (PreferSyncPointLookups && stmt.Columns.Any(c => c.IsStar))
+        if (PreferSyncPointLookups && residualWhere == null && stmt.Columns.Any(c => c.IsStar))
         {
             if (tableTree.TryFindCached(lookupValue, out var payload))
             {
@@ -1156,6 +1153,10 @@ public sealed class QueryPlanner
         if (stmt.Columns.Any(c => c.IsStar))
         {
             IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+            if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
+                residualWhere = pushedWhere;
+            if (residualWhere != null)
+                op = new FilterOperator(op, GetOrCompileExpression(residualWhere, schema));
             result = new QueryResult(op);
             return true;
         }
@@ -1163,27 +1164,99 @@ public sealed class QueryPlanner
         // Column projection — check if all columns are simple column references
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
-            // PK-only projection: skip row decode entirely
-            if (IsPrimaryKeyOnlyProjection(columnIndices, pkIdx))
+            // PK-only projection with no residual filter: skip row decode entirely.
+            if (residualWhere == null && IsPrimaryKeyOnlyProjection(columnIndices, pkIdx))
             {
                 IOperator op = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols);
                 result = new QueryResult(op);
                 return true;
             }
 
-            // Column projection with row decode
+            // Column projection with row decode (and optional residual filter).
             var pkOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
-            int maxCol = 0;
+            var remainingResidual = residualWhere;
+            if (remainingResidual != null &&
+                TryPushDownSimplePreDecodeFilter(pkOp, remainingResidual, schema, out var pushedWhere))
+            {
+                remainingResidual = pushedWhere;
+            }
+
+            int maxCol = -1;
             for (int i = 0; i < columnIndices.Length; i++)
                 if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
-            pkOp.SetDecodedColumnUpperBound(maxCol);
-            IOperator projOp = new ProjectionOperator(pkOp, columnIndices, outputCols, schema);
+            if (remainingResidual != null &&
+                !TryAccumulateMaxReferencedColumn(remainingResidual, schema, ref maxCol))
+            {
+                return false;
+            }
+            if (maxCol >= 0)
+                pkOp.SetDecodedColumnUpperBound(maxCol);
+
+            IOperator projOp = pkOp;
+            if (remainingResidual != null)
+                projOp = new FilterOperator(projOp, GetOrCompileExpression(remainingResidual, schema));
+            projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
             return true;
         }
 
         // Expression columns — fall through to general path
         return false;
+    }
+
+    private static bool TryExtractPrimaryKeyLookupWithResidual(
+        Expression where,
+        TableSchema schema,
+        int pkIndex,
+        out long lookupValue,
+        out Expression? residualWhere)
+    {
+        lookupValue = 0;
+        residualWhere = null;
+
+        if (TryExtractIntegerEqualityLookupTerm(where, schema, out int columnIndex, out long singleLookup))
+        {
+            if (columnIndex != pkIndex)
+                return false;
+
+            lookupValue = singleLookup;
+            return true;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(where, conjuncts);
+
+        int selectedConjunctIndex = -1;
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractIntegerEqualityLookupTerm(conjuncts[i], schema, out int conjunctColumnIndex, out long conjunctLookup))
+                continue;
+
+            if (conjunctColumnIndex != pkIndex)
+                continue;
+
+            selectedConjunctIndex = i;
+            lookupValue = conjunctLookup;
+            break;
+        }
+
+        if (selectedConjunctIndex < 0)
+            return false;
+
+        if (conjuncts.Count == 1)
+            return true;
+
+        var residualTerms = new List<Expression>(conjuncts.Count - 1);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (i == selectedConjunctIndex)
+                continue;
+
+            residualTerms.Add(conjuncts[i]);
+        }
+
+        residualWhere = CombineConjuncts(residualTerms);
+        return true;
     }
 
     private bool TryBuildSimpleCountStarQuery(SelectStatement stmt, out QueryResult result)
