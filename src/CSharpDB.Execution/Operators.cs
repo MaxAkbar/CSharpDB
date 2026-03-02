@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Text;
 using CSharpDB.Core;
 using CSharpDB.Sql;
@@ -593,7 +594,7 @@ internal sealed class AggregateDistinctValueSet
 /// Hash aggregate operator — groups rows and computes aggregate functions.
 /// Used for GROUP BY and queries with aggregate functions (COUNT, SUM, AVG, MIN, MAX).
 /// </summary>
-public sealed class HashAggregateOperator : IOperator
+public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
     private readonly IOperator _source;
     private readonly List<SelectColumn> _selectColumns;
@@ -612,6 +613,7 @@ public sealed class HashAggregateOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _results?.Count;
 
     public HashAggregateOperator(
         IOperator source,
@@ -718,6 +720,21 @@ public sealed class HashAggregateOperator : IOperator
         if (_index >= _results!.Count) return ValueTask.FromResult(false);
         Current = _results[_index];
         return ValueTask.FromResult(true);
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        if (_results == null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _results;
+        _results = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        return true;
     }
 
     public ValueTask DisposeAsync() => _source.DisposeAsync();
@@ -1456,7 +1473,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
 /// <summary>
 /// Sort operator — materializes all input then sorts. Used for ORDER BY.
 /// </summary>
-public sealed class SortOperator : IOperator
+public sealed class SortOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
     private const int TypedPrecomputedKeyMinRowCount = 50_000;
 
@@ -1532,6 +1549,7 @@ public sealed class SortOperator : IOperator
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _sortedRows?.Count;
 
     public SortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema)
     {
@@ -1625,6 +1643,24 @@ public sealed class SortOperator : IOperator
         _index = -1;
         Current = Array.Empty<DbValue>();
         return _source.DisposeAsync();
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        // When row indices are used, logical ordering is represented outside _sortedRows.
+        // Keep the normal iterator path for that case.
+        if (_sortedRows == null || _sortedRowIndices != null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _sortedRows;
+        _sortedRows = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        ReleasePooledBuffers();
+        return true;
     }
 
     private int CompareRows(DbValue[] a, DbValue[] b)
@@ -2059,7 +2095,7 @@ public sealed class SortOperator : IOperator
 /// Keeps only the best N rows in memory and does a final in-memory sort
 /// over that bounded set.
 /// </summary>
-public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
+public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
     private readonly struct CompiledSortClause
     {
@@ -2209,6 +2245,21 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider
         _index = -1;
         Current = Array.Empty<DbValue>();
         return _source.DisposeAsync();
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        if (_sortedRows == null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _sortedRows;
+        _sortedRows = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        return true;
     }
 
     private async ValueTask<bool> TryOpenWithTableScanLateMaterializationAsync(CancellationToken ct)
@@ -2549,10 +2600,11 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
     private readonly int _singleBuildKeyIndex;
     private readonly int _singleProbeKeyIndex;
     private Dictionary<HashJoinKey, List<DbValue[]>>? _hashTable;
-    private Dictionary<DbValue, List<DbValue[]>>? _singleKeyHashTable;
+    private Dictionary<DbValue, SingleKeyBucket>? _singleKeyHashTable;
     private List<DbValue[]>? _allRightRows;
     private HashSet<DbValue[]>? _matchedRightRows;
     private DbValue[]? _activeProbeRow;
+    private DbValue[]? _activeSingleBuildRow;
     private DbValue[]? _residualRowBuffer;
     private List<DbValue[]>? _activeBuildMatches;
     private int _activeBuildMatchIndex;
@@ -2602,9 +2654,16 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
             throw new CSharpDbException(ErrorCode.Unknown, "Swapped hash build side is supported for INNER JOIN only.");
 
         if (_left is IRowBufferReuseController leftController)
-            leftController.SetReuseCurrentRowBuffer(false);
+        {
+            // Keep probe-side streaming allocations low; build-side rows are materialized.
+            leftController.SetReuseCurrentRowBuffer(!_buildRightSide);
+        }
+
         if (_right is IRowBufferReuseController rightController)
-            rightController.SetReuseCurrentRowBuffer(false);
+        {
+            // Keep probe-side streaming allocations low; build-side rows are materialized.
+            rightController.SetReuseCurrentRowBuffer(_buildRightSide);
+        }
 
         await _left.OpenAsync(ct);
         await _right.OpenAsync(ct);
@@ -2613,7 +2672,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
             ? null
             : new Dictionary<HashJoinKey, List<DbValue[]>>(HashJoinKeyComparer.Instance);
         _singleKeyHashTable = _singleKeyFastPath
-            ? new Dictionary<DbValue, List<DbValue[]>>()
+            ? new Dictionary<DbValue, SingleKeyBucket>()
             : null;
         _allRightRows = _buildRightSide && _joinType == JoinType.RightOuter ? new List<DbValue[]>() : null;
         _matchedRightRows = _buildRightSide && _joinType == JoinType.RightOuter
@@ -2643,6 +2702,23 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
         {
             if (_activeProbeRow != null)
             {
+                if (_activeSingleBuildRow != null)
+                {
+                    var singleBuildMatch = _activeSingleBuildRow;
+                    _activeSingleBuildRow = null;
+
+                    if (PassesResidual(_activeProbeRow, singleBuildMatch))
+                    {
+                        var combined = CombineProbeAndBuildRows(_activeProbeRow, singleBuildMatch);
+                        _activeProbeMatched = true;
+                        if (_buildRightSide && _joinType == JoinType.RightOuter)
+                            _matchedRightRows?.Add(singleBuildMatch);
+
+                        Current = combined;
+                        return true;
+                    }
+                }
+
                 while (_activeBuildMatches != null && _activeBuildMatchIndex < _activeBuildMatches.Count)
                 {
                     var buildMatch = _activeBuildMatches[_activeBuildMatchIndex++];
@@ -2677,13 +2753,19 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
                     var probeRow = probeSource.Current;
 
                     _activeProbeRow = probeRow;
+                    _activeSingleBuildRow = null;
+                    _activeBuildMatches = null;
                     _activeProbeMatched = false;
                     _activeBuildMatchIndex = 0;
 
                     if (_singleKeyFastPath)
                     {
                         var keyValue = ExtractSingleJoinKey(probeRow, _singleProbeKeyIndex);
-                        _singleKeyHashTable!.TryGetValue(keyValue, out _activeBuildMatches);
+                        if (_singleKeyHashTable!.TryGetValue(keyValue, out var bucket))
+                        {
+                            _activeSingleBuildRow = bucket.SingleMatch;
+                            _activeBuildMatches = bucket.MultipleMatches;
+                        }
                     }
                     else
                     {
@@ -2818,13 +2900,19 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
         if (_singleKeyFastPath)
         {
             var keyValue = ExtractSingleJoinKey(buildRow, _singleBuildKeyIndex);
-            if (!_singleKeyHashTable!.TryGetValue(keyValue, out var singleBucket))
+            ref var singleBucket = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                _singleKeyHashTable!,
+                keyValue,
+                out bool exists);
+            if (exists)
             {
-                singleBucket = new List<DbValue[]>();
-                _singleKeyHashTable[keyValue] = singleBucket;
+                singleBucket.Add(buildRow);
+            }
+            else
+            {
+                singleBucket = SingleKeyBucket.Create(buildRow);
             }
 
-            singleBucket.Add(buildRow);
             return;
         }
 
@@ -2860,6 +2948,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
     private void ResetProbeState()
     {
         _activeProbeRow = null;
+        _activeSingleBuildRow = null;
         _activeBuildMatches = null;
         _activeBuildMatchIndex = 0;
         _activeProbeMatched = false;
@@ -2870,6 +2959,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
     private void ClearActiveProbeState()
     {
         _activeProbeRow = null;
+        _activeSingleBuildRow = null;
         _activeBuildMatches = null;
         _activeBuildMatchIndex = 0;
         _activeProbeMatched = false;
@@ -3067,6 +3157,43 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
         return projected;
     }
 
+    private struct SingleKeyBucket
+    {
+        public DbValue[]? SingleMatch;
+        public List<DbValue[]>? MultipleMatches;
+
+        public static SingleKeyBucket Create(DbValue[] buildRow)
+        {
+            return new SingleKeyBucket
+            {
+                SingleMatch = buildRow,
+                MultipleMatches = null,
+            };
+        }
+
+        public void Add(DbValue[] buildRow)
+        {
+            if (MultipleMatches != null)
+            {
+                MultipleMatches.Add(buildRow);
+                return;
+            }
+
+            if (SingleMatch != null)
+            {
+                MultipleMatches = new List<DbValue[]>(4)
+                {
+                    SingleMatch,
+                    buildRow,
+                };
+                SingleMatch = null;
+                return;
+            }
+
+            SingleMatch = buildRow;
+        }
+    }
+
     private readonly struct HashJoinKey
     {
         public readonly DbValue[] Values;
@@ -3168,7 +3295,8 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         if (_outer is IRowBufferReuseController outerController)
-            outerController.SetReuseCurrentRowBuffer(false);
+            // Outer rows are consumed before advancing the outer source again.
+            outerController.SetReuseCurrentRowBuffer(true);
 
         await _outer.OpenAsync(ct);
         Current = Array.Empty<DbValue>();
@@ -3528,7 +3656,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 /// Nested-loop join operator — materializes both sides and computes the join.
 /// Supports INNER, LEFT OUTER, RIGHT OUTER, and CROSS joins.
 /// </summary>
-public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarget
+public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
     private readonly IOperator _left;
     private readonly IOperator _right;
@@ -3551,6 +3679,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _precomputedRows?.Count;
 
     public NestedLoopJoinOperator(
         IOperator left, IOperator right,
@@ -3572,8 +3701,10 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         if (_left is IRowBufferReuseController leftController)
-            leftController.SetReuseCurrentRowBuffer(false);
+            // Left side is streamed row-by-row; reuse is safe and lowers per-row allocations.
+            leftController.SetReuseCurrentRowBuffer(true);
         if (_right is IRowBufferReuseController rightController)
+            // Right side is materialized, so request owned rows directly.
             rightController.SetReuseCurrentRowBuffer(false);
 
         await _left.OpenAsync(ct);
@@ -3693,6 +3824,23 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
 
             return false;
         }
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        if (_precomputedRows == null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _precomputedRows;
+        _precomputedRows = null;
+        _precomputedIndex = -1;
+        _rightRows = null;
+        _leftExhausted = true;
+        Current = Array.Empty<DbValue>();
+        return true;
     }
 
     public async ValueTask DisposeAsync()
@@ -5140,15 +5288,15 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
 /// <summary>
 /// Yields pre-materialized rows. Used for CTEs whose results have been computed upfront.
 /// </summary>
-public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider
+public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
-    private readonly List<DbValue[]> _rows;
+    private List<DbValue[]>? _rows;
     private int _index;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
-    public int? EstimatedRowCount => _rows.Count;
+    public int? EstimatedRowCount => _rows?.Count;
 
     public MaterializedOperator(List<DbValue[]> rows, ColumnDefinition[] outputSchema)
     {
@@ -5164,10 +5312,28 @@ public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
+        if (_rows == null)
+            return ValueTask.FromResult(false);
+
         _index++;
         if (_index >= _rows.Count) return ValueTask.FromResult(false);
         Current = _rows[_index];
         return ValueTask.FromResult(true);
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        if (_rows == null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _rows;
+        _rows = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        return true;
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

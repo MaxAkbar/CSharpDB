@@ -135,10 +135,20 @@ public sealed class QueryResult : IAsyncDisposable
         if (_operator == null)
             return new List<DbValue[]>(0);
 
+        bool openedNow = false;
         if (!_opened)
         {
             await _operator.OpenAsync(ct);
             _opened = true;
+            openedNow = true;
+        }
+
+        if (openedNow &&
+            !_operator.ReusesCurrentRowBuffer &&
+            _operator is IMaterializedRowsProvider materialized &&
+            materialized.TryTakeMaterializedRows(out var materializedRows))
+        {
+            return materializedRows;
         }
 
         bool cloneRows = _operator.ReusesCurrentRowBuffer;

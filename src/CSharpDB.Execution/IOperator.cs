@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using CSharpDB.Core;
 
 namespace CSharpDB.Execution;
@@ -35,4 +36,9 @@ internal interface IEstimatedRowCountProvider
 internal interface IProjectionPushdownTarget
 {
     bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema);
+}
+
+internal interface IMaterializedRowsProvider
+{
+    bool TryTakeMaterializedRows(out List<DbValue[]> rows);
 }
