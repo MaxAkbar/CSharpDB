@@ -23,6 +23,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private const int WalStreamBufferSize = 64 * 1024;
     private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
+    private const int WalPreallocationChunkBytes = 4 * 1024 * 1024;
     private static readonly IComparer<KeyValuePair<uint, long>> PageIdComparer =
         Comparer<KeyValuePair<uint, long>>.Create(static (left, right) => left.Key.CompareTo(right.Key));
 
@@ -42,6 +43,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private uint _lastUncommittedDataChecksum;
     private readonly List<(uint PageId, long WalOffset)> _recoverUncommittedBatch = new();
     private long _uncommittedStartOffset;
+    private long _reservedLength;
     private readonly byte[] _walHeaderBuffer = new byte[PageConstants.WalHeaderSize];
     private readonly byte[] _appendFrameHeader = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _appendFrameBuffer = new byte[PageConstants.WalFrameSize];
@@ -100,6 +102,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             await _stream.FlushAsync(cancellationToken);
 
             _uncommittedStartOffset = _stream.Position;
+            _reservedLength = _stream.Length;
             OpenReadHandle();
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
@@ -139,6 +142,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
+            EnsureAppendCapacity(PageConstants.WalFrameSize);
             uint dataChecksum = WriteWalFrame(
                 _appendFrameBuffer.AsSpan(0, PageConstants.WalFrameSize),
                 pageId,
@@ -266,6 +270,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         try
         {
             _stream.SetLength(_uncommittedStartOffset);
+            _reservedLength = _uncommittedStartOffset;
             _stream.Position = _uncommittedStartOffset;
             await _stream.FlushAsync(cancellationToken);
             _uncommittedFrames.Clear();
@@ -394,6 +399,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             _stream.Position = _stream.Length;
             _uncommittedStartOffset = _stream.Position;
+            _reservedLength = _stream.Length;
             OpenReadHandle();
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
@@ -517,6 +523,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
 
             _stream.SetLength(PageConstants.WalHeaderSize);
+            _reservedLength = PageConstants.WalHeaderSize;
             await _stream.FlushAsync(cancellationToken);
             _uncommittedStartOffset = PageConstants.WalHeaderSize;
         }
@@ -796,6 +803,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
+            EnsureAppendCapacity((long)totalFrameCount * PageConstants.WalFrameSize);
             while (frameIndex < totalFrameCount)
             {
                 int framesInChunk = Math.Min(AppendFrameChunkSize, totalFrameCount - frameIndex);
@@ -909,6 +917,26 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(12, 4), dbPageCount);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(16, 4), _salt1);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(20, 4), _salt2);
+    }
+
+    private void EnsureAppendCapacity(long additionalBytes)
+    {
+        if (_stream == null || additionalBytes <= 0)
+            return;
+
+        long requiredEndOffset = _stream.Position + additionalBytes;
+        if (requiredEndOffset <= _reservedLength)
+            return;
+
+        long nextReservedLength = _reservedLength;
+        if (nextReservedLength < _stream.Position)
+            nextReservedLength = _stream.Position;
+
+        while (nextReservedLength < requiredEndOffset)
+            nextReservedLength += WalPreallocationChunkBytes;
+
+        _stream.SetLength(nextReservedLength);
+        _reservedLength = nextReservedLength;
     }
 
     private void EnsureCheckpointCommittedPageCapacity(int requiredCount)
