@@ -20,6 +20,7 @@ namespace CSharpDB.Storage.Wal;
 public sealed class WriteAheadLog : IWriteAheadLog
 {
     private const int WalStreamBufferSize = 64 * 1024;
+    private const int CheckpointWriteChunkPages = 16;
 
     private readonly string _walPath;
     private FileStream? _stream;
@@ -40,7 +41,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly byte[] _appendFrameHeader = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryFrameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryPageBuffer = new byte[PageConstants.PageSize];
-    private readonly byte[] _checkpointPageBuffer = new byte[PageConstants.PageSize];
+    private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
 
     public WriteAheadLog(
         string databasePath,
@@ -377,10 +378,34 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
             _checkpointOrderedPages.Sort(static (a, b) => a.Key.CompareTo(b.Key));
 
+            uint batchStartPageId = 0;
+            int batchPageCount = 0;
+
             foreach (var (pageId, walOffset) in _checkpointOrderedPages)
             {
-                await ReadPageIntoFromStreamAsync(walOffset, _checkpointPageBuffer, cancellationToken);
-                await device.WriteAsync((long)pageId * PageConstants.PageSize, _checkpointPageBuffer, cancellationToken);
+                bool startsNewBatch = batchPageCount == 0 ||
+                    (ulong)pageId != (ulong)batchStartPageId + (uint)batchPageCount ||
+                    batchPageCount == CheckpointWriteChunkPages;
+
+                if (startsNewBatch && batchPageCount > 0)
+                {
+                    await FlushCheckpointBatchAsync(device, batchStartPageId, batchPageCount, cancellationToken);
+                    batchPageCount = 0;
+                }
+
+                if (batchPageCount == 0)
+                    batchStartPageId = pageId;
+
+                var destination = _checkpointWriteBuffer.AsMemory(
+                    batchPageCount * PageConstants.PageSize,
+                    PageConstants.PageSize);
+                await ReadPageIntoFromStreamAsync(walOffset, destination, cancellationToken);
+                batchPageCount++;
+            }
+
+            if (batchPageCount > 0)
+            {
+                await FlushCheckpointBatchAsync(device, batchStartPageId, batchPageCount, cancellationToken);
             }
 
             await device.FlushAsync(cancellationToken);
@@ -574,6 +599,17 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 $"Failed to read WAL page from stream at walFrameOffset={walFrameOffset}.",
                 ex);
         }
+    }
+
+    private ValueTask FlushCheckpointBatchAsync(
+        IStorageDevice device,
+        uint startPageId,
+        int pageCount,
+        CancellationToken cancellationToken)
+    {
+        long dbOffset = (long)startPageId * PageConstants.PageSize;
+        int byteCount = pageCount * PageConstants.PageSize;
+        return device.WriteAsync(dbOffset, _checkpointWriteBuffer.AsMemory(0, byteCount), cancellationToken);
     }
 
     private void WriteWalHeader(Span<byte> header, uint dbPageCount)
