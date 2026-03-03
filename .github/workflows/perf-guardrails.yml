@@ -1,0 +1,63 @@
+name: Perf Guardrails
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/CSharpDB.Benchmarks/**"
+      - ".github/workflows/perf-guardrails.yml"
+  workflow_dispatch:
+    inputs:
+      fail_on_regression:
+        description: "Fail run when guardrails are violated"
+        required: false
+        default: false
+        type: boolean
+      baseline_snapshot:
+        description: "Optional baseline snapshot folder name (for example 20260302-001757)"
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "0 10 * * *"
+
+jobs:
+  perf-guardrails:
+    runs-on: windows-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run Perf Guardrails (Report)
+        if: github.event_name != 'workflow_dispatch' || inputs.fail_on_regression != true
+        shell: pwsh
+        run: |
+          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
+            -Configuration Release `
+            -NoFailOnRegression `
+            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+
+      - name: Run Perf Guardrails (Gate)
+        if: github.event_name == 'workflow_dispatch' && inputs.fail_on_regression == true
+        shell: pwsh
+        run: |
+          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
+            -Configuration Release `
+            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+
+      - name: Upload Perf Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-guardrails-${{ github.run_id }}
+          path: |
+            tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md
+            BenchmarkDotNet.Artifacts/results/*.csv
+            BenchmarkDotNet.Artifacts/*.log

@@ -6,6 +6,9 @@ param(
         "*PointLookupBenchmarks*",
         "*InsertBenchmarks*",
         "*JoinBenchmarks*",
+        "*OrderByIndexBenchmarks*",
+        "*ScalarAggregateBenchmarks*",
+        "*ScalarAggregateLookupBenchmarks*",
         "*WalBenchmarks*",
         "*AdoNetBenchmarks*"
     ),

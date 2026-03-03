@@ -1,0 +1,121 @@
+{
+  "baselineSnapshot": "20260302-001757",
+  "defaults": {
+    "maxMeanRegressionPercent": 8.0,
+    "maxAllocRegressionPercent": 10.0,
+    "maxAllocRegressionBytes": 256.0
+  },
+  "checks": [
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
+      "keyColumns": [
+        "Method",
+        "PreSeededRows"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'Batch INSERT x100 in transaction'"
+          },
+          "maxMeanRegressionPercent": 18.0
+        },
+        {
+          "match": {
+            "Method": "'Batch INSERT x1000 in transaction'"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'SELECT by primary key'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT by primary key'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'SELECT by primary key'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'SELECT by PK with residual conjunct'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT by PK with residual conjunct'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'SELECT by PK with residual conjunct'",
+          "RowCount": "100000"
+        }
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'SELECT by primary key'",
+            "RowCount": "10000"
+          },
+          "maxMeanRegressionPercent": 20.0
+        }
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv",
+      "keyColumns": [
+        "Method"
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260303-190500",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "maxMeanRegressionPercent": 25.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260303-190500",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "maxMeanRegressionPercent": 30.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260303-190500",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "maxMeanRegressionPercent": 15.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
+      "keyColumns": [
+        "Method",
+        "WalFramesBeforeCheckpoint"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'Manual checkpoint after N writes'"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ]
+    }
+  ]
+}

@@ -53,6 +53,41 @@ pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1 -SkipMicro
 
 Snapshots are written to `tests/CSharpDB.Benchmarks/baselines/<utc-timestamp>/`.
 
+### Performance Guardrails
+
+Guardrails compare current micro-benchmark results against a locked baseline snapshot and fail on regressions that exceed thresholds.
+Current default guardrail subset covers `InsertBenchmarks`, `PointLookupBenchmarks`, `JoinBenchmarks`, `OrderByIndexBenchmarks`, `ScalarAggregateBenchmarks`, `ScalarAggregateLookupBenchmarks`, and `WalBenchmarks`.
+
+```bash
+# Run the guardrail benchmark subset + baseline comparison
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1
+
+# Compare only (skip running benchmarks), useful after a manual benchmark run
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -SkipMicroRun
+```
+
+Defaults:
+
+- Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/20260302-001757`
+- Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
+- Report output: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
+- Some checks can pin their own baseline via `baselineSnapshot` in `perf-thresholds.json` (used for focused suites).
+
+Useful overrides:
+
+```bash
+# Use a different baseline snapshot and report only (no failure)
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
+  -BaselineSnapshot 20260302-001757 `
+  -NoFailOnRegression
+```
+
+To refresh guardrails after intentional performance changes:
+
+1. Capture a new baseline with `Capture-Baseline.ps1`.
+2. Update `baselineSnapshot` and threshold rules in `perf-thresholds.json`.
+3. Re-run `Run-Perf-Guardrails.ps1` and confirm clean pass.
+
 ---
 
 ## Benchmark Results
