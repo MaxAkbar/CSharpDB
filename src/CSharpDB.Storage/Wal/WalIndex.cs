@@ -19,6 +19,17 @@ public sealed class WalIndex
     public int FrameCount => _frameCount;
 
     /// <summary>
+    /// Ensure internal page map capacity before bulk frame publication.
+    /// </summary>
+    public void EnsurePageCapacity(int additionalEntries)
+    {
+        if (additionalEntries <= 0)
+            return;
+
+        _pageMap.EnsureCapacity(_pageMap.Count + additionalEntries);
+    }
+
+    /// <summary>
     /// Record a committed frame. Called by WriteAheadLog after writing
     /// each frame that belongs to a committed transaction.
     /// </summary>

@@ -720,6 +720,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
     private void PublishCommittedFramesFromBatch(ReadOnlyMemory<WalFrameWrite> frames, long firstFrameOffset)
     {
+        _index.EnsurePageCapacity(frames.Length);
+
         for (int i = 0; i < frames.Length; i++)
         {
             long frameOffset = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
@@ -732,6 +734,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
     private void PublishCommittedFrames()
     {
+        _index.EnsurePageCapacity(_uncommittedFrames.Count);
+
         foreach (var (pageId, walOffset) in _uncommittedFrames)
         {
             _index.AddCommittedFrame(pageId, walOffset);
