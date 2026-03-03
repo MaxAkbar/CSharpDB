@@ -753,22 +753,44 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
             {
                 // Stream rows into group accumulators; preserve first-seen group order.
                 var groups = new List<GroupState>();
-                var groupIndex = new Dictionary<GroupKey, int>(s_groupKeyComparer);
-
-                while (await _source.MoveNextAsync(ct))
+                if (_groupByEvaluators is { Length: 1 })
                 {
-                    var row = _source.Current;
-                    var key = BuildGroupKey(row);
-                    if (!groupIndex.TryGetValue(key, out int idx))
+                    var groupByEvaluator = _groupByEvaluators[0];
+                    var groupIndex = new Dictionary<DbValue, int>();
+                    while (await _source.MoveNextAsync(ct))
                     {
-                        idx = groups.Count;
-                        groupIndex[key] = idx;
-                        groups.Add(new GroupState(
-                            firstRow: (DbValue[])row.Clone(),
-                            aggregateStates: CreateAggregateStates()));
-                    }
+                        var row = _source.Current;
+                        var key = groupByEvaluator(row);
+                        if (!groupIndex.TryGetValue(key, out int idx))
+                        {
+                            idx = groups.Count;
+                            groupIndex[key] = idx;
+                            groups.Add(new GroupState(
+                                firstRow: (DbValue[])row.Clone(),
+                                aggregateStates: CreateAggregateStates()));
+                        }
 
-                    groups[idx].Accumulate(row);
+                        groups[idx].Accumulate(row);
+                    }
+                }
+                else
+                {
+                    var groupIndex = new Dictionary<GroupKey, int>(s_groupKeyComparer);
+                    while (await _source.MoveNextAsync(ct))
+                    {
+                        var row = _source.Current;
+                        var key = BuildGroupKey(row);
+                        if (!groupIndex.TryGetValue(key, out int idx))
+                        {
+                            idx = groups.Count;
+                            groupIndex[key] = idx;
+                            groups.Add(new GroupState(
+                                firstRow: (DbValue[])row.Clone(),
+                                aggregateStates: CreateAggregateStates()));
+                        }
+
+                        groups[idx].Accumulate(row);
+                    }
                 }
 
                 foreach (var group in groups)
@@ -2184,14 +2206,24 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
 {
     private readonly struct CompiledSortClause
     {
+        public readonly Expression Expression;
         public readonly int ColumnIndex;
+        public readonly int MaxReferencedColumnIndex;
         public readonly int KeyIndex;
         public readonly int Direction;
         public readonly Func<DbValue[], DbValue>? KeyEvaluator;
 
-        public CompiledSortClause(int columnIndex, int keyIndex, bool descending, Func<DbValue[], DbValue>? keyEvaluator)
+        public CompiledSortClause(
+            Expression expression,
+            int columnIndex,
+            int maxReferencedColumnIndex,
+            int keyIndex,
+            bool descending,
+            Func<DbValue[], DbValue>? keyEvaluator)
         {
+            Expression = expression;
             ColumnIndex = columnIndex;
+            MaxReferencedColumnIndex = maxReferencedColumnIndex;
             KeyIndex = keyIndex;
             Direction = descending ? -1 : 1;
             KeyEvaluator = keyEvaluator;
@@ -2212,11 +2244,23 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
     {
         public readonly DbValue[] Row;
         public readonly DbValue[]? Keys;
+        public readonly DbValue SingleKey;
+        public readonly bool HasSingleKey;
 
         public RankedRow(DbValue[] row, DbValue[]? keys)
         {
             Row = row;
             Keys = keys;
+            SingleKey = DbValue.Null;
+            HasSingleKey = false;
+        }
+
+        public RankedRow(DbValue[] row, DbValue singleKey)
+        {
+            Row = row;
+            Keys = null;
+            SingleKey = singleKey;
+            HasSingleKey = true;
         }
     }
 
@@ -2247,6 +2291,8 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
     private readonly IOperator _source;
     private readonly CompiledSortClause[] _compiledOrderBy;
     private readonly int _precomputedKeyCount;
+    private readonly bool _singleComputedKeyFastPath;
+    private readonly int _singleComputedKeyClauseIndex;
     private readonly int _topN;
 
     private List<DbValue[]>? _sortedRows;
@@ -2261,6 +2307,8 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
     {
         _source = source;
         _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount);
+        _singleComputedKeyClauseIndex = FindSingleComputedKeyClauseIndex(_compiledOrderBy, _precomputedKeyCount);
+        _singleComputedKeyFastPath = _singleComputedKeyClauseIndex >= 0;
         _topN = Math.Max(0, topN);
     }
 
@@ -2353,15 +2401,13 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
     {
         if (_source is not TableScanOperator tableScan)
             return false;
-        if (_precomputedKeyCount != 0)
-            return false;
         if (tableScan.DecodedColumnUpperBound.HasValue)
             return false;
 
         int maxOrderByColumnIndex = -1;
         for (int i = 0; i < _compiledOrderBy.Length; i++)
         {
-            int columnIndex = _compiledOrderBy[i].ColumnIndex;
+            int columnIndex = _compiledOrderBy[i].MaxReferencedColumnIndex;
             if (columnIndex < 0)
                 return false;
 
@@ -2384,8 +2430,12 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
 
             while (await _source.MoveNextAsync(ct))
             {
+                var sourceRow = _source.Current;
+                var key = clause.KeyIndex >= 0
+                    ? clause.EvaluateSortKey(sourceRow)
+                    : clause.EvaluateRow(sourceRow);
                 var candidate = new SingleKeyRowIdRankedRow(
-                    clause.EvaluateRow(_source.Current),
+                    key,
                     tableScan.CurrentRowId);
 
                 if (singleKeyHeap.Count < _topN)
@@ -2457,6 +2507,12 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
         if (_precomputedKeyCount == 0)
             return new RankedRow(row, null);
 
+        if (_singleComputedKeyFastPath)
+        {
+            var singleClause = _compiledOrderBy[_singleComputedKeyClauseIndex];
+            return new RankedRow(row, singleClause.EvaluateSortKey(row));
+        }
+
         var keys = new DbValue[_precomputedKeyCount];
         for (int i = 0; i < _compiledOrderBy.Length; i++)
         {
@@ -2473,12 +2529,26 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
         for (int i = 0; i < _compiledOrderBy.Length; i++)
         {
             var clause = _compiledOrderBy[i];
-            var leftValue = clause.KeyIndex >= 0
-                ? left.Keys![clause.KeyIndex]
-                : clause.EvaluateRow(left.Row);
-            var rightValue = clause.KeyIndex >= 0
-                ? right.Keys![clause.KeyIndex]
-                : clause.EvaluateRow(right.Row);
+            DbValue leftValue;
+            DbValue rightValue;
+            if (clause.KeyIndex >= 0)
+            {
+                if (_singleComputedKeyFastPath)
+                {
+                    leftValue = left.SingleKey;
+                    rightValue = right.SingleKey;
+                }
+                else
+                {
+                    leftValue = left.Keys![clause.KeyIndex];
+                    rightValue = right.Keys![clause.KeyIndex];
+                }
+            }
+            else
+            {
+                leftValue = clause.EvaluateRow(left.Row);
+                rightValue = clause.EvaluateRow(right.Row);
+            }
 
             int cmp = DbValue.Compare(leftValue, rightValue);
             if (cmp != 0)
@@ -2633,7 +2703,9 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
         if (!sourceReusesCurrentRowBuffer)
             return row;
 
-        return new RankedRow((DbValue[])row.Row.Clone(), row.Keys);
+        return row.HasSingleKey
+            ? new RankedRow((DbValue[])row.Row.Clone(), row.SingleKey)
+            : new RankedRow((DbValue[])row.Row.Clone(), row.Keys);
     }
 
     private static CompiledSortClause[] CompileOrderBy(List<OrderByClause> orderBy, TableSchema schema, out int precomputedKeyCount)
@@ -2645,11 +2717,22 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
         {
             var clause = orderBy[i];
             int columnIndex = ResolveColumnIndex(clause.Expression, schema);
+            int maxReferencedColumnIndex = -1;
+            bool hasKnownMaxReferencedColumn = TryResolveMaxReferencedColumn(
+                clause.Expression,
+                schema,
+                out maxReferencedColumnIndex);
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
                 ? ExpressionCompiler.Compile(clause.Expression, schema)
                 : null;
-            compiled[i] = new CompiledSortClause(columnIndex, keyIndex, clause.Descending, keyEvaluator);
+            compiled[i] = new CompiledSortClause(
+                clause.Expression,
+                columnIndex,
+                hasKnownMaxReferencedColumn ? maxReferencedColumnIndex : -1,
+                keyIndex,
+                clause.Descending,
+                keyEvaluator);
         }
 
         return compiled;
@@ -2665,6 +2748,98 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
             : schema.GetColumnIndex(col.ColumnName);
 
         return idx;
+    }
+
+    private static bool TryResolveMaxReferencedColumn(
+        Expression expression,
+        TableSchema schema,
+        out int maxReferencedColumnIndex)
+    {
+        maxReferencedColumnIndex = -1;
+        return TryAccumulateMaxReferencedColumn(expression, schema, ref maxReferencedColumnIndex);
+    }
+
+    private static bool TryAccumulateMaxReferencedColumn(
+        Expression expression,
+        TableSchema schema,
+        ref int maxReferencedColumnIndex)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return true;
+            case ColumnRefExpression column:
+            {
+                int columnIndex = column.TableAlias != null
+                    ? schema.GetQualifiedColumnIndex(column.TableAlias, column.ColumnName)
+                    : schema.GetColumnIndex(column.ColumnName);
+                if (columnIndex < 0)
+                    return false;
+
+                if (columnIndex > maxReferencedColumnIndex)
+                    maxReferencedColumnIndex = columnIndex;
+                return true;
+            }
+            case BinaryExpression binaryExpression:
+                return TryAccumulateMaxReferencedColumn(binaryExpression.Left, schema, ref maxReferencedColumnIndex)
+                    && TryAccumulateMaxReferencedColumn(binaryExpression.Right, schema, ref maxReferencedColumnIndex);
+            case UnaryExpression unaryExpression:
+                return TryAccumulateMaxReferencedColumn(unaryExpression.Operand, schema, ref maxReferencedColumnIndex);
+            case LikeExpression likeExpression:
+                return TryAccumulateMaxReferencedColumn(likeExpression.Operand, schema, ref maxReferencedColumnIndex)
+                    && TryAccumulateMaxReferencedColumn(likeExpression.Pattern, schema, ref maxReferencedColumnIndex)
+                    && (likeExpression.EscapeChar == null ||
+                        TryAccumulateMaxReferencedColumn(likeExpression.EscapeChar, schema, ref maxReferencedColumnIndex));
+            case InExpression inExpression:
+            {
+                if (!TryAccumulateMaxReferencedColumn(inExpression.Operand, schema, ref maxReferencedColumnIndex))
+                    return false;
+
+                for (int i = 0; i < inExpression.Values.Count; i++)
+                {
+                    if (!TryAccumulateMaxReferencedColumn(inExpression.Values[i], schema, ref maxReferencedColumnIndex))
+                        return false;
+                }
+
+                return true;
+            }
+            case BetweenExpression betweenExpression:
+                return TryAccumulateMaxReferencedColumn(betweenExpression.Operand, schema, ref maxReferencedColumnIndex)
+                    && TryAccumulateMaxReferencedColumn(betweenExpression.Low, schema, ref maxReferencedColumnIndex)
+                    && TryAccumulateMaxReferencedColumn(betweenExpression.High, schema, ref maxReferencedColumnIndex);
+            case IsNullExpression isNullExpression:
+                return TryAccumulateMaxReferencedColumn(isNullExpression.Operand, schema, ref maxReferencedColumnIndex);
+            case FunctionCallExpression functionCall:
+            {
+                if (functionCall.IsStarArg)
+                    return true;
+
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryAccumulateMaxReferencedColumn(functionCall.Arguments[i], schema, ref maxReferencedColumnIndex))
+                        return false;
+                }
+
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private static int FindSingleComputedKeyClauseIndex(CompiledSortClause[] compiledOrderBy, int precomputedKeyCount)
+    {
+        if (precomputedKeyCount != 1)
+            return -1;
+
+        for (int i = 0; i < compiledOrderBy.Length; i++)
+        {
+            if (compiledOrderBy[i].KeyIndex == 0)
+                return i;
+        }
+
+        return -1;
     }
 }
 
