@@ -176,6 +176,89 @@ public static class RecordEncoder
     }
 
     /// <summary>
+    /// Decode only the requested (sorted, unique) column indices into destination slots by original ordinal.
+    /// Unrequested columns are skipped without materializing values.
+    /// </summary>
+    public static void DecodeSelectedInto(
+        ReadOnlySpan<byte> buffer,
+        Span<DbValue> destination,
+        ReadOnlySpan<int> selectedColumnIndices)
+    {
+        if (selectedColumnIndices.IsEmpty)
+            return;
+
+        int pos = 0;
+        int count = (int)Varint.Read(buffer, out int bytesRead);
+        pos += bytesRead;
+
+        int selectedCursor = 0;
+        int targetColumn = selectedColumnIndices[selectedCursor];
+        for (int columnIndex = 0; columnIndex < count && selectedCursor < selectedColumnIndices.Length; columnIndex++)
+        {
+            var type = (DbType)buffer[pos++];
+            if (columnIndex != targetColumn)
+            {
+                SkipValue(type, buffer, ref pos);
+                continue;
+            }
+
+            bool canWrite = (uint)columnIndex < (uint)destination.Length;
+            switch (type)
+            {
+                case DbType.Null:
+                    if (canWrite)
+                        destination[columnIndex] = DbValue.Null;
+                    break;
+                case DbType.Integer:
+                {
+                    long value = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
+                    if (canWrite)
+                        destination[columnIndex] = DbValue.FromInteger(value);
+                    pos += 8;
+                    break;
+                }
+                case DbType.Real:
+                {
+                    long bits = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
+                    if (canWrite)
+                        destination[columnIndex] = DbValue.FromReal(BitConverter.Int64BitsToDouble(bits));
+                    pos += 8;
+                    break;
+                }
+                case DbType.Text:
+                {
+                    int len = (int)Varint.Read(buffer[pos..], out int lb);
+                    pos += lb;
+                    if (canWrite)
+                        destination[columnIndex] = DbValue.FromText(DecodeText(buffer.Slice(pos, len)));
+                    pos += len;
+                    break;
+                }
+                case DbType.Blob:
+                {
+                    int len = (int)Varint.Read(buffer[pos..], out int lb);
+                    pos += lb;
+                    if (canWrite)
+                    {
+                        destination[columnIndex] = DbValue.FromBlob(len == 0
+                            ? Array.Empty<byte>()
+                            : buffer.Slice(pos, len).ToArray());
+                    }
+                    pos += len;
+                    break;
+                }
+                default:
+                    SkipValue(type, buffer, ref pos);
+                    break;
+            }
+
+            selectedCursor++;
+            if (selectedCursor < selectedColumnIndices.Length)
+                targetColumn = selectedColumnIndices[selectedCursor];
+        }
+    }
+
+    /// <summary>
     /// Decode only the prefix of columns up to maxColumnIndexInclusive.
     /// Columns after that index are skipped without materializing values.
     /// </summary>
@@ -443,20 +526,23 @@ public static class RecordEncoder
         int hash = ComputeHash(utf8);
         int slot = hash & (TextCacheCapacity - 1);
         ref var entry = ref cache[slot];
+        PackSmallTextKey(utf8, out ulong keyLo, out ulong keyHi);
 
-        var cachedUtf8 = entry.Utf8;
         if (entry.Hash == hash &&
-            cachedUtf8 != null &&
-            cachedUtf8.Length == utf8.Length &&
-            cachedUtf8.AsSpan().SequenceEqual(utf8))
+            entry.Length == utf8.Length &&
+            entry.KeyLo == keyLo &&
+            entry.KeyHi == keyHi &&
+            entry.Text != null)
         {
-            return entry.Text!;
+            return entry.Text;
         }
 
         string text = Utf8.GetString(utf8);
         entry.Hash = hash;
+        entry.Length = (byte)utf8.Length;
+        entry.KeyLo = keyLo;
+        entry.KeyHi = keyHi;
         entry.Text = text;
-        entry.Utf8 = utf8.ToArray();
         return text;
     }
 
@@ -492,11 +578,26 @@ public static class RecordEncoder
         }
     }
 
+    private static void PackSmallTextKey(ReadOnlySpan<byte> utf8, out ulong keyLo, out ulong keyHi)
+    {
+        keyLo = 0;
+        keyHi = 0;
+
+        int loLen = Math.Min(utf8.Length, 8);
+        for (int i = 0; i < loLen; i++)
+            keyLo |= (ulong)utf8[i] << (i * 8);
+
+        for (int i = 8; i < utf8.Length; i++)
+            keyHi |= (ulong)utf8[i] << ((i - 8) * 8);
+    }
+
     private struct TextCacheEntry
     {
         public int Hash;
+        public int Length;
+        public ulong KeyLo;
+        public ulong KeyHi;
         public string? Text;
-        public byte[]? Utf8;
     }
 
     private static int ValueDataSize(DbValue v)

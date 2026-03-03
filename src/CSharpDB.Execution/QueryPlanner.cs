@@ -995,8 +995,23 @@ public sealed class QueryPlanner
         // This applies to both scalar aggregates and GROUP BY aggregates.
         if (hasAggregates)
         {
-            if (TryGetAggregateDecodeUpperBound(stmt, schema, remainingWhere, out int maxColumnIndex))
+            if (TryGetAggregateDecodeColumnIndices(stmt, schema, remainingWhere, out var decodeColumns) &&
+                TrySetDecodedColumnIndices(op, decodeColumns))
+            {
+                // Sparse decode hint applied.
+            }
+            else if (TryGetAggregateDecodeUpperBound(stmt, schema, remainingWhere, out int maxColumnIndex))
                 TrySetDecodedColumnUpperBound(op, maxColumnIndex);
+        }
+        else if (TryGetProjectionDecodeColumnIndices(
+                     stmt,
+                     schema,
+                     remainingWhere,
+                     includeOrderBy: !sourceProvidesRequestedOrder,
+                     out var decodeColumns) &&
+                 TrySetDecodedColumnIndices(op, decodeColumns))
+        {
+            // Sparse decode hint applied.
         }
         else if (TryGetProjectionDecodeUpperBound(
                      stmt,
@@ -3112,18 +3127,21 @@ public sealed class QueryPlanner
 
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
-            int maxCol = -1;
+            var decodeColumns = new HashSet<int>();
             for (int i = 0; i < columnIndices.Length; i++)
-                if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
+                decodeColumns.Add(columnIndices[i]);
 
             if (remainingWhere != null &&
-                !TryAccumulateMaxReferencedColumn(remainingWhere, schema, ref maxCol))
+                !TryAccumulateReferencedColumns(remainingWhere, schema, decodeColumns))
             {
                 return false;
             }
 
-            if (maxCol >= 0)
+            if (!TrySetDecodedColumnIndices(scanOp, ToSortedColumnIndices(decodeColumns)))
+            {
+                int maxCol = decodeColumns.Count == 0 ? -1 : decodeColumns.Max();
                 scanOp.SetDecodedColumnUpperBound(maxCol);
+            }
 
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
@@ -3695,6 +3713,127 @@ public sealed class QueryPlanner
         }
     }
 
+    private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
+    {
+        if (op is TableScanOperator tableScan)
+        {
+            tableScan.SetDecodedColumnIndices(columnIndices);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static int[] ToSortedColumnIndices(HashSet<int> columnSet)
+    {
+        if (columnSet.Count == 0)
+            return Array.Empty<int>();
+
+        var columns = new int[columnSet.Count];
+        columnSet.CopyTo(columns);
+        Array.Sort(columns);
+        return columns;
+    }
+
+    private static bool TryGetAggregateDecodeColumnIndices(
+        SelectStatement stmt,
+        TableSchema schema,
+        Expression? whereExpr,
+        out int[] columnIndices)
+    {
+        var referencedColumns = new HashSet<int>();
+
+        if (whereExpr != null && !TryAccumulateReferencedColumns(whereExpr, schema, referencedColumns))
+        {
+            columnIndices = Array.Empty<int>();
+            return false;
+        }
+
+        if (stmt.Having != null && !TryAccumulateReferencedColumns(stmt.Having, schema, referencedColumns))
+        {
+            columnIndices = Array.Empty<int>();
+            return false;
+        }
+
+        if (stmt.GroupBy != null)
+        {
+            for (int i = 0; i < stmt.GroupBy.Count; i++)
+            {
+                if (!TryAccumulateReferencedColumns(stmt.GroupBy[i], schema, referencedColumns))
+                {
+                    columnIndices = Array.Empty<int>();
+                    return false;
+                }
+            }
+        }
+
+        for (int i = 0; i < stmt.Columns.Count; i++)
+        {
+            var col = stmt.Columns[i];
+            if (col.IsStar || col.Expression == null)
+                continue;
+
+            if (!TryAccumulateReferencedColumns(col.Expression, schema, referencedColumns))
+            {
+                columnIndices = Array.Empty<int>();
+                return false;
+            }
+        }
+
+        columnIndices = ToSortedColumnIndices(referencedColumns);
+        return true;
+    }
+
+    private static bool TryGetProjectionDecodeColumnIndices(
+        SelectStatement stmt,
+        TableSchema schema,
+        Expression? whereExpr,
+        bool includeOrderBy,
+        out int[] columnIndices)
+    {
+        if (stmt.Columns.Any(c => c.IsStar))
+        {
+            columnIndices = Array.Empty<int>();
+            return false;
+        }
+
+        var referencedColumns = new HashSet<int>();
+
+        if (whereExpr != null && !TryAccumulateReferencedColumns(whereExpr, schema, referencedColumns))
+        {
+            columnIndices = Array.Empty<int>();
+            return false;
+        }
+
+        if (includeOrderBy && stmt.OrderBy != null)
+        {
+            for (int i = 0; i < stmt.OrderBy.Count; i++)
+            {
+                if (!TryAccumulateReferencedColumns(stmt.OrderBy[i].Expression, schema, referencedColumns))
+                {
+                    columnIndices = Array.Empty<int>();
+                    return false;
+                }
+            }
+        }
+
+        for (int i = 0; i < stmt.Columns.Count; i++)
+        {
+            var expression = stmt.Columns[i].Expression;
+            if (expression == null)
+                continue;
+
+            if (!TryAccumulateReferencedColumns(expression, schema, referencedColumns))
+            {
+                columnIndices = Array.Empty<int>();
+                return false;
+            }
+        }
+
+        columnIndices = ToSortedColumnIndices(referencedColumns);
+        return true;
+    }
+
     private static bool TryGetAggregateDecodeUpperBound(
         SelectStatement stmt,
         TableSchema schema,
@@ -3885,6 +4024,72 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private static bool TryAccumulateReferencedColumns(
+        Expression expr,
+        TableSchema schema,
+        HashSet<int> referencedColumns)
+    {
+        switch (expr)
+        {
+            case LiteralExpression:
+                return true;
+            case ColumnRefExpression col:
+            {
+                int idx = col.TableAlias != null
+                    ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
+                    : schema.GetColumnIndex(col.ColumnName);
+
+                if (idx < 0)
+                    return false;
+
+                referencedColumns.Add(idx);
+                return true;
+            }
+            case BinaryExpression bin:
+                return TryAccumulateReferencedColumns(bin.Left, schema, referencedColumns)
+                    && TryAccumulateReferencedColumns(bin.Right, schema, referencedColumns);
+            case UnaryExpression un:
+                return TryAccumulateReferencedColumns(un.Operand, schema, referencedColumns);
+            case LikeExpression like:
+                return TryAccumulateReferencedColumns(like.Operand, schema, referencedColumns)
+                    && TryAccumulateReferencedColumns(like.Pattern, schema, referencedColumns)
+                    && (like.EscapeChar == null || TryAccumulateReferencedColumns(like.EscapeChar, schema, referencedColumns));
+            case InExpression inExpr:
+            {
+                if (!TryAccumulateReferencedColumns(inExpr.Operand, schema, referencedColumns))
+                    return false;
+                foreach (var value in inExpr.Values)
+                {
+                    if (!TryAccumulateReferencedColumns(value, schema, referencedColumns))
+                        return false;
+                }
+
+                return true;
+            }
+            case BetweenExpression between:
+                return TryAccumulateReferencedColumns(between.Operand, schema, referencedColumns)
+                    && TryAccumulateReferencedColumns(between.Low, schema, referencedColumns)
+                    && TryAccumulateReferencedColumns(between.High, schema, referencedColumns);
+            case IsNullExpression isNull:
+                return TryAccumulateReferencedColumns(isNull.Operand, schema, referencedColumns);
+            case FunctionCallExpression func:
+            {
+                if (func.IsStarArg)
+                    return true;
+
+                foreach (var arg in func.Arguments)
+                {
+                    if (!TryAccumulateReferencedColumns(arg, schema, referencedColumns))
+                        return false;
+                }
+
+                return true;
+            }
+            default:
+                return false;
+        }
     }
 
     private static bool TryResolveUnaliasedPrimaryKeyProjectionCount(

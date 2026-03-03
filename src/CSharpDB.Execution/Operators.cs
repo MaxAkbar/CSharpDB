@@ -21,6 +21,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private int? _maxDecodedColumnIndex;
+    private int[]? _decodedColumnIndices;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
@@ -54,7 +55,52 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     /// </summary>
     public void SetDecodedColumnUpperBound(int maxColumnIndex)
     {
+        _decodedColumnIndices = null;
         _maxDecodedColumnIndex = maxColumnIndex;
+    }
+
+    /// <summary>
+    /// Hint the scan to decode only specific column ordinals.
+    /// The provided indices must reference the source row schema.
+    /// </summary>
+    public void SetDecodedColumnIndices(ReadOnlySpan<int> columnIndices)
+    {
+        if (columnIndices.Length == 0)
+        {
+            _decodedColumnIndices = Array.Empty<int>();
+            _maxDecodedColumnIndex = -1;
+            return;
+        }
+
+        var sorted = columnIndices.ToArray();
+        Array.Sort(sorted);
+
+        int uniqueCount = 0;
+        int last = int.MinValue;
+        for (int i = 0; i < sorted.Length; i++)
+        {
+            int current = sorted[i];
+            if (current < 0 || current >= _schema.Columns.Count)
+                continue;
+            if (uniqueCount > 0 && current == last)
+                continue;
+
+            sorted[uniqueCount++] = current;
+            last = current;
+        }
+
+        if (uniqueCount == 0)
+        {
+            _decodedColumnIndices = Array.Empty<int>();
+            _maxDecodedColumnIndex = -1;
+            return;
+        }
+
+        if (uniqueCount != sorted.Length)
+            Array.Resize(ref sorted, uniqueCount);
+
+        _decodedColumnIndices = sorted;
+        _maxDecodedColumnIndex = sorted[uniqueCount - 1];
     }
 
     /// <summary>
@@ -100,6 +146,31 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
             int targetColumnCount = _maxDecodedColumnIndex.HasValue
                 ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
                 : _schema.Columns.Count;
+            var decodedColumnIndices = _decodedColumnIndices;
+
+            if (decodedColumnIndices is { Length: > 0 })
+            {
+                if (_reuseCurrentRowBuffer)
+                {
+                    EnsureRowBuffer(targetColumnCount);
+                    if (targetColumnCount > 0)
+                        Array.Fill(_rowBuffer!, DbValue.Null, 0, targetColumnCount);
+                    _recordSerializer.DecodeSelectedInto(payload, _rowBuffer!, decodedColumnIndices);
+                    Current = _rowBuffer!;
+                }
+                else
+                {
+                    var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+                    if (targetColumnCount > 0)
+                    {
+                        Array.Fill(row, DbValue.Null);
+                        _recordSerializer.DecodeSelectedInto(payload, row, decodedColumnIndices);
+                    }
+
+                    Current = row;
+                }
+                return true;
+            }
 
             if (_reuseCurrentRowBuffer)
             {
@@ -2619,7 +2690,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
     private readonly int? _buildKeyCapacityHint;
     private readonly int _buildBucketInitialCapacity;
     private readonly int? _estimatedRowCount;
-    private Dictionary<HashJoinKey, List<DbValue[]>>? _hashTable;
+    private Dictionary<HashJoinKey, SingleKeyBucket>? _hashTable;
     private Dictionary<DbValue, SingleKeyBucket>? _singleKeyHashTable;
     private List<DbValue[]>? _allRightRows;
     private HashSet<DbValue[]>? _matchedRightRows;
@@ -2661,8 +2732,17 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _singleKeyFastPath = leftKeyIndices.Length == 1 && rightKeyIndices.Length == 1;
-        _singleBuildKeyIndex = _buildRightSide ? rightKeyIndices[0] : leftKeyIndices[0];
-        _singleProbeKeyIndex = _buildRightSide ? leftKeyIndices[0] : rightKeyIndices[0];
+        if (_singleKeyFastPath)
+        {
+            _singleBuildKeyIndex = _buildRightSide ? rightKeyIndices[0] : leftKeyIndices[0];
+            _singleProbeKeyIndex = _buildRightSide ? leftKeyIndices[0] : rightKeyIndices[0];
+        }
+        else
+        {
+            _singleBuildKeyIndex = -1;
+            _singleProbeKeyIndex = -1;
+        }
+
         _buildRowCapacityHint = buildRowCapacityHint > 0 ? buildRowCapacityHint : null;
         _buildKeyCapacityHint = DeriveBuildKeyCapacityHint(_buildRowCapacityHint);
         _buildBucketInitialCapacity = DeriveBuildBucketInitialCapacity(_buildRowCapacityHint, _buildKeyCapacityHint);
@@ -2700,8 +2780,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         _hashTable = _singleKeyFastPath
             ? null
             : _buildKeyCapacityHint.HasValue
-                ? new Dictionary<HashJoinKey, List<DbValue[]>>(_buildKeyCapacityHint.Value, HashJoinKeyComparer.Instance)
-                : new Dictionary<HashJoinKey, List<DbValue[]>>(HashJoinKeyComparer.Instance);
+                ? new Dictionary<HashJoinKey, SingleKeyBucket>(_buildKeyCapacityHint.Value, HashJoinKeyComparer.Instance)
+                : new Dictionary<HashJoinKey, SingleKeyBucket>(HashJoinKeyComparer.Instance);
         _singleKeyHashTable = _singleKeyFastPath
             ? _buildKeyCapacityHint.HasValue
                 ? new Dictionary<DbValue, SingleKeyBucket>(_buildKeyCapacityHint.Value)
@@ -2809,7 +2889,11 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
                     else
                     {
                         var key = ExtractJoinKey(probeRow, ProbeKeyIndices);
-                        _hashTable!.TryGetValue(key, out _activeBuildMatches);
+                        if (_hashTable!.TryGetValue(key, out var bucket))
+                        {
+                            _activeSingleBuildRow = bucket.SingleMatch;
+                            _activeBuildMatches = bucket.MultipleMatches;
+                        }
                     }
                     continue;
                 }
@@ -2942,8 +3026,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             ref var singleBucket = ref CollectionsMarshal.GetValueRefOrAddDefault(
                 _singleKeyHashTable!,
                 keyValue,
-                out bool exists);
-            if (exists)
+                out bool singleExists);
+            if (singleExists)
             {
                 singleBucket.Add(buildRow);
             }
@@ -2955,14 +3039,19 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             return;
         }
 
-        var key = ExtractJoinKey(buildRow, BuildKeyIndices);
-        if (!_hashTable!.TryGetValue(key, out var bucket))
+        var joinKey = ExtractJoinKey(buildRow, BuildKeyIndices);
+        ref var bucketRef = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            _hashTable!,
+            joinKey,
+            out bool hashExists);
+        if (hashExists)
         {
-            bucket = new List<DbValue[]>(_buildBucketInitialCapacity);
-            _hashTable[key] = bucket;
+            bucketRef.Add(buildRow, _buildBucketInitialCapacity);
         }
-
-        bucket.Add(buildRow);
+        else
+        {
+            bucketRef = SingleKeyBucket.Create(buildRow);
+        }
     }
 
     private bool TryEmitUnmatchedRightRow(out DbValue[] row)
@@ -3222,7 +3311,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
 
     private struct SingleKeyBucket
     {
-        private const int MultiMatchInitialCapacity = 16;
+        private const int DefaultMultiMatchInitialCapacity = 16;
 
         public DbValue[]? SingleMatch;
         public List<DbValue[]>? MultipleMatches;
@@ -3236,7 +3325,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             };
         }
 
-        public void Add(DbValue[] buildRow)
+        public void Add(DbValue[] buildRow, int multiMatchInitialCapacity = DefaultMultiMatchInitialCapacity)
         {
             if (MultipleMatches != null)
             {
@@ -3246,8 +3335,9 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
 
             if (SingleMatch != null)
             {
-                // Skewed joins often produce >4 matches per key; start higher to reduce list growth churn.
-                MultipleMatches = new List<DbValue[]>(MultiMatchInitialCapacity)
+                // Skewed joins often produce multiple matches per key.
+                // Start above 1 to avoid immediate growth churn on duplicate-heavy joins.
+                MultipleMatches = new List<DbValue[]>(Math.Max(2, multiMatchInitialCapacity))
                 {
                     SingleMatch,
                     buildRow,
