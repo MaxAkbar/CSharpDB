@@ -22,6 +22,7 @@ namespace CSharpDB.Storage.Wal;
 public sealed class WriteAheadLog : IWriteAheadLog
 {
     private const int WalStreamBufferSize = 64 * 1024;
+    private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
     private static readonly IComparer<KeyValuePair<uint, long>> PageIdComparer =
         Comparer<KeyValuePair<uint, long>>.Create(static (left, right) => left.Key.CompareTo(right.Key));
@@ -44,6 +45,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly byte[] _walHeaderBuffer = new byte[PageConstants.WalHeaderSize];
     private readonly byte[] _appendFrameHeader = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _appendFrameBuffer = new byte[PageConstants.WalFrameSize];
+    private readonly byte[] _appendFrameChunkBuffer = new byte[PageConstants.WalFrameSize * AppendFrameChunkSize];
     private readonly byte[] _recoveryFrameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryPageBuffer = new byte[PageConstants.PageSize];
     private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
@@ -131,22 +133,13 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         long frameOffset = _stream.Position;
 
-        var frameHeader = _appendFrameHeader;
-        var frameHeaderSpan = frameHeader.AsSpan(0, PageConstants.WalFrameHeaderSize);
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(0, 4), pageId);
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(4, 4), 0u); // dbPageCount=0 means non-commit
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(8, 4), _salt1);
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(12, 4), _salt2);
-
-        uint headerChecksum = _checksumProvider.Compute(frameHeaderSpan.Slice(0, 16));
-        uint dataChecksum = _checksumProvider.Compute(pageData.Span);
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(16, 4), headerChecksum);
-        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(20, 4), dataChecksum);
-
         try
         {
-            frameHeaderSpan.CopyTo(_appendFrameBuffer.AsSpan(0, PageConstants.WalFrameHeaderSize));
-            pageData.Span.CopyTo(_appendFrameBuffer.AsSpan(PageConstants.WalFrameHeaderSize, PageConstants.PageSize));
+            uint dataChecksum = WriteWalFrame(
+                _appendFrameBuffer.AsSpan(0, PageConstants.WalFrameSize),
+                pageId,
+                pageData.Span,
+                dbPageCount: 0u);
             await _stream.WriteAsync(_appendFrameBuffer.AsMemory(0, PageConstants.WalFrameSize), cancellationToken);
             _uncommittedFrames.Add((pageId, frameOffset));
             _lastUncommittedDataChecksum = dataChecksum;
@@ -156,6 +149,40 @@ public sealed class WriteAheadLog : IWriteAheadLog
             throw new CSharpDbException(
                 ErrorCode.WalError,
                 $"Failed to append WAL frame for pageId={pageId} at walOffset={frameOffset}.",
+                ex);
+        }
+    }
+
+    public async ValueTask AppendFramesAsync(
+        ReadOnlyMemory<WalFrameWrite> frames,
+        CancellationToken cancellationToken = default)
+    {
+        await AppendFramesCoreAsync(frames, commitOnLastFrame: false, newDbPageCount: 0u, cancellationToken);
+    }
+
+    public async ValueTask AppendFramesAndCommitAsync(
+        ReadOnlyMemory<WalFrameWrite> frames,
+        uint newDbPageCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (frames.IsEmpty)
+            throw new CSharpDbException(ErrorCode.WalError, "No frames to commit.");
+
+        await AppendFramesCoreAsync(frames, commitOnLastFrame: true, newDbPageCount, cancellationToken);
+
+        if (_stream == null)
+            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+
+        try
+        {
+            await _stream.FlushAsync(cancellationToken);
+            PublishCommittedFrames();
+        }
+        catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Failed to append+commit {frames.Length} WAL frame(s), newDbPageCount={newDbPageCount}.",
                 ex);
         }
     }
@@ -198,14 +225,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             // Flush to disk — this is the commit point
             await _stream.FlushAsync(cancellationToken);
 
-            // Update the in-memory WAL index
-            foreach (var (pageId, walOffset) in _uncommittedFrames)
-            {
-                _index.AddCommittedFrame(pageId, walOffset);
-            }
-            _index.AdvanceCommit();
-            _uncommittedFrames.Clear();
-            _lastUncommittedDataChecksum = 0;
+            PublishCommittedFrames();
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -428,7 +448,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 var destination = _checkpointWriteBuffer.AsMemory(
                     batchPageCount * PageConstants.PageSize,
                     PageConstants.PageSize);
-                await ReadPageIntoFromStreamAsync(walOffset, destination, cancellationToken);
+                await ReadPageIntoAsync(walOffset, destination, cancellationToken);
                 batchPageCount++;
             }
 
@@ -612,27 +632,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
         throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
     }
 
-    private async ValueTask ReadPageIntoFromStreamAsync(long walFrameOffset, Memory<byte> destination, CancellationToken cancellationToken)
-    {
-        if (_stream == null)
-            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
-
-        long dataOffset = walFrameOffset + PageConstants.WalFrameHeaderSize;
-
-        try
-        {
-            _stream.Position = dataOffset;
-            await _stream.ReadExactlyAsync(destination, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
-        {
-            throw new CSharpDbException(
-                ErrorCode.WalError,
-                $"Failed to read WAL page from stream at walFrameOffset={walFrameOffset}.",
-                ex);
-        }
-    }
-
     private ValueTask FlushCheckpointBatchAsync(
         IStorageDevice device,
         uint startPageId,
@@ -642,6 +641,98 @@ public sealed class WriteAheadLog : IWriteAheadLog
         long dbOffset = (long)startPageId * PageConstants.PageSize;
         int byteCount = pageCount * PageConstants.PageSize;
         return device.WriteAsync(dbOffset, _checkpointWriteBuffer.AsMemory(0, byteCount), cancellationToken);
+    }
+
+    private async ValueTask AppendFramesCoreAsync(
+        ReadOnlyMemory<WalFrameWrite> frames,
+        bool commitOnLastFrame,
+        uint newDbPageCount,
+        CancellationToken cancellationToken)
+    {
+        if (_stream == null)
+            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+        if (frames.IsEmpty)
+            return;
+
+        int frameIndex = 0;
+        int totalFrameCount = frames.Length;
+        int lastFrameIndex = totalFrameCount - 1;
+
+        try
+        {
+            while (frameIndex < totalFrameCount)
+            {
+                int framesInChunk = Math.Min(AppendFrameChunkSize, totalFrameCount - frameIndex);
+                long chunkStartOffset = _stream.Position;
+
+                for (int i = 0; i < framesInChunk; i++)
+                {
+                    int currentFrameIndex = frameIndex + i;
+                    WalFrameWrite frame = frames.Span[currentFrameIndex];
+                    int destinationOffset = i * PageConstants.WalFrameSize;
+                    uint dbPageCount = commitOnLastFrame && currentFrameIndex == lastFrameIndex
+                        ? newDbPageCount
+                        : 0u;
+
+                    uint dataChecksum = WriteWalFrame(
+                        _appendFrameChunkBuffer.AsSpan(destinationOffset, PageConstants.WalFrameSize),
+                        frame.PageId,
+                        frame.PageData.Span,
+                        dbPageCount);
+
+                    long frameOffset = chunkStartOffset + (long)i * PageConstants.WalFrameSize;
+                    _uncommittedFrames.Add((frame.PageId, frameOffset));
+                    _lastUncommittedDataChecksum = dataChecksum;
+                }
+
+                int bytesToWrite = framesInChunk * PageConstants.WalFrameSize;
+                await _stream.WriteAsync(_appendFrameChunkBuffer.AsMemory(0, bytesToWrite), cancellationToken);
+                frameIndex += framesInChunk;
+            }
+        }
+        catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Failed to append {frames.Length} WAL frame(s).",
+                ex);
+        }
+    }
+
+    private void PublishCommittedFrames()
+    {
+        foreach (var (pageId, walOffset) in _uncommittedFrames)
+        {
+            _index.AddCommittedFrame(pageId, walOffset);
+        }
+
+        _index.AdvanceCommit();
+        _uncommittedFrames.Clear();
+        _lastUncommittedDataChecksum = 0;
+    }
+
+    private uint WriteWalFrame(Span<byte> frameDestination, uint pageId, ReadOnlySpan<byte> pageData, uint dbPageCount)
+    {
+        if (pageData.Length != PageConstants.PageSize)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Invalid WAL page payload size for pageId={pageId}. Expected {PageConstants.PageSize}, got {pageData.Length}.");
+        }
+
+        var frameHeader = frameDestination[..PageConstants.WalFrameHeaderSize];
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(0, 4), pageId);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(4, 4), dbPageCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(8, 4), _salt1);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(12, 4), _salt2);
+
+        uint headerChecksum = _checksumProvider.Compute(frameHeader.Slice(0, 16));
+        uint dataChecksum = _checksumProvider.Compute(pageData);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(16, 4), headerChecksum);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(20, 4), dataChecksum);
+
+        pageData.CopyTo(frameDestination.Slice(PageConstants.WalFrameHeaderSize, PageConstants.PageSize));
+        return dataChecksum;
     }
 
     private void WriteWalHeader(Span<byte> header, uint dbPageCount)

@@ -23,6 +23,7 @@ public class WalCoreBenchmarks
     private FileStorageDevice _device = null!;
     private WriteAheadLog _wal = null!;
     private byte[] _pageBuffer = null!;
+    private WalFrameWrite[] _batchFrameWrites = null!;
     private uint _singlePageCursor;
     private uint _batchPageCursor;
 
@@ -33,6 +34,7 @@ public class WalCoreBenchmarks
         _device = new FileStorageDevice(_dbPath);
         _wal = new WriteAheadLog(_dbPath, new WalIndex());
         _pageBuffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+        _batchFrameWrites = new WalFrameWrite[100];
         _singlePageCursor = 1;
         _batchPageCursor = 1;
 
@@ -68,10 +70,10 @@ public class WalCoreBenchmarks
         _wal.BeginTransaction();
         for (int i = 0; i < 100; i++)
         {
-            await _wal.AppendFrameAsync(NextBatchPageId(), _pageBuffer);
+            _batchFrameWrites[i] = new WalFrameWrite(NextBatchPageId(), _pageBuffer);
         }
 
-        await _wal.CommitAsync(BatchPageRange + 1);
+        await _wal.AppendFramesAndCommitAsync(_batchFrameWrites, BatchPageRange + 1);
     }
 
     [Benchmark(Description = "WAL core: manual checkpoint after N frames")]

@@ -1,4 +1,5 @@
 using CSharpDB.Core;
+using System.Buffers;
 
 namespace CSharpDB.Storage.Paging;
 
@@ -280,7 +281,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     }
                 }
 
-                await CommitWalAndCheckpointAsync(ct);
+                await CommitWalAndFinalizeAsync(ct);
                 commitSucceeded = true;
             }
             finally
@@ -292,22 +293,51 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             EnforceReaderWalBackpressure(dirtyCount);
 
-            // Fast path: no interceptor — skip all lifecycle hooks and per-page try/finally
-            foreach (var pageId in _buffers.DirtyPages)
+            // Fast path: no interceptor — batch WAL appends to reduce per-frame write overhead.
+            WalFrameWrite[]? frameBatch = null;
+            int frameCount = 0;
+            try
             {
-                if (_buffers.TryGetDirtyPage(pageId, out var data))
-                    await _wal.AppendFrameAsync(pageId, data, ct);
+                frameBatch = ArrayPool<WalFrameWrite>.Shared.Rent(dirtyCount);
+                foreach (var pageId in _buffers.DirtyPages)
+                {
+                    if (_buffers.TryGetDirtyPage(pageId, out var data))
+                    {
+                        frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
+                    }
+                }
+
+                if (frameCount > 0)
+                {
+                    await _wal.AppendFramesAndCommitAsync(frameBatch.AsMemory(0, frameCount), PageCount, ct);
+                }
+                else
+                {
+                    await _wal.CommitAsync(PageCount, ct);
+                }
+            }
+            finally
+            {
+                if (frameBatch != null)
+                {
+                    frameBatch.AsSpan(0, frameCount).Clear();
+                    ArrayPool<WalFrameWrite>.Shared.Return(frameBatch, clearArray: false);
+                }
             }
 
-            await CommitWalAndCheckpointAsync(ct);
+            await FinalizeCommitAndCheckpointAsync(ct);
         }
     }
 
-    private async ValueTask CommitWalAndCheckpointAsync(CancellationToken ct)
+    private async ValueTask CommitWalAndFinalizeAsync(CancellationToken ct)
     {
         // Commit the WAL (makes frames durable and visible to new readers)
         await _wal.CommitAsync(PageCount, ct);
+        await FinalizeCommitAndCheckpointAsync(ct);
+    }
 
+    private async ValueTask FinalizeCommitAndCheckpointAsync(CancellationToken ct)
+    {
         _buffers.ClearDirty();
         _transactions!.CompleteCommit();
 
