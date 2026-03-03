@@ -258,13 +258,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             bool commitSucceeded = false;
             await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+            uint[]? orderedDirtyPageIds = null;
+            int orderedDirtyCount = 0;
             try
             {
                 EnforceReaderWalBackpressure(dirtyCount);
+                orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
 
                 // Write all dirty pages to WAL with per-page interceptor hooks
-                foreach (var pageId in _buffers.DirtyPages)
+                for (int i = 0; i < orderedDirtyCount; i++)
                 {
+                    uint pageId = orderedDirtyPageIds[i];
                     if (_buffers.TryGetDirtyPage(pageId, out var data))
                     {
                         bool writeSucceeded = false;
@@ -286,6 +290,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             }
             finally
             {
+                if (orderedDirtyPageIds != null)
+                    ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
                 await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, ct);
             }
         }
@@ -294,13 +300,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             EnforceReaderWalBackpressure(dirtyCount);
 
             // Fast path: no interceptor — batch WAL appends to reduce per-frame write overhead.
+            uint[]? orderedDirtyPageIds = null;
+            int orderedDirtyCount = 0;
             WalFrameWrite[]? frameBatch = null;
             int frameCount = 0;
             try
             {
+                orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
                 frameBatch = ArrayPool<WalFrameWrite>.Shared.Rent(dirtyCount);
-                foreach (var pageId in _buffers.DirtyPages)
+                for (int i = 0; i < orderedDirtyCount; i++)
                 {
+                    uint pageId = orderedDirtyPageIds[i];
                     if (_buffers.TryGetDirtyPage(pageId, out var data))
                     {
                         frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
@@ -323,6 +333,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     frameBatch.AsSpan(0, frameCount).Clear();
                     ArrayPool<WalFrameWrite>.Shared.Return(frameBatch, clearArray: false);
                 }
+                if (orderedDirtyPageIds != null)
+                    ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
             }
 
             await FinalizeCommitAndCheckpointAsync(ct);
@@ -543,6 +555,25 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (frameCount <= 0)
             return PageConstants.WalHeaderSize;
         return PageConstants.WalHeaderSize + (long)frameCount * PageConstants.WalFrameSize;
+    }
+
+    private static uint[] RentSortedPageIds(IReadOnlyCollection<uint> pageIds, out int count)
+    {
+        count = pageIds.Count;
+        int capacity = count > 0 ? count : 1;
+        uint[] orderedPageIds = ArrayPool<uint>.Shared.Rent(capacity);
+
+        int index = 0;
+        foreach (uint pageId in pageIds)
+        {
+            orderedPageIds[index++] = pageId;
+        }
+
+        if (index > 1)
+            Array.Sort(orderedPageIds, 0, index);
+
+        count = index;
+        return orderedPageIds;
     }
 
     private static void ValidateOptions(PagerOptions options)

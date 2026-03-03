@@ -32,6 +32,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private SafeFileHandle? _readHandle; // separate read handle for concurrent reads
     private readonly WalIndex _index;
     private readonly IPageChecksumProvider _checksumProvider;
+    private readonly bool _useAdditiveHeaderChecksum;
 
     // WAL header fields
     private uint _salt1;
@@ -48,7 +49,9 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly byte[] _appendFrameChunkBuffer = new byte[PageConstants.WalFrameSize * AppendFrameChunkSize];
     private readonly byte[] _recoveryFrameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryPageBuffer = new byte[PageConstants.PageSize];
+    private readonly byte[] _checkpointReadBuffer = new byte[PageConstants.WalFrameSize * CheckpointWriteChunkPages];
     private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
+    private readonly long[] _checkpointBatchWalOffsets = new long[CheckpointWriteChunkPages];
 
     public WriteAheadLog(
         string databasePath,
@@ -58,6 +61,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         _walPath = databasePath + ".wal";
         _index = index;
         _checksumProvider = checksumProvider ?? new AdditiveChecksumProvider();
+        _useAdditiveHeaderChecksum = _checksumProvider is AdditiveChecksumProvider;
     }
 
     public WalIndex Index => _index;
@@ -222,7 +226,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(8, 4), _salt1);
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(12, 4), _salt2);
 
-        uint headerChecksum = _checksumProvider.Compute(frameHeaderSpan.Slice(0, 16));
+        uint headerChecksum = ComputeHeaderChecksum(
+            lastPageId,
+            newDbPageCount,
+            _salt1,
+            _salt2,
+            frameHeaderSpan.Slice(0, 16));
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(16, 4), headerChecksum);
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(20, 4), lastDataChecksum);
 
@@ -342,7 +351,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 // Validate checksums
                 uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
                 uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(20, 4));
-                uint actualHeaderChecksum = _checksumProvider.Compute(frameHeaderBuffer.AsSpan(0, 16));
+                uint actualHeaderChecksum = ComputeHeaderChecksum(
+                    BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4)),
+                    BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4)),
+                    BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4)),
+                    BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4)),
+                    frameHeaderBuffer.AsSpan(0, 16));
                 uint actualDataChecksum = _checksumProvider.Compute(pageDataBuffer);
 
                 if (expectedHeaderChecksum != actualHeaderChecksum ||
@@ -438,6 +452,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             uint batchStartPageId = 0;
             int batchPageCount = 0;
+            long batchStartWalOffset = 0;
+            bool batchHasContiguousWalOffsets = true;
 
             for (int i = 0; i < committedPageCount; i++)
             {
@@ -450,23 +466,42 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
                 if (startsNewBatch && batchPageCount > 0)
                 {
-                    await FlushCheckpointBatchAsync(device, batchStartPageId, batchPageCount, cancellationToken);
+                    await FlushCheckpointBatchAsync(
+                        device,
+                        batchStartPageId,
+                        batchPageCount,
+                        batchStartWalOffset,
+                        batchHasContiguousWalOffsets,
+                        cancellationToken);
                     batchPageCount = 0;
                 }
 
                 if (batchPageCount == 0)
+                {
                     batchStartPageId = pageId;
+                    batchStartWalOffset = walOffset;
+                    batchHasContiguousWalOffsets = true;
+                }
+                else if (batchHasContiguousWalOffsets)
+                {
+                    long expectedWalOffset = batchStartWalOffset + (long)batchPageCount * PageConstants.WalFrameSize;
+                    if (walOffset != expectedWalOffset)
+                        batchHasContiguousWalOffsets = false;
+                }
 
-                var destination = _checkpointWriteBuffer.AsMemory(
-                    batchPageCount * PageConstants.PageSize,
-                    PageConstants.PageSize);
-                await ReadPageIntoAsync(walOffset, destination, cancellationToken);
+                _checkpointBatchWalOffsets[batchPageCount] = walOffset;
                 batchPageCount++;
             }
 
             if (batchPageCount > 0)
             {
-                await FlushCheckpointBatchAsync(device, batchStartPageId, batchPageCount, cancellationToken);
+                await FlushCheckpointBatchAsync(
+                    device,
+                    batchStartPageId,
+                    batchPageCount,
+                    batchStartWalOffset,
+                    batchHasContiguousWalOffsets,
+                    cancellationToken);
             }
 
             await device.FlushAsync(cancellationToken);
@@ -648,11 +683,105 @@ public sealed class WriteAheadLog : IWriteAheadLog
         IStorageDevice device,
         uint startPageId,
         int pageCount,
+        long startWalOffset,
+        bool hasContiguousWalOffsets,
         CancellationToken cancellationToken)
     {
+        return FlushCheckpointBatchCoreAsync(
+            device,
+            startPageId,
+            pageCount,
+            startWalOffset,
+            hasContiguousWalOffsets,
+            cancellationToken);
+    }
+
+    private async ValueTask FlushCheckpointBatchCoreAsync(
+        IStorageDevice device,
+        uint startPageId,
+        int pageCount,
+        long startWalOffset,
+        bool hasContiguousWalOffsets,
+        CancellationToken cancellationToken)
+    {
+        if (hasContiguousWalOffsets)
+        {
+            int readByteCount = pageCount * PageConstants.WalFrameSize;
+            await ReadWalRangeIntoAsync(startWalOffset, _checkpointReadBuffer.AsMemory(0, readByteCount), cancellationToken);
+
+            var sourceFrames = _checkpointReadBuffer.AsSpan(0, readByteCount);
+            var destinationPages = _checkpointWriteBuffer.AsSpan(0, pageCount * PageConstants.PageSize);
+            for (int i = 0; i < pageCount; i++)
+            {
+                sourceFrames
+                    .Slice(i * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize, PageConstants.PageSize)
+                    .CopyTo(destinationPages.Slice(i * PageConstants.PageSize, PageConstants.PageSize));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < pageCount; i++)
+            {
+                await ReadPageIntoAsync(
+                    _checkpointBatchWalOffsets[i],
+                    _checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
+                    cancellationToken);
+            }
+        }
+
         long dbOffset = (long)startPageId * PageConstants.PageSize;
-        int byteCount = pageCount * PageConstants.PageSize;
-        return device.WriteAsync(dbOffset, _checkpointWriteBuffer.AsMemory(0, byteCount), cancellationToken);
+        int writeByteCount = pageCount * PageConstants.PageSize;
+        await device.WriteAsync(dbOffset, _checkpointWriteBuffer.AsMemory(0, writeByteCount), cancellationToken);
+    }
+
+    private async ValueTask ReadWalRangeIntoAsync(long walOffset, Memory<byte> destination, CancellationToken cancellationToken)
+    {
+        if (_readHandle != null)
+        {
+            int bytesRead = 0;
+            while (bytesRead < destination.Length)
+            {
+                int read = await RandomAccess.ReadAsync(
+                    _readHandle,
+                    destination.Slice(bytesRead),
+                    walOffset + bytesRead,
+                    cancellationToken);
+                if (read == 0) break;
+                bytesRead += read;
+            }
+
+            if (bytesRead != destination.Length)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.WalError,
+                    $"Short WAL range read at walOffset={walOffset} (expected {destination.Length} bytes, read {bytesRead}).");
+            }
+
+            return;
+        }
+
+        if (_stream != null)
+        {
+            _stream.Position = walOffset;
+            int bytesRead = 0;
+            while (bytesRead < destination.Length)
+            {
+                int read = await _stream.ReadAsync(destination.Slice(bytesRead), cancellationToken);
+                if (read == 0) break;
+                bytesRead += read;
+            }
+
+            if (bytesRead != destination.Length)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.WalError,
+                    $"Short WAL range read at walOffset={walOffset} (expected {destination.Length} bytes, read {bytesRead}).");
+            }
+
+            return;
+        }
+
+        throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
     }
 
     private async ValueTask AppendFramesCoreAsync(
@@ -701,7 +830,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
                         _uncommittedFrames.Add((frame.PageId, frameOffset));
                     }
 
-                    _lastUncommittedDataChecksum = dataChecksum;
+                    if (trackUncommittedFrames)
+                        _lastUncommittedDataChecksum = dataChecksum;
                 }
 
                 int bytesToWrite = framesInChunk * PageConstants.WalFrameSize;
@@ -761,13 +891,21 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(8, 4), _salt1);
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(12, 4), _salt2);
 
-        uint headerChecksum = _checksumProvider.Compute(frameHeader.Slice(0, 16));
+        uint headerChecksum = ComputeHeaderChecksum(pageId, dbPageCount, _salt1, _salt2, frameHeader.Slice(0, 16));
         uint dataChecksum = _checksumProvider.Compute(pageData);
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(16, 4), headerChecksum);
         BinaryPrimitives.WriteUInt32LittleEndian(frameHeader.Slice(20, 4), dataChecksum);
 
         pageData.CopyTo(frameDestination.Slice(PageConstants.WalFrameHeaderSize, PageConstants.PageSize));
         return dataChecksum;
+    }
+
+    private uint ComputeHeaderChecksum(uint pageId, uint dbPageCount, uint salt1, uint salt2, ReadOnlySpan<byte> headerPrefix)
+    {
+        if (_useAdditiveHeaderChecksum)
+            return unchecked(pageId + dbPageCount + salt1 + salt2);
+
+        return _checksumProvider.Compute(headerPrefix);
     }
 
     private void WriteWalHeader(Span<byte> header, uint dbPageCount)
