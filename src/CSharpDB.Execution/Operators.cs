@@ -2655,14 +2655,16 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 
         if (_left is IRowBufferReuseController leftController)
         {
-            // Keep probe-side streaming allocations low; build-side rows are materialized.
-            leftController.SetReuseCurrentRowBuffer(!_buildRightSide);
+            // Probe rows are consumed immediately, so reuse is safe.
+            // Build rows are retained in hash buckets and must be owned.
+            leftController.SetReuseCurrentRowBuffer(_buildRightSide);
         }
 
         if (_right is IRowBufferReuseController rightController)
         {
-            // Keep probe-side streaming allocations low; build-side rows are materialized.
-            rightController.SetReuseCurrentRowBuffer(_buildRightSide);
+            // Probe rows are consumed immediately, so reuse is safe.
+            // Build rows are retained in hash buckets and must be owned.
+            rightController.SetReuseCurrentRowBuffer(!_buildRightSide);
         }
 
         await _left.OpenAsync(ct);
@@ -3159,6 +3161,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 
     private struct SingleKeyBucket
     {
+        private const int MultiMatchInitialCapacity = 16;
+
         public DbValue[]? SingleMatch;
         public List<DbValue[]>? MultipleMatches;
 
@@ -3181,7 +3185,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 
             if (SingleMatch != null)
             {
-                MultipleMatches = new List<DbValue[]>(4)
+                // Skewed joins often produce >4 matches per key; start higher to reduce list growth churn.
+                MultipleMatches = new List<DbValue[]>(MultiMatchInitialCapacity)
                 {
                     SingleMatch,
                     buildRow,
@@ -3320,7 +3325,15 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
             {
                 while (TryReadPendingRowId(out long rowId))
                 {
-                    var payload = await _innerTableTree.FindAsync(rowId, ct);
+                    byte[]? payload;
+                    if (_innerTableTree.TryFindCached(rowId, out var cachedPayload))
+                    {
+                        payload = cachedPayload;
+                    }
+                    else
+                    {
+                        payload = await _innerTableTree.FindAsync(rowId, ct);
+                    }
                     if (payload == null)
                         continue;
 
@@ -3377,7 +3390,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
                 _pendingPrimaryRowId = false;
                 _pendingIndexPayload = indexPayload == null
                     ? ReadOnlyMemory<byte>.Empty
-                    : new ReadOnlyMemory<byte>(indexPayload);
+                    : indexPayload;
                 _pendingIndexOffset = 0;
             }
         }
@@ -4074,7 +4087,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
 /// The index stores: key = indexed column value, payload = list of rowids (each 8 bytes).
 /// For each matching rowid, looks up the actual row in the table's B+tree.
 /// </summary>
-public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport
+public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -4085,6 +4098,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     private int _rowIdPayloadOffset;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
+    private int? _estimatedRowCount;
     private int? _maxDecodedColumnIndex;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
@@ -4094,6 +4108,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
     internal IIndexStore IndexStore => _indexStore;
@@ -4142,6 +4157,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         {
             _rowIdPayload = cachedPayload ?? ReadOnlyMemory<byte>.Empty;
             _rowIdPayloadOffset = 0;
+            _estimatedRowCount = _rowIdPayload.Length / 8;
             _rowBuffer = null;
             Current = Array.Empty<DbValue>();
             return ValueTask.CompletedTask;
@@ -4155,6 +4171,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         var payload = await _indexStore.FindAsync(_seekValue, ct);
         _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
+        _estimatedRowCount = _rowIdPayload.Length / 8;
 
         _rowBuffer = null;
         Current = Array.Empty<DbValue>();
@@ -4543,36 +4560,24 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
                     _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
                 _rowIdPayloadOffset += 8;
 
-                var payload = await _tableTree.FindAsync(rowId, ct);
+                byte[]? payload;
+                if (_tableTree.TryFindCached(rowId, out var cachedPayload))
+                {
+                    payload = cachedPayload;
+                }
+                else
+                {
+                    payload = await _tableTree.FindAsync(rowId, ct);
+                }
+
                 if (payload == null)
-                    continue; // Skip deleted rows
+                    continue;
 
                 if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
                     continue;
 
                 CurrentRowId = rowId;
-
-                int targetColumnCount = _maxDecodedColumnIndex.HasValue
-                    ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
-                    : _schema.Columns.Count;
-
-                if (_reuseCurrentRowBuffer)
-                {
-                    EnsureRowBuffer(targetColumnCount);
-                    int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
-                    if (decodedCount < targetColumnCount)
-                        Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
-                    Current = _rowBuffer!;
-                }
-                else
-                {
-                    var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
-                    int decodedCount = _recordSerializer.DecodeInto(payload, row);
-                    if (decodedCount < targetColumnCount)
-                        Array.Fill(row, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
-                    Current = row;
-                }
-
+                PopulateCurrentFromPayload(payload);
                 return true;
             }
 
@@ -4600,6 +4605,29 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     {
         if (_rowBuffer == null || _rowBuffer.Length != columnCount)
             _rowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+    }
+
+    private void PopulateCurrentFromPayload(ReadOnlySpan<byte> payload)
+    {
+        int targetColumnCount = _maxDecodedColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
+            : _schema.Columns.Count;
+
+        if (_reuseCurrentRowBuffer)
+        {
+            EnsureRowBuffer(targetColumnCount);
+            int decodedCount = _recordSerializer.DecodeInto(payload, _rowBuffer!);
+            if (decodedCount < targetColumnCount)
+                Array.Fill(_rowBuffer!, DbValue.Null, decodedCount, targetColumnCount - decodedCount);
+            Current = _rowBuffer!;
+            return;
+        }
+
+        var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+        int decoded = _recordSerializer.DecodeInto(payload, row);
+        if (decoded < targetColumnCount)
+            Array.Fill(row, DbValue.Null, decoded, targetColumnCount - decoded);
+        Current = row;
     }
 
     private bool EvaluatePreDecodeFilter(DbValue value)
