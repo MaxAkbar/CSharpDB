@@ -16,6 +16,7 @@ Focused improvements to SQL completeness and query performance.
 | **Prepared statement cache** | Cache parsed ASTs and query plans to avoid re-parsing identical SQL | Planned |
 | **Cached max rowid** | Store in table metadata to avoid O(n) scan when generating row IDs on insert | Planned |
 | **B+tree delete rebalancing** | Merge underflowed pages on delete to reclaim space | Planned |
+| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Planned |
 
 ---
 
@@ -106,4 +107,5 @@ Major features already implemented:
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
+- [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities
