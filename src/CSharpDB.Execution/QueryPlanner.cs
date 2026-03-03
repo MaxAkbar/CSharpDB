@@ -232,9 +232,12 @@ public sealed class QueryPlanner
 
                 // Rewrite all rows without the dropped column
                 var tree = _catalog.GetTableTree(stmt.TableName);
-                var scan = new TableScanOperator(tree, schema, _recordSerializer);
+                int? rewriteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+                var scan = new TableScanOperator(tree, schema, _recordSerializer, rewriteCapacityHint);
                 await scan.OpenAsync(ct);
-                var rowsToRewrite = new List<(long rowId, DbValue[] newRow)>();
+                var rowsToRewrite = rewriteCapacityHint.HasValue
+                    ? new List<(long rowId, DbValue[] newRow)>(rewriteCapacityHint.Value)
+                    : new List<(long rowId, DbValue[] newRow)>();
                 while (await scan.MoveNextAsync(ct))
                 {
                     var oldRow = scan.Current;
@@ -340,7 +343,11 @@ public sealed class QueryPlanner
         // Populate the index from existing rows
         var tableTree = _catalog.GetTableTree(stmt.TableName);
         var indexStore = _catalog.GetIndexStore(stmt.IndexName);
-        var scan = new TableScanOperator(tableTree, tableSchema, _recordSerializer);
+        var scan = new TableScanOperator(
+            tableTree,
+            tableSchema,
+            _recordSerializer,
+            TryGetCachedTreeRowCountCapacityHint(tableTree));
         await scan.OpenAsync(ct);
 
         while (await scan.MoveNextAsync(ct))
@@ -1820,8 +1827,11 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         // Collect rows to delete (can't modify tree while iterating)
-        var rowsToDelete = new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, _recordSerializer);
+        int? deleteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var rowsToDelete = deleteCapacityHint.HasValue
+            ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
+            : new List<(long rowId, DbValue[] row)>();
+        var scan = new TableScanOperator(tree, schema, _recordSerializer, deleteCapacityHint);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -1861,8 +1871,11 @@ public sealed class QueryPlanner
         bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
 
         // Collect rows to update
-        var updates = new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
-        var scan = new TableScanOperator(tree, schema, _recordSerializer);
+        int? updateCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var updates = updateCapacityHint.HasValue
+            ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
+            : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
+        var scan = new TableScanOperator(tree, schema, _recordSerializer, updateCapacityHint);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -2049,7 +2062,11 @@ public sealed class QueryPlanner
             // Normal table
             var schema = GetSchema(simple.TableName);
             var tree = _catalog.GetTableTree(simple.TableName, _pager);
-            IOperator op = new TableScanOperator(tree, schema, _recordSerializer);
+            IOperator op = new TableScanOperator(
+                tree,
+                schema,
+                _recordSerializer,
+                TryGetCachedTreeRowCountCapacityHint(tree));
 
             // Create schema with qualified mappings for this table
             string tableAlias = simple.Alias ?? simple.TableName;
@@ -2470,6 +2487,13 @@ public sealed class QueryPlanner
     private int? TryEstimateTableRefRowCountCapacityHint(TableRef tableRef)
     {
         return TryEstimateTableRefRowCount(tableRef, out long count)
+            ? ToCapacityHint(count)
+            : null;
+    }
+
+    private static int? TryGetCachedTreeRowCountCapacityHint(BTree tree)
+    {
+        return tree.TryGetCachedEntryCount(out long count)
             ? ToCapacityHint(count)
             : null;
     }
@@ -3063,7 +3087,11 @@ public sealed class QueryPlanner
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
-        var scanOp = new TableScanOperator(tableTree, schema, _recordSerializer);
+        var scanOp = new TableScanOperator(
+            tableTree,
+            schema,
+            _recordSerializer,
+            TryGetCachedTreeRowCountCapacityHint(tableTree));
         IOperator op = scanOp;
         var remainingWhere = stmt.Where;
 

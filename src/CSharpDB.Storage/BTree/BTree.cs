@@ -239,6 +239,21 @@ public sealed class BTree
         return count;
     }
 
+    /// <summary>
+    /// Returns a cached entry count when available without touching storage.
+    /// </summary>
+    public bool TryGetCachedEntryCount(out long count)
+    {
+        if (_cachedEntryCount.HasValue)
+        {
+            count = _cachedEntryCount.Value;
+            return true;
+        }
+
+        count = 0;
+        return false;
+    }
+
     #region Internal Insert
 
     private struct InsertResult

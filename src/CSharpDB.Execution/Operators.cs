@@ -10,11 +10,12 @@ namespace CSharpDB.Execution;
 /// <summary>
 /// Full table scan operator — reads all rows from a B+tree via cursor.
 /// </summary>
-public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport
+public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
 {
     private readonly BTree _tree;
     private readonly TableSchema _schema;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly int? _estimatedRowCount;
     private BTreeCursor? _cursor;
     private ReadOnlyMemory<byte> _currentPayload;
     private DbValue[]? _rowBuffer;
@@ -28,16 +29,22 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
     internal ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal int? DecodedColumnUpperBound => _maxDecodedColumnIndex;
 
-    public TableScanOperator(BTree tree, TableSchema schema, IRecordSerializer? recordSerializer = null)
+    public TableScanOperator(
+        BTree tree,
+        TableSchema schema,
+        IRecordSerializer? recordSerializer = null,
+        int? estimatedRowCount = null)
     {
         _tree = tree;
         _schema = schema;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -1575,7 +1582,14 @@ public sealed class SortOperator : IOperator, IEstimatedRowCountProvider, IMater
         await _source.OpenAsync(ct);
         bool cloneRows = _source.ReusesCurrentRowBuffer;
         ReleasePooledBuffers();
-        _sortedRows = new List<DbValue[]>();
+        int initialRowCapacity = _source is IEstimatedRowCountProvider estimated &&
+                                 estimated.EstimatedRowCount is int estimatedRowCount &&
+                                 estimatedRowCount > 0
+            ? estimatedRowCount
+            : 0;
+        _sortedRows = initialRowCapacity > 0
+            ? new List<DbValue[]>(initialRowCapacity)
+            : new List<DbValue[]>();
         _sortedRowIndices = null;
         _precomputedKeyColumns = null;
 
@@ -2181,7 +2195,9 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
-        _sortedRows = new List<DbValue[]>();
+        _sortedRows = _topN > 0
+            ? new List<DbValue[]>(_topN)
+            : new List<DbValue[]>();
 
         if (_topN == 0)
         {
@@ -2600,6 +2616,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
     private readonly int _singleBuildKeyIndex;
     private readonly int _singleProbeKeyIndex;
     private readonly int? _buildRowCapacityHint;
+    private readonly int? _buildKeyCapacityHint;
+    private readonly int _buildBucketInitialCapacity;
     private readonly int? _estimatedRowCount;
     private Dictionary<HashJoinKey, List<DbValue[]>>? _hashTable;
     private Dictionary<DbValue, SingleKeyBucket>? _singleKeyHashTable;
@@ -2646,6 +2664,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         _singleBuildKeyIndex = _buildRightSide ? rightKeyIndices[0] : leftKeyIndices[0];
         _singleProbeKeyIndex = _buildRightSide ? leftKeyIndices[0] : rightKeyIndices[0];
         _buildRowCapacityHint = buildRowCapacityHint > 0 ? buildRowCapacityHint : null;
+        _buildKeyCapacityHint = DeriveBuildKeyCapacityHint(_buildRowCapacityHint);
+        _buildBucketInitialCapacity = DeriveBuildBucketInitialCapacity(_buildRowCapacityHint, _buildKeyCapacityHint);
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualPredicate = residualCondition != null
             ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
@@ -2679,12 +2699,12 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
 
         _hashTable = _singleKeyFastPath
             ? null
-            : _buildRowCapacityHint.HasValue
-                ? new Dictionary<HashJoinKey, List<DbValue[]>>(_buildRowCapacityHint.Value, HashJoinKeyComparer.Instance)
+            : _buildKeyCapacityHint.HasValue
+                ? new Dictionary<HashJoinKey, List<DbValue[]>>(_buildKeyCapacityHint.Value, HashJoinKeyComparer.Instance)
                 : new Dictionary<HashJoinKey, List<DbValue[]>>(HashJoinKeyComparer.Instance);
         _singleKeyHashTable = _singleKeyFastPath
-            ? _buildRowCapacityHint.HasValue
-                ? new Dictionary<DbValue, SingleKeyBucket>(_buildRowCapacityHint.Value)
+            ? _buildKeyCapacityHint.HasValue
+                ? new Dictionary<DbValue, SingleKeyBucket>(_buildKeyCapacityHint.Value)
                 : new Dictionary<DbValue, SingleKeyBucket>()
             : null;
         _allRightRows = _buildRightSide && _joinType == JoinType.RightOuter
@@ -2938,7 +2958,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         var key = ExtractJoinKey(buildRow, BuildKeyIndices);
         if (!_hashTable!.TryGetValue(key, out var bucket))
         {
-            bucket = new List<DbValue[]>();
+            bucket = new List<DbValue[]>(_buildBucketInitialCapacity);
             _hashTable[key] = bucket;
         }
 
@@ -3068,6 +3088,30 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         }
 
         return new HashJoinKey(values);
+    }
+
+    private static int? DeriveBuildKeyCapacityHint(int? buildRowCapacityHint)
+    {
+        if (!buildRowCapacityHint.HasValue || buildRowCapacityHint.Value <= 0)
+            return null;
+
+        // Build row count is a poor proxy for distinct join keys on duplicate-heavy joins.
+        // Keep a bounded hint to avoid oversized dictionary backing arrays.
+        const int maxDistinctKeyCapacityHint = 8_192;
+        return Math.Min(buildRowCapacityHint.Value, maxDistinctKeyCapacityHint);
+    }
+
+    private static int DeriveBuildBucketInitialCapacity(int? buildRowCapacityHint, int? buildKeyCapacityHint)
+    {
+        if (!buildRowCapacityHint.HasValue ||
+            !buildKeyCapacityHint.HasValue ||
+            buildKeyCapacityHint.Value <= 0)
+        {
+            return 1;
+        }
+
+        int averageMatchesPerKey = buildRowCapacityHint.Value / buildKeyCapacityHint.Value;
+        return Math.Clamp(averageMatchesPerKey, 1, 8);
     }
 
     private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)

@@ -74,6 +74,12 @@ public sealed class QueryResult : IAsyncDisposable
 
         if (_operator == null) yield break;
         bool cloneRows = _operator.ReusesCurrentRowBuffer;
+        if (cloneRows && _operator is IRowBufferReuseController controller)
+        {
+            controller.SetReuseCurrentRowBuffer(false);
+            cloneRows = _operator.ReusesCurrentRowBuffer;
+        }
+
         while (await MoveNextAsync(ct))
         {
             var row = Current;
@@ -135,6 +141,13 @@ public sealed class QueryResult : IAsyncDisposable
         if (_operator == null)
             return new List<DbValue[]>(0);
 
+        bool cloneRows = _operator.ReusesCurrentRowBuffer;
+        if (cloneRows && _operator is IRowBufferReuseController controller)
+        {
+            controller.SetReuseCurrentRowBuffer(false);
+            cloneRows = _operator.ReusesCurrentRowBuffer;
+        }
+
         bool openedNow = false;
         if (!_opened)
         {
@@ -144,14 +157,13 @@ public sealed class QueryResult : IAsyncDisposable
         }
 
         if (openedNow &&
-            !_operator.ReusesCurrentRowBuffer &&
+            !cloneRows &&
             _operator is IMaterializedRowsProvider materialized &&
             materialized.TryTakeMaterializedRows(out var materializedRows))
         {
             return materializedRows;
         }
 
-        bool cloneRows = _operator.ReusesCurrentRowBuffer;
         int initialCapacity = 0;
         if (_operator is IEstimatedRowCountProvider estimated &&
             estimated.EstimatedRowCount is int rowCount &&
