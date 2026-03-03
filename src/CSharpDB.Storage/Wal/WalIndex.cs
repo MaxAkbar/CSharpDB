@@ -77,6 +77,14 @@ public sealed class WalIndex
     }
 
     /// <summary>
+    /// Internal fast-path access for checkpointing without interface enumeration overhead.
+    /// </summary>
+    internal Dictionary<uint, long> GetCommittedPages()
+    {
+        return _pageMap;
+    }
+
+    /// <summary>
     /// Reset after a successful checkpoint. Clears all entries.
     /// Must only be called when no readers hold snapshots.
     /// </summary>

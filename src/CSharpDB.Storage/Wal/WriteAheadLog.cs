@@ -1,6 +1,5 @@
 using CSharpDB.Core;
 using Microsoft.Win32.SafeHandles;
-using System.Buffers;
 using System.Buffers.Binary;
 
 namespace CSharpDB.Storage.Wal;
@@ -52,6 +51,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly byte[] _checkpointReadBuffer = new byte[PageConstants.WalFrameSize * CheckpointWriteChunkPages];
     private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
     private readonly long[] _checkpointBatchWalOffsets = new long[CheckpointWriteChunkPages];
+    private KeyValuePair<uint, long>[] _checkpointCommittedPages = Array.Empty<KeyValuePair<uint, long>>();
 
     public WriteAheadLog(
         string databasePath,
@@ -415,15 +415,14 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         if (_stream == null) return;
 
-        var committedPages = _index.GetAllCommittedPages();
+        var committedPages = _index.GetCommittedPages();
         int committedPageCount = committedPages.Count;
         if (committedPageCount == 0) return;
 
-        KeyValuePair<uint, long>[]? sortedCommittedPages = null;
-
         try
         {
-            sortedCommittedPages = ArrayPool<KeyValuePair<uint, long>>.Shared.Rent(committedPageCount);
+            EnsureCheckpointCommittedPageCapacity(committedPageCount);
+            var sortedCommittedPages = _checkpointCommittedPages;
             int sortedCount = 0;
             bool isPageIdSortedAscending = true;
             uint previousPageId = 0;
@@ -527,13 +526,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 ErrorCode.WalError,
                 $"Failed to checkpoint WAL '{_walPath}' with {committedPageCount} committed page(s).",
                 ex);
-        }
-        finally
-        {
-            if (sortedCommittedPages != null)
-            {
-                ArrayPool<KeyValuePair<uint, long>>.Shared.Return(sortedCommittedPages, clearArray: false);
-            }
         }
     }
 
@@ -917,5 +909,17 @@ public sealed class WriteAheadLog : IWriteAheadLog
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(12, 4), dbPageCount);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(16, 4), _salt1);
         BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(20, 4), _salt2);
+    }
+
+    private void EnsureCheckpointCommittedPageCapacity(int requiredCount)
+    {
+        if (_checkpointCommittedPages.Length >= requiredCount)
+            return;
+
+        int newLength = _checkpointCommittedPages.Length == 0 ? requiredCount : _checkpointCommittedPages.Length;
+        while (newLength < requiredCount)
+            newLength *= 2;
+
+        _checkpointCommittedPages = new KeyValuePair<uint, long>[newLength];
     }
 }
