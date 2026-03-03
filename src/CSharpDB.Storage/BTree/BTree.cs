@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using CSharpDB.Core;
 
 namespace CSharpDB.Storage.BTrees;
@@ -17,6 +19,7 @@ public sealed class BTree
     private const int InteriorCellHeaderBytes = 1; // varint(12)
     private const int InteriorCellLeftChildOffset = InteriorCellHeaderBytes;
     private const int InteriorCellKeyOffset = InteriorCellHeaderBytes + 4;
+    private const int MaxStackLeafCellBytes = 256;
 
     private readonly Pager _pager;
     private uint _rootPageId;
@@ -181,9 +184,11 @@ public sealed class BTree
             sp.Initialize(PageConstants.PageTypeInterior);
             sp.RightChildOrNextLeaf = result.NewPageId;
 
-            // Insert single interior cell pointing to old root
-            var cell = BuildInteriorCell(_rootPageId, result.SplitKey);
-            sp.InsertCell(0, cell);
+            // Insert single interior cell pointing to old root.
+            // Interior cells are fixed-size (13 bytes), so avoid heap allocation here.
+            Span<byte> rootCell = stackalloc byte[13];
+            WriteInteriorCell(rootCell, _rootPageId, result.SplitKey);
+            sp.InsertCell(0, rootCell);
             await _pager.MarkDirtyAsync(newRootId, ct);
 
             _rootPageId = newRootId;
@@ -299,55 +304,88 @@ public sealed class BTree
                 throw new CSharpDbException(ErrorCode.DuplicateKey, $"Duplicate key: {key}");
         }
 
-        var cell = BuildLeafCell(key, payload.Span);
+        int leafCellLength = GetLeafCellLength(payload.Length);
+        if (leafCellLength <= MaxStackLeafCellBytes)
+        {
+            Span<byte> stackCell = stackalloc byte[leafCellLength];
+            WriteLeafCell(stackCell, key, payload.Span);
 
-        if (sp.InsertCell(insertIdx, cell))
+            if (sp.InsertCell(insertIdx, stackCell))
+            {
+                await _pager.MarkDirtyAsync(pageId, ct);
+                return new InsertResult { Split = false };
+            }
+
+            // Preserve the stack-built cell for split handling.
+            byte[] splitCell = GC.AllocateUninitializedArray<byte>(leafCellLength);
+            stackCell.CopyTo(splitCell);
+            return await SplitLeafAsync(pageId, page, sp, insertIdx, splitCell, ct);
+        }
+
+        byte[] heapCell = BuildLeafCell(key, payload.Span);
+        if (sp.InsertCell(insertIdx, heapCell))
         {
             await _pager.MarkDirtyAsync(pageId, ct);
             return new InsertResult { Split = false };
         }
 
         // Page is full — split
-        return await SplitLeafAsync(pageId, page, sp, insertIdx, cell, ct);
+        return await SplitLeafAsync(pageId, page, sp, insertIdx, heapCell, ct);
     }
 
     private async ValueTask<InsertResult> SplitLeafAsync(uint pageId, byte[] page, SlottedPage sp, int insertIdx, byte[] newCell, CancellationToken ct)
     {
-        // Collect all cells + the new one
-        int count = sp.CellCount;
-        var allCells = new byte[count + 1][];
-        for (int i = 0; i < insertIdx; i++)
-            allCells[i] = CopyCellBytes(page, sp.GetCellOffset(i));
-        allCells[insertIdx] = newCell;
-        for (int i = insertIdx; i < count; i++)
-            allCells[i + 1] = CopyCellBytes(page, sp.GetCellOffset(i));
+        int existingCellCount = sp.CellCount;
+        int totalCellCount = existingCellCount + 1;
+        int[] cellOffsets = ArrayPool<int>.Shared.Rent(totalCellCount + 1);
+        byte[]? splitCellBuffer = null;
+        try
+        {
+            splitCellBuffer = BuildSplitCellBuffer(page, sp, insertIdx, newCell, cellOffsets, out int totalCellBytes);
+            cellOffsets[totalCellCount] = totalCellBytes;
+            int mid = totalCellCount / 2;
 
-        int mid = allCells.Length / 2;
+            // Allocate new right sibling
+            uint newPageId = await _pager.AllocatePageAsync(ct);
+            var newPage = await _pager.GetPageAsync(newPageId, ct);
+            var newSp = new SlottedPage(newPage, newPageId);
+            newSp.Initialize(PageConstants.PageTypeLeaf);
 
-        // Allocate new right sibling
-        uint newPageId = await _pager.AllocatePageAsync(ct);
-        var newPage = await _pager.GetPageAsync(newPageId, ct);
-        var newSp = new SlottedPage(newPage, newPageId);
-        newSp.Initialize(PageConstants.PageTypeLeaf);
+            // Link leaves
+            newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
+            sp.Initialize(PageConstants.PageTypeLeaf);
+            sp.RightChildOrNextLeaf = newPageId;
 
-        // Link leaves
-        newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
-        sp.Initialize(PageConstants.PageTypeLeaf);
-        sp.RightChildOrNextLeaf = newPageId;
+            // Distribute cells from split buffer
+            for (int i = 0; i < mid; i++)
+            {
+                int offset = cellOffsets[i];
+                int length = cellOffsets[i + 1] - offset;
+                sp.InsertCell(i, splitCellBuffer.AsSpan(offset, length));
+            }
 
-        // Distribute cells
-        for (int i = 0; i < mid; i++)
-            sp.InsertCell(i, allCells[i]);
-        for (int i = mid; i < allCells.Length; i++)
-            newSp.InsertCell(i - mid, allCells[i]);
+            for (int i = mid; i < totalCellCount; i++)
+            {
+                int offset = cellOffsets[i];
+                int length = cellOffsets[i + 1] - offset;
+                newSp.InsertCell(i - mid, splitCellBuffer.AsSpan(offset, length));
+            }
 
-        await _pager.MarkDirtyAsync(pageId, ct);
-        await _pager.MarkDirtyAsync(newPageId, ct);
+            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(newPageId, ct);
 
-        // The split key is the first key of the right page
-        long splitKey = ReadLeafKey(newSp, 0);
-
-        return new InsertResult { Split = true, SplitKey = splitKey, NewPageId = newPageId };
+            // The split key is the first key of the right page.
+            int splitOffset = cellOffsets[mid];
+            int splitLength = cellOffsets[mid + 1] - splitOffset;
+            long splitKey = ReadLeafCellKey(splitCellBuffer.AsSpan(splitOffset, splitLength));
+            return new InsertResult { Split = true, SplitKey = splitKey, NewPageId = newPageId };
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(cellOffsets, clearArray: false);
+            if (splitCellBuffer != null)
+                ArrayPool<byte>.Shared.Return(splitCellBuffer, clearArray: false);
+        }
     }
 
     private async ValueTask<InsertResult> InsertIntoInteriorAsync(uint pageId, byte[] page, SlottedPage sp, long key, uint newChildPageId, int afterChildIdx, CancellationToken ct)
@@ -355,11 +393,21 @@ public sealed class BTree
         // Get the original child pointer that was at afterChildIdx
         uint originalChild = FindChildAtIndex(sp, afterChildIdx);
 
-        // The new cell's left child is the original (left half stays)
-        var cell = BuildInteriorCell(originalChild, key);
+        // The new cell's left child is the original (left half stays).
+        // Interior cells are fixed-size (13 bytes), so use stackalloc on the no-split fast path.
+        Span<byte> cell = stackalloc byte[13];
+        WriteInteriorCell(cell, originalChild, key);
 
         // Update the pointer at afterChildIdx to point to the new right sibling
-        UpdateChildPointerDirect(page, pageId, afterChildIdx, newChildPageId);
+        if (afterChildIdx >= sp.CellCount)
+        {
+            sp.RightChildOrNextLeaf = newChildPageId;
+        }
+        else
+        {
+            int offset = sp.GetCellOffset(afterChildIdx);
+            BinaryPrimitives.WriteUInt32LittleEndian(page.AsSpan(offset + InteriorCellLeftChildOffset), newChildPageId);
+        }
 
         if (sp.InsertCell(afterChildIdx, cell))
         {
@@ -368,43 +416,73 @@ public sealed class BTree
         }
 
         // Interior page full — split it
-        return await SplitInteriorAsync(pageId, page, sp, afterChildIdx, cell, ct);
+        return await SplitInteriorAsync(pageId, page, sp, afterChildIdx, originalChild, key, ct);
     }
 
-    private async ValueTask<InsertResult> SplitInteriorAsync(uint pageId, byte[] page, SlottedPage sp, int insertIdx, byte[] newCell, CancellationToken ct)
+    private async ValueTask<InsertResult> SplitInteriorAsync(
+        uint pageId,
+        byte[] page,
+        SlottedPage sp,
+        int insertIdx,
+        uint insertedLeftChild,
+        long insertedKey,
+        CancellationToken ct)
     {
-        int count = sp.CellCount;
-        var allCells = new byte[count + 1][];
-        for (int i = 0; i < insertIdx; i++)
-            allCells[i] = CopyCellBytes(page, sp.GetCellOffset(i));
-        allCells[insertIdx] = newCell;
-        for (int i = insertIdx; i < count; i++)
-            allCells[i + 1] = CopyCellBytes(page, sp.GetCellOffset(i));
+        int existingCellCount = sp.CellCount;
+        int totalCellCount = existingCellCount + 1;
+        const int interiorCellSize = 13;
+        int totalBytes = checked(totalCellCount * interiorCellSize);
+        byte[]? splitCellBuffer = null;
+        try
+        {
+            splitCellBuffer = ArrayPool<byte>.Shared.Rent(totalBytes);
+            int writeOffset = 0;
+            for (int i = 0; i < totalCellCount; i++)
+            {
+                if (i == insertIdx)
+                {
+                    WriteInteriorCell(splitCellBuffer.AsSpan(writeOffset, interiorCellSize), insertedLeftChild, insertedKey);
+                }
+                else
+                {
+                    int sourceIndex = i < insertIdx ? i : i - 1;
+                    ushort sourceOffset = sp.GetCellOffset(sourceIndex);
+                    page.AsSpan(sourceOffset, interiorCellSize).CopyTo(splitCellBuffer.AsSpan(writeOffset, interiorCellSize));
+                }
 
-        int mid = allCells.Length / 2;
-        long promotedKey = ReadInteriorCellKey(allCells[mid]);
+                writeOffset += interiorCellSize;
+            }
 
-        uint newPageId = await _pager.AllocatePageAsync(ct);
-        var newPage = await _pager.GetPageAsync(newPageId, ct);
-        var newSp = new SlottedPage(newPage, newPageId);
-        newSp.Initialize(PageConstants.PageTypeInterior);
+            int mid = totalCellCount / 2;
+            ReadOnlySpan<byte> promotedCell = splitCellBuffer.AsSpan(mid * interiorCellSize, interiorCellSize);
+            long promotedKey = ReadInteriorCellKey(promotedCell);
+            uint rightChildOfLeft = ReadInteriorCellLeftChild(promotedCell);
 
-        newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
+            uint newPageId = await _pager.AllocatePageAsync(ct);
+            var newPage = await _pager.GetPageAsync(newPageId, ct);
+            var newSp = new SlottedPage(newPage, newPageId);
+            newSp.Initialize(PageConstants.PageTypeInterior);
 
-        uint rightChildOfLeft = ReadInteriorCellLeftChild(allCells[mid]);
-        sp.Initialize(PageConstants.PageTypeInterior);
-        sp.RightChildOrNextLeaf = rightChildOfLeft;
+            newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
+            sp.Initialize(PageConstants.PageTypeInterior);
+            sp.RightChildOrNextLeaf = rightChildOfLeft;
 
-        for (int i = 0; i < mid; i++)
-            sp.InsertCell(i, allCells[i]);
+            for (int i = 0; i < mid; i++)
+                sp.InsertCell(i, splitCellBuffer.AsSpan(i * interiorCellSize, interiorCellSize));
 
-        for (int i = mid + 1; i < allCells.Length; i++)
-            newSp.InsertCell(i - mid - 1, allCells[i]);
+            for (int i = mid + 1; i < totalCellCount; i++)
+                newSp.InsertCell(i - mid - 1, splitCellBuffer.AsSpan(i * interiorCellSize, interiorCellSize));
 
-        await _pager.MarkDirtyAsync(pageId, ct);
-        await _pager.MarkDirtyAsync(newPageId, ct);
+            await _pager.MarkDirtyAsync(pageId, ct);
+            await _pager.MarkDirtyAsync(newPageId, ct);
 
-        return new InsertResult { Split = true, SplitKey = promotedKey, NewPageId = newPageId };
+            return new InsertResult { Split = true, SplitKey = promotedKey, NewPageId = newPageId };
+        }
+        finally
+        {
+            if (splitCellBuffer != null)
+                ArrayPool<byte>.Shared.Return(splitCellBuffer, clearArray: false);
+        }
     }
 
     #endregion
@@ -438,35 +516,41 @@ public sealed class BTree
 
     internal static byte[] BuildLeafCell(long key, ReadOnlySpan<byte> payload)
     {
-        // Cell: [totalSize:varint] [key:8] [payload]
-        int payloadPart = 8 + payload.Length;
-        int sizeBytes = Varint.SizeOf((ulong)payloadPart);
-        var cell = new byte[sizeBytes + payloadPart];
-        int pos = Varint.Write(cell, (ulong)payloadPart);
-        BinaryPrimitives.WriteInt64LittleEndian(cell.AsSpan(pos), key);
-        pos += 8;
-        payload.CopyTo(cell.AsSpan(pos));
+        byte[] cell = GC.AllocateUninitializedArray<byte>(GetLeafCellLength(payload.Length));
+        WriteLeafCell(cell, key, payload);
         return cell;
     }
 
-    private static byte[] BuildInteriorCell(uint leftChild, long key)
+    private static int GetLeafCellLength(int payloadLength)
     {
-        // Cell: [totalSize:varint] [leftChild:4] [key:8]
-        int payloadPart = 4 + 8;
-        int sizeBytes = Varint.SizeOf((ulong)payloadPart);
-        var cell = new byte[sizeBytes + payloadPart];
-        int pos = Varint.Write(cell, (ulong)payloadPart);
-        BinaryPrimitives.WriteUInt32LittleEndian(cell.AsSpan(pos), leftChild);
-        pos += 4;
-        BinaryPrimitives.WriteInt64LittleEndian(cell.AsSpan(pos), key);
-        return cell;
+        int payloadPart = 8 + payloadLength;
+        return checked(Varint.SizeOf((ulong)payloadPart) + payloadPart);
+    }
+
+    private static void WriteLeafCell(Span<byte> destination, long key, ReadOnlySpan<byte> payload)
+    {
+        // Cell: [totalSize:varint] [key:8] [payload]
+        int payloadPart = 8 + payload.Length;
+        int pos;
+        if (payloadPart <= 0x7F)
+        {
+            destination[0] = (byte)payloadPart;
+            pos = 1;
+        }
+        else
+        {
+            pos = Varint.Write(destination, (ulong)payloadPart);
+        }
+
+        BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(pos, 8), key);
+        payload.CopyTo(destination[(pos + 8)..]);
     }
 
     internal static long ReadLeafKey(SlottedPage sp, int index)
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        Varint.Read(page.AsSpan(offset), out int headerBytes);
+        ReadVarintFast(page.AsSpan(offset), out int headerBytes);
         return BinaryPrimitives.ReadInt64LittleEndian(page.AsSpan(offset + headerBytes));
     }
 
@@ -479,27 +563,86 @@ public sealed class BTree
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        ulong payloadSize = Varint.Read(page.AsSpan(offset), out int headerBytes);
+        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
         int payloadLength = (int)payloadSize - 8;
         return page.AsMemory(offset + headerBytes + 8, payloadLength);
     }
 
-    private static byte[] CopyCellBytes(byte[] page, ushort offset)
+    private static long ReadInteriorCellKey(ReadOnlySpan<byte> cell)
     {
-        var cellSpan = page.AsSpan(offset);
-        ulong payloadSize = Varint.Read(cellSpan, out int headerBytes);
-        int totalSize = headerBytes + (int)payloadSize;
-        return cellSpan[..totalSize].ToArray();
+        return BinaryPrimitives.ReadInt64LittleEndian(cell[InteriorCellKeyOffset..]);
     }
 
-    private static long ReadInteriorCellKey(byte[] cell)
+    private static uint ReadInteriorCellLeftChild(ReadOnlySpan<byte> cell)
     {
-        return BinaryPrimitives.ReadInt64LittleEndian(cell.AsSpan(InteriorCellKeyOffset));
+        return BinaryPrimitives.ReadUInt32LittleEndian(cell[InteriorCellLeftChildOffset..]);
     }
 
-    private static uint ReadInteriorCellLeftChild(byte[] cell)
+    private static long ReadLeafCellKey(ReadOnlySpan<byte> cell)
     {
-        return BinaryPrimitives.ReadUInt32LittleEndian(cell.AsSpan(InteriorCellLeftChildOffset));
+        ReadVarintFast(cell, out int headerBytes);
+        return BinaryPrimitives.ReadInt64LittleEndian(cell.Slice(headerBytes, 8));
+    }
+
+    private static byte[] BuildSplitCellBuffer(
+        byte[] page,
+        SlottedPage sp,
+        int insertIdx,
+        ReadOnlySpan<byte> newCell,
+        int[] cellOffsets,
+        out int totalCellBytes)
+    {
+        int existingCellCount = sp.CellCount;
+        int totalCellCount = existingCellCount + 1;
+        byte[] splitCellBuffer = ArrayPool<byte>.Shared.Rent(checked(page.Length + newCell.Length));
+        int writeOffset = 0;
+        for (int i = 0; i < totalCellCount; i++)
+        {
+            if (i == insertIdx)
+            {
+                cellOffsets[i] = writeOffset;
+                newCell.CopyTo(splitCellBuffer.AsSpan(writeOffset, newCell.Length));
+                writeOffset += newCell.Length;
+                continue;
+            }
+
+            int sourceIndex = i < insertIdx ? i : i - 1;
+            ushort sourceOffset = sp.GetCellOffset(sourceIndex);
+            int sourceLength = GetCellTotalSize(page, sourceOffset);
+            cellOffsets[i] = writeOffset;
+            page.AsSpan(sourceOffset, sourceLength).CopyTo(splitCellBuffer.AsSpan(writeOffset, sourceLength));
+            writeOffset += sourceLength;
+        }
+
+        totalCellBytes = writeOffset;
+        return splitCellBuffer;
+    }
+
+    private static int GetCellTotalSize(byte[] page, ushort offset)
+    {
+        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        return checked(headerBytes + (int)payloadSize);
+    }
+
+    private static void WriteInteriorCell(Span<byte> destination, uint leftChild, long key)
+    {
+        // Interior payload size is always 12, encoded as a one-byte varint.
+        destination[0] = 12;
+        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(1, 4), leftChild);
+        BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(5, 8), key);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong ReadVarintFast(ReadOnlySpan<byte> source, out int bytesRead)
+    {
+        byte first = source[0];
+        if ((first & 0x80) == 0)
+        {
+            bytesRead = 1;
+            return first;
+        }
+
+        return Varint.Read(source, out bytesRead);
     }
 
     private static long ReadInteriorKey(SlottedPage sp, int index)
@@ -579,21 +722,6 @@ public sealed class BTree
         if (index < sp.CellCount)
             return ReadInteriorLeftChild(sp, index);
         return sp.RightChildOrNextLeaf;
-    }
-
-    internal void UpdateChildPointerDirect(byte[] pageData, uint pageId, int index, uint newChildId)
-    {
-        var sp = new SlottedPage(pageData, pageId);
-        if (index >= sp.CellCount)
-        {
-            sp.RightChildOrNextLeaf = newChildId;
-        }
-        else
-        {
-            int offset = sp.GetCellOffset(index);
-            BinaryPrimitives.WriteUInt32LittleEndian(
-                pageData.AsSpan(offset + InteriorCellLeftChildOffset), newChildId);
-        }
     }
 
     /// <summary>
