@@ -33,8 +33,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private uint _salt2;
 
     // Uncommitted frame tracking for current transaction
-    private readonly List<(uint PageId, long WalOffset, uint DataChecksum)> _uncommittedFrames = new(capacity: 256);
-    private readonly List<KeyValuePair<uint, long>> _checkpointOrderedPages = new();
+    private readonly List<(uint PageId, long WalOffset)> _uncommittedFrames = new(capacity: 256);
+    private uint _lastUncommittedDataChecksum;
     private readonly List<(uint PageId, long WalOffset)> _recoverUncommittedBatch = new();
     private long _uncommittedStartOffset;
     private readonly byte[] _walHeaderBuffer = new byte[PageConstants.WalHeaderSize];
@@ -111,6 +111,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         if (_stream == null)
             throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
         _uncommittedFrames.Clear();
+        _lastUncommittedDataChecksum = 0;
         _uncommittedStartOffset = _stream.Position;
     }
 
@@ -140,7 +141,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
         {
             await _stream.WriteAsync(frameHeader, cancellationToken);
             await _stream.WriteAsync(pageData, cancellationToken);
-            _uncommittedFrames.Add((pageId, frameOffset, dataChecksum));
+            _uncommittedFrames.Add((pageId, frameOffset));
+            _lastUncommittedDataChecksum = dataChecksum;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -163,7 +165,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
             throw new CSharpDbException(ErrorCode.WalError, "No frames to commit.");
 
         // Rewrite the last frame's dbPageCount to mark it as a commit frame
-        var (lastPageId, lastOffset, lastDataChecksum) = _uncommittedFrames[^1];
+        var (lastPageId, lastOffset) = _uncommittedFrames[^1];
+        uint lastDataChecksum = _lastUncommittedDataChecksum;
 
         // Rebuild the commit-frame header directly (avoid read-back I/O on the hot commit path)
         var frameHeader = _appendFrameHeader;
@@ -188,12 +191,13 @@ public sealed class WriteAheadLog : IWriteAheadLog
             await _stream.FlushAsync(cancellationToken);
 
             // Update the in-memory WAL index
-            foreach (var (pageId, walOffset, _) in _uncommittedFrames)
+            foreach (var (pageId, walOffset) in _uncommittedFrames)
             {
                 _index.AddCommittedFrame(pageId, walOffset);
             }
             _index.AdvanceCommit();
             _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -216,6 +220,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _stream.Position = _uncommittedStartOffset;
             await _stream.FlushAsync(cancellationToken);
             _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -368,20 +373,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 await device.SetLengthAsync(requiredLength, cancellationToken);
             }
 
-            // Read each committed page from WAL and write to DB file in page-id order
-            // for stable write patterns and reduced run-to-run variance.
-            _checkpointOrderedPages.Clear();
-            _checkpointOrderedPages.EnsureCapacity(committedPages.Count);
-            foreach (var pair in committedPages)
-            {
-                _checkpointOrderedPages.Add(pair);
-            }
-            _checkpointOrderedPages.Sort(static (a, b) => a.Key.CompareTo(b.Key));
-
             uint batchStartPageId = 0;
             int batchPageCount = 0;
 
-            foreach (var (pageId, walOffset) in _checkpointOrderedPages)
+            foreach (var (pageId, walOffset) in committedPages)
             {
                 bool startsNewBatch = batchPageCount == 0 ||
                     (ulong)pageId != (ulong)batchStartPageId + (uint)batchPageCount ||
@@ -412,7 +407,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             // Reset WAL
             _index.Reset();
-            _checkpointOrderedPages.Clear();
             CloseReadHandle();
 
             _salt1 = (uint)Random.Shared.Next();
