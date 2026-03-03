@@ -1,5 +1,6 @@
 using CSharpDB.Core;
 using Microsoft.Win32.SafeHandles;
+using System.Buffers;
 using System.Buffers.Binary;
 
 namespace CSharpDB.Storage.Wal;
@@ -22,6 +23,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
 {
     private const int WalStreamBufferSize = 64 * 1024;
     private const int CheckpointWriteChunkPages = 16;
+    private static readonly IComparer<KeyValuePair<uint, long>> PageIdComparer =
+        Comparer<KeyValuePair<uint, long>>.Create(static (left, right) => left.Key.CompareTo(right.Key));
 
     private readonly string _walPath;
     private FileStream? _stream;
@@ -40,6 +43,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private long _uncommittedStartOffset;
     private readonly byte[] _walHeaderBuffer = new byte[PageConstants.WalHeaderSize];
     private readonly byte[] _appendFrameHeader = new byte[PageConstants.WalFrameHeaderSize];
+    private readonly byte[] _appendFrameBuffer = new byte[PageConstants.WalFrameSize];
     private readonly byte[] _recoveryFrameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryPageBuffer = new byte[PageConstants.PageSize];
     private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
@@ -141,8 +145,9 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
-            await _stream.WriteAsync(frameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), cancellationToken);
-            await _stream.WriteAsync(pageData, cancellationToken);
+            frameHeaderSpan.CopyTo(_appendFrameBuffer.AsSpan(0, PageConstants.WalFrameHeaderSize));
+            pageData.Span.CopyTo(_appendFrameBuffer.AsSpan(PageConstants.WalFrameHeaderSize, PageConstants.PageSize));
+            await _stream.WriteAsync(_appendFrameBuffer.AsMemory(0, PageConstants.WalFrameSize), cancellationToken);
             _uncommittedFrames.Add((pageId, frameOffset));
             _lastUncommittedDataChecksum = dataChecksum;
         }
@@ -365,10 +370,33 @@ public sealed class WriteAheadLog : IWriteAheadLog
         if (_stream == null) return;
 
         var committedPages = _index.GetAllCommittedPages();
-        if (committedPages.Count == 0) return;
+        int committedPageCount = committedPages.Count;
+        if (committedPageCount == 0) return;
+
+        KeyValuePair<uint, long>[]? sortedCommittedPages = null;
 
         try
         {
+            sortedCommittedPages = ArrayPool<KeyValuePair<uint, long>>.Shared.Rent(committedPageCount);
+            int sortedCount = 0;
+            bool isPageIdSortedAscending = true;
+            uint previousPageId = 0;
+            foreach (var committedPage in committedPages)
+            {
+                if (sortedCount > 0 && committedPage.Key < previousPageId)
+                {
+                    isPageIdSortedAscending = false;
+                }
+
+                sortedCommittedPages[sortedCount++] = committedPage;
+                previousPageId = committedPage.Key;
+            }
+
+            if (!isPageIdSortedAscending && committedPageCount > 1)
+            {
+                Array.Sort(sortedCommittedPages, 0, committedPageCount, PageIdComparer);
+            }
+
             // Ensure DB file is large enough
             long requiredLength = (long)pageCount * PageConstants.PageSize;
             if (device.Length < requiredLength)
@@ -379,8 +407,11 @@ public sealed class WriteAheadLog : IWriteAheadLog
             uint batchStartPageId = 0;
             int batchPageCount = 0;
 
-            foreach (var (pageId, walOffset) in committedPages)
+            for (int i = 0; i < committedPageCount; i++)
             {
+                var committedPage = sortedCommittedPages[i];
+                uint pageId = committedPage.Key;
+                long walOffset = committedPage.Value;
                 bool startsNewBatch = batchPageCount == 0 ||
                     (ulong)pageId != (ulong)batchStartPageId + (uint)batchPageCount ||
                     batchPageCount == CheckpointWriteChunkPages;
@@ -410,7 +441,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             // Reset WAL
             _index.Reset();
-            CloseReadHandle();
 
             _salt1 = (uint)Random.Shared.Next();
             _salt2 = (uint)Random.Shared.Next();
@@ -423,15 +453,20 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _stream.SetLength(PageConstants.WalHeaderSize);
             await _stream.FlushAsync(cancellationToken);
             _uncommittedStartOffset = PageConstants.WalHeaderSize;
-
-            OpenReadHandle();
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
             throw new CSharpDbException(
                 ErrorCode.WalError,
-                $"Failed to checkpoint WAL '{_walPath}' with {committedPages.Count} committed page(s).",
+                $"Failed to checkpoint WAL '{_walPath}' with {committedPageCount} committed page(s).",
                 ex);
+        }
+        finally
+        {
+            if (sortedCommittedPages != null)
+            {
+                ArrayPool<KeyValuePair<uint, long>>.Shared.Return(sortedCommittedPages, clearArray: false);
+            }
         }
     }
 
