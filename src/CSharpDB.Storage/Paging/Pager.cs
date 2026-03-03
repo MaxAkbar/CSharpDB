@@ -31,6 +31,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     // Configurable behavior
     private readonly PagerOptions _options;
+    private readonly byte[] _fileHeaderBuffer = new byte[PageConstants.FileHeaderSize];
+    private readonly byte[] _walHeaderPageBuffer = new byte[PageConstants.PageSize];
 
     /// <summary>
     /// Legacy threshold property preserved for compatibility.
@@ -158,7 +160,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async ValueTask ReadFileHeaderAsync(CancellationToken ct = default)
     {
-        var header = new byte[PageConstants.FileHeaderSize];
+        var header = _fileHeaderBuffer;
         await _device.ReadAsync(0, header, ct);
 
         // Validate magic
@@ -344,8 +346,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // If WAL has committed page 0, re-read header from WAL version
         if (_walIndex.TryGetLatest(0, out long walOffset))
         {
-            var walPage0 = await _wal.ReadPageAsync(walOffset, ct);
-            ReadFileHeaderFrom(walPage0);
+            await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
+            ReadFileHeaderFrom(_walHeaderPageBuffer);
         }
     }
 
@@ -393,8 +395,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             // Read the latest header from WAL if page 0 was committed
             if (_walIndex.TryGetLatest(0, out long walOffset))
             {
-                var walPage0 = await _wal.ReadPageAsync(walOffset, ct);
-                ReadFileHeaderFrom(walPage0);
+                await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
+                ReadFileHeaderFrom(_walHeaderPageBuffer);
             }
 
             await CheckpointAsync(ct);

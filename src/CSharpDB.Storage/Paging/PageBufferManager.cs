@@ -70,7 +70,8 @@ internal sealed class PageBufferManager
         {
             if (_readerSnapshot.TryGet(pageId, out long walOffset))
             {
-                var walPage = await _wal.ReadPageAsync(walOffset, ct);
+                var walPage = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+                await _wal.ReadPageIntoAsync(walOffset, walPage, ct);
                 _cache.Set(pageId, walPage);
                 if (_hasInterceptor)
                     await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalSnapshot, ct);
@@ -79,14 +80,15 @@ internal sealed class PageBufferManager
         }
         else if (_walIndex.TryGetLatest(pageId, out long latestOffset))
         {
-            var walPage = await _wal.ReadPageAsync(latestOffset, ct);
+            var walPage = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+            await _wal.ReadPageIntoAsync(latestOffset, walPage, ct);
             _cache.Set(pageId, walPage);
             if (_hasInterceptor)
                 await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalLatest, ct);
             return walPage;
         }
 
-        var buffer = new byte[PageConstants.PageSize];
+        var buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
         await device.ReadAsync((long)pageId * PageConstants.PageSize, buffer, ct);
         _cache.Set(pageId, buffer);
         if (_hasInterceptor)

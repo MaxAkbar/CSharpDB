@@ -9,14 +9,14 @@ public sealed class WalIndex
     // Maps pageId → WAL file offset of the latest committed frame for that page.
     private readonly Dictionary<uint, long> _pageMap = new();
 
-    // Ordered log of all committed frames.
-    private readonly List<WalFrameEntry> _frameLog = new();
+    // Number of committed frames currently in WAL.
+    private int _frameCount;
 
     // Monotonically increasing commit counter.
     private long _commitCounter;
 
     /// <summary>Total number of committed frames.</summary>
-    public int FrameCount => _frameLog.Count;
+    public int FrameCount => _frameCount;
 
     /// <summary>
     /// Record a committed frame. Called by WriteAheadLog after writing
@@ -25,7 +25,7 @@ public sealed class WalIndex
     public void AddCommittedFrame(uint pageId, long walFileOffset)
     {
         _pageMap[pageId] = walFileOffset;
-        _frameLog.Add(new WalFrameEntry(_commitCounter, pageId, walFileOffset));
+        _frameCount++;
     }
 
     /// <summary>
@@ -72,13 +72,8 @@ public sealed class WalIndex
     public void Reset()
     {
         _pageMap.Clear();
-        _frameLog.Clear();
+        _frameCount = 0;
     }
-
-    private readonly record struct WalFrameEntry(
-        long CommitCounter,
-        uint PageId,
-        long WalFileOffset);
 }
 
 /// <summary>
