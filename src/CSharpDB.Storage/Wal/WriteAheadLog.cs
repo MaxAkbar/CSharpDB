@@ -157,7 +157,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
         ReadOnlyMemory<WalFrameWrite> frames,
         CancellationToken cancellationToken = default)
     {
-        await AppendFramesCoreAsync(frames, commitOnLastFrame: false, newDbPageCount: 0u, cancellationToken);
+        await AppendFramesCoreAsync(
+            frames,
+            commitOnLastFrame: false,
+            newDbPageCount: 0u,
+            trackUncommittedFrames: true,
+            cancellationToken);
     }
 
     public async ValueTask AppendFramesAndCommitAsync(
@@ -167,16 +172,23 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         if (frames.IsEmpty)
             throw new CSharpDbException(ErrorCode.WalError, "No frames to commit.");
-
-        await AppendFramesCoreAsync(frames, commitOnLastFrame: true, newDbPageCount, cancellationToken);
-
+        if (_uncommittedFrames.Count != 0)
+            throw new CSharpDbException(ErrorCode.WalError, "AppendFramesAndCommitAsync cannot be used with existing uncommitted frames.");
         if (_stream == null)
             throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+
+        long firstFrameOffset = _stream.Position;
+        await AppendFramesCoreAsync(
+            frames,
+            commitOnLastFrame: true,
+            newDbPageCount,
+            trackUncommittedFrames: false,
+            cancellationToken);
 
         try
         {
             await _stream.FlushAsync(cancellationToken);
-            PublishCommittedFrames();
+            PublishCommittedFramesFromBatch(frames, firstFrameOffset);
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -647,6 +659,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         ReadOnlyMemory<WalFrameWrite> frames,
         bool commitOnLastFrame,
         uint newDbPageCount,
+        bool trackUncommittedFrames,
         CancellationToken cancellationToken)
     {
         if (_stream == null)
@@ -657,6 +670,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
         int frameIndex = 0;
         int totalFrameCount = frames.Length;
         int lastFrameIndex = totalFrameCount - 1;
+        if (trackUncommittedFrames)
+            _uncommittedFrames.EnsureCapacity(_uncommittedFrames.Count + totalFrameCount);
 
         try
         {
@@ -680,8 +695,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
                         frame.PageData.Span,
                         dbPageCount);
 
-                    long frameOffset = chunkStartOffset + (long)i * PageConstants.WalFrameSize;
-                    _uncommittedFrames.Add((frame.PageId, frameOffset));
+                    if (trackUncommittedFrames)
+                    {
+                        long frameOffset = chunkStartOffset + (long)i * PageConstants.WalFrameSize;
+                        _uncommittedFrames.Add((frame.PageId, frameOffset));
+                    }
+
                     _lastUncommittedDataChecksum = dataChecksum;
                 }
 
@@ -697,6 +716,18 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 $"Failed to append {frames.Length} WAL frame(s).",
                 ex);
         }
+    }
+
+    private void PublishCommittedFramesFromBatch(ReadOnlyMemory<WalFrameWrite> frames, long firstFrameOffset)
+    {
+        for (int i = 0; i < frames.Length; i++)
+        {
+            long frameOffset = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
+            _index.AddCommittedFrame(frames.Span[i].PageId, frameOffset);
+        }
+
+        _index.AdvanceCommit();
+        _lastUncommittedDataChecksum = 0;
     }
 
     private void PublishCommittedFrames()
