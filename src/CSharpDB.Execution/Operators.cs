@@ -2585,7 +2585,7 @@ public sealed class TopNSortOperator : IOperator, IEstimatedRowCountProvider, IM
 /// Hash-join operator for equi-joins (with optional residual predicate).
 /// Supports INNER, LEFT OUTER, and RIGHT OUTER joins.
 /// </summary>
-public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
+public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider
 {
     private readonly IOperator _left;
     private readonly IOperator _right;
@@ -2599,6 +2599,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
     private readonly bool _singleKeyFastPath;
     private readonly int _singleBuildKeyIndex;
     private readonly int _singleProbeKeyIndex;
+    private readonly int? _buildRowCapacityHint;
+    private readonly int? _estimatedRowCount;
     private Dictionary<HashJoinKey, List<DbValue[]>>? _hashTable;
     private Dictionary<DbValue, SingleKeyBucket>? _singleKeyHashTable;
     private List<DbValue[]>? _allRightRows;
@@ -2616,6 +2618,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _estimatedRowCount;
 
     public HashJoinOperator(
         IOperator left,
@@ -2627,7 +2630,9 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
         int rightColCount,
         int[] leftKeyIndices,
         int[] rightKeyIndices,
-        bool buildRightSide = true)
+        bool buildRightSide = true,
+        int? buildRowCapacityHint = null,
+        int? estimatedOutputRowCount = null)
     {
         _left = left;
         _right = right;
@@ -2640,6 +2645,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
         _singleKeyFastPath = leftKeyIndices.Length == 1 && rightKeyIndices.Length == 1;
         _singleBuildKeyIndex = _buildRightSide ? rightKeyIndices[0] : leftKeyIndices[0];
         _singleProbeKeyIndex = _buildRightSide ? leftKeyIndices[0] : rightKeyIndices[0];
+        _buildRowCapacityHint = buildRowCapacityHint > 0 ? buildRowCapacityHint : null;
+        _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualPredicate = residualCondition != null
             ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
             : null;
@@ -2672,13 +2679,23 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 
         _hashTable = _singleKeyFastPath
             ? null
-            : new Dictionary<HashJoinKey, List<DbValue[]>>(HashJoinKeyComparer.Instance);
+            : _buildRowCapacityHint.HasValue
+                ? new Dictionary<HashJoinKey, List<DbValue[]>>(_buildRowCapacityHint.Value, HashJoinKeyComparer.Instance)
+                : new Dictionary<HashJoinKey, List<DbValue[]>>(HashJoinKeyComparer.Instance);
         _singleKeyHashTable = _singleKeyFastPath
-            ? new Dictionary<DbValue, SingleKeyBucket>()
+            ? _buildRowCapacityHint.HasValue
+                ? new Dictionary<DbValue, SingleKeyBucket>(_buildRowCapacityHint.Value)
+                : new Dictionary<DbValue, SingleKeyBucket>()
             : null;
-        _allRightRows = _buildRightSide && _joinType == JoinType.RightOuter ? new List<DbValue[]>() : null;
+        _allRightRows = _buildRightSide && _joinType == JoinType.RightOuter
+            ? _buildRowCapacityHint.HasValue
+                ? new List<DbValue[]>(_buildRowCapacityHint.Value)
+                : new List<DbValue[]>()
+            : null;
         _matchedRightRows = _buildRightSide && _joinType == JoinType.RightOuter
-            ? new HashSet<DbValue[]>(ReferenceEqualityComparer.Instance)
+            ? _buildRowCapacityHint.HasValue
+                ? new HashSet<DbValue[]>(_buildRowCapacityHint.Value, ReferenceEqualityComparer.Instance)
+                : new HashSet<DbValue[]>(ReferenceEqualityComparer.Instance)
             : null;
         _residualRowBuffer = _residualPredicate == null
             ? null
@@ -3245,7 +3262,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget
 /// Uses a right-side PRIMARY KEY or unique single-column index for lookup joins.
 /// Supports INNER and LEFT OUTER joins.
 /// </summary>
-public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdownTarget
+public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider
 {
     private readonly IOperator _outer;
     private readonly BTree _innerTableTree;
@@ -3254,6 +3271,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
     private readonly int _outerKeyIndex;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
+    private readonly int? _estimatedRowCount;
     private readonly Func<DbValue[], DbValue>? _residualPredicate;
     private readonly IRecordSerializer _recordSerializer;
     private DbValue[]? _activeOuterRow;
@@ -3270,6 +3288,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _estimatedRowCount;
 
     public IndexNestedLoopJoinOperator(
         IOperator outer,
@@ -3281,7 +3300,8 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
         int rightColCount,
         Expression? residualCondition,
         TableSchema compositeSchema,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        int? estimatedOutputRowCount = null)
     {
         _outer = outer;
         _innerTableTree = innerTableTree;
@@ -3290,6 +3310,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
         _outerKeyIndex = outerKeyIndex;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
+        _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualPredicate = residualCondition != null
             ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
             : null;
@@ -3677,6 +3698,8 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     private readonly Func<DbValue[], DbValue>? _conditionEvaluator;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
+    private readonly int? _estimatedRowCount;
+    private readonly int? _rightRowCapacityHint;
     private int[]? _projectionColumnIndices;
     private List<DbValue[]>? _rightRows;
     private DbValue[]? _currentLeftRow;
@@ -3692,13 +3715,15 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
-    public int? EstimatedRowCount => _precomputedRows?.Count;
+    public int? EstimatedRowCount => _precomputedRows?.Count ?? _estimatedRowCount;
 
     public NestedLoopJoinOperator(
         IOperator left, IOperator right,
         JoinType joinType, Expression? condition,
         TableSchema compositeSchema,
-        int leftColCount, int rightColCount)
+        int leftColCount, int rightColCount,
+        int? estimatedOutputRowCount = null,
+        int? rightRowCapacityHint = null)
     {
         _left = left;
         _right = right;
@@ -3708,6 +3733,8 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
             : null;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
+        _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
+        _rightRowCapacityHint = rightRowCapacityHint > 0 ? rightRowCapacityHint : null;
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
     }
 
@@ -3724,7 +3751,9 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
         await _right.OpenAsync(ct);
 
         // Materialize right side once; left side is streamed.
-        var rightRows = new List<DbValue[]>();
+        var rightRows = _rightRowCapacityHint.HasValue
+            ? new List<DbValue[]>(_rightRowCapacityHint.Value)
+            : new List<DbValue[]>();
         bool cloneRightRows = _right.ReusesCurrentRowBuffer;
         while (await _right.MoveNextAsync(ct))
             rightRows.Add(cloneRightRows ? (DbValue[])_right.Current.Clone() : _right.Current);
@@ -3746,9 +3775,11 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
 
         if (_joinType == JoinType.Cross)
         {
-            var results = rightRows.Count == 0
-                ? new List<DbValue[]>()
-                : new List<DbValue[]>(rightRows.Count * 4);
+            var results = _estimatedRowCount.HasValue
+                ? new List<DbValue[]>(_estimatedRowCount.Value)
+                : rightRows.Count == 0
+                    ? new List<DbValue[]>()
+                    : new List<DbValue[]>(rightRows.Count * 4);
             while (await _left.MoveNextAsync(ct))
             {
                 var leftRow = _left.Current;
