@@ -2855,7 +2855,9 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
     private readonly bool _buildRightSide;
     private readonly int[] _leftKeyIndices;
     private readonly int[] _rightKeyIndices;
+    private readonly Expression? _residualConditionExpression;
     private readonly Func<DbValue[], DbValue>? _residualPredicate;
+    private readonly TableSchema _compositeSchema;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly bool _singleKeyFastPath;
@@ -2878,6 +2880,9 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
     private bool _probeExhausted;
     private int _rightOuterEmitIndex;
     private int[]? _projectionColumnIndices;
+    private bool _buildRowCompactionEnabled;
+    private int[]? _buildRequiredColumnIndices;
+    private int[]? _buildColumnToCompactIndexMap;
 
     public ColumnDefinition[] OutputSchema { get; private set; }
     public bool ReusesCurrentRowBuffer => false;
@@ -2904,6 +2909,8 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         _buildRightSide = buildRightSide;
         _leftKeyIndices = leftKeyIndices;
         _rightKeyIndices = rightKeyIndices;
+        _residualConditionExpression = residualCondition;
+        _compositeSchema = compositeSchema;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _singleKeyFastPath = leftKeyIndices.Length == 1 && rightKeyIndices.Length == 1;
@@ -2923,9 +2930,9 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         _buildBucketInitialCapacity = DeriveBuildBucketInitialCapacity(_buildRowCapacityHint, _buildKeyCapacityHint);
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualPredicate = residualCondition != null
-            ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
+            ? ExpressionCompiler.Compile(residualCondition, _compositeSchema)
             : null;
-        OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
+        OutputSchema = _compositeSchema.Columns as ColumnDefinition[] ?? _compositeSchema.Columns.ToArray();
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -2935,18 +2942,22 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         if (!_buildRightSide && _joinType != JoinType.Inner)
             throw new CSharpDbException(ErrorCode.Unknown, "Swapped hash build side is supported for INNER JOIN only.");
 
+        ConfigureBuildRowCompaction();
+
         if (_left is IRowBufferReuseController leftController)
         {
-            // Probe rows are consumed immediately, so reuse is safe.
-            // Build rows are retained in hash buckets and must be owned.
-            leftController.SetReuseCurrentRowBuffer(_buildRightSide);
+            bool leftIsBuildSide = !_buildRightSide;
+            // Probe rows are consumed immediately, so reuse is always safe.
+            // Build rows are retained unless compaction is enabled (we copy only required columns).
+            leftController.SetReuseCurrentRowBuffer(!leftIsBuildSide || _buildRowCompactionEnabled);
         }
 
         if (_right is IRowBufferReuseController rightController)
         {
-            // Probe rows are consumed immediately, so reuse is safe.
-            // Build rows are retained in hash buckets and must be owned.
-            rightController.SetReuseCurrentRowBuffer(!_buildRightSide);
+            bool rightIsBuildSide = _buildRightSide;
+            // Probe rows are consumed immediately, so reuse is always safe.
+            // Build rows are retained unless compaction is enabled (we copy only required columns).
+            rightController.SetReuseCurrentRowBuffer(!rightIsBuildSide || _buildRowCompactionEnabled);
         }
 
         await _left.OpenAsync(ct);
@@ -2980,10 +2991,19 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         while (await buildSource.MoveNextAsync(ct))
         {
             var buildCurrent = buildSource.Current;
-            var buildRow = buildSource.ReusesCurrentRowBuffer
-                ? (DbValue[])buildCurrent.Clone()
-                : buildCurrent;
-            AddBuildRow(buildRow);
+            DbValue[] buildRow;
+            if (_buildRowCompactionEnabled)
+            {
+                buildRow = CompactBuildRow(buildCurrent);
+            }
+            else
+            {
+                buildRow = buildSource.ReusesCurrentRowBuffer
+                    ? (DbValue[])buildCurrent.Clone()
+                    : buildCurrent;
+            }
+
+            AddBuildRow(buildRow, _buildRowCompactionEnabled ? buildCurrent : null);
         }
 
         Current = Array.Empty<DbValue>();
@@ -3189,15 +3209,204 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
     private IOperator ProbeSource => _buildRightSide ? _left : _right;
     private int[] BuildKeyIndices => _buildRightSide ? _rightKeyIndices : _leftKeyIndices;
     private int[] ProbeKeyIndices => _buildRightSide ? _leftKeyIndices : _rightKeyIndices;
+    private int BuildColumnCount => _buildRightSide ? _rightColCount : _leftColCount;
 
-    private void AddBuildRow(DbValue[] buildRow)
+    private void ConfigureBuildRowCompaction()
+    {
+        _buildRowCompactionEnabled = false;
+        _buildRequiredColumnIndices = null;
+        _buildColumnToCompactIndexMap = null;
+
+        var projection = _projectionColumnIndices;
+        if (projection == null || projection.Length == 0)
+            return;
+
+        int buildColumnCount = BuildColumnCount;
+        if (buildColumnCount <= 0)
+            return;
+
+        var requiredFlags = new bool[buildColumnCount];
+        int requiredCount = 0;
+
+        void MarkRequired(int buildColumnIndex)
+        {
+            if ((uint)buildColumnIndex >= (uint)buildColumnCount)
+                return;
+            if (requiredFlags[buildColumnIndex])
+                return;
+
+            requiredFlags[buildColumnIndex] = true;
+            requiredCount++;
+        }
+
+        var buildKeys = BuildKeyIndices;
+        for (int i = 0; i < buildKeys.Length; i++)
+            MarkRequired(buildKeys[i]);
+
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int projectionIndex = projection[i];
+            if (_buildRightSide)
+            {
+                if (projectionIndex < _leftColCount)
+                    continue;
+                MarkRequired(projectionIndex - _leftColCount);
+            }
+            else
+            {
+                if (projectionIndex >= _leftColCount)
+                    continue;
+                MarkRequired(projectionIndex);
+            }
+        }
+
+        if (_residualConditionExpression != null &&
+            !TryMarkBuildSideColumnsForExpression(_residualConditionExpression, MarkRequired))
+        {
+            _buildRowCompactionEnabled = false;
+            _buildRequiredColumnIndices = null;
+            _buildColumnToCompactIndexMap = null;
+            return;
+        }
+
+        if (requiredCount <= 0 || requiredCount >= buildColumnCount)
+            return;
+
+        var requiredColumns = new int[requiredCount];
+        int cursor = 0;
+        for (int i = 0; i < requiredFlags.Length; i++)
+        {
+            if (!requiredFlags[i])
+                continue;
+            requiredColumns[cursor++] = i;
+        }
+
+        var columnToCompactIndex = new int[buildColumnCount];
+        Array.Fill(columnToCompactIndex, -1);
+        for (int i = 0; i < requiredColumns.Length; i++)
+            columnToCompactIndex[requiredColumns[i]] = i;
+
+        _buildRequiredColumnIndices = requiredColumns;
+        _buildColumnToCompactIndexMap = columnToCompactIndex;
+        _buildRowCompactionEnabled = true;
+    }
+
+    private bool TryMarkBuildSideColumnsForExpression(Expression expression, Action<int> markBuildColumn)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return true;
+            case ColumnRefExpression columnRef:
+            {
+                int compositeColumnIndex = columnRef.TableAlias != null
+                    ? _compositeSchema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
+                    : _compositeSchema.GetColumnIndex(columnRef.ColumnName);
+                if (compositeColumnIndex < 0)
+                    return false;
+
+                if (TryMapCompositeColumnToBuildColumn(compositeColumnIndex, out int buildColumnIndex))
+                    markBuildColumn(buildColumnIndex);
+                return true;
+            }
+            case BinaryExpression binaryExpression:
+                return TryMarkBuildSideColumnsForExpression(binaryExpression.Left, markBuildColumn)
+                    && TryMarkBuildSideColumnsForExpression(binaryExpression.Right, markBuildColumn);
+            case UnaryExpression unaryExpression:
+                return TryMarkBuildSideColumnsForExpression(unaryExpression.Operand, markBuildColumn);
+            case LikeExpression likeExpression:
+                return TryMarkBuildSideColumnsForExpression(likeExpression.Operand, markBuildColumn)
+                    && TryMarkBuildSideColumnsForExpression(likeExpression.Pattern, markBuildColumn)
+                    && (likeExpression.EscapeChar == null ||
+                        TryMarkBuildSideColumnsForExpression(likeExpression.EscapeChar, markBuildColumn));
+            case InExpression inExpression:
+            {
+                if (!TryMarkBuildSideColumnsForExpression(inExpression.Operand, markBuildColumn))
+                    return false;
+
+                for (int i = 0; i < inExpression.Values.Count; i++)
+                {
+                    if (!TryMarkBuildSideColumnsForExpression(inExpression.Values[i], markBuildColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            case BetweenExpression betweenExpression:
+                return TryMarkBuildSideColumnsForExpression(betweenExpression.Operand, markBuildColumn)
+                    && TryMarkBuildSideColumnsForExpression(betweenExpression.Low, markBuildColumn)
+                    && TryMarkBuildSideColumnsForExpression(betweenExpression.High, markBuildColumn);
+            case IsNullExpression isNullExpression:
+                return TryMarkBuildSideColumnsForExpression(isNullExpression.Operand, markBuildColumn);
+            case FunctionCallExpression functionCall:
+            {
+                if (functionCall.IsStarArg)
+                    return true;
+
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryMarkBuildSideColumnsForExpression(functionCall.Arguments[i], markBuildColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private bool TryMapCompositeColumnToBuildColumn(int compositeColumnIndex, out int buildColumnIndex)
+    {
+        if (_buildRightSide)
+        {
+            if (compositeColumnIndex < _leftColCount)
+            {
+                buildColumnIndex = -1;
+                return false;
+            }
+
+            buildColumnIndex = compositeColumnIndex - _leftColCount;
+            return true;
+        }
+
+        if (compositeColumnIndex >= _leftColCount)
+        {
+            buildColumnIndex = -1;
+            return false;
+        }
+
+        buildColumnIndex = compositeColumnIndex;
+        return true;
+    }
+
+    private DbValue[] CompactBuildRow(DbValue[] buildRow)
+    {
+        var requiredColumns = _buildRequiredColumnIndices
+            ?? throw new InvalidOperationException("Build row compaction columns are not configured.");
+        var compact = new DbValue[requiredColumns.Length];
+        for (int i = 0; i < requiredColumns.Length; i++)
+        {
+            int sourceIndex = requiredColumns[i];
+            compact[i] = sourceIndex < buildRow.Length
+                ? buildRow[sourceIndex]
+                : DbValue.Null;
+        }
+
+        return compact;
+    }
+
+    private void AddBuildRow(DbValue[] buildRow, DbValue[]? buildKeySourceRow)
     {
         if (_buildRightSide && _allRightRows != null)
             _allRightRows.Add(buildRow);
 
+        var keySourceRow = buildKeySourceRow ?? buildRow;
+
         if (_singleKeyFastPath)
         {
-            var keyValue = ExtractSingleJoinKey(buildRow, _singleBuildKeyIndex);
+            var keyValue = ExtractSingleJoinKey(keySourceRow, _singleBuildKeyIndex);
             ref var singleBucket = ref CollectionsMarshal.GetValueRefOrAddDefault(
                 _singleKeyHashTable!,
                 keyValue,
@@ -3214,7 +3423,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             return;
         }
 
-        var joinKey = ExtractJoinKey(buildRow, BuildKeyIndices);
+        var joinKey = ExtractJoinKey(keySourceRow, BuildKeyIndices);
         ref var bucketRef = ref CollectionsMarshal.GetValueRefOrAddDefault(
             _hashTable!,
             joinKey,
@@ -3274,6 +3483,33 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             return true;
 
         var combined = _residualRowBuffer ??= new DbValue[_leftColCount + _rightColCount];
+        if (_buildRowCompactionEnabled)
+        {
+            var buildRequiredColumns = _buildRequiredColumnIndices
+                ?? throw new InvalidOperationException("Build row compaction columns are not configured.");
+
+            if (_buildRightSide)
+            {
+                probeRow.CopyTo(combined, 0);
+                if (_rightColCount > 0)
+                    Array.Fill(combined, DbValue.Null, _leftColCount, _rightColCount);
+
+                for (int i = 0; i < buildRequiredColumns.Length && i < buildRow.Length; i++)
+                    combined[_leftColCount + buildRequiredColumns[i]] = buildRow[i];
+            }
+            else
+            {
+                if (_leftColCount > 0)
+                    Array.Fill(combined, DbValue.Null, 0, _leftColCount);
+                for (int i = 0; i < buildRequiredColumns.Length && i < buildRow.Length; i++)
+                    combined[buildRequiredColumns[i]] = buildRow[i];
+
+                probeRow.CopyTo(combined, _leftColCount);
+            }
+
+            return _residualPredicate(combined).IsTruthy;
+        }
+
         if (_buildRightSide)
         {
             probeRow.CopyTo(combined, 0);
@@ -3296,7 +3532,12 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         var projection = _projectionColumnIndices;
         return projection == null
             ? CombineRows(leftRow, rightRow)
-            : ProjectRows(leftRow, rightRow, projection);
+            : ProjectRows(
+                leftRow,
+                rightRow,
+                projection,
+                leftIsBuildSide: !_buildRightSide,
+                rightIsBuildSide: _buildRightSide);
     }
 
     private DbValue[] CreateLeftOuterRowFromProbe(DbValue[] probeRow)
@@ -3325,7 +3566,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             var projection = _projectionColumnIndices;
             return projection == null
                 ? CombineWithNulls(buildRow, _leftColCount, padRight: false)
-                : ProjectNullLeftWithRight(buildRow, projection);
+                : ProjectNullLeftWithRight(buildRow, projection, rightIsBuildSide: true);
         }
 
         // Swapped build side is only used for INNER joins, so this is defensive.
@@ -3334,7 +3575,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         var projected = _projectionColumnIndices;
         return projected == null
             ? CombineRows(leftRow, rightRow)
-            : ProjectRows(leftRow, rightRow, projected);
+            : ProjectRows(leftRow, rightRow, projected, leftIsBuildSide: true, rightIsBuildSide: false);
     }
 
     private static DbValue ExtractSingleJoinKey(DbValue[] row, int keyIndex)
@@ -3432,7 +3673,7 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         return projected;
     }
 
-    private DbValue[] ProjectNullLeftWithRight(DbValue[] rightRow, int[] projection)
+    private DbValue[] ProjectNullLeftWithRight(DbValue[] rightRow, int[] projection, bool rightIsBuildSide = false)
     {
         if (projection.Length == 0)
             return Array.Empty<DbValue>();
@@ -3448,16 +3689,23 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             else
             {
                 int rightIndex = columnIndex - _leftColCount;
-                projected[i] = rightIndex < rightRow.Length
-                    ? rightRow[rightIndex]
-                    : DbValue.Null;
+                projected[i] = rightIsBuildSide
+                    ? GetBuildSideColumnValue(rightRow, rightIndex)
+                    : rightIndex < rightRow.Length
+                        ? rightRow[rightIndex]
+                        : DbValue.Null;
             }
         }
 
         return projected;
     }
 
-    private DbValue[] ProjectRows(DbValue[] leftRow, DbValue[] rightRow, int[] projection)
+    private DbValue[] ProjectRows(
+        DbValue[] leftRow,
+        DbValue[] rightRow,
+        int[] projection,
+        bool leftIsBuildSide = false,
+        bool rightIsBuildSide = false)
     {
         if (projection.Length == 0)
             return Array.Empty<DbValue>();
@@ -3468,20 +3716,40 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
             int columnIndex = projection[i];
             if (columnIndex < _leftColCount)
             {
-                projected[i] = columnIndex < leftRow.Length
-                    ? leftRow[columnIndex]
-                    : DbValue.Null;
+                projected[i] = leftIsBuildSide
+                    ? GetBuildSideColumnValue(leftRow, columnIndex)
+                    : columnIndex < leftRow.Length
+                        ? leftRow[columnIndex]
+                        : DbValue.Null;
             }
             else
             {
                 int rightIndex = columnIndex - _leftColCount;
-                projected[i] = rightIndex < rightRow.Length
-                    ? rightRow[rightIndex]
-                    : DbValue.Null;
+                projected[i] = rightIsBuildSide
+                    ? GetBuildSideColumnValue(rightRow, rightIndex)
+                    : rightIndex < rightRow.Length
+                        ? rightRow[rightIndex]
+                        : DbValue.Null;
             }
         }
 
         return projected;
+    }
+
+    private DbValue GetBuildSideColumnValue(DbValue[] buildRow, int buildColumnIndex)
+    {
+        if (!_buildRowCompactionEnabled)
+            return buildColumnIndex < buildRow.Length ? buildRow[buildColumnIndex] : DbValue.Null;
+
+        var columnToCompactIndex = _buildColumnToCompactIndexMap
+            ?? throw new InvalidOperationException("Build row compaction map is not configured.");
+        if ((uint)buildColumnIndex >= (uint)columnToCompactIndex.Length)
+            return DbValue.Null;
+
+        int compactIndex = columnToCompactIndex[buildColumnIndex];
+        return compactIndex >= 0 && compactIndex < buildRow.Length
+            ? buildRow[compactIndex]
+            : DbValue.Null;
     }
 
     private struct SingleKeyBucket
