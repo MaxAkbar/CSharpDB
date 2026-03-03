@@ -1,5 +1,6 @@
 using CSharpDB.Core;
 using Microsoft.Win32.SafeHandles;
+using System.Buffers.Binary;
 
 namespace CSharpDB.Storage.Wal;
 
@@ -127,19 +128,20 @@ public sealed class WriteAheadLog : IWriteAheadLog
         long frameOffset = _stream.Position;
 
         var frameHeader = _appendFrameHeader;
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(0), pageId);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(4), 0u); // dbPageCount=0 means non-commit
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(8), _salt1);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(12), _salt2);
+        var frameHeaderSpan = frameHeader.AsSpan(0, PageConstants.WalFrameHeaderSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(0, 4), pageId);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(4, 4), 0u); // dbPageCount=0 means non-commit
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(8, 4), _salt1);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(12, 4), _salt2);
 
-        uint headerChecksum = _checksumProvider.Compute(frameHeader.AsSpan(0, 16));
+        uint headerChecksum = _checksumProvider.Compute(frameHeaderSpan.Slice(0, 16));
         uint dataChecksum = _checksumProvider.Compute(pageData.Span);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(16), headerChecksum);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(20), dataChecksum);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(16, 4), headerChecksum);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(20, 4), dataChecksum);
 
         try
         {
-            await _stream.WriteAsync(frameHeader, cancellationToken);
+            await _stream.WriteAsync(frameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), cancellationToken);
             await _stream.WriteAsync(pageData, cancellationToken);
             _uncommittedFrames.Add((pageId, frameOffset));
             _lastUncommittedDataChecksum = dataChecksum;
@@ -170,14 +172,15 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         // Rebuild the commit-frame header directly (avoid read-back I/O on the hot commit path)
         var frameHeader = _appendFrameHeader;
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(0), lastPageId);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(4), newDbPageCount);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(8), _salt1);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(12), _salt2);
+        var frameHeaderSpan = frameHeader.AsSpan(0, PageConstants.WalFrameHeaderSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(0, 4), lastPageId);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(4, 4), newDbPageCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(8, 4), _salt1);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(12, 4), _salt2);
 
-        uint headerChecksum = _checksumProvider.Compute(frameHeader.AsSpan(0, 16));
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(16), headerChecksum);
-        BitConverter.TryWriteBytes(frameHeader.AsSpan(20), lastDataChecksum);
+        uint headerChecksum = _checksumProvider.Compute(frameHeaderSpan.Slice(0, 16));
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(16, 4), headerChecksum);
+        BinaryPrimitives.WriteUInt32LittleEndian(frameHeaderSpan.Slice(20, 4), lastDataChecksum);
 
         try
         {
@@ -266,8 +269,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
             if (!header.AsSpan(0, 4).SequenceEqual(PageConstants.WalMagic))
                 throw new CSharpDbException(ErrorCode.WalError, "Invalid WAL file: bad magic.");
 
-            _salt1 = BitConverter.ToUInt32(header, 16);
-            _salt2 = BitConverter.ToUInt32(header, 20);
+            _salt1 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(16, 4));
+            _salt2 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(20, 4));
 
             // Scan frames
             var uncommittedBatch = _recoverUncommittedBatch;
@@ -291,8 +294,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 }
 
                 // Validate salt
-                uint frameSalt1 = BitConverter.ToUInt32(frameHeaderBuffer, 8);
-                uint frameSalt2 = BitConverter.ToUInt32(frameHeaderBuffer, 12);
+                uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
+                uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
                 if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
                 {
                     _stream.SetLength(frameOffset);
@@ -300,8 +303,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 }
 
                 // Validate checksums
-                uint expectedHeaderChecksum = BitConverter.ToUInt32(frameHeaderBuffer, 16);
-                uint expectedDataChecksum = BitConverter.ToUInt32(frameHeaderBuffer, 20);
+                uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
+                uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(20, 4));
                 uint actualHeaderChecksum = _checksumProvider.Compute(frameHeaderBuffer.AsSpan(0, 16));
                 uint actualDataChecksum = _checksumProvider.Compute(pageDataBuffer);
 
@@ -313,8 +316,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
                     break;
                 }
 
-                uint pageId = BitConverter.ToUInt32(frameHeaderBuffer, 0);
-                uint dbPageCount = BitConverter.ToUInt32(frameHeaderBuffer, 4);
+                uint pageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4));
+                uint dbPageCount = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4));
 
                 uncommittedBatch.Add((pageId, frameOffset));
 
@@ -610,10 +613,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         header.Clear();
         PageConstants.WalMagic.AsSpan().CopyTo(header);
-        BitConverter.TryWriteBytes(header.Slice(4), 1);
-        BitConverter.TryWriteBytes(header.Slice(8), PageConstants.PageSize);
-        BitConverter.TryWriteBytes(header.Slice(12), dbPageCount);
-        BitConverter.TryWriteBytes(header.Slice(16), _salt1);
-        BitConverter.TryWriteBytes(header.Slice(20), _salt2);
+        BinaryPrimitives.WriteInt32LittleEndian(header.Slice(4, 4), 1);
+        BinaryPrimitives.WriteInt32LittleEndian(header.Slice(8, 4), PageConstants.PageSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(12, 4), dbPageCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(16, 4), _salt1);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(20, 4), _salt2);
     }
 }
