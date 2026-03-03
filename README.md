@@ -254,13 +254,13 @@ Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. Full results in [tests/C
 
 | Metric | Result |
 |--------|--------|
-| Single INSERT (auto-commit, durable) | 10,611 ops/sec |
-| Batched INSERT (100 rows/tx) | ~247K rows/sec |
-| Point lookup by PK (1K rows) | 217,694 ops/sec |
-| Collection `GetAsync` (10K docs) | 1,438,440 ops/sec |
-| Concurrent readers (8 sessions) | 576,447 ops/sec |
-| ADO.NET `ExecuteScalar` | 253 ns / 448 bytes |
-| Crash recovery | 100% reliable (50/50 cycles), P50 = 13 ms |
+| Single INSERT (auto-commit, durable) | 27,842 ops/sec |
+| Batched INSERT (100 rows/tx) | ~370K rows/sec |
+| Point lookup by PK (1K rows) | 786,596 ops/sec |
+| Collection `GetAsync` (10K docs) | 1,371,530 ops/sec |
+| Concurrent readers (8 sessions) | 256,088 ops/sec |
+| ADO.NET `ExecuteScalar` | 323 ns / 696 bytes |
+| Crash recovery | 100% reliable (50/50 cycles), P50 = 11.5 ms |
 
 ## Samples
 
