@@ -50,9 +50,9 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly byte[] _appendFrameChunkBuffer = new byte[PageConstants.WalFrameSize * AppendFrameChunkSize];
     private readonly byte[] _recoveryFrameHeaderBuffer = new byte[PageConstants.WalFrameHeaderSize];
     private readonly byte[] _recoveryPageBuffer = new byte[PageConstants.PageSize];
-    private readonly byte[] _checkpointReadBuffer = new byte[PageConstants.WalFrameSize * CheckpointWriteChunkPages];
-    private readonly byte[] _checkpointWriteBuffer = new byte[PageConstants.PageSize * CheckpointWriteChunkPages];
-    private readonly long[] _checkpointBatchWalOffsets = new long[CheckpointWriteChunkPages];
+    private byte[]? _checkpointReadBuffer;
+    private byte[]? _checkpointWriteBuffer;
+    private long[]? _checkpointBatchWalOffsets;
     private KeyValuePair<uint, long>[] _checkpointCommittedPages = Array.Empty<KeyValuePair<uint, long>>();
 
     public WriteAheadLog(
@@ -427,8 +427,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
+            EnsureCheckpointBuffers();
             EnsureCheckpointCommittedPageCapacity(committedPageCount);
             var sortedCommittedPages = _checkpointCommittedPages;
+            var checkpointBatchWalOffsets = _checkpointBatchWalOffsets!;
             int sortedCount = 0;
             bool isPageIdSortedAscending = true;
             uint previousPageId = 0;
@@ -494,7 +496,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
                         batchHasContiguousWalOffsets = false;
                 }
 
-                _checkpointBatchWalOffsets[batchPageCount] = walOffset;
+                checkpointBatchWalOffsets[batchPageCount] = walOffset;
                 batchPageCount++;
             }
 
@@ -703,13 +705,20 @@ public sealed class WriteAheadLog : IWriteAheadLog
         bool hasContiguousWalOffsets,
         CancellationToken cancellationToken)
     {
+        byte[] checkpointReadBuffer = _checkpointReadBuffer
+            ?? throw new CSharpDbException(ErrorCode.WalError, "Checkpoint read buffer was not initialized.");
+        byte[] checkpointWriteBuffer = _checkpointWriteBuffer
+            ?? throw new CSharpDbException(ErrorCode.WalError, "Checkpoint write buffer was not initialized.");
+        long[] checkpointBatchWalOffsets = _checkpointBatchWalOffsets
+            ?? throw new CSharpDbException(ErrorCode.WalError, "Checkpoint WAL offset buffer was not initialized.");
+
         if (hasContiguousWalOffsets)
         {
             int readByteCount = pageCount * PageConstants.WalFrameSize;
-            await ReadWalRangeIntoAsync(startWalOffset, _checkpointReadBuffer.AsMemory(0, readByteCount), cancellationToken);
+            await ReadWalRangeIntoAsync(startWalOffset, checkpointReadBuffer.AsMemory(0, readByteCount), cancellationToken);
 
-            var sourceFrames = _checkpointReadBuffer.AsSpan(0, readByteCount);
-            var destinationPages = _checkpointWriteBuffer.AsSpan(0, pageCount * PageConstants.PageSize);
+            var sourceFrames = checkpointReadBuffer.AsSpan(0, readByteCount);
+            var destinationPages = checkpointWriteBuffer.AsSpan(0, pageCount * PageConstants.PageSize);
             for (int i = 0; i < pageCount; i++)
             {
                 sourceFrames
@@ -722,15 +731,15 @@ public sealed class WriteAheadLog : IWriteAheadLog
             for (int i = 0; i < pageCount; i++)
             {
                 await ReadPageIntoAsync(
-                    _checkpointBatchWalOffsets[i],
-                    _checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
+                    checkpointBatchWalOffsets[i],
+                    checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
                     cancellationToken);
             }
         }
 
         long dbOffset = (long)startPageId * PageConstants.PageSize;
         int writeByteCount = pageCount * PageConstants.PageSize;
-        await device.WriteAsync(dbOffset, _checkpointWriteBuffer.AsMemory(0, writeByteCount), cancellationToken);
+        await device.WriteAsync(dbOffset, checkpointWriteBuffer.AsMemory(0, writeByteCount), cancellationToken);
     }
 
     private async ValueTask ReadWalRangeIntoAsync(long walOffset, Memory<byte> destination, CancellationToken cancellationToken)
@@ -937,6 +946,20 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         _stream.SetLength(nextReservedLength);
         _reservedLength = nextReservedLength;
+    }
+
+    private void EnsureCheckpointBuffers()
+    {
+        int readBufferSize = PageConstants.WalFrameSize * CheckpointWriteChunkPages;
+        if (_checkpointReadBuffer is null || _checkpointReadBuffer.Length < readBufferSize)
+            _checkpointReadBuffer = new byte[readBufferSize];
+
+        int writeBufferSize = PageConstants.PageSize * CheckpointWriteChunkPages;
+        if (_checkpointWriteBuffer is null || _checkpointWriteBuffer.Length < writeBufferSize)
+            _checkpointWriteBuffer = new byte[writeBufferSize];
+
+        if (_checkpointBatchWalOffsets is null || _checkpointBatchWalOffsets.Length < CheckpointWriteChunkPages)
+            _checkpointBatchWalOffsets = new long[CheckpointWriteChunkPages];
     }
 
     private void EnsureCheckpointCommittedPageCapacity(int requiredCount)
