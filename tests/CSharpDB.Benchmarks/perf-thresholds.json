@@ -103,6 +103,35 @@
       "maxMeanRegressionPercent": 15.0
     },
     {
+      "csv": "CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260304-000103",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'SELECT DISTINCT value'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value ORDER BY value + LIMIT 100'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value ORDER BY value + LIMIT 100'",
+          "RowCount": "10000"
+        }
+      ],
+      "maxMeanRegressionPercent": 35.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 131072.0
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
       "keyColumns": [
         "Method",

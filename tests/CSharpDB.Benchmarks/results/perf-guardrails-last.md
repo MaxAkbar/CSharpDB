@@ -4,12 +4,16 @@
 - Note: one or more checks use per-check `baselineSnapshot` overrides
 - Current: `C:\Users\maxim\source\Code\CSharpDB\BenchmarkDotNet.Artifacts\\results`
 - Thresholds: `C:\Users\maxim\source\Code\CSharpDB\tests\CSharpDB.Benchmarks\perf-thresholds.json`
-- Generated (UTC): 2026-03-03 19:36:55Z
+- Generated (UTC): 2026-03-04 00:03:34Z
 
-Compared 88 rows against baseline. PASS=88, FAIL=0
+Compared 92 rows against baseline. PASS=92, FAIL=0
 
 | CSV | Key | Mean Δ% | Alloc Δ% | Alloc Δ B | Status |
 |---|---|---:|---:|---:|---|
+| CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv | Method='SELECT DISTINCT value ORDER BY value + LIMIT 100'; RowCount=1000 | 0.00 | 0.00 | 0 | PASS |
+| CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv | Method='SELECT DISTINCT value ORDER BY value + LIMIT 100'; RowCount=10000 | 0.00 | 0.00 | 0 | PASS |
+| CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv | Method='SELECT DISTINCT value'; RowCount=1000 | 0.00 | 0.00 | 0 | PASS |
+| CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv | Method='SELECT DISTINCT value'; RowCount=10000 | 0.00 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=100 | -38.55 | -12.71 | -30,863 | PASS |
 | CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=1000 | -36.55 | -12.70 | -30,843 | PASS |
 | CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=10000 | -45.66 | -12.69 | -30,833 | PASS |

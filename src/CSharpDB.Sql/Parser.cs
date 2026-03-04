@@ -119,6 +119,7 @@ public sealed class Parser
 
             statement = new SelectStatement
             {
+                IsDistinct = false,
                 Columns = columns,
                 From = new SimpleTableRef { TableName = tableName },
                 Where = where,
@@ -1093,6 +1094,7 @@ public sealed class Parser
     private SelectStatement ParseSelect()
     {
         Expect(TokenType.Select);
+        bool isDistinct = TryConsume(TokenType.Distinct);
 
         var columns = new List<SelectColumn>();
         if (Peek().Type == TokenType.Star)
@@ -1184,6 +1186,7 @@ public sealed class Parser
 
         return new SelectStatement
         {
+            IsDistinct = isDistinct,
             Columns = columns,
             From = from,
             Where = where,

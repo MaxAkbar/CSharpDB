@@ -49,6 +49,15 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_SelectDistinct()
+    {
+        var stmt = Parser.Parse("SELECT DISTINCT name, age FROM users");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        Assert.True(select.IsDistinct);
+        Assert.Equal(2, select.Columns.Count);
+    }
+
+    [Fact]
     public void Parse_Select_WithOrderBy()
     {
         var stmt = Parser.Parse("SELECT name, age FROM users ORDER BY age DESC, name ASC");

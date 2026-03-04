@@ -856,6 +856,50 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SelectDistinct_WithNullsAndOrderBy()
+    {
+        await _db.ExecuteAsync("CREATE TABLE tags_distinct (id INTEGER, tag TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (1, 'a')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (2, 'b')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (3, 'a')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (4, NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (5, NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (6, 'c')", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT DISTINCT tag FROM tags_distinct ORDER BY tag",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, rows.Count);
+        Assert.True(rows[0][0].IsNull);
+        Assert.Equal("a", rows[1][0].AsText);
+        Assert.Equal("b", rows[2][0].AsText);
+        Assert.Equal("c", rows[3][0].AsText);
+    }
+
+    [Fact]
+    public async Task SelectDistinct_AppliesBeforeLimitAndOffset()
+    {
+        await _db.ExecuteAsync("CREATE TABLE nums_distinct (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (4)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT DISTINCT val FROM nums_distinct ORDER BY val LIMIT 2 OFFSET 1",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[1][0].AsInteger);
+    }
+
+    [Fact]
     public async Task DistinctAggregates_IntegerColumn()
     {
         await _db.ExecuteAsync("CREATE TABLE nums (id INTEGER, val INTEGER)", TestContext.Current.CancellationToken);

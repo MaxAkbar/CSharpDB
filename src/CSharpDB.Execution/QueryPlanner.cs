@@ -426,6 +426,8 @@ public sealed class QueryPlanner
     {
         var parts = new List<string>();
         parts.Add("SELECT");
+        if (stmt.IsDistinct)
+            parts.Add("DISTINCT");
 
         // Columns
         var colParts = new List<string>();
@@ -933,33 +935,36 @@ public sealed class QueryPlanner
 
     private QueryResult ExecuteSelect(SelectStatement stmt)
     {
-        // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
-        if (TryFastPkLookup(stmt, out var fastResult))
-            return fastResult;
-        // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
-        if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
-            return fastIndexedResult;
-        // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
-        if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
-            return fastTableScanResult;
+        if (!stmt.IsDistinct)
+        {
+            // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
+            if (TryFastPkLookup(stmt, out var fastResult))
+                return fastResult;
+            // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
+            if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+                return fastIndexedResult;
+            // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
+            if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+                return fastTableScanResult;
 
-        if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
-            return systemCountResult;
-        if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
-            return countResult;
-        if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
-            return scalarAggResult;
-        if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
-            return lookupScalarAggResult;
-        if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
-            return constantGroupAggResult;
+            if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+                return systemCountResult;
+            if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
+                return countResult;
+            if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
+                return scalarAggResult;
+            if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
+                return lookupScalarAggResult;
+            if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
+                return constantGroupAggResult;
+        }
 
         // Build the FROM operator (single table scan, join tree, or view expansion)
         var (op, schema) = BuildFromOperator(stmt.From);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
-        int? orderByTopN = GetOrderByTopN(stmt);
+        int? orderByTopN = stmt.IsDistinct ? null : GetOrderByTopN(stmt);
         bool sourceProvidesRequestedOrder = false;
 
         // Try index-based scan for simple equality WHERE on a single table
@@ -1050,6 +1055,9 @@ public sealed class QueryPlanner
                 Columns = outputCols,
             };
 
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
+
             op = ApplyOrdering(op, stmt.OrderBy, aggSchema, orderByTopN);
         }
         else
@@ -1095,6 +1103,9 @@ public sealed class QueryPlanner
                         GetOrCompileExpressions(expressions, schema));
                 }
             }
+
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
         }
 
         if (stmt.Offset.HasValue)
