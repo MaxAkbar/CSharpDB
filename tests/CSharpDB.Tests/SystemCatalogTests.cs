@@ -101,6 +101,61 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ExposesObjects()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE audit (user_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_age ON users(age)", ct);
+        await _db.ExecuteAsync("CREATE VIEW v_users AS SELECT id, name, age FROM users", ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TRIGGER trg_users_audit AFTER INSERT ON users
+            BEGIN
+                INSERT INTO audit VALUES (NEW.id);
+            END;
+            """, ct);
+
+        await using var objects = await _db.ExecuteAsync(
+            "SELECT object_name, object_type, parent_table_name FROM sys.objects ORDER BY object_type, object_name", ct);
+        var objectRows = await objects.ToListAsync(ct);
+        Assert.Equal(5, objectRows.Count);
+
+        Assert.Collection(
+            objectRows,
+            row =>
+            {
+                Assert.Equal("idx_users_age", row[0].AsText);
+                Assert.Equal("INDEX", row[1].AsText);
+                Assert.Equal("users", row[2].AsText);
+            },
+            row =>
+            {
+                Assert.Equal("audit", row[0].AsText);
+                Assert.Equal("TABLE", row[1].AsText);
+                Assert.True(row[2].IsNull);
+            },
+            row =>
+            {
+                Assert.Equal("users", row[0].AsText);
+                Assert.Equal("TABLE", row[1].AsText);
+                Assert.True(row[2].IsNull);
+            },
+            row =>
+            {
+                Assert.Equal("trg_users_audit", row[0].AsText);
+                Assert.Equal("TRIGGER", row[1].AsText);
+                Assert.Equal("users", row[2].AsText);
+            },
+            row =>
+            {
+                Assert.Equal("v_users", row[0].AsText);
+                Assert.Equal("VIEW", row[1].AsText);
+                Assert.True(row[2].IsNull);
+            });
+    }
+
+    [Fact]
     public async Task SystemCatalog_AllowsUnderscoredAliases()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -115,6 +170,11 @@ public sealed class SystemCatalogTests : IAsyncLifetime
             "SELECT COUNT(*) FROM sys_columns WHERE table_name = 't'", ct);
         var columnCountRows = await columnCount.ToListAsync(ct);
         Assert.Equal(2L, Assert.Single(columnCountRows)[0].AsInteger);
+
+        await using var objectCount = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys_objects WHERE object_name = 't' AND object_type = 'TABLE'", ct);
+        var objectCountRows = await objectCount.ToListAsync(ct);
+        Assert.Equal(1L, Assert.Single(objectCountRows)[0].AsInteger);
     }
 
     [Fact]
@@ -213,5 +273,8 @@ public sealed class SystemCatalogTests : IAsyncLifetime
 
         await using var triggerCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_triggers", ct);
         Assert.Equal(1L, Assert.Single(await triggerCountResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var objectCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.objects", ct);
+        Assert.Equal(5L, Assert.Single(await objectCountResult.ToListAsync(ct))[0].AsInteger);
     }
 }
