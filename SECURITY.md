@@ -9,7 +9,6 @@ Please do not report security vulnerabilities through public GitHub issues.
 
 Instead, report issues by one of the following methods:
 - Preferred: GitHub Private Vulnerability Reporting (Security tab)
-- Or: Email <YOUR_EMAIL_HERE>
 
 Include as much of the following as possible:
 - A description of the vulnerability and impact
