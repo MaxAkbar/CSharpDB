@@ -118,13 +118,36 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download NuGet artifacts
         uses: actions/download-artifact@v4
         with:
           name: nuget-packages
           path: artifacts/nuget
 
-      - name: Create release
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f RELEASE_NOTES.md ]]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release (custom notes)
+        if: steps.notes.outputs.has_notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: artifacts/nuget/*.nupkg
+
+      - name: Create release (auto-generated notes)
+        if: steps.notes.outputs.has_notes == 'false'
         uses: softprops/action-gh-release@v2
         with:
           name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
