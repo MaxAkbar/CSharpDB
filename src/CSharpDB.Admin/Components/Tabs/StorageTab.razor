@@ -1,0 +1,316 @@
+@using CSharpDB.Storage.Diagnostics
+@inject CSharpDbService DbService
+@inject ToastService Toast
+
+<div class="storage-tab">
+    <div class="toolbar">
+        <button class="toolbar-btn" @onclick="RefreshAllAsync" disabled="@_loading">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-separator"></div>
+        <label class="storage-check">
+            <input type="checkbox" @bind="_includeHex" />
+            Include Hex Dump
+        </label>
+        <input class="storage-input mono" type="number" min="0" @bind="_pageIdText" />
+        <button class="toolbar-btn" @onclick="InspectPageAsync" disabled="@_loadingPage">
+            <i class="bi bi-search"></i> Inspect Page
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">@(_dbReport?.DatabasePath ?? DbService.DataSource)</div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading-overlay">
+            <span class="spinner"></span>
+        </div>
+    }
+    else
+    {
+        <div class="storage-content">
+            <div class="storage-grid">
+                <section class="storage-card">
+                    <h3>Database Header</h3>
+                    @if (_dbReport is not null)
+                    {
+                        <table class="schema-table">
+                            <tbody>
+                                <tr><th>File Length</th><td>@_dbReport.Header.FileLengthBytes</td></tr>
+                                <tr><th>Physical Pages</th><td>@_dbReport.Header.PhysicalPageCount</td></tr>
+                                <tr><th>Declared Pages</th><td>@_dbReport.Header.DeclaredPageCount</td></tr>
+                                <tr><th>Magic</th><td>@_dbReport.Header.Magic (@BoolLabel(_dbReport.Header.MagicValid))</td></tr>
+                                <tr><th>Version</th><td>@_dbReport.Header.Version (@BoolLabel(_dbReport.Header.VersionValid))</td></tr>
+                                <tr><th>Page Size</th><td>@_dbReport.Header.PageSize (@BoolLabel(_dbReport.Header.PageSizeValid))</td></tr>
+                                <tr><th>Schema Root</th><td>@_dbReport.Header.SchemaRootPage</td></tr>
+                                <tr><th>Freelist Head</th><td>@_dbReport.Header.FreelistHead</td></tr>
+                                <tr><th>Change Counter</th><td>@_dbReport.Header.ChangeCounter</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                </section>
+
+                <section class="storage-card">
+                    <h3>WAL</h3>
+                    @if (_walReport is not null)
+                    {
+                        <table class="schema-table">
+                            <tbody>
+                                <tr><th>Path</th><td class="mono-cell">@_walReport.WalPath</td></tr>
+                                <tr><th>Exists</th><td>@(_walReport.Exists ? "Yes" : "No")</td></tr>
+                                <tr><th>File Length</th><td>@_walReport.FileLengthBytes</td></tr>
+                                <tr><th>Frames</th><td>@_walReport.FullFrameCount</td></tr>
+                                <tr><th>Commit Frames</th><td>@_walReport.CommitFrameCount</td></tr>
+                                <tr><th>Trailing Bytes</th><td>@_walReport.TrailingBytes</td></tr>
+                                <tr><th>Magic</th><td>@_walReport.Magic (@BoolLabel(_walReport.MagicValid))</td></tr>
+                                <tr><th>Version</th><td>@_walReport.Version (@BoolLabel(_walReport.VersionValid))</td></tr>
+                                <tr><th>Page Size</th><td>@_walReport.PageSize (@BoolLabel(_walReport.PageSizeValid))</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                </section>
+            </div>
+
+            <section class="storage-card">
+                <h3>Page Type Histogram</h3>
+                @if (_dbReport?.PageTypeHistogram is not null && _dbReport.PageTypeHistogram.Count > 0)
+                {
+                    <table class="schema-table">
+                        <thead>
+                            <tr>
+                                <th>Page Type</th>
+                                <th>Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in _dbReport.PageTypeHistogram.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
+                            {
+                                <tr>
+                                    <td class="mono-cell">@item.Key</td>
+                                    <td>@item.Value</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                else
+                {
+                    <p class="schema-empty">No pages were scanned.</p>
+                }
+            </section>
+
+            <section class="storage-card">
+                <h3>Index Checks</h3>
+                @if (_indexReport?.Indexes is not null && _indexReport.Indexes.Count > 0)
+                {
+                    <table class="schema-table">
+                        <thead>
+                            <tr>
+                                <th>Index</th>
+                                <th>Table</th>
+                                <th>Root</th>
+                                <th>Root OK</th>
+                                <th>Table OK</th>
+                                <th>Columns OK</th>
+                                <th>Reachable</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var idx in _indexReport.Indexes.OrderBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
+                            {
+                                <tr>
+                                    <td class="mono-cell">@idx.IndexName</td>
+                                    <td>@idx.TableName</td>
+                                    <td>@idx.RootPage</td>
+                                    <td>@BoolText(idx.RootPageValid)</td>
+                                    <td>@BoolText(idx.TableExists)</td>
+                                    <td>@BoolText(idx.ColumnsExistInTable)</td>
+                                    <td>@BoolText(idx.RootTreeReachable)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                else
+                {
+                    <p class="schema-empty">No indexes found.</p>
+                }
+            </section>
+
+            <section class="storage-card">
+                <h3>Integrity Issues</h3>
+                @if (_combinedIssues.Count > 0)
+                {
+                    <table class="schema-table">
+                        <thead>
+                            <tr>
+                                <th>Severity</th>
+                                <th>Code</th>
+                                <th>Message</th>
+                                <th>Page</th>
+                                <th>Offset</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var issue in _combinedIssues)
+                            {
+                                <tr>
+                                    <td>
+                                        <span class="storage-badge @SeverityClass(issue.Severity)">@issue.Severity</span>
+                                    </td>
+                                    <td class="mono-cell">@issue.Code</td>
+                                    <td>@issue.Message</td>
+                                    <td>@(issue.PageId?.ToString() ?? "-")</td>
+                                    <td>@(issue.Offset?.ToString() ?? "-")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                else
+                {
+                    <p class="schema-empty">No warnings or errors detected.</p>
+                }
+            </section>
+
+            <section class="storage-card">
+                <h3>Page Drill-Down</h3>
+                @if (_pageReport is null)
+                {
+                    <p class="schema-empty">Enter a page id and click <strong>Inspect Page</strong>.</p>
+                }
+                else if (!_pageReport.Exists)
+                {
+                    <p class="schema-empty">Page @_pageReport.PageId was not found in the file bounds.</p>
+                }
+                else
+                {
+                    <table class="schema-table">
+                        <tbody>
+                            <tr><th>Page Id</th><td>@_pageReport.PageId</td></tr>
+                            <tr><th>Type</th><td>@_pageReport.Page?.PageTypeName (@_pageReport.Page?.PageTypeCode)</td></tr>
+                            <tr><th>Cell Count</th><td>@_pageReport.Page?.CellCount</td></tr>
+                            <tr><th>Cell Content Start</th><td>@_pageReport.Page?.CellContentStart</td></tr>
+                            <tr><th>Free Space Bytes</th><td>@_pageReport.Page?.FreeSpaceBytes</td></tr>
+                            <tr><th>Right Child / Next Leaf</th><td>@_pageReport.Page?.RightChildOrNextLeaf</td></tr>
+                        </tbody>
+                    </table>
+
+                    @if (_pageReport.Issues.Count > 0)
+                    {
+                        <div class="storage-subsection">
+                            <h4>Page Issues</h4>
+                            <ul class="storage-issues-list">
+                                @foreach (var issue in _pageReport.Issues)
+                                {
+                                    <li>
+                                        <span class="storage-badge @SeverityClass(issue.Severity)">@issue.Severity</span>
+                                        <span class="mono-cell">@issue.Code</span> — @issue.Message
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_pageReport.HexDump))
+                    {
+                        <div class="storage-subsection">
+                            <h4>Hex Dump</h4>
+                            <pre class="sql-definition">@_pageReport.HexDump</pre>
+                        </div>
+                    }
+                }
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private DatabaseInspectReport? _dbReport;
+    private WalInspectReport? _walReport;
+    private IndexInspectReport? _indexReport;
+    private PageInspectReport? _pageReport;
+
+    private bool _loading;
+    private bool _loadingPage;
+    private string _pageIdText = "0";
+    private bool _includeHex;
+
+    private readonly List<IntegrityIssue> _combinedIssues = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAllAsync();
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        _loading = true;
+        try
+        {
+            _dbReport = await DbService.InspectStorageAsync(includePages: false);
+            _walReport = await DbService.CheckWalAsync();
+            _indexReport = await DbService.CheckIndexesAsync();
+            RebuildIssueList();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Storage inspection failed: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task InspectPageAsync()
+    {
+        if (!uint.TryParse(_pageIdText, out uint pageId))
+        {
+            Toast.Error("Page id must be a non-negative integer.");
+            return;
+        }
+
+        _loadingPage = true;
+        try
+        {
+            _pageReport = await DbService.InspectPageAsync(pageId, _includeHex);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Page inspection failed: {ex.Message}");
+        }
+        finally
+        {
+            _loadingPage = false;
+        }
+    }
+
+    private void RebuildIssueList()
+    {
+        _combinedIssues.Clear();
+        if (_dbReport is not null)
+            _combinedIssues.AddRange(_dbReport.Issues);
+        if (_walReport is not null)
+            _combinedIssues.AddRange(_walReport.Issues);
+        if (_indexReport is not null)
+            _combinedIssues.AddRange(_indexReport.Issues);
+
+        _combinedIssues.Sort((a, b) =>
+        {
+            int severity = b.Severity.CompareTo(a.Severity);
+            if (severity != 0) return severity;
+            return string.Compare(a.Code, b.Code, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    private static string BoolText(bool value) => value ? "Yes" : "No";
+    private static string BoolLabel(bool value) => value ? "ok" : "bad";
+
+    private static string SeverityClass(InspectSeverity severity) => severity switch
+    {
+        InspectSeverity.Error => "storage-badge-error",
+        InspectSeverity.Warning => "storage-badge-warning",
+        _ => "storage-badge-info",
+    };
+}

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore CSharpDB.slnx
+
+      - name: Build
+        run: dotnet build CSharpDB.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
+
+  pack:
+    name: Pack NuGet Artifacts
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/nuget
+          dotnet pack src/CSharpDB.Core/CSharpDB.Core.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Sql/CSharpDB.Sql.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Execution/CSharpDB.Execution.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Engine/CSharpDB.Engine.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Service/CSharpDB.Service.csproj -c Release -o artifacts/nuget
+
+      - name: Upload NuGet artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/nuget/*.nupkg
+          if-no-files-found: error

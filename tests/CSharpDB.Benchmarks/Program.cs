@@ -22,6 +22,10 @@ public static class Program
                 RunMicroBenchmarks(args.Skip(1).ToArray());
                 break;
 
+            case "--filter":
+                RunMicroBenchmarks(args);
+                break;
+
             case "--macro":
                 await RunMacroBenchmarksAsync();
                 break;

@@ -1,5 +1,8 @@
 # Backup, Export/Import, and Storage Maintenance Plan
 
+> Note: the canonical storage diagnostics spec now lives in [../storage-inspector.md](../storage-inspector.md).  
+> This document remains focused on broader backup/import/maintenance roadmap work.
+
 This document outlines the proposed tooling plan for:
 
 - database file structure checks

@@ -73,4 +73,29 @@ public sealed class ServiceSqlExecutionTests : IAsyncLifetime
         var tables = await _service.GetTableNamesAsync();
         Assert.Contains("semicolon_optional", tables);
     }
+
+    [Fact]
+    public async Task InspectStorageAsync_ReturnsHeaderAndHistogram()
+    {
+        await _service.ExecuteSqlAsync("CREATE TABLE inspect_service (id INTEGER PRIMARY KEY, n INTEGER);");
+        await _service.ExecuteSqlAsync("INSERT INTO inspect_service VALUES (1, 10);");
+
+        var report = await _service.InspectStorageAsync(includePages: false);
+
+        Assert.Equal("1.0", report.SchemaVersion);
+        Assert.True(report.Header.FileLengthBytes > 0);
+        Assert.NotEmpty(report.PageTypeHistogram);
+    }
+
+    [Fact]
+    public async Task InspectPageAsync_ReturnsPageReport()
+    {
+        await _service.ExecuteSqlAsync("CREATE TABLE inspect_page_service (id INTEGER PRIMARY KEY, n INTEGER);");
+
+        var report = await _service.InspectPageAsync(pageId: 0, includeHex: false);
+
+        Assert.Equal("1.0", report.SchemaVersion);
+        Assert.True(report.Exists);
+        Assert.NotNull(report.Page);
+    }
 }

@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
   </ItemGroup>
 
 </Project>

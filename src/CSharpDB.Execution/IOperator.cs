@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using CSharpDB.Core;
 
 namespace CSharpDB.Execution;
@@ -25,4 +26,19 @@ internal interface IRowBufferReuseController
 internal interface IPreDecodeFilterSupport
 {
     void SetPreDecodeFilter(int columnIndex, CSharpDB.Sql.BinaryOp op, DbValue literal);
+}
+
+internal interface IEstimatedRowCountProvider
+{
+    int? EstimatedRowCount { get; }
+}
+
+internal interface IProjectionPushdownTarget
+{
+    bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema);
+}
+
+internal interface IMaterializedRowsProvider
+{
+    bool TryTakeMaterializedRows(out List<DbValue[]> rows);
 }

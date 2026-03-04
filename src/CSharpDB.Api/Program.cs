@@ -63,5 +63,6 @@ api.MapViewEndpoints();
 api.MapTriggerEndpoints();
 api.MapSqlEndpoints();
 api.MapSchemaEndpoints();
+api.MapInspectEndpoints();
 
 app.Run();

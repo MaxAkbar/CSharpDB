@@ -39,6 +39,55 @@ dotnet run -c Release -- --all
 
 Results are written to CSV in `bin/Release/net10.0/results/`.
 
+### Capture Baseline Snapshot
+
+Use the helper script to run a repeatable subset of benchmarks and archive fresh artifacts (CSV/log + metadata) into a timestamped folder.
+
+```bash
+# Run micro + macro + stress + scaling, then snapshot outputs
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1
+
+# Skip the long micro run (macro/stress/scaling only)
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1 -SkipMicro
+```
+
+Snapshots are written to `tests/CSharpDB.Benchmarks/baselines/<utc-timestamp>/`.
+
+### Performance Guardrails
+
+Guardrails compare current micro-benchmark results against a locked baseline snapshot and fail on regressions that exceed thresholds.
+Current default guardrail subset covers `InsertBenchmarks`, `PointLookupBenchmarks`, `JoinBenchmarks`, `OrderByIndexBenchmarks`, `ScalarAggregateBenchmarks`, `ScalarAggregateLookupBenchmarks`, and `WalBenchmarks`.
+
+```bash
+# Run the guardrail benchmark subset + baseline comparison
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1
+
+# Compare only (skip running benchmarks), useful after a manual benchmark run
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -SkipMicroRun
+```
+
+Defaults:
+
+- Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/20260302-001757`
+- Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
+- Report output: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
+- Some checks can pin their own baseline via `baselineSnapshot` in `perf-thresholds.json` (used for focused suites).
+
+Useful overrides:
+
+```bash
+# Use a different baseline snapshot and report only (no failure)
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
+  -BaselineSnapshot 20260302-001757 `
+  -NoFailOnRegression
+```
+
+To refresh guardrails after intentional performance changes:
+
+1. Capture a new baseline with `Capture-Baseline.ps1`.
+2. Update `baselineSnapshot` and threshold rules in `perf-thresholds.json`.
+3. Re-run `Run-Perf-Guardrails.ps1` and confirm clean pass.
+
 ---
 
 ## Benchmark Results
@@ -47,32 +96,32 @@ Results are written to CSV in `bin/Release/net10.0/results/`.
 
 | Operation | Throughput | P50 Latency | P99 Latency | Notes |
 |-----------|-----------|-------------|-------------|-------|
-| Single INSERT (auto-commit) | 10,611 ops/sec | 0.064 ms | 0.229 ms | Each op = parse + BEGIN + insert + WAL flush + COMMIT |
-| Writer (in explicit transaction) | ~10,419 ops/sec | 0.070 ms | 0.372 ms | Single writer, 1 concurrent reader |
-| Batch 100 rows/tx | 2,474 tx/sec | 0.260 ms/tx | 0.884 ms/tx | ~247K rows/sec effective throughput |
-| Mixed workload writes (20%) | 8,201 ops/sec | 0.070 ms | 0.244 ms | Concurrent with 80% read traffic |
+| Single INSERT (auto-commit) | 27,842 ops/sec | 0.019 ms | 0.151 ms | Each op = parse + BEGIN + insert + WAL flush + COMMIT |
+| Writer (in explicit transaction) | ~25,616 ops/sec | 0.024 ms | 0.269 ms | Single writer, 1 concurrent reader |
+| Batch 100 rows/tx | 3,698 tx/sec | 0.171 ms/tx | 0.696 ms/tx | ~370K rows/sec effective throughput |
+| Mixed workload writes (20%) | 17,415 ops/sec | 0.022 ms | 0.125 ms | Concurrent with 80% read traffic |
 
 ### Read Performance
 
 | Operation | Throughput | P50 Latency | P99 Latency | Dataset |
 |-----------|-----------|-------------|-------------|---------|
-| Point lookup by PK | 8,403 ops/sec | 0.002 ms | 0.301 ms | 100 rows (cold) |
-| Point lookup by PK | 217,694 ops/sec | 0.003 ms | 0.033 ms | 1K rows |
-| Point lookup by PK | 78,407 ops/sec | 0.005 ms | 0.046 ms | 10K rows |
-| Point lookup by PK | 36,774 ops/sec | 0.023 ms | 0.103 ms | 100K rows |
-| Mixed workload reads (80%) | 32,714 ops/sec | 0.002 ms | 0.030 ms | 10K row table |
-| Reader session (1 reader) | 224,592 ops/sec | 0.002 ms | 0.046 ms | Concurrent with writer |
-| Reader sessions (8 readers) | 576,447 ops/sec | 0.005 ms | 0.289 ms | Concurrent with writer |
-| ADO.NET ExecuteReader (100 rows) | ~116,400 calls/sec | 8.59 us/call | -- | 1K row table |
-| ADO.NET ExecuteScalar COUNT(*) | ~3,956,000 ops/sec | 253 ns | -- | 1K row table |
-| ADO.NET Parameterized SELECT | ~15,200 ops/sec | 65.7 us | -- | 1K row table |
+| Point lookup by PK | 208,464 ops/sec | 0.001 ms | 0.045 ms | 100 rows |
+| Point lookup by PK | 786,596 ops/sec | 0.001 ms | 0.016 ms | 1K rows |
+| Point lookup by PK | 122,602 ops/sec | 0.001 ms | 0.040 ms | 10K rows |
+| Point lookup by PK | 53,192 ops/sec | 0.013 ms | 0.134 ms | 100K rows |
+| Mixed workload reads (80%) | 69,617 ops/sec | 0.001 ms | 0.033 ms | 10K row table |
+| Reader session (1 reader) | 62,202 ops/sec | 0.006 ms | 0.133 ms | Concurrent with writer |
+| Reader sessions (8 readers) | 256,088 ops/sec | 0.014 ms | 0.443 ms | Concurrent with writer |
+| ADO.NET ExecuteReader (100 rows) | ~117,100 calls/sec | 8.54 us/call | -- | 1K row table |
+| ADO.NET ExecuteScalar COUNT(*) | ~3,097,000 ops/sec | 323 ns | -- | 1K row table |
+| ADO.NET Parameterized SELECT | ~15,900 ops/sec | 62.9 us | -- | 1K row table |
 
 ### Mixed Workload (80% Reads / 20% Writes)
 
 | Component | Throughput | P50 Latency | P99 Latency |
 |-----------|-----------|-------------|-------------|
-| Reads | 32,714 ops/sec | 0.002 ms | 0.030 ms |
-| Writes | 8,201 ops/sec | 0.070 ms | 0.244 ms |
+| Reads | 69,617 ops/sec | 0.001 ms | 0.033 ms |
+| Writes | 17,415 ops/sec | 0.022 ms | 0.125 ms |
 
 Sustained for 15 seconds on a 10K-row table with concurrent read and write traffic.
 
@@ -80,42 +129,42 @@ Sustained for 15 seconds on a 10K-row table with concurrent read and write traff
 
 | Tree Depth | Row Count | Lookups/sec | P50 Latency | P99 Latency |
 |------------|-----------|-------------|-------------|-------------|
-| Depth 2 | 1,600 | 296,815 | 0.002 ms | 0.020 ms |
-| Depth 3 | 50,000 | 54,829 | 0.020 ms | 0.095 ms |
-| Depth 3 | 100,000 | 47,804 | 0.020 ms | 0.091 ms |
+| Depth 2 | 1,600 | 392,788 | 0.001 ms | 0.016 ms |
+| Depth 3 | 50,000 | 101,681 | 0.012 ms | 0.043 ms |
+| Depth 3 | 100,000 | 48,732 | 0.014 ms | 0.145 ms |
 
 ### Row Count Scaling
 
 | Row Count | Point Lookup ops/sec | Insert ops/sec | COUNT(*) scan ops/sec |
 |-----------|---------------------|----------------|----------------------|
-| 100 | 8,403 | 5,938 | 561 |
-| 1,000 | 217,694 | 5,827 | 3,607 |
-| 10,000 | 78,407 | 6,220 | 453 |
-| 100,000 | 36,774 | 6,996 | 49 |
+| 100 | 208,464 | 23,829 | 8,723 |
+| 1,000 | 786,596 | 23,559 | 3,168 |
+| 10,000 | 122,602 | 24,890 | 423 |
+| 100,000 | 53,192 | 23,836 | 51 |
 
-Insert throughput stays consistent across all table sizes (~6-7K ops/sec). Full COUNT(*) scans scale linearly as expected.
+Insert throughput stays consistent across all table sizes (~24K ops/sec). Full COUNT(*) scans scale linearly as expected.
 
 ### WAL & Checkpoint Performance
 
 | Metric | Value |
 |--------|-------|
-| Checkpoint time (100 WAL frames) | 7.1 ms |
-| Checkpoint time (500 WAL frames) | 7.5 ms |
-| Checkpoint time (1,000 WAL frames) | 8.7 ms |
-| Checkpoint time (2,000 WAL frames) | 7.1 ms |
+| Checkpoint time (100 WAL frames) | 3.79 ms |
+| Checkpoint time (500 WAL frames) | 3.45 ms |
+| Checkpoint time (1,000 WAL frames) | 3.70 ms |
+| Checkpoint time (2,000 WAL frames) | 3.55 ms |
 | Auto-checkpoint threshold | 1,000 frames |
 
-Checkpoint performance is fast (~7-9ms) and consistent regardless of WAL size.
+Checkpoint performance is fast (~3.4-3.8ms) and consistent regardless of WAL size.
 
 ### WAL Growth Impact on Read Latency
 
 | WAL Frames | WAL Size | Read P50 | Read P99 |
 |------------|----------|----------|----------|
-| 100 | 33 KB | 0.002 ms | 0.021 ms |
-| 1,000 | 120 KB | 0.002 ms | 0.005 ms |
-| 5,000 | 499 KB | 0.002 ms | 0.003 ms |
-| 10,000 | 972 KB | 0.002 ms | 0.005 ms |
-| Post-checkpoint | -- | 0.021 ms | 0.094 ms |
+| 100 | 33 KB | 0.000 ms | 0.002 ms |
+| 1,000 | 120 KB | 0.001 ms | 0.006 ms |
+| 5,000 | 499 KB | 0.001 ms | 0.003 ms |
+| 10,000 | 972 KB | 0.001 ms | 0.003 ms |
+| Post-checkpoint | -- | 0.014 ms | 0.035 ms |
 
 **Read latency is constant regardless of WAL size** thanks to the hash-map based WAL index. Page lookups in the WAL are O(1) instead of O(n).
 
@@ -123,34 +172,34 @@ Checkpoint performance is fast (~7-9ms) and consistent regardless of WAL size.
 
 | Readers | Writer ops/sec | Total Reader ops/sec | Writer P99 |
 |---------|---------------|---------------------|------------|
-| 0 (writer only) | 10,611 | -- | 0.229 ms |
-| 1 | 10,419 | 224,592 | 0.372 ms |
-| 2 | 8,607 | 485,969 | 0.468 ms |
-| 4 | 5,833 | 463,018 | 0.640 ms |
-| 8 | 2,801 | 576,447 | 1.404 ms |
+| 0 (writer only) | 27,842 | -- | 0.151 ms |
+| 1 | 25,616 | 62,202 | 0.269 ms |
+| 2 | 20,377 | 99,236 | 0.396 ms |
+| 4 | 10,479 | 160,414 | 0.868 ms |
+| 8 | 7,190 | 256,088 | 1.031 ms |
 
-Snapshot readers don't block the writer (WAL-based MVCC). **Total reader throughput scales to 576K ops/sec with 8 concurrent readers** while the writer maintains 2,801 ops/sec.
+Snapshot readers don't block the writer (WAL-based MVCC). **Total reader throughput scales to 256K ops/sec with 8 concurrent readers** while the writer maintains 7,190 ops/sec.
 
 ### Write Amplification
 
 | Row Count | Logical Data | WAL Size (pre-ckpt) | DB Size (post-ckpt) | Amplification |
 |-----------|-------------|---------------------|---------------------|---------------|
-| 1,000 | 112 KB | 309 KB | 283 KB | 5.3x |
-| 10,000 | 1.1 MB | 3.0 MB | 2.8 MB | 5.2x |
-| 50,000 | 5.6 MB | 2.4 MB | 13.8 MB | 2.9x |
+| 1,000 | 112 KB | 309 KB | 283 KB | 5.28x |
+| 10,000 | 1.1 MB | 3.0 MB | 2.8 MB | 5.17x |
+| 50,000 | 5.6 MB | 2.4 MB | 13.8 MB | 2.89x |
 
 ### ADO.NET Provider Performance
 
 | Operation | Mean Latency | Memory Allocated |
 |-----------|-------------|-----------------|
-| Connection Open+Close | 4,158 us | 15.0 KB |
-| ExecuteNonQuery (INSERT) | 117 us | 3.7 KB |
-| ExecuteScalar (COUNT) | 253 ns | 448 B |
-| ExecuteReader (100 rows) | 8.59 us | 4.9 KB |
-| Parameterized SELECT | 65.7 us | 20.8 KB |
-| Prepared SELECT (reused cmd) | 63.9 us | 20.5 KB |
+| Connection Open+Close | 5,570 us | 170.3 KB |
+| ExecuteNonQuery (INSERT) | 46.0 us | 2.6 KB |
+| ExecuteScalar (COUNT) | 323 ns | 696 B |
+| ExecuteReader (100 rows) | 8.54 us | 4.9 KB |
+| Parameterized SELECT | 62.9 us | 20.6 KB |
+| Prepared SELECT (reused cmd) | 60.1 us | 20.3 KB |
 
-The ADO.NET layer adds minimal overhead. Memory allocations are highly optimized, with ExecuteScalar requiring only **448 bytes** per call.
+The ADO.NET layer adds minimal overhead. Memory allocations are highly optimized, with ExecuteScalar requiring only **696 bytes** per call.
 
 ### Collection (NoSQL) API Performance
 
@@ -160,35 +209,35 @@ The Collection API bypasses the SQL parser/planner entirely, going directly to t
 
 | Operation | Throughput | P50 Latency | P99 Latency | Notes |
 |-----------|-----------|-------------|-------------|-------|
-| Single Put (auto-commit) | 10,935 ops/sec | 0.062 ms | 0.213 ms | JSON serialize + B+tree insert + WAL flush |
-| Batch 100 Puts/tx | 2,131 tx/sec | 0.245 ms/tx | 1.247 ms/tx | ~213K docs/sec effective throughput |
-| Mixed writes (20%) | 8,952 ops/sec | 0.065 ms | 0.232 ms | Concurrent with 80% read traffic |
+| Single Put (auto-commit) | 29,321 ops/sec | 0.018 ms | 0.147 ms | JSON serialize + B+tree insert + WAL flush |
+| Batch 100 Puts/tx | 3,863 tx/sec | 0.108 ms/tx | 0.874 ms/tx | ~386K docs/sec effective throughput |
+| Mixed writes (20%) | 18,988 ops/sec | 0.019 ms | 0.134 ms | Concurrent with 80% read traffic |
 
 #### Read Performance
 
 | Operation | Throughput | P50 Latency | P99 Latency | Dataset |
 |-----------|-----------|-------------|-------------|---------|
-| Point Get by key | 1,438,440 ops/sec | 0.001 ms | 0.002 ms | 10K documents |
-| Mixed reads (80%) | 35,725 ops/sec | 0.001 ms | 0.025 ms | 10K documents |
-| Full Scan (all docs) | 2,357 scans/sec | 0.390 ms | 0.771 ms | 1K documents |
-| Filtered Find (20% match) | 2,323 scans/sec | 0.403 ms | 0.729 ms | 1K documents |
+| Point Get by key | 1,371,530 ops/sec | 0.001 ms | 0.002 ms | 10K documents |
+| Mixed reads (80%) | 76,006 ops/sec | 0.001 ms | 0.030 ms | 10K documents |
+| Full Scan (all docs) | 2,384 scans/sec | 0.381 ms | 0.739 ms | 1K documents |
+| Filtered Find (20% match) | 2,285 scans/sec | 0.398 ms | 0.782 ms | 1K documents |
 
 #### SQL vs Collection API — Head-to-Head (same data, same DB)
 
 | API | Point Lookup ops/sec | P50 Latency | P99 Latency | Speedup |
 |-----|---------------------|-------------|-------------|---------|
-| SQL (`SELECT * WHERE id = ?`) | 1,084,962 ops/sec | 0.001 ms | 0.002 ms | baseline |
-| Collection (`GetAsync(key)`) | 1,380,629 ops/sec | 0.001 ms | 0.002 ms | **1.27x faster** |
+| SQL (`SELECT * WHERE id = ?`) | 1,260,882 ops/sec | 0.001 ms | 0.002 ms | baseline |
+| Collection (`GetAsync(key)`) | 1,357,942 ops/sec | 0.001 ms | 0.002 ms | **1.08x faster** |
 
-The Collection API achieves **1.44M point reads/sec** — the fastest read path in CSharpDB. The 27% speedup over SQL comes from bypassing SQL parsing, query planning, and the operator pipeline. Both paths use the same underlying B+tree and page cache.
+The Collection API achieves **1.37M point reads/sec** — the fastest read path in CSharpDB. The 8% speedup over SQL comes from bypassing SQL parsing, query planning, and the operator pipeline. Both paths use the same underlying B+tree and page cache.
 
 ### Crash Recovery & Durability
 
 | Metric | Value |
 |--------|-------|
 | Crash recovery success rate | **100%** (50/50 cycles) |
-| Recovery time P50 | 13.2 ms |
-| Recovery time P99 | 17.4 ms |
+| Recovery time P50 | 11.5 ms |
+| Recovery time P99 | 14.5 ms |
 | Data verified after recovery | All committed rows present, uncommitted rows correctly absent |
 
 The WAL-based crash recovery is fully reliable. Recovery time is fast and bounded by WAL replay.
@@ -203,8 +252,8 @@ All CSharpDB numbers are from this benchmark suite with full WAL durability (fsy
 
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|---------|------|--------------|----------------|-------------|-----------------|
-| **CSharpDB (SQL)** | **C#** | **Relational SQL** | **10.6K ops/sec** | **~247K rows/sec** | **37-218K ops/sec** | **576K ops/sec (8r)** |
-| **CSharpDB (Collection)** | **C#** | **Document (NoSQL)** | **10.9K ops/sec** | **~213K docs/sec** | **1,438K ops/sec** | **—** |
+| **CSharpDB (SQL)** | **C#** | **Relational SQL** | **27.8K ops/sec** | **~370K rows/sec** | **53-787K ops/sec** | **256K ops/sec (8r)** |
+| **CSharpDB (Collection)** | **C#** | **Document (NoSQL)** | **29.3K ops/sec** | **~386K docs/sec** | **1,372K ops/sec** | **—** |
 | SQLite | C | Relational SQL | ~1-4K ops/sec | ~80-114K rows/sec | ~275-484K ops/sec | WAL lock limited |
 | LiteDB | C# | Document (NoSQL) | ~1K ops/sec | ~16-21K rows/sec | ~24K ops/sec | N/A |
 | Realm | C++ | Object DB | ~9-76K obj/sec | N/A | Near-instant (zero-copy) | Multi-reader |
@@ -223,30 +272,30 @@ All CSharpDB numbers are from this benchmark suite with full WAL durability (fsy
 
 | Metric | CSharpDB | SQLite (WAL, sync=NORMAL) | Winner |
 |--------|----------|--------------------------|--------|
-| Single auto-commit INSERT | 10,611 ops/sec | ~925-4,363 ops/sec | **CSharpDB 2-11x** |
-| Batched INSERT (rows/sec) | ~247K rows/sec | ~80-114K rows/sec | **CSharpDB 2-3x** |
-| Point lookup (cached) | ~37-218K ops/sec | ~275-484K ops/sec | **SQLite 1.3-7x** |
-| Concurrent readers (8) | 576K ops/sec | WAL lock limited | **CSharpDB** |
+| Single auto-commit INSERT | 27,842 ops/sec | ~925-4,363 ops/sec | **CSharpDB 6-30x** |
+| Batched INSERT (rows/sec) | ~370K rows/sec | ~80-114K rows/sec | **CSharpDB 3-5x** |
+| Point lookup (cached) | ~53-787K ops/sec | ~275-484K ops/sec | **Mixed (dataset-dependent)** |
+| Concurrent readers (8) | 256K ops/sec | WAL lock limited | **CSharpDB** |
 | Crash recovery | 100% reliable | 100% reliable | Parity |
 
 #### vs LiteDB — Closest .NET Competitor
 
 | Metric | CSharpDB (Collection API) | LiteDB v5 | Winner |
 |--------|--------------------------|-----------|--------|
-| Single document Put | 10,935 ops/sec | ~1,000 ops/sec | **CSharpDB 10.9x** |
-| Bulk Put (100/tx) | ~213K docs/sec | ~16-21K rows/sec | **CSharpDB 10-13x** |
-| Point lookup by key | 1,438,440 ops/sec | ~24K ops/sec | **CSharpDB 60x** |
+| Single document Put | 29,321 ops/sec | ~1,000 ops/sec | **CSharpDB 29x** |
+| Bulk Put (100/tx) | ~386K docs/sec | ~16-21K rows/sec | **CSharpDB 18-24x** |
+| Point lookup by key | 1,371,530 ops/sec | ~24K ops/sec | **CSharpDB 57x** |
 | Full SQL support | Yes (dual API) | No | **CSharpDB** |
 | LINQ-style filtering | FindAsync(predicate) | LINQ provider | Parity |
 
-The Collection API makes the comparison apples-to-apples: both are document/NoSQL APIs in .NET. CSharpDB's direct B+tree path achieves **60x faster point lookups** than LiteDB.
+The Collection API makes the comparison apples-to-apples: both are document/NoSQL APIs in .NET. CSharpDB's direct B+tree path achieves **57x faster point lookups** than LiteDB.
 
 #### vs Realm — Mobile Object DB
 
 | Metric | CSharpDB | Realm | Winner |
 |--------|----------|-------|--------|
-| Insert throughput | 10,611 ops/sec | ~9-76K obj/sec | Depends on platform |
-| Point lookup | ~37-218K ops/sec | Near-instant (zero-copy mmap) | **Realm** for hot data |
+| Insert throughput | 27,842 ops/sec | ~9-76K obj/sec | Depends on platform |
+| Point lookup | ~53-787K ops/sec | Near-instant (zero-copy mmap) | **Realm** for hot data |
 | SQL support | Full SQL, JOINs | No SQL | **CSharpDB** |
 | Modification scaling | Linear | Quadratic on large datasets | **CSharpDB** |
 | WAL crash recovery | Yes, always durable | Yes | Parity |
@@ -255,8 +304,8 @@ The Collection API makes the comparison apples-to-apples: both are document/NoSQ
 
 | Metric | CSharpDB | UnQLite (native C est.) | Winner |
 |--------|----------|------------------------|--------|
-| KV write | 10,611 ops/sec | ~80-160K ops/sec | **UnQLite 8-15x** |
-| KV read | ~37-218K ops/sec | ~120-240K ops/sec | **UnQLite 1-6x** |
+| KV write | 27,842 ops/sec | ~80-160K ops/sec | **UnQLite 3-6x** |
+| KV read | ~53-787K ops/sec | ~120-240K ops/sec | **Mixed (dataset-dependent)** |
 | SQL support | Full SQL engine | None | **CSharpDB** |
 | Crash recovery | 100%, WAL-based | No WAL | **CSharpDB** |
 
@@ -264,35 +313,35 @@ The Collection API makes the comparison apples-to-apples: both are document/NoSQ
 
 | Metric | CSharpDB | H2 (persistent, MVStore) | Winner |
 |--------|----------|--------------------------|--------|
-| Auto-commit INSERT (durable) | 10,611 ops/sec | ~500-7,000 TPS | **CSharpDB 1.5-21x** |
-| Batched INSERT | ~247K rows/sec | ~2-6.5K rows/sec | **CSharpDB 38-123x** |
-| Point lookup | ~37-218K ops/sec | ~50-150K ops/sec | **CSharpDB 1-4x** |
+| Auto-commit INSERT (durable) | 27,842 ops/sec | ~500-7,000 TPS | **CSharpDB 4-56x** |
+| Batched INSERT | ~370K rows/sec | ~2-6.5K rows/sec | **CSharpDB 57-185x** |
+| Point lookup | ~53-787K ops/sec | ~50-150K ops/sec | **CSharpDB 1-16x** |
 | Crash safety | Always durable | WRITE_DELAY=500ms default | **CSharpDB** |
 
 #### vs DuckDB — Analytical SQL (C++)
 
 | Metric | CSharpDB | DuckDB | Winner |
 |--------|----------|--------|--------|
-| Single row INSERT | 10,611 ops/sec | ~1-8K ops/sec | **CSharpDB** |
-| Bulk INSERT | ~247K rows/sec | ~163K-1.2M rows/sec | **DuckDB** for bulk |
-| Point lookup | ~37-218K ops/sec | Not optimized | **CSharpDB** |
+| Single row INSERT | 27,842 ops/sec | ~1-8K ops/sec | **CSharpDB** |
+| Bulk INSERT | ~370K rows/sec | ~163K-1.2M rows/sec | **DuckDB** for bulk |
+| Point lookup | ~53-787K ops/sec | Not optimized | **CSharpDB** |
 | Analytical scans | Not optimized | Excellent | **DuckDB** |
 
 #### vs RocksDB — LSM-Tree KV Store (C++)
 
 | Metric | CSharpDB | RocksDB (NVMe) | Winner |
 |--------|----------|----------------|--------|
-| Single write | 10,611 ops/sec | ~17K ops/sec | **RocksDB 1.6x** |
-| Bulk load | ~247K rows/sec | ~1M+ rows/sec | **RocksDB 4x** |
-| Point read (multi-thread) | 576K ops/sec (8r) | ~713K (32 threads) | Comparable per-thread |
+| Single write | 27,842 ops/sec | ~17K ops/sec | **CSharpDB 1.6x** |
+| Bulk load | ~370K rows/sec | ~1M+ rows/sec | **RocksDB 2.7x** |
+| Point read (multi-thread) | 256K ops/sec (8r) | ~713K (32 threads) | Comparable per-thread |
 | SQL support | Full SQL | None (KV only) | **CSharpDB** |
 
 #### vs NeDB / LowDB / PouchDB / TinyDB — Lightweight Scripting DBs
 
 | Metric | CSharpDB | NeDB (persistent) | LowDB | PouchDB | TinyDB |
 |--------|----------|-------------------|-------|---------|--------|
-| Insert ops/sec | 10,611 | ~325 | ~5-50 | ~4-6K | ~1-5K |
-| **CSharpDB advantage** | -- | **33x** | **212-2,122x** | **1.8-2.7x** | **2.1-10.6x** |
+| Insert ops/sec | 27,842 | ~325 | ~5-50 | ~4-6K | ~1-5K |
+| **CSharpDB advantage** | -- | **86x** | **557-5,568x** | **4.6-7.0x** | **5.6-27.8x** |
 
 These lightweight databases are designed for developer convenience in scripting environments, not raw performance. CSharpDB outperforms all of them while providing features none of them have (SQL, JOINs, indexes, WAL, concurrent readers).
 
@@ -316,8 +365,8 @@ All CSharpDB numbers are from this benchmark suite. Competitor numbers are drawn
 ### Ranking by Category
 
 **Durable Write Throughput** (auto-commit INSERT with crash safety):
-1. RocksDB — ~17K ops/sec (KV only, configurable durability)
-2. **CSharpDB — 10,611 ops/sec** (full SQL, always durable)
+1. **CSharpDB — 27,842 ops/sec** (full SQL, always durable)
+2. RocksDB — ~17K ops/sec (KV only, configurable durability)
 3. Realm — ~9-76K obj/sec (varies wildly by platform)
 4. H2 — ~500-7,000 TPS (durable mode)
 5. SQLite — ~1-4K ops/sec (WAL, sync=NORMAL)
@@ -325,20 +374,20 @@ All CSharpDB numbers are from this benchmark suite. Competitor numbers are drawn
 
 **Concurrent Read Throughput**:
 1. RocksDB — ~713K ops/sec (32 threads)
-2. **CSharpDB — 576K ops/sec (8 readers)**
+2. **CSharpDB — 256K ops/sec (8 readers)**
 3. SQLite — WAL lock limited
 4. H2 — multi-threaded but no published concurrent read numbers
 
 **Batched Insert Throughput**:
 1. RocksDB — ~1M+ rows/sec (bulk load)
 2. DuckDB — ~163K-1.2M rows/sec (Arrow optimized)
-3. **CSharpDB — ~247K rows/sec**
+3. **CSharpDB — ~370K rows/sec**
 4. SQLite — ~80-114K rows/sec
 
 **Point Lookup Throughput** (single-thread, cached):
-1. **CSharpDB (Collection API) — 1,438K ops/sec**
+1. **CSharpDB (Collection API) — 1,372K ops/sec**
 2. SQLite — ~275-484K ops/sec
-3. **CSharpDB (SQL API) — ~37-218K ops/sec**
+3. **CSharpDB (SQL API) — ~53-787K ops/sec (dataset-dependent)**
 4. H2 — ~50-150K ops/sec (estimated)
 5. UnQLite — ~60K ops/sec (KV API)
 6. LiteDB — ~24K ops/sec
@@ -475,6 +524,9 @@ tests/CSharpDB.Benchmarks/
     IndexBenchmarks.cs                Index overhead + speedup
     WalBenchmarks.cs                  WAL commit/checkpoint
     ParserBenchmarks.cs               SQL parser throughput
+    SqlTextStabilityBenchmarks.cs     Parser/cache behavior under SQL text churn
+    SystemCatalogBenchmarks.cs        sys.* query and metadata API overhead
+    TriggerDispatchBenchmarks.cs      Trigger lookup/dispatch overhead
     AdoNetBenchmarks.cs               ADO.NET provider overhead
     RecordSizeBenchmarks.cs           Payload size impact
   Macro/                              Sustained workload benchmarks

@@ -34,6 +34,7 @@ BenchmarkDotNet.Artifacts/
 coverage*/
 *.log
 *.csv
+*.txt
 
 ## OS files
 Thumbs.db

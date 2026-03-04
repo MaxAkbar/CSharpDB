@@ -3,6 +3,9 @@ using CSharpDB.Engine;
 
 Ansi.EnableVirtualTerminal();
 
+if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
+    return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);
+
 string dbPath = args.Length > 0 ? args[0] : "csharpdb.db";
 
 Console.WriteLine($"{Ansi.Bold}{Ansi.Cyan}CSharpDB{Ansi.Reset} - Interactive SQL Shell");

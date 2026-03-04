@@ -1335,6 +1335,112 @@ body {
     height: 100%;
 }
 
+.storage-tab {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.storage-content {
+    padding: 14px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.storage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 12px;
+}
+
+.storage-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+}
+
+.storage-card h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 8px;
+}
+
+.storage-subsection {
+    margin-top: 10px;
+}
+
+.storage-subsection h4 {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+    margin-bottom: 6px;
+}
+
+.storage-input {
+    width: 110px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.storage-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.storage-check input[type="checkbox"] {
+    accent-color: var(--accent-blue);
+}
+
+.storage-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.25px;
+    text-transform: uppercase;
+}
+
+.storage-badge-error {
+    background: rgba(247,118,142,0.16);
+    color: var(--accent-red);
+}
+
+.storage-badge-warning {
+    background: rgba(224,175,104,0.18);
+    color: var(--accent-yellow);
+}
+
+.storage-badge-info {
+    background: rgba(122,162,247,0.16);
+    color: var(--accent-blue);
+}
+
+.storage-issues-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 0;
+    margin: 0;
+}
+
 /* ═══════════════════════════════════════════════════
    LOADING
    ═══════════════════════════════════════════════════ */

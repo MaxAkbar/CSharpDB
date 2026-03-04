@@ -3,6 +3,16 @@ using CSharpDB.Core;
 
 namespace CSharpDB.Sql;
 
+public readonly record struct SimplePrimaryKeyLookupSql(
+    string TableName,
+    bool SelectStar,
+    string ProjectionColumn,
+    string PredicateColumn,
+    long LookupValue,
+    bool HasResidualPredicate = false,
+    string ResidualPredicateColumn = "",
+    DbValue ResidualPredicateLiteral = default);
+
 public sealed class Parser
 {
     private readonly List<Token> _tokens;
@@ -16,6 +26,9 @@ public sealed class Parser
 
     public static Statement Parse(string sql)
     {
+        if (TryParseSimpleSelect(sql, out var simpleSelect))
+            return simpleSelect;
+
         var tokenizer = new Tokenizer(sql);
         var tokens = tokenizer.Tokenize();
         var parser = new Parser(tokens);
@@ -31,6 +44,17 @@ public sealed class Parser
     {
         var fast = new FastSimpleSelectParser(sql);
         return fast.TryParse(out statement);
+    }
+
+    /// <summary>
+    /// Fast-path parser for a narrow point-lookup shape:
+    /// SELECT *|column FROM table WHERE column = integer-literal [AND column = literal] [;]
+    /// Produces lightweight metadata for direct planner execution.
+    /// </summary>
+    public static bool TryParseSimplePrimaryKeyLookup(string sql, out SimplePrimaryKeyLookupSql lookup)
+    {
+        var fast = new FastPrimaryKeyLookupParser(sql);
+        return fast.TryParse(out lookup);
     }
 
     public Statement ParseStatement()
@@ -355,6 +379,261 @@ public sealed class Parser
                     break;
 
                 _pos++; // consume '.'
+
+                if (!TryReadIdentifier(out string part))
+                    return false;
+
+                identifier = $"{identifier}.{part}";
+            }
+
+            return true;
+        }
+
+        private bool TryConsumeChar(char ch)
+        {
+            SkipWhitespace();
+            if (_pos >= _text.Length || _text[_pos] != ch)
+                return false;
+
+            _pos++;
+            return true;
+        }
+
+        private bool TryConsumeOptionalSemicolonAndRequireEnd()
+        {
+            SkipWhitespace();
+            if (_pos < _text.Length && _text[_pos] == ';')
+                _pos++;
+
+            SkipWhitespace();
+            return _pos == _text.Length;
+        }
+
+        private void SkipWhitespace()
+        {
+            while (_pos < _text.Length && char.IsWhiteSpace(_text[_pos]))
+                _pos++;
+        }
+
+        private static bool IsIdentifierStart(char c) => char.IsLetter(c) || c == '_';
+        private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+    }
+
+    private ref struct FastPrimaryKeyLookupParser
+    {
+        private readonly ReadOnlySpan<char> _text;
+        private int _pos;
+
+        public FastPrimaryKeyLookupParser(string sql)
+        {
+            _text = sql.AsSpan();
+            _pos = 0;
+        }
+
+        public bool TryParse(out SimplePrimaryKeyLookupSql lookup)
+        {
+            lookup = default;
+
+            if (!TryReadKeyword("SELECT"))
+                return false;
+
+            SkipWhitespace();
+            bool selectStar;
+            string projectionColumn;
+            if (TryConsumeChar('*'))
+            {
+                selectStar = true;
+                projectionColumn = string.Empty;
+            }
+            else
+            {
+                if (!TryReadIdentifier(out projectionColumn))
+                    return false;
+                selectStar = false;
+            }
+
+            if (!TryReadKeyword("FROM"))
+                return false;
+
+            if (!TryReadMultipartIdentifier(out string tableName))
+                return false;
+
+            if (!TryReadKeyword("WHERE"))
+                return false;
+
+            if (!TryReadIdentifier(out string predicateColumn))
+                return false;
+
+            SkipWhitespace();
+            if (!TryConsumeChar('='))
+                return false;
+
+            if (!TryReadIntegerLiteral(out long lookupValue))
+                return false;
+
+            bool hasResidual = false;
+            string residualColumn = string.Empty;
+            DbValue residualLiteral = default;
+            if (TryReadKeyword("AND"))
+            {
+                if (!TryReadIdentifier(out residualColumn))
+                    return false;
+
+                SkipWhitespace();
+                if (!TryConsumeChar('='))
+                    return false;
+
+                if (!TryReadSimpleLiteral(out residualLiteral))
+                    return false;
+
+                hasResidual = true;
+            }
+
+            if (!TryConsumeOptionalSemicolonAndRequireEnd())
+                return false;
+
+            lookup = new SimplePrimaryKeyLookupSql(
+                tableName,
+                selectStar,
+                projectionColumn,
+                predicateColumn,
+                lookupValue,
+                hasResidual,
+                residualColumn,
+                residualLiteral);
+            return true;
+        }
+
+        private bool TryReadSimpleLiteral(out DbValue literal)
+        {
+            literal = default;
+            SkipWhitespace();
+
+            if (_pos >= _text.Length)
+                return false;
+
+            if (_text[_pos] == '\'')
+            {
+                if (!TryReadStringLiteral(out string textValue))
+                    return false;
+
+                literal = DbValue.FromText(textValue);
+                return true;
+            }
+
+            if (TryReadKeyword("NULL"))
+            {
+                literal = DbValue.Null;
+                return true;
+            }
+
+            if (!TryReadIntegerLiteral(out long intValue))
+                return false;
+
+            literal = DbValue.FromInteger(intValue);
+            return true;
+        }
+
+        private bool TryReadStringLiteral(out string value)
+        {
+            value = string.Empty;
+            if (!TryConsumeChar('\''))
+                return false;
+
+            var sb = new System.Text.StringBuilder();
+            while (_pos < _text.Length)
+            {
+                char c = _text[_pos++];
+                if (c == '\'')
+                {
+                    if (_pos < _text.Length && _text[_pos] == '\'')
+                    {
+                        sb.Append('\'');
+                        _pos++;
+                        continue;
+                    }
+
+                    value = sb.ToString();
+                    return true;
+                }
+
+                sb.Append(c);
+            }
+
+            return false;
+        }
+
+        private bool TryReadIntegerLiteral(out long value)
+        {
+            value = 0;
+            SkipWhitespace();
+
+            int start = _pos;
+            if (_pos < _text.Length && (_text[_pos] == '+' || _text[_pos] == '-'))
+                _pos++;
+
+            int digitStart = _pos;
+            while (_pos < _text.Length && char.IsDigit(_text[_pos]))
+                _pos++;
+
+            if (_pos == digitStart)
+            {
+                _pos = start;
+                return false;
+            }
+
+            return long.TryParse(
+                _text.Slice(start, _pos - start),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out value);
+        }
+
+        private bool TryReadKeyword(string keyword)
+        {
+            SkipWhitespace();
+            if (_pos + keyword.Length > _text.Length)
+                return false;
+
+            var span = _text.Slice(_pos, keyword.Length);
+            if (!span.Equals(keyword.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            int end = _pos + keyword.Length;
+            if (end < _text.Length && IsIdentifierChar(_text[end]))
+                return false;
+
+            _pos = end;
+            return true;
+        }
+
+        private bool TryReadIdentifier(out string identifier)
+        {
+            identifier = string.Empty;
+            SkipWhitespace();
+            if (_pos >= _text.Length || !IsIdentifierStart(_text[_pos]))
+                return false;
+
+            int start = _pos++;
+            while (_pos < _text.Length && IsIdentifierChar(_text[_pos]))
+                _pos++;
+
+            identifier = _text.Slice(start, _pos - start).ToString();
+            return true;
+        }
+
+        private bool TryReadMultipartIdentifier(out string identifier)
+        {
+            if (!TryReadIdentifier(out identifier))
+                return false;
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (_pos >= _text.Length || _text[_pos] != '.')
+                    break;
+
+                _pos++;
 
                 if (!TryReadIdentifier(out string part))
                     return false;

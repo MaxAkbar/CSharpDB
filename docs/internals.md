@@ -257,11 +257,10 @@ Recognize `SELECT DISTINCT` in `ParseSelect()` and set a flag on `SelectStatemen
 ### Running Tests
 
 ```bash
-dotnet test                                # Run all tests
-dotnet test --filter "IntegrationTests"    # Run only integration tests
-dotnet test --filter "WalTests"            # Run only WAL tests
-dotnet test tests/CSharpDB.Data.Tests      # Run only ADO.NET tests
-dotnet test tests/CSharpDB.Cli.Tests       # Run only CLI tests
+dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj -- -class "CSharpDB.Tests.IntegrationTests"  # Run integration tests
+dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj -- -class "CSharpDB.Tests.WalTests"          # Run WAL tests
+dotnet run --project tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj --                      # Run ADO.NET tests
+dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --                        # Run CLI tests
 ```
 
 ---

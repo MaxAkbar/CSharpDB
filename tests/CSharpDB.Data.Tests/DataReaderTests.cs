@@ -6,6 +6,7 @@ namespace CSharpDB.Data.Tests;
 public class DataReaderTests : IAsyncLifetime
 {
     private readonly string _dbPath;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private CSharpDbConnection _conn = null!;
 
     public DataReaderTests()
@@ -16,16 +17,16 @@ public class DataReaderTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         _conn = new CSharpDbConnection($"Data Source={_dbPath}");
-        await _conn.OpenAsync();
+        await _conn.OpenAsync(Ct);
 
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score REAL, data TEXT);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
 
         cmd.CommandText = "INSERT INTO t VALUES (1, 'Alice', 95.5, NULL);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "INSERT INTO t VALUES (2, 'Bob', 87.3, 'some data');";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -40,11 +41,11 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
-        Assert.True(await reader.ReadAsync());
-        Assert.False(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.False(await reader.ReadAsync(Ct));
     }
 
     [Fact]
@@ -52,7 +53,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
         Assert.Equal(4, reader.FieldCount);
     }
 
@@ -61,7 +62,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Equal("id", reader.GetName(0));
         Assert.Equal("name", reader.GetName(1));
@@ -74,7 +75,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Equal(0, reader.GetOrdinal("id"));
         Assert.Equal(1, reader.GetOrdinal("name"));
@@ -86,7 +87,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Throws<IndexOutOfRangeException>(() => reader.GetOrdinal("nonexistent"));
     }
@@ -96,9 +97,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal(1L, reader.GetInt64(0));
     }
 
@@ -107,9 +108,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal(1, reader.GetInt32(0));
     }
 
@@ -118,9 +119,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal("Alice", reader.GetString(1));
     }
 
@@ -129,9 +130,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal(95.5, reader.GetDouble(2));
     }
 
@@ -140,9 +141,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t WHERE id = 1;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.True(reader.IsDBNull(3));   // data column is NULL for row 1
         Assert.False(reader.IsDBNull(1));  // name is not NULL
     }
@@ -152,9 +153,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t WHERE id = 1;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal(DBNull.Value, reader.GetValue(3));
     }
 
@@ -163,9 +164,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t WHERE id = 1;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.IsType<long>(reader.GetValue(0));
         Assert.IsType<string>(reader.GetValue(1));
         Assert.IsType<double>(reader.GetValue(2));
@@ -176,9 +177,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t WHERE id = 2;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.Equal("Bob", reader["name"]);
     }
 
@@ -187,9 +188,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.False(await reader.NextResultAsync());
+        Assert.False(await reader.NextResultAsync(Ct));
     }
 
     [Fact]
@@ -197,7 +198,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Equal(typeof(long), reader.GetFieldType(0));
         Assert.Equal(typeof(string), reader.GetFieldType(1));
@@ -209,7 +210,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Equal("INTEGER", reader.GetDataTypeName(0));
         Assert.Equal("TEXT", reader.GetDataTypeName(1));
@@ -221,7 +222,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         var schemaTable = reader.GetSchemaTable();
         Assert.NotNull(schemaTable);
@@ -235,9 +236,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "INSERT INTO t VALUES (3, 'Charlie', 70.0, 'test');";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
         // Drain the reader
-        while (await reader.ReadAsync()) { }
+        while (await reader.ReadAsync(Ct)) { }
         Assert.Equal(1, reader.RecordsAffected);
     }
 
@@ -246,7 +247,7 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         // HasRows should be true even before first Read
         Assert.True(reader.HasRows);
@@ -257,19 +258,19 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE bools (val INTEGER);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "INSERT INTO bools VALUES (1);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "INSERT INTO bools VALUES (0);";
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(Ct);
 
         cmd.CommandText = "SELECT * FROM bools;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.True(reader.GetBoolean(0));
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         Assert.False(reader.GetBoolean(0));
     }
 
@@ -278,9 +279,9 @@ public class DataReaderTests : IAsyncLifetime
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM t WHERE id = 1;";
-        await using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.ReadAsync(Ct));
         var values = new object[4];
         int count = reader.GetValues(values);
         Assert.Equal(4, count);
@@ -288,3 +289,4 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal("Alice", values[1]);
     }
 }
+

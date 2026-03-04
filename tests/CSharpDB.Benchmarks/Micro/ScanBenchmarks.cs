@@ -77,6 +77,14 @@ public class ScanBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "ORDER BY expression + LIMIT 100 (top-N)")]
+    public async Task OrderedScan_Expression_TopN()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT * FROM bench ORDER BY value + id ASC LIMIT 100");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "SELECT with LIMIT 100")]
     public async Task LimitedScan()
     {

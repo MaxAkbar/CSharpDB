@@ -99,6 +99,13 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenStorageTab()
+    {
+        var tab = new TabDescriptor("storage:inspect", "Storage", "bi-hdd-stack", TabKind.Storage);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     /// <summary>Open a table tab and switch it to Schema view.</summary>
     public TabDescriptor OpenTableSchemaTab(string tableName)
     {

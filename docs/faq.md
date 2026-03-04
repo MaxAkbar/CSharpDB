@@ -29,6 +29,7 @@ Yes. Query virtual catalog sources:
 - `sys.indexes`
 - `sys.views`
 - `sys.triggers`
+- `sys.objects`
 
 Underscored aliases are also supported (`sys_tables`, `sys_columns`, etc.).
 

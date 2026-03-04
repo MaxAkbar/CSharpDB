@@ -5,6 +5,7 @@
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
     <Project Path="src/CSharpDB.Storage/CSharpDB.Storage.csproj" />
+    <Project Path="src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj" />
     <Project Path="src/CSharpDB.Cli/CSharpDB.Cli.csproj" />
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />

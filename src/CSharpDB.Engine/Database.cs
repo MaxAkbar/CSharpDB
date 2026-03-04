@@ -1,7 +1,6 @@
 using CSharpDB.Core;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
-using CSharpDB.Storage;
 
 namespace CSharpDB.Engine;
 
@@ -15,13 +14,15 @@ public sealed class Database : IAsyncDisposable
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
+    private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
+    private long _observedSchemaVersion;
     private bool _inTransaction;
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * WHERE pk = N) use a synchronous
-    /// cache-only fast path, bypassing the async operator pipeline. Defaults to false.
+    /// cache-only fast path, bypassing the async operator pipeline. Defaults to true.
     /// </summary>
     public bool PreferSyncPointLookups
     {
@@ -29,12 +30,17 @@ public sealed class Database : IAsyncDisposable
         set => _planner.PreferSyncPointLookups = value;
     }
 
-    private Database(Pager pager, SchemaCatalog catalog)
+    private Database(
+        Pager pager,
+        SchemaCatalog catalog,
+        IRecordSerializer recordSerializer)
     {
         _pager = pager;
         _catalog = catalog;
-        _planner = new QueryPlanner(pager, catalog);
+        _recordSerializer = recordSerializer;
+        _planner = new QueryPlanner(pager, catalog, recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
+        _observedSchemaVersion = catalog.SchemaVersion;
     }
 
     /// <summary>
@@ -42,72 +48,84 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public static async ValueTask<Database> OpenAsync(string filePath, CancellationToken ct = default)
     {
-        bool isNew = !File.Exists(filePath);
-        var device = new FileStorageDevice(filePath);
-        var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(filePath, walIndex);
-        var pager = await Pager.CreateAsync(device, wal, walIndex, ct);
+        return await OpenAsync(filePath, new DatabaseOptions(), ct);
+    }
 
-        if (isNew)
-        {
-            await pager.InitializeNewDatabaseAsync(ct);
-            await wal.OpenAsync(pager.PageCount, ct);
-        }
-        else
-        {
-            // Check for WAL → recovery + checkpoint
-            await pager.RecoverAsync(ct);
-        }
+    /// <summary>
+    /// Open an existing database file, or create a new one if it doesn't exist, using explicit composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
 
-        var catalog = await SchemaCatalog.CreateAsync(pager, ct);
-        return new Database(pager, catalog);
+        var context = await options.StorageEngineFactory.OpenAsync(filePath, options.StorageEngineOptions, ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
     }
 
     /// <summary>
     /// Execute a SQL statement. Returns a QueryResult with rows (for SELECT) or affected count (for DML/DDL).
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
+        InvalidateCachesIfSchemaChanged();
+        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
+            return ExecuteStatementAsync(cachedStmt, ct);
+
+        if (bypassParse)
+        {
+            if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
+            {
+                if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+                    return ValueTask.FromResult(fastResult);
+            }
+        }
+
         var stmt = ParseCached(sql);
-        return await ExecuteStatementAsync(stmt, ct);
+        return ExecuteStatementAsync(stmt, ct);
     }
 
     /// <summary>
     /// Execute a pre-parsed SQL statement. Used by prepared command paths
     /// to bypass SQL text parsing on repeated executions.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+        => ExecuteStatementAsync(statement, ct);
+
+    private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        return await ExecuteStatementAsync(statement, ct);
+        if (stmt is SelectStatement)
+            return _planner.ExecuteAsync(stmt, ct);
+
+        return ExecuteWriteStatementAsync(stmt, ct);
     }
 
-    private async ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
+    private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        bool needsTransaction = stmt is not SelectStatement;
-
-        if (needsTransaction && !_inTransaction)
-        {
+        if (!_inTransaction)
             await _pager.BeginTransactionAsync(ct);
-        }
 
         try
         {
             var result = await _planner.ExecuteAsync(stmt, ct);
 
-            if (needsTransaction && !_inTransaction)
+            if (!_inTransaction)
             {
                 // Auto-commit
-                await _pager.CommitAsync(ct);
+                await CommitWithCatalogSyncAsync(ct);
             }
 
             return result;
         }
         catch
         {
-            if (needsTransaction && !_inTransaction)
-            {
+            if (!_inTransaction)
                 await _pager.RollbackAsync(ct);
-            }
             throw;
         }
     }
@@ -130,7 +148,7 @@ public sealed class Database : IAsyncDisposable
     {
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
-        await _pager.CommitAsync(ct);
+        await CommitWithCatalogSyncAsync(ct);
         _inTransaction = false;
     }
 
@@ -161,7 +179,12 @@ public sealed class Database : IAsyncDisposable
     public ReaderSession CreateReaderSession()
     {
         var snapshot = _pager.AcquireReaderSnapshot();
-        return new ReaderSession(_pager, _catalog, snapshot, _statementCache);
+        return new ReaderSession(
+            _pager,
+            _catalog,
+            _recordSerializer,
+            snapshot,
+            _statementCache);
     }
 
     /// <summary>
@@ -194,6 +217,12 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public IReadOnlyCollection<TriggerSchema> GetTriggers() => _catalog.GetTriggers();
 
+    /// <summary>
+    /// Monotonic in-process token that advances on schema mutations (DDL).
+    /// Useful for cache invalidation.
+    /// </summary>
+    public long SchemaVersion => _catalog.SchemaVersion;
+
     // ============ Document Collection API ============
 
     private const string CollectionPrefix = "_col_";
@@ -205,6 +234,7 @@ public sealed class Database : IAsyncDisposable
     public async ValueTask<Collection<T>> GetCollectionAsync<T>(string name, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        InvalidateCachesIfSchemaChanged();
 
         string catalogName = $"{CollectionPrefix}{name}";
 
@@ -234,7 +264,7 @@ public sealed class Database : IAsyncDisposable
                     await _catalog.CreateTableAsync(schema, ct);
                 }
 
-                if (needsTx) await _pager.CommitAsync(ct);
+                if (needsTx) await CommitWithCatalogSyncAsync(ct);
             }
             catch
             {
@@ -245,7 +275,12 @@ public sealed class Database : IAsyncDisposable
 
         var tree = _catalog.GetTableTree(catalogName);
         var collection = new Collection<T>(
-            _pager, _catalog, catalogName, tree, () => _inTransaction);
+            _pager,
+            _catalog,
+            _recordSerializer,
+            catalogName,
+            tree,
+            () => _inTransaction);
         _collectionCache[catalogName] = collection;
         return collection;
     }
@@ -266,6 +301,23 @@ public sealed class Database : IAsyncDisposable
             sql,
             static s => Parser.TryParseSimpleSelect(s, out var stmt) ? stmt : Parser.Parse(s));
 
+    private void InvalidateCachesIfSchemaChanged()
+    {
+        long currentVersion = _catalog.SchemaVersion;
+        if (currentVersion == _observedSchemaVersion)
+            return;
+
+        _statementCache.Clear();
+        _collectionCache.Clear();
+        _observedSchemaVersion = currentVersion;
+    }
+
+    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
+    {
+        await _catalog.PersistAllRootPageChangesAsync(ct);
+        await _pager.CommitAsync(ct);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_inTransaction)
@@ -283,14 +335,21 @@ public sealed class Database : IAsyncDisposable
     {
         private readonly Pager _pager;
         private readonly SchemaCatalog _catalog;
+        private readonly IRecordSerializer _recordSerializer;
         private readonly WalSnapshot _snapshot;
         private readonly StatementCache _statementCache;
         private bool _disposed;
 
-        internal ReaderSession(Pager pager, SchemaCatalog catalog, WalSnapshot snapshot, StatementCache statementCache)
+        internal ReaderSession(
+            Pager pager,
+            SchemaCatalog catalog,
+            IRecordSerializer recordSerializer,
+            WalSnapshot snapshot,
+            StatementCache statementCache)
         {
             _pager = pager;
             _catalog = catalog;
+            _recordSerializer = recordSerializer;
             _snapshot = snapshot;
             _statementCache = statementCache;
         }
@@ -309,7 +368,7 @@ public sealed class Database : IAsyncDisposable
 
             // Create a snapshot-aware pager for reading
             var snapshotPager = _pager.CreateSnapshotReader(_snapshot);
-            var planner = new QueryPlanner(snapshotPager, _catalog);
+            var planner = new QueryPlanner(snapshotPager, _catalog, _recordSerializer);
             return await planner.ExecuteAsync(stmt, ct);
         }
 
@@ -330,6 +389,11 @@ public sealed class Database : IAsyncDisposable
     {
         private readonly int _capacity;
         private readonly Dictionary<string, Statement> _map = new(StringComparer.Ordinal);
+        private readonly Queue<string> _insertionOrder = new();
+        private readonly int[] _recentMissHashes;
+        private readonly Dictionary<int, int> _recentMissHashCounts;
+        private int _recentMissHashCursor;
+        private int _recentMissHashCount;
         private string? _lastSql;
         private Statement? _lastStatement;
         private readonly object _gate = new();
@@ -337,6 +401,52 @@ public sealed class Database : IAsyncDisposable
         internal StatementCache(int capacity)
         {
             _capacity = capacity > 0 ? capacity : 0;
+            int fingerprintWindowSize = _capacity <= 0 ? 0 : _capacity;
+            _recentMissHashes = new int[fingerprintWindowSize];
+            _recentMissHashCounts = fingerprintWindowSize > 0
+                ? new Dictionary<int, int>(fingerprintWindowSize)
+                : new Dictionary<int, int>(0);
+            _recentMissHashCursor = 0;
+            _recentMissHashCount = 0;
+        }
+
+        internal bool TryGetOrMarkBypass(string sql, out Statement statement, out bool bypassParse)
+        {
+            statement = null!;
+            bypassParse = false;
+            if (_capacity == 0)
+                return false;
+
+            lock (_gate)
+            {
+                if (_lastSql != null &&
+                    string.Equals(_lastSql, sql, StringComparison.Ordinal) &&
+                    _lastStatement != null)
+                {
+                    statement = _lastStatement;
+                    return true;
+                }
+
+                if (_map.TryGetValue(sql, out var hitNode))
+                {
+                    _lastSql = sql;
+                    _lastStatement = hitNode;
+                    statement = hitNode;
+                    return true;
+                }
+
+                if (_recentMissHashes.Length > 0 && _map.Count >= _capacity)
+                {
+                    int hash = StringComparer.Ordinal.GetHashCode(sql);
+                    if (!HasRecentMissHash(hash))
+                    {
+                        RecordRecentMissHash(hash);
+                        bypassParse = true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         internal Statement GetOrAdd(string sql, Func<string, Statement> parse)
@@ -384,9 +494,16 @@ public sealed class Database : IAsyncDisposable
 
                 if (_map.Count < _capacity)
                 {
-                    // Keep the cache bounded and avoid miss-time churn once full.
-                    // Ad-hoc one-off SQL still benefits from the last-statement fast slot.
                     _map[sql] = parsed;
+                    _insertionOrder.Enqueue(sql);
+                }
+                else if (parsed is SelectStatement && ShouldPromoteSelectAtCapacity(sql))
+                {
+                    // Only promote SELECT statements that show short-term reuse.
+                    // This avoids steady eviction churn on one-off/high-cardinality SQL.
+                    EvictOldestEntry();
+                    _map[sql] = parsed;
+                    _insertionOrder.Enqueue(sql);
                 }
 
                 _lastSql = sql;
@@ -394,5 +511,80 @@ public sealed class Database : IAsyncDisposable
                 return statementToReturn;
             }
         }
+
+        private bool ShouldPromoteSelectAtCapacity(string sql)
+        {
+            if (_recentMissHashes.Length == 0)
+                return true;
+
+            int hash = StringComparer.Ordinal.GetHashCode(sql);
+            if (HasRecentMissHash(hash))
+                return true;
+
+            RecordRecentMissHash(hash);
+
+            return false;
+        }
+
+        private bool HasRecentMissHash(int hash) => _recentMissHashCounts.ContainsKey(hash);
+
+        private void RecordRecentMissHash(int hash)
+        {
+            if (_recentMissHashes.Length == 0)
+                return;
+
+            if (_recentMissHashCount == _recentMissHashes.Length)
+            {
+                int evicted = _recentMissHashes[_recentMissHashCursor];
+                if (_recentMissHashCounts.TryGetValue(evicted, out int evictedCount))
+                {
+                    if (evictedCount <= 1)
+                        _recentMissHashCounts.Remove(evicted);
+                    else
+                        _recentMissHashCounts[evicted] = evictedCount - 1;
+                }
+            }
+            else
+            {
+                _recentMissHashCount++;
+            }
+
+            _recentMissHashes[_recentMissHashCursor] = hash;
+            _recentMissHashCounts.TryGetValue(hash, out int currentCount);
+            _recentMissHashCounts[hash] = currentCount + 1;
+
+            _recentMissHashCursor++;
+            if (_recentMissHashCursor >= _recentMissHashes.Length)
+                _recentMissHashCursor = 0;
+        }
+
+        private void EvictOldestEntry()
+        {
+            while (_insertionOrder.Count > 0)
+            {
+                string candidate = _insertionOrder.Dequeue();
+                if (_map.Remove(candidate))
+                    return;
+            }
+        }
+
+        internal void Clear()
+        {
+            if (_capacity == 0)
+                return;
+
+            lock (_gate)
+            {
+                _map.Clear();
+                _insertionOrder.Clear();
+                Array.Clear(_recentMissHashes);
+                _recentMissHashCounts.Clear();
+                _recentMissHashCursor = 0;
+                _recentMissHashCount = 0;
+                _lastSql = null;
+                _lastStatement = null;
+            }
+        }
     }
+
 }
