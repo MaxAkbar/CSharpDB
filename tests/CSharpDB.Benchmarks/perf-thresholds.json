@@ -132,6 +132,31 @@
       "maxAllocRegressionBytes": 131072.0
     },
     {
+      "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260304-005821",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'Stable SQL text (statement+plan cache hits)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Pre-parsed statement (plan cache hit)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Varying SQL text (limited plan reuse)'",
+          "RowCount": "10000"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 131072.0
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
       "keyColumns": [
         "Method",

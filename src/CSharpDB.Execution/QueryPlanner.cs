@@ -91,9 +91,36 @@ public sealed class QueryPlanner
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<SelectStatement, SelectPlanKind> _selectPlanCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Queue<SelectStatement> _selectPlanInsertionOrder = new();
+    private long _selectPlanCacheHitCount;
+    private long _selectPlanCacheMissCount;
+    private long _selectPlanCacheReclassificationCount;
+    private long _selectPlanCacheStoreCount;
     private long _observedSchemaVersion;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
+    private const int MaxSelectPlanCacheEntries = 1024;
+
+    private enum SelectPlanKind
+    {
+        FastPrimaryKeyLookup,
+        FastIndexedLookup,
+        FastSimpleTableScan,
+        SimpleSystemCatalogCountStar,
+        SimpleCountStar,
+        SimpleScalarAggregateColumn,
+        SimpleLookupScalarAggregateColumn,
+        SimpleConstantGroupAggregateColumn,
+        General,
+    }
+
+    internal readonly record struct SelectPlanCacheDiagnostics(
+        long HitCount,
+        long MissCount,
+        long ReclassificationCount,
+        long StoreCount,
+        int EntryCount);
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * / PK-only projection WHERE pk = N) will try a synchronous
@@ -136,6 +163,22 @@ public sealed class QueryPlanner
         };
     }
 
+    internal SelectPlanCacheDiagnostics GetSelectPlanCacheDiagnostics()
+        => new(
+            _selectPlanCacheHitCount,
+            _selectPlanCacheMissCount,
+            _selectPlanCacheReclassificationCount,
+            _selectPlanCacheStoreCount,
+            _selectPlanCache.Count);
+
+    internal void ResetSelectPlanCacheDiagnostics()
+    {
+        _selectPlanCacheHitCount = 0;
+        _selectPlanCacheMissCount = 0;
+        _selectPlanCacheReclassificationCount = 0;
+        _selectPlanCacheStoreCount = 0;
+    }
+
     private void InvalidateSchemaSensitiveCachesIfNeeded()
     {
         long currentVersion = _catalog.SchemaVersion;
@@ -156,6 +199,8 @@ public sealed class QueryPlanner
         _systemTriggersRowsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
+        _selectPlanCache.Clear();
+        _selectPlanInsertionOrder.Clear();
 
         _observedSchemaVersion = currentVersion;
     }
@@ -935,30 +980,148 @@ public sealed class QueryPlanner
 
     private QueryResult ExecuteSelect(SelectStatement stmt)
     {
+        if (_cteData != null)
+            return ExecuteSelectGeneral(stmt);
+
+        if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
+        {
+            _selectPlanCacheHitCount++;
+            return ExecuteSelectWithCachedPlan(stmt, cachedPlan);
+        }
+
+        _selectPlanCacheMissCount++;
+
+        var result = ClassifyAndExecuteSelect(stmt, out var selectedPlan);
+        CacheSelectPlan(stmt, selectedPlan);
+        return result;
+    }
+
+    private QueryResult ExecuteSelectWithCachedPlan(SelectStatement stmt, SelectPlanKind cachedPlan)
+    {
+        switch (cachedPlan)
+        {
+            case SelectPlanKind.FastPrimaryKeyLookup:
+                if (TryFastPkLookup(stmt, out var fastPkResult))
+                    return fastPkResult;
+                break;
+            case SelectPlanKind.FastIndexedLookup:
+                if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+                    return fastIndexedResult;
+                break;
+            case SelectPlanKind.FastSimpleTableScan:
+                if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+                    return fastTableScanResult;
+                break;
+            case SelectPlanKind.SimpleSystemCatalogCountStar:
+                if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+                    return systemCountResult;
+                break;
+            case SelectPlanKind.SimpleCountStar:
+                if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
+                    return countResult;
+                break;
+            case SelectPlanKind.SimpleScalarAggregateColumn:
+                if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
+                    return scalarAggResult;
+                break;
+            case SelectPlanKind.SimpleLookupScalarAggregateColumn:
+                if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
+                    return lookupScalarAggResult;
+                break;
+            case SelectPlanKind.SimpleConstantGroupAggregateColumn:
+                if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
+                    return constantGroupAggResult;
+                break;
+            case SelectPlanKind.General:
+                return ExecuteSelectGeneral(stmt);
+            default:
+                throw new InvalidOperationException($"Unknown select plan kind: {cachedPlan}");
+        }
+
+        // Plan assumptions no longer hold (typically after cache invalidation edge cases).
+        // Reclassify and refresh the cache entry.
+        _selectPlanCacheReclassificationCount++;
+        var result = ClassifyAndExecuteSelect(stmt, out var updatedPlan);
+        CacheSelectPlan(stmt, updatedPlan);
+        return result;
+    }
+
+    private QueryResult ClassifyAndExecuteSelect(SelectStatement stmt, out SelectPlanKind selectedPlan)
+    {
         if (!stmt.IsDistinct)
         {
             // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
             if (TryFastPkLookup(stmt, out var fastResult))
+            {
+                selectedPlan = SelectPlanKind.FastPrimaryKeyLookup;
                 return fastResult;
+            }
             // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
             if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+            {
+                selectedPlan = SelectPlanKind.FastIndexedLookup;
                 return fastIndexedResult;
+            }
             // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
             if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+            {
+                selectedPlan = SelectPlanKind.FastSimpleTableScan;
                 return fastTableScanResult;
+            }
 
             if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleSystemCatalogCountStar;
                 return systemCountResult;
+            }
             if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleCountStar;
                 return countResult;
+            }
             if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleScalarAggregateColumn;
                 return scalarAggResult;
+            }
             if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleLookupScalarAggregateColumn;
                 return lookupScalarAggResult;
+            }
             if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleConstantGroupAggregateColumn;
                 return constantGroupAggResult;
+            }
         }
 
+        selectedPlan = SelectPlanKind.General;
+        return ExecuteSelectGeneral(stmt);
+    }
+
+    private void CacheSelectPlan(SelectStatement stmt, SelectPlanKind kind)
+    {
+        _selectPlanCacheStoreCount++;
+        if (_selectPlanCache.TryAdd(stmt, kind))
+        {
+            _selectPlanInsertionOrder.Enqueue(stmt);
+        }
+        else
+        {
+            _selectPlanCache[stmt] = kind;
+        }
+
+        while (_selectPlanCache.Count > MaxSelectPlanCacheEntries &&
+               _selectPlanInsertionOrder.Count > 0)
+        {
+            var evicted = _selectPlanInsertionOrder.Dequeue();
+            _selectPlanCache.Remove(evicted);
+        }
+    }
+
+    private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
+    {
         // Build the FROM operator (single table scan, join tree, or view expansion)
         var (op, schema) = BuildFromOperator(stmt.From);
         bool hasAggregates = stmt.GroupBy != null ||

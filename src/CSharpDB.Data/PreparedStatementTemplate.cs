@@ -72,6 +72,7 @@ internal sealed class PreparedStatementTemplate
 
                 return new SelectStatement
                 {
+                    IsDistinct = select.IsDistinct,
                     Columns = columns,
                     From = from,
                     Where = where,

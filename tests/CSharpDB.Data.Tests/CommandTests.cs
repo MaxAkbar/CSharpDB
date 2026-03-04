@@ -112,6 +112,42 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_SelectDistinct_PreservesDistinctSemantics()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t VALUES (1, 'Alice');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO t VALUES (2, 'Alice');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO t VALUES (3, 'Bob');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT DISTINCT name FROM t WHERE id >= @minId ORDER BY name;";
+        var minId = cmd.Parameters.AddWithValue("@minId", 1);
+        cmd.Prepare();
+
+        static async Task<List<string>> ReadNamesAsync(CSharpDbCommand command, CancellationToken ct)
+        {
+            var names = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                names.Add(reader.GetString(0));
+            return names;
+        }
+
+        var allNames = await ReadNamesAsync(cmd, Ct);
+        Assert.Equal(["Alice", "Bob"], allNames);
+
+        minId.Value = 2;
+        var filteredNames = await ReadNamesAsync(cmd, Ct);
+        Assert.Equal(["Alice", "Bob"], filteredNames);
+    }
+
+    [Fact]
     public async Task ExecuteReaderAsync_ParameterizedLimit_FallsBackToSqlBindingPath()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

@@ -71,6 +71,8 @@ Defaults:
 - Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/20260302-001757`
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
 - Report output: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
+- Per-run logs: `tests/CSharpDB.Benchmarks/results/perf-guardrails-run-logs/*.log`
+- Report includes a `Select Plan Cache Diagnostics` section when benchmark output emits lines like `Select plan cache stats: ...`.
 - Some checks can pin their own baseline via `baselineSnapshot` in `perf-thresholds.json` (used for focused suites).
 
 Useful overrides:

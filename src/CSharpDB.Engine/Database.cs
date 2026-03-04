@@ -223,6 +223,38 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public long SchemaVersion => _catalog.SchemaVersion;
 
+    /// <summary>
+    /// Planner select-plan cache counters, exposed for tests and benchmarks.
+    /// </summary>
+    internal readonly record struct SelectPlanCacheDiagnostics(
+        long HitCount,
+        long MissCount,
+        long ReclassificationCount,
+        long StoreCount,
+        int EntryCount);
+
+    /// <summary>
+    /// Returns planner select-plan cache counters.
+    /// Internal-only: intended for tests and benchmarks.
+    /// </summary>
+    internal SelectPlanCacheDiagnostics GetSelectPlanCacheDiagnostics()
+    {
+        var d = _planner.GetSelectPlanCacheDiagnostics();
+        return new SelectPlanCacheDiagnostics(
+            d.HitCount,
+            d.MissCount,
+            d.ReclassificationCount,
+            d.StoreCount,
+            d.EntryCount);
+    }
+
+    /// <summary>
+    /// Resets planner select-plan cache counters.
+    /// Internal-only: intended for tests and benchmarks.
+    /// </summary>
+    internal void ResetSelectPlanCacheDiagnostics()
+        => _planner.ResetSelectPlanCacheDiagnostics();
+
     // ============ Document Collection API ============
 
     private const string CollectionPrefix = "_col_";

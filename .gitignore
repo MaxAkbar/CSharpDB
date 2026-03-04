@@ -35,6 +35,8 @@ coverage*/
 *.log
 *.csv
 *.txt
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260304-000103/micro-results/CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260304-005821/micro-results/CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv
 
 ## OS files
 Thumbs.db
