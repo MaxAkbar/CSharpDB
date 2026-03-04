@@ -364,16 +364,29 @@ public sealed class QueryPlanner
 
         var tableSchema = GetSchema(stmt.TableName);
 
-        // Validate columns exist and are INTEGER type (MVP: single-column integer indexes)
-        if (stmt.Columns.Count != 1)
-            throw new CSharpDbException(ErrorCode.SyntaxError, "Only single-column indexes are supported.");
+        if (stmt.Columns.Count == 0)
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Index must reference at least one column.");
 
-        int colIdx = tableSchema.GetColumnIndex(stmt.Columns[0]);
-        if (colIdx < 0)
-            throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{stmt.Columns[0]}' not found in table '{stmt.TableName}'.");
+        // Validate columns exist, are INTEGER typed, and are not duplicated.
+        var indexColumnIndices = new int[stmt.Columns.Count];
+        for (int i = 0; i < stmt.Columns.Count; i++)
+        {
+            string columnName = stmt.Columns[i];
+            int colIdx = tableSchema.GetColumnIndex(columnName);
+            if (colIdx < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{stmt.TableName}'.");
 
-        if (tableSchema.Columns[colIdx].Type != DbType.Integer)
-            throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER column indexes are supported.");
+            if (tableSchema.Columns[colIdx].Type != DbType.Integer)
+                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER column indexes are supported.");
+
+            for (int j = 0; j < i; j++)
+            {
+                if (indexColumnIndices[j] == colIdx)
+                    throw new CSharpDbException(ErrorCode.SyntaxError, $"Duplicate column '{columnName}' in index definition.");
+            }
+
+            indexColumnIndices[i] = colIdx;
+        }
 
         var indexSchema = new IndexSchema
         {
@@ -397,22 +410,38 @@ public sealed class QueryPlanner
 
         while (await scan.MoveNextAsync(ct))
         {
-            var value = scan.Current[colIdx];
-            if (value.IsNull) continue; // Don't index NULL values
-
-            long indexKey = value.AsInteger;
+            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, out long indexKey, out long[]? keyComponents))
+                continue; // Don't index entries that include NULL.
 
             if (stmt.IsUnique)
             {
-                // Check for duplicate
-                var existing = await indexStore.FindAsync(indexKey, ct);
-                if (existing != null)
-                    throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                        $"Duplicate key value in unique index '{stmt.IndexName}'.");
+                if (indexColumnIndices.Length == 1)
+                {
+                    // Single-column unique index: key is exact integer value.
+                    var existing = await indexStore.FindAsync(indexKey, ct);
+                    if (existing != null)
+                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                            $"Duplicate key value in unique index '{stmt.IndexName}'.");
 
-                var payload = new byte[8];
-                BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
-                await indexStore.InsertAsync(indexKey, payload, ct);
+                    var payload = new byte[8];
+                    BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
+                    await indexStore.InsertAsync(indexKey, payload, ct);
+                }
+                else
+                {
+                    // Composite index keys are hashed; verify uniqueness by comparing
+                    // the actual indexed column values for rows in the hash bucket.
+                    await EnsureCompositeUniqueConstraintAsync(
+                        indexStore,
+                        tableTree,
+                        indexColumnIndices,
+                        keyComponents!,
+                        indexKey,
+                        stmt.IndexName,
+                        ct);
+
+                    await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
+                }
             }
             else
             {
@@ -2943,6 +2972,27 @@ public sealed class QueryPlanner
             }
         }
 
+        bool hasCompositeCandidate = TryPickCompositeLookupCandidate(
+            conjuncts,
+            schema,
+            indexes,
+            out var compositeIndex,
+            out long compositeLookupKey);
+
+        if (hasCompositeCandidate &&
+            (selectedConjunctIndex < 0 || (compositeIndex!.IsUnique ? 1 : 2) < selectedRank))
+        {
+            // Composite index keys are hashed; keep the full predicate as residual
+            // so hash collisions are filtered out by expression evaluation.
+            remaining = where;
+            return BuildLookupOperator(
+                tableName,
+                schema,
+                isPrimaryKey: false,
+                compositeIndex,
+                compositeLookupKey);
+        }
+
         if (selectedConjunctIndex < 0)
             return null;
         IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
@@ -3004,6 +3054,113 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static bool TryPickCompositeLookupCandidate(
+        IReadOnlyList<Expression> conjuncts,
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> indexes,
+        out IndexSchema? selectedIndex,
+        out long lookupKey)
+    {
+        selectedIndex = null;
+        lookupKey = 0;
+
+        if (conjuncts.Count == 0)
+            return false;
+
+        Dictionary<int, long>? equalityLiteralsByColumn = null;
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractIntegerEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out long literal))
+                continue;
+
+            equalityLiteralsByColumn ??= new Dictionary<int, long>();
+            if (equalityLiteralsByColumn.TryGetValue(columnIndex, out long existing))
+            {
+                if (existing != literal)
+                    return false;
+
+                continue;
+            }
+
+            equalityLiteralsByColumn[columnIndex] = literal;
+        }
+
+        if (equalityLiteralsByColumn == null || equalityLiteralsByColumn.Count < 2)
+            return false;
+
+        IndexSchema? bestUnique = null;
+        long bestUniqueKey = 0;
+        int bestUniqueColumnCount = -1;
+
+        IndexSchema? bestNonUnique = null;
+        long bestNonUniqueKey = 0;
+        int bestNonUniqueColumnCount = -1;
+
+        foreach (var idx in indexes)
+        {
+            if (idx.Columns.Count <= 1)
+                continue;
+
+            var keyComponents = new long[idx.Columns.Count];
+            bool matches = true;
+
+            for (int i = 0; i < idx.Columns.Count; i++)
+            {
+                int colIndex = schema.GetColumnIndex(idx.Columns[i]);
+                if (colIndex < 0 || colIndex >= schema.Columns.Count || schema.Columns[colIndex].Type != DbType.Integer)
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (!equalityLiteralsByColumn.TryGetValue(colIndex, out long literal))
+                {
+                    matches = false;
+                    break;
+                }
+
+                keyComponents[i] = literal;
+            }
+
+            if (!matches)
+                continue;
+
+            long key = ComputeIndexKey(keyComponents);
+
+            if (idx.IsUnique)
+            {
+                if (idx.Columns.Count > bestUniqueColumnCount)
+                {
+                    bestUnique = idx;
+                    bestUniqueKey = key;
+                    bestUniqueColumnCount = idx.Columns.Count;
+                }
+            }
+            else if (idx.Columns.Count > bestNonUniqueColumnCount)
+            {
+                bestNonUnique = idx;
+                bestNonUniqueKey = key;
+                bestNonUniqueColumnCount = idx.Columns.Count;
+            }
+        }
+
+        if (bestUnique != null)
+        {
+            selectedIndex = bestUnique;
+            lookupKey = bestUniqueKey;
+            return true;
+        }
+
+        if (bestNonUnique != null)
+        {
+            selectedIndex = bestNonUnique;
+            lookupKey = bestNonUniqueKey;
+            return true;
+        }
+
+        return false;
+    }
+
     private IOperator BuildLookupOperator(
         string tableName,
         TableSchema schema,
@@ -3016,7 +3173,7 @@ public sealed class QueryPlanner
             return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
 
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
-        return index.IsUnique
+        return index.IsUnique && index.Columns.Count == 1
             ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
             : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
     }
@@ -3088,6 +3245,21 @@ public sealed class QueryPlanner
         }
 
         return firstNonUnique;
+    }
+
+    private static long ComputeIndexKey(ReadOnlySpan<long> keyComponents)
+    {
+        if (keyComponents.Length == 1)
+            return keyComponents[0];
+
+        ulong hash = 14695981039346656037UL; // FNV-1a offset basis
+        for (int i = 0; i < keyComponents.Length; i++)
+        {
+            hash ^= unchecked((ulong)keyComponents[i]);
+            hash *= 1099511628211UL;
+        }
+
+        return unchecked((long)hash);
     }
 
     /// <summary>
@@ -3704,27 +3876,43 @@ public sealed class QueryPlanner
     private async ValueTask InsertIntoAllIndexesAsync(
         IReadOnlyList<IndexSchema> indexes, TableSchema schema, DbValue[] row, long rowId, CancellationToken ct)
     {
+        var tableTree = _catalog.GetTableTree(schema.TableName);
+
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+                continue;
+            if (!TryBuildIndexKey(row, columnIndices, out long indexKey, out long[]? keyComponents))
+                continue; // Don't index entries that include NULL.
 
-            var value = row[colIdx];
-            if (value.IsNull) continue; // Don't index NULL values
-
-            long indexKey = value.AsInteger;
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
 
             if (idx.IsUnique)
             {
-                var existing = await indexStore.FindAsync(indexKey, ct);
-                if (existing != null)
-                    throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                        $"Duplicate key value in unique index '{idx.IndexName}'.");
+                if (columnIndices.Length == 1)
+                {
+                    var existing = await indexStore.FindAsync(indexKey, ct);
+                    if (existing != null)
+                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                            $"Duplicate key value in unique index '{idx.IndexName}'.");
 
-                var payload = new byte[8];
-                BitConverter.TryWriteBytes(payload, rowId);
-                await indexStore.InsertAsync(indexKey, payload, ct);
+                    var payload = new byte[8];
+                    BitConverter.TryWriteBytes(payload, rowId);
+                    await indexStore.InsertAsync(indexKey, payload, ct);
+                }
+                else
+                {
+                    await EnsureCompositeUniqueConstraintAsync(
+                        indexStore,
+                        tableTree,
+                        columnIndices,
+                        keyComponents!,
+                        indexKey,
+                        idx.IndexName,
+                        ct);
+
+                    await InsertIntoIndexAsync(indexStore, indexKey, rowId, ct);
+                }
             }
             else
             {
@@ -3738,13 +3926,11 @@ public sealed class QueryPlanner
     {
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+                continue;
+            if (!TryBuildIndexKey(row, columnIndices, out long indexKey, out _))
+                continue;
 
-            var value = row[colIdx];
-            if (value.IsNull) continue;
-
-            long indexKey = value.AsInteger;
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
             await DeleteFromIndexAsync(indexStore, indexKey, rowId, ct);
         }
@@ -3754,41 +3940,61 @@ public sealed class QueryPlanner
         IReadOnlyList<IndexSchema> indexes, TableSchema schema,
         DbValue[] oldRow, DbValue[] newRow, long oldRowId, long newRowId, CancellationToken ct)
     {
+        var tableTree = _catalog.GetTableTree(schema.TableName);
+
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+                continue;
 
-            var oldValue = oldRow[colIdx];
-            var newValue = newRow[colIdx];
+            bool hasOldKey = TryBuildIndexKey(oldRow, columnIndices, out long oldKey, out long[]? oldComponents);
+            bool hasNewKey = TryBuildIndexKey(newRow, columnIndices, out long newKey, out long[]? newComponents);
 
-            // If neither indexed value nor rowid changed, no maintenance needed.
-            if (oldValue.Equals(newValue) && oldRowId == newRowId) continue;
-
-            // Remove old entry
-            if (!oldValue.IsNull)
+            // If neither index presence, key value, nor rowid changed, no maintenance needed.
+            if (hasOldKey == hasNewKey &&
+                oldRowId == newRowId &&
+                (!hasOldKey || (oldKey == newKey && IndexKeyComponentsEqual(oldComponents, newComponents))))
             {
-                long oldKey = oldValue.AsInteger;
-                var indexStore = _catalog.GetIndexStore(idx.IndexName);
+                continue;
+            }
+
+            var indexStore = _catalog.GetIndexStore(idx.IndexName);
+
+            // Remove old entry.
+            if (hasOldKey)
+            {
                 await DeleteFromIndexAsync(indexStore, oldKey, oldRowId, ct);
             }
 
-            // Add new entry
-            if (!newValue.IsNull)
+            // Add new entry.
+            if (hasNewKey)
             {
-                long newKey = newValue.AsInteger;
-                var indexStore = _catalog.GetIndexStore(idx.IndexName);
-
                 if (idx.IsUnique)
                 {
-                    var existing = await indexStore.FindAsync(newKey, ct);
-                    if (existing != null)
-                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                            $"Duplicate key value in unique index '{idx.IndexName}'.");
+                    if (columnIndices.Length == 1)
+                    {
+                        var existing = await indexStore.FindAsync(newKey, ct);
+                        if (existing != null)
+                            throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                                $"Duplicate key value in unique index '{idx.IndexName}'.");
 
-                    var payload = new byte[8];
-                    BitConverter.TryWriteBytes(payload, newRowId);
-                    await indexStore.InsertAsync(newKey, payload, ct);
+                        var payload = new byte[8];
+                        BitConverter.TryWriteBytes(payload, newRowId);
+                        await indexStore.InsertAsync(newKey, payload, ct);
+                    }
+                    else
+                    {
+                        await EnsureCompositeUniqueConstraintAsync(
+                            indexStore,
+                            tableTree,
+                            columnIndices,
+                            newComponents!,
+                            newKey,
+                            idx.IndexName,
+                            ct);
+
+                        await InsertIntoIndexAsync(indexStore, newKey, newRowId, ct);
+                    }
                 }
                 else
                 {
@@ -3796,6 +4002,146 @@ public sealed class QueryPlanner
                 }
             }
         }
+    }
+
+    private async ValueTask EnsureCompositeUniqueConstraintAsync(
+        IIndexStore indexStore,
+        BTree tableTree,
+        int[] indexColumnIndices,
+        long[] keyComponents,
+        long indexKey,
+        string indexName,
+        CancellationToken ct)
+    {
+        var existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null || existing.Length < 8)
+            return;
+
+        int entryCount = existing.Length / 8;
+        int maxIndexedColumn = indexColumnIndices.Max();
+
+        for (int i = 0; i < entryCount; i++)
+        {
+            long existingRowId = BitConverter.ToInt64(existing, i * 8);
+            var existingRowPayload = await tableTree.FindAsync(existingRowId, ct);
+            if (existingRowPayload == null)
+                continue;
+
+            var existingRow = _recordSerializer.DecodeUpTo(existingRowPayload, maxIndexedColumn);
+            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Duplicate key value in unique index '{indexName}'.");
+            }
+        }
+    }
+
+    private static bool TryResolveIndexColumnIndices(IndexSchema index, TableSchema schema, out int[] columnIndices)
+    {
+        int count = index.Columns.Count;
+        columnIndices = new int[count];
+        if (count == 0)
+            return false;
+
+        for (int i = 0; i < count; i++)
+        {
+            int colIdx = schema.GetColumnIndex(index.Columns[i]);
+            if (colIdx < 0 || colIdx >= schema.Columns.Count)
+                return false;
+            if (schema.Columns[colIdx].Type != DbType.Integer)
+                return false;
+
+            columnIndices[i] = colIdx;
+        }
+
+        return true;
+    }
+
+    private static bool TryBuildIndexKey(
+        DbValue[] row,
+        int[] indexColumnIndices,
+        out long indexKey,
+        out long[]? keyComponents)
+    {
+        indexKey = 0;
+        keyComponents = null;
+
+        if (indexColumnIndices.Length == 0)
+            return false;
+
+        if (indexColumnIndices.Length == 1)
+        {
+            int colIdx = indexColumnIndices[0];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull)
+                return false;
+
+            indexKey = value.AsInteger;
+            return true;
+        }
+
+        var components = new long[indexColumnIndices.Length];
+        for (int i = 0; i < indexColumnIndices.Length; i++)
+        {
+            int colIdx = indexColumnIndices[i];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull)
+                return false;
+
+            components[i] = value.AsInteger;
+        }
+
+        indexKey = ComputeIndexKey(components);
+        keyComponents = components;
+        return true;
+    }
+
+    private static bool IndexRowMatchesKeyComponents(
+        DbValue[] row,
+        int[] indexColumnIndices,
+        long[] keyComponents)
+    {
+        if (indexColumnIndices.Length != keyComponents.Length)
+            return false;
+
+        for (int i = 0; i < indexColumnIndices.Length; i++)
+        {
+            int colIdx = indexColumnIndices[i];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull)
+                return false;
+
+            if (value.AsInteger != keyComponents[i])
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IndexKeyComponentsEqual(long[]? left, long[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left == null || right == null)
+            return false;
+        if (left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+            if (left[i] != right[i])
+                return false;
+
+        return true;
     }
 
     /// <summary>

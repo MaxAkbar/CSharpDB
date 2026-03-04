@@ -1818,12 +1818,60 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_MultiColumn_Fails()
+    public async Task Index_MultiColumn_CanCreateAndQuery()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 100)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 101)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 11, 20, 102)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (4, 10, 20, 103)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("CREATE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, payload FROM t WHERE a = 10 AND b = 20 ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(4, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_EnforcesTupleUniqueness()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21)", TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync("CREATE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken));
+            await _db.ExecuteAsync("INSERT INTO t VALUES (3, 10, 20)", TestContext.Current.CancellationToken));
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 11, 20)", TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_CreateOnDuplicateData_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 20)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_ViolationOnUpdate_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("UPDATE t SET b = 20 WHERE id = 2", TestContext.Current.CancellationToken));
     }
 
     #endregion

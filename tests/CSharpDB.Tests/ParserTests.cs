@@ -539,6 +539,17 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateIndex_MultiColumn()
+    {
+        var stmt = Parser.Parse("CREATE INDEX idx_ab ON users (a, b)");
+        var create = Assert.IsType<CreateIndexStatement>(stmt);
+        Assert.Equal("idx_ab", create.IndexName);
+        Assert.Equal("users", create.TableName);
+        Assert.Equal(["a", "b"], create.Columns);
+        Assert.False(create.IsUnique);
+    }
+
+    [Fact]
     public void Parse_CreateUniqueIndex()
     {
         var stmt = Parser.Parse("CREATE UNIQUE INDEX idx_email ON users (email)");
