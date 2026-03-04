@@ -367,7 +367,7 @@ public sealed class QueryPlanner
         if (stmt.Columns.Count == 0)
             throw new CSharpDbException(ErrorCode.SyntaxError, "Index must reference at least one column.");
 
-        // Validate columns exist, are INTEGER typed, and are not duplicated.
+        // Validate columns exist, are supported index types, and are not duplicated.
         var indexColumnIndices = new int[stmt.Columns.Count];
         for (int i = 0; i < stmt.Columns.Count; i++)
         {
@@ -376,8 +376,9 @@ public sealed class QueryPlanner
             if (colIdx < 0)
                 throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{stmt.TableName}'.");
 
-            if (tableSchema.Columns[colIdx].Type != DbType.Integer)
-                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER column indexes are supported.");
+            DbType columnType = tableSchema.Columns[colIdx].Type;
+            if (columnType is not (DbType.Integer or DbType.Text))
+                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
 
             for (int j = 0; j < i; j++)
             {
@@ -407,15 +408,18 @@ public sealed class QueryPlanner
             _recordSerializer,
             TryGetCachedTreeRowCountCapacityHint(tableTree));
         await scan.OpenAsync(ct);
+        bool usesDirectIntegerKey =
+            indexColumnIndices.Length == 1 &&
+            tableSchema.Columns[indexColumnIndices[0]].Type == DbType.Integer;
 
         while (await scan.MoveNextAsync(ct))
         {
-            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, out long indexKey, out long[]? keyComponents))
+            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                 continue; // Don't index entries that include NULL.
 
             if (stmt.IsUnique)
             {
-                if (indexColumnIndices.Length == 1)
+                if (usesDirectIntegerKey)
                 {
                     // Single-column unique index: key is exact integer value.
                     var existing = await indexStore.FindAsync(indexKey, ct);
@@ -429,9 +433,9 @@ public sealed class QueryPlanner
                 }
                 else
                 {
-                    // Composite index keys are hashed; verify uniqueness by comparing
+                    // Hashed index keys are collision-prone; verify uniqueness by comparing
                     // the actual indexed column values for rows in the hash bucket.
-                    await EnsureCompositeUniqueConstraintAsync(
+                    await EnsureHashedUniqueConstraintAsync(
                         indexStore,
                         tableTree,
                         indexColumnIndices,
@@ -2929,7 +2933,7 @@ public sealed class QueryPlanner
         // Fast path: single equality lookup term.
         if (TryPickLookupCandidate(where, schema, indexes, hasIntegerPk, pkIdx, out var singleCandidate))
         {
-            remaining = null;
+            remaining = singleCandidate.RequiresResidualPredicate ? where : null;
             return BuildLookupOperator(tableName, schema, singleCandidate.IsPrimaryKey, singleCandidate.Index, singleCandidate.LookupValue);
         }
 
@@ -2943,7 +2947,9 @@ public sealed class QueryPlanner
             {
                 bool useLeft = hasLeft && (!hasRight || leftCandidate.Rank <= rightCandidate.Rank);
                 var selected = useLeft ? leftCandidate : rightCandidate;
-                remaining = useLeft ? andExpr.Right : andExpr.Left;
+                remaining = selected.RequiresResidualPredicate
+                    ? where
+                    : (useLeft ? andExpr.Right : andExpr.Left);
                 return BuildLookupOperator(tableName, schema, selected.IsPrimaryKey, selected.Index, selected.LookupValue);
             }
         }
@@ -2997,6 +3003,12 @@ public sealed class QueryPlanner
             return null;
         IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
 
+        if (selectedCandidate.RequiresResidualPredicate)
+        {
+            remaining = where;
+            return lookupOp;
+        }
+
         if (conjuncts.Count == 1)
         {
             remaining = null;
@@ -3020,7 +3032,8 @@ public sealed class QueryPlanner
         long LookupValue,
         bool IsPrimaryKey,
         IndexSchema? Index,
-        int Rank);
+        int Rank,
+        bool RequiresResidualPredicate);
 
     private static bool TryPickLookupCandidate(
         Expression expression,
@@ -3032,12 +3045,19 @@ public sealed class QueryPlanner
     {
         candidate = default;
 
-        if (!TryExtractIntegerEqualityLookupTerm(expression, schema, out int columnIndex, out long lookupValue))
+        if (!TryExtractIndexEqualityLookupTerm(expression, schema, out int columnIndex, out DbValue lookupLiteral))
             return false;
 
-        if (hasIntegerPk && columnIndex == pkIdx)
+        if (hasIntegerPk &&
+            columnIndex == pkIdx &&
+            lookupLiteral.Type == DbType.Integer)
         {
-            candidate = new LookupCandidate(lookupValue, IsPrimaryKey: true, Index: null, Rank: 0);
+            candidate = new LookupCandidate(
+                LookupValue: lookupLiteral.AsInteger,
+                IsPrimaryKey: true,
+                Index: null,
+                Rank: 0,
+                RequiresResidualPredicate: false);
             return true;
         }
 
@@ -3046,11 +3066,19 @@ public sealed class QueryPlanner
         if (matchedIndex == null)
             return false;
 
+        bool usesDirectIntegerKey =
+            lookupLiteral.Type == DbType.Integer &&
+            schema.Columns[columnIndex].Type == DbType.Integer;
+        long lookupValue = usesDirectIntegerKey
+            ? lookupLiteral.AsInteger
+            : ComputeIndexKey(new[] { lookupLiteral });
+
         candidate = new LookupCandidate(
             lookupValue,
             IsPrimaryKey: false,
             Index: matchedIndex,
-            Rank: matchedIndex.IsUnique ? 1 : 2);
+            Rank: matchedIndex.IsUnique ? 1 : 2,
+            RequiresResidualPredicate: !usesDirectIntegerKey);
         return true;
     }
 
@@ -3067,16 +3095,16 @@ public sealed class QueryPlanner
         if (conjuncts.Count == 0)
             return false;
 
-        Dictionary<int, long>? equalityLiteralsByColumn = null;
+        Dictionary<int, DbValue>? equalityLiteralsByColumn = null;
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (!TryExtractIntegerEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out long literal))
+            if (!TryExtractIndexEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out DbValue literal))
                 continue;
 
-            equalityLiteralsByColumn ??= new Dictionary<int, long>();
-            if (equalityLiteralsByColumn.TryGetValue(columnIndex, out long existing))
+            equalityLiteralsByColumn ??= new Dictionary<int, DbValue>();
+            if (equalityLiteralsByColumn.TryGetValue(columnIndex, out DbValue existing))
             {
-                if (existing != literal)
+                if (DbValue.Compare(existing, literal) != 0)
                     return false;
 
                 continue;
@@ -3101,19 +3129,32 @@ public sealed class QueryPlanner
             if (idx.Columns.Count <= 1)
                 continue;
 
-            var keyComponents = new long[idx.Columns.Count];
+            var keyComponents = new DbValue[idx.Columns.Count];
             bool matches = true;
 
             for (int i = 0; i < idx.Columns.Count; i++)
             {
                 int colIndex = schema.GetColumnIndex(idx.Columns[i]);
-                if (colIndex < 0 || colIndex >= schema.Columns.Count || schema.Columns[colIndex].Type != DbType.Integer)
+                if (colIndex < 0 || colIndex >= schema.Columns.Count)
                 {
                     matches = false;
                     break;
                 }
 
-                if (!equalityLiteralsByColumn.TryGetValue(colIndex, out long literal))
+                DbType colType = schema.Columns[colIndex].Type;
+                if (colType is not (DbType.Integer or DbType.Text))
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (!equalityLiteralsByColumn.TryGetValue(colIndex, out DbValue literal))
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (literal.Type != colType)
                 {
                     matches = false;
                     break;
@@ -3173,9 +3214,20 @@ public sealed class QueryPlanner
             return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
 
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
-        return index.IsUnique && index.Columns.Count == 1
+        return index.IsUnique && UsesDirectIntegerIndexKey(index, schema)
             ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
             : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
+    }
+
+    private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)
+    {
+        if (index.Columns.Count != 1)
+            return false;
+
+        int colIdx = schema.GetColumnIndex(index.Columns[0]);
+        return colIdx >= 0 &&
+            colIdx < schema.Columns.Count &&
+            schema.Columns[colIdx].Type == DbType.Integer;
     }
 
     private static bool TryExtractIntegerEqualityLookupTerm(
@@ -3223,6 +3275,57 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static bool TryExtractIndexEqualityLookupTerm(
+        Expression expression,
+        TableSchema schema,
+        out int columnIndex,
+        out DbValue lookupLiteral)
+    {
+        columnIndex = -1;
+        lookupLiteral = DbValue.Null;
+
+        if (expression is not BinaryExpression { Op: BinaryOp.Equals } eq)
+            return false;
+
+        if (TryExtractColumnIndexLiteralPair(eq.Left, eq.Right, schema, out columnIndex, out lookupLiteral))
+            return true;
+
+        return TryExtractColumnIndexLiteralPair(eq.Right, eq.Left, schema, out columnIndex, out lookupLiteral);
+    }
+
+    private static bool TryExtractColumnIndexLiteralPair(
+        Expression columnSide,
+        Expression literalSide,
+        TableSchema schema,
+        out int columnIndex,
+        out DbValue lookupLiteral)
+    {
+        columnIndex = -1;
+        lookupLiteral = DbValue.Null;
+
+        if (columnSide is not ColumnRefExpression col || literalSide is not LiteralExpression lit)
+            return false;
+        if (!TryConvertLiteral(lit, out var literal) || literal.IsNull)
+            return false;
+
+        int resolvedIndex = col.TableAlias != null
+            ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
+            : schema.GetColumnIndex(col.ColumnName);
+        if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
+            return false;
+
+        DbType columnType = schema.Columns[resolvedIndex].Type;
+        if (columnType is not (DbType.Integer or DbType.Text))
+            return false;
+
+        if (literal.Type != columnType)
+            return false;
+
+        columnIndex = resolvedIndex;
+        lookupLiteral = literal;
+        return true;
+    }
+
     private static IndexSchema? FindLookupIndexForColumn(
         IReadOnlyList<IndexSchema> indexes,
         string columnName)
@@ -3247,19 +3350,53 @@ public sealed class QueryPlanner
         return firstNonUnique;
     }
 
-    private static long ComputeIndexKey(ReadOnlySpan<long> keyComponents)
+    private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
     {
-        if (keyComponents.Length == 1)
-            return keyComponents[0];
+        if (keyComponents.Length == 1 && keyComponents[0].Type == DbType.Integer)
+            return keyComponents[0].AsInteger;
 
-        ulong hash = 14695981039346656037UL; // FNV-1a offset basis
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        ulong hash = offsetBasis;
         for (int i = 0; i < keyComponents.Length; i++)
-        {
-            hash ^= unchecked((ulong)keyComponents[i]);
-            hash *= 1099511628211UL;
-        }
+            hash = HashIndexKeyComponent(hash, keyComponents[i], prime);
 
         return unchecked((long)hash);
+    }
+
+    private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
+    {
+        hash ^= (byte)value.Type;
+        hash *= prime;
+
+        switch (value.Type)
+        {
+            case DbType.Integer:
+                hash ^= unchecked((ulong)value.AsInteger);
+                hash *= prime;
+                return hash;
+
+            case DbType.Text:
+            {
+                string text = value.AsText;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char c = text[i];
+                    hash ^= (byte)c;
+                    hash *= prime;
+                    hash ^= (byte)(c >> 8);
+                    hash *= prime;
+                }
+
+                return hash;
+            }
+
+            default:
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"Unsupported indexed value type '{value.Type}'.");
+        }
     }
 
     /// <summary>
@@ -3880,16 +4017,16 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!TryBuildIndexKey(row, columnIndices, out long indexKey, out long[]? keyComponents))
+            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                 continue; // Don't index entries that include NULL.
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
 
             if (idx.IsUnique)
             {
-                if (columnIndices.Length == 1)
+                if (usesDirectIntegerKey)
                 {
                     var existing = await indexStore.FindAsync(indexKey, ct);
                     if (existing != null)
@@ -3902,7 +4039,7 @@ public sealed class QueryPlanner
                 }
                 else
                 {
-                    await EnsureCompositeUniqueConstraintAsync(
+                    await EnsureHashedUniqueConstraintAsync(
                         indexStore,
                         tableTree,
                         columnIndices,
@@ -3926,9 +4063,9 @@ public sealed class QueryPlanner
     {
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!TryBuildIndexKey(row, columnIndices, out long indexKey, out _))
+            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
                 continue;
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
@@ -3944,11 +4081,11 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices))
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
 
-            bool hasOldKey = TryBuildIndexKey(oldRow, columnIndices, out long oldKey, out long[]? oldComponents);
-            bool hasNewKey = TryBuildIndexKey(newRow, columnIndices, out long newKey, out long[]? newComponents);
+            bool hasOldKey = TryBuildIndexKey(oldRow, columnIndices, usesDirectIntegerKey, out long oldKey, out DbValue[]? oldComponents);
+            bool hasNewKey = TryBuildIndexKey(newRow, columnIndices, usesDirectIntegerKey, out long newKey, out DbValue[]? newComponents);
 
             // If neither index presence, key value, nor rowid changed, no maintenance needed.
             if (hasOldKey == hasNewKey &&
@@ -3971,7 +4108,7 @@ public sealed class QueryPlanner
             {
                 if (idx.IsUnique)
                 {
-                    if (columnIndices.Length == 1)
+                    if (usesDirectIntegerKey)
                     {
                         var existing = await indexStore.FindAsync(newKey, ct);
                         if (existing != null)
@@ -3984,7 +4121,7 @@ public sealed class QueryPlanner
                     }
                     else
                     {
-                        await EnsureCompositeUniqueConstraintAsync(
+                        await EnsureHashedUniqueConstraintAsync(
                             indexStore,
                             tableTree,
                             columnIndices,
@@ -4004,11 +4141,11 @@ public sealed class QueryPlanner
         }
     }
 
-    private async ValueTask EnsureCompositeUniqueConstraintAsync(
+    private async ValueTask EnsureHashedUniqueConstraintAsync(
         IIndexStore indexStore,
         BTree tableTree,
         int[] indexColumnIndices,
-        long[] keyComponents,
+        DbValue[] keyComponents,
         long indexKey,
         string indexName,
         CancellationToken ct)
@@ -4037,10 +4174,15 @@ public sealed class QueryPlanner
         }
     }
 
-    private static bool TryResolveIndexColumnIndices(IndexSchema index, TableSchema schema, out int[] columnIndices)
+    private static bool TryResolveIndexColumnIndices(
+        IndexSchema index,
+        TableSchema schema,
+        out int[] columnIndices,
+        out bool usesDirectIntegerKey)
     {
         int count = index.Columns.Count;
         columnIndices = new int[count];
+        usesDirectIntegerKey = false;
         if (count == 0)
             return false;
 
@@ -4049,20 +4191,22 @@ public sealed class QueryPlanner
             int colIdx = schema.GetColumnIndex(index.Columns[i]);
             if (colIdx < 0 || colIdx >= schema.Columns.Count)
                 return false;
-            if (schema.Columns[colIdx].Type != DbType.Integer)
+            if (schema.Columns[colIdx].Type is not (DbType.Integer or DbType.Text))
                 return false;
 
             columnIndices[i] = colIdx;
         }
 
+        usesDirectIntegerKey = count == 1 && schema.Columns[columnIndices[0]].Type == DbType.Integer;
         return true;
     }
 
     private static bool TryBuildIndexKey(
         DbValue[] row,
         int[] indexColumnIndices,
+        bool usesDirectIntegerKey,
         out long indexKey,
-        out long[]? keyComponents)
+        out DbValue[]? keyComponents)
     {
         indexKey = 0;
         keyComponents = null;
@@ -4070,21 +4214,21 @@ public sealed class QueryPlanner
         if (indexColumnIndices.Length == 0)
             return false;
 
-        if (indexColumnIndices.Length == 1)
+        if (usesDirectIntegerKey)
         {
             int colIdx = indexColumnIndices[0];
             if (colIdx < 0 || colIdx >= row.Length)
                 return false;
 
             var value = row[colIdx];
-            if (value.IsNull)
+            if (value.IsNull || value.Type != DbType.Integer)
                 return false;
 
             indexKey = value.AsInteger;
             return true;
         }
 
-        var components = new long[indexColumnIndices.Length];
+        var components = new DbValue[indexColumnIndices.Length];
         for (int i = 0; i < indexColumnIndices.Length; i++)
         {
             int colIdx = indexColumnIndices[i];
@@ -4094,8 +4238,10 @@ public sealed class QueryPlanner
             var value = row[colIdx];
             if (value.IsNull)
                 return false;
+            if (value.Type is not (DbType.Integer or DbType.Text))
+                return false;
 
-            components[i] = value.AsInteger;
+            components[i] = value;
         }
 
         indexKey = ComputeIndexKey(components);
@@ -4106,7 +4252,7 @@ public sealed class QueryPlanner
     private static bool IndexRowMatchesKeyComponents(
         DbValue[] row,
         int[] indexColumnIndices,
-        long[] keyComponents)
+        DbValue[] keyComponents)
     {
         if (indexColumnIndices.Length != keyComponents.Length)
             return false;
@@ -4121,14 +4267,14 @@ public sealed class QueryPlanner
             if (value.IsNull)
                 return false;
 
-            if (value.AsInteger != keyComponents[i])
+            if (DbValue.Compare(value, keyComponents[i]) != 0)
                 return false;
         }
 
         return true;
     }
 
-    private static bool IndexKeyComponentsEqual(long[]? left, long[]? right)
+    private static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
     {
         if (ReferenceEquals(left, right))
             return true;
@@ -4138,7 +4284,7 @@ public sealed class QueryPlanner
             return false;
 
         for (int i = 0; i < left.Length; i++)
-            if (left[i] != right[i])
+            if (DbValue.Compare(left[i], right[i]) != 0)
                 return false;
 
         return true;

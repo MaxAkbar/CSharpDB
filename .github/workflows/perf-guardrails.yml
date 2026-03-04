@@ -24,7 +24,7 @@ on:
 jobs:
   perf-guardrails:
     runs-on: windows-latest
-    timeout-minutes: 150
+    timeout-minutes: 240
 
     steps:
       - name: Checkout

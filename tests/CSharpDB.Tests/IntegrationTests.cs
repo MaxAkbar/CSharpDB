@@ -1809,12 +1809,31 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_OnNonIntegerColumn_Fails()
+    public async Task Index_OnTextColumn_Works()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'Alice')", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id FROM t WHERE name = 'Alice' ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Index_OnUnsupportedColumnType_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, score REAL)", TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", TestContext.Current.CancellationToken));
+            await _db.ExecuteAsync("CREATE INDEX idx_score ON t (score)", TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -1872,6 +1891,31 @@ public class IntegrationTests : IAsyncLifetime
 
         await Assert.ThrowsAsync<CSharpDbException>(async () =>
             await _db.ExecuteAsync("UPDATE t SET b = 20 WHERE id = 2", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task UniqueIndex_Text_EnforcesUniqueness()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_email ON t (email)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'a@x.com')", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'a@x.com')", TestContext.Current.CancellationToken));
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'b@x.com')", TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_Text_ViolationOnUpdate_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'a@x.com')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'b@x.com')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_email ON t (email)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("UPDATE t SET email = 'a@x.com' WHERE id = 2", TestContext.Current.CancellationToken));
     }
 
     #endregion

@@ -56,7 +56,7 @@ Snapshots are written to `tests/CSharpDB.Benchmarks/baselines/<utc-timestamp>/`.
 ### Performance Guardrails
 
 Guardrails compare current micro-benchmark results against a locked baseline snapshot and fail on regressions that exceed thresholds.
-Current default guardrail subset covers `InsertBenchmarks`, `PointLookupBenchmarks`, `JoinBenchmarks`, `OrderByIndexBenchmarks`, `ScalarAggregateBenchmarks`, `ScalarAggregateLookupBenchmarks`, `DistinctBenchmarks`, `QueryPlanCacheBenchmarks`, `CompositeIndexBenchmarks`, and `WalBenchmarks`.
+Current default guardrail subset covers `InsertBenchmarks`, `PointLookupBenchmarks`, `JoinBenchmarks`, `OrderByIndexBenchmarks`, `ScalarAggregateBenchmarks`, `ScalarAggregateLookupBenchmarks`, `DistinctBenchmarks`, `QueryPlanCacheBenchmarks`, `CompositeIndexBenchmarks`, `TextIndexBenchmarks`, and `WalBenchmarks`.
 
 ```bash
 # Run the guardrail benchmark subset + baseline comparison
@@ -524,6 +524,7 @@ tests/CSharpDB.Benchmarks/
     ScanBenchmarks.cs                 Full scan, filter, aggregate
     JoinBenchmarks.cs                 INNER/LEFT/CROSS JOIN
     IndexBenchmarks.cs                Index overhead + speedup
+    TextIndexBenchmarks.cs            TEXT equality lookup (indexed vs scan)
     WalBenchmarks.cs                  WAL commit/checkpoint
     ParserBenchmarks.cs               SQL parser throughput
     SqlTextStabilityBenchmarks.cs     Parser/cache behavior under SQL text churn

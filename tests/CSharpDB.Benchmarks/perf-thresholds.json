@@ -194,6 +194,35 @@
       "maxAllocRegressionBytes": 262144.0
     },
     {
+      "csv": "CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260303-180221",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'WHERE text eq (no index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE text eq (text index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE text eq (no index)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'WHERE text eq (text index)'",
+          "RowCount": "100000"
+        }
+      ],
+      "maxMeanRegressionPercent": 40.0,
+      "maxAllocRegressionPercent": 35.0,
+      "maxAllocRegressionBytes": 65536.0
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
       "keyColumns": [
         "Method",
