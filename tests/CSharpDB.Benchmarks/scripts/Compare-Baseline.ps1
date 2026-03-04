@@ -176,6 +176,7 @@ $config = Get-Content -Path $ThresholdsPath -Raw | ConvertFrom-Json
 $baselineRoot = Join-Path $benchDir "baselines"
 
 $configuredBaseline = [string](Get-OptionalProperty -Object $config -Name "baselineSnapshot" -DefaultValue "")
+$baselineResolved = $false
 if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     if (-not [string]::IsNullOrWhiteSpace($configuredBaseline))
@@ -184,34 +185,41 @@ if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
     }
     else
     {
-        $latest = Get-ChildItem -Path $baselineRoot -Directory |
-            Where-Object { $_.Name -match "^\d{8}-\d{6}$" } |
-            Sort-Object Name |
-            Select-Object -Last 1
-
-        if ($null -eq $latest)
+        if (Test-Path $baselineRoot)
         {
-            throw "No baseline snapshots found under $baselineRoot."
-        }
+            $latest = Get-ChildItem -Path $baselineRoot -Directory |
+                Where-Object { $_.Name -match "^\d{8}-\d{6}$" } |
+                Sort-Object Name |
+                Select-Object -Last 1
 
-        $BaselineSnapshot = $latest.FullName
+            if ($null -ne $latest)
+            {
+                $BaselineSnapshot = $latest.FullName
+            }
+        }
     }
 }
 
-if (-not [System.IO.Path]::IsPathRooted($BaselineSnapshot))
+if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
-    $BaselineSnapshot = Join-Path $baselineRoot $BaselineSnapshot
+    if (-not [System.IO.Path]::IsPathRooted($BaselineSnapshot))
+    {
+        $BaselineSnapshot = Join-Path $baselineRoot $BaselineSnapshot
+    }
+
+    if ((Test-Path $BaselineSnapshot))
+    {
+        $baselineMicroDir = Join-Path $BaselineSnapshot "micro-results"
+        if ((Test-Path $baselineMicroDir))
+        {
+            $baselineResolved = $true
+        }
+    }
 }
 
-if (-not (Test-Path $BaselineSnapshot))
+if (-not $baselineResolved)
 {
-    throw "Baseline snapshot not found: $BaselineSnapshot"
-}
-
-$baselineMicroDir = Join-Path $BaselineSnapshot "micro-results"
-if (-not (Test-Path $baselineMicroDir))
-{
-    throw "Baseline micro-results directory not found: $baselineMicroDir"
+    Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
 }
 
 if ([string]::IsNullOrWhiteSpace($CurrentMicroResultsDir))
@@ -226,6 +234,42 @@ elseif (-not [System.IO.Path]::IsPathRooted($CurrentMicroResultsDir))
 if (-not (Test-Path $CurrentMicroResultsDir))
 {
     throw "Current micro-results directory not found: $CurrentMicroResultsDir"
+}
+
+if (-not $baselineResolved)
+{
+    $summary = "No baseline snapshot available. Benchmark run completed but no regression comparison performed."
+    Write-Host $summary
+
+    if (-not [string]::IsNullOrWhiteSpace($ReportPath))
+    {
+        if (-not [System.IO.Path]::IsPathRooted($ReportPath))
+        {
+            $ReportPath = Join-Path $repoRoot $ReportPath
+        }
+
+        $reportDir = Split-Path -Parent $ReportPath
+        if (-not [string]::IsNullOrWhiteSpace($reportDir))
+        {
+            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+        }
+
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add("# Performance Guardrail Report")
+        $lines.Add("")
+        $lines.Add("- Baseline: **not available** (baselines directory is not present)")
+        $lines.Add("- Current: ``$CurrentMicroResultsDir``")
+        $lines.Add("- Thresholds: ``$ThresholdsPath``")
+        $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
+        $lines.Add("")
+        $lines.Add($summary)
+        $lines.Add("")
+        $lines.Add("To enable regression comparison, run ``Capture-Baseline.ps1`` on this machine and commit or make available the resulting snapshot.")
+        Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
+        Write-Host "Report written to $ReportPath"
+    }
+
+    return
 }
 
 $defaults = Get-OptionalProperty -Object $config -Name "defaults" -DefaultValue $null
