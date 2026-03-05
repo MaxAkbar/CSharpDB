@@ -50,10 +50,21 @@ public static class RowCountScalingBenchmark
                 // --- Point Lookup Benchmark ---
                 var lookupHist = new LatencyHistogram();
                 var lookupRng = new Random(42);
-                int lookupIters = Math.Min(1000, targetRowCount);
-                var lookupSw = Stopwatch.StartNew();
+                const int lookupWarmupIters = 1_000;
+                const int minLookupIters = 2_000;
+                const int maxLookupIters = 100_000;
+                const double minLookupDurationMs = 250;
 
-                for (int i = 0; i < lookupIters; i++)
+                for (int i = 0; i < lookupWarmupIters; i++)
+                {
+                    int id = lookupRng.Next(0, targetRowCount);
+                    await using var warmup = await db.ExecuteAsync($"SELECT * FROM t WHERE id = {id}");
+                    await warmup.ToListAsync();
+                }
+
+                var lookupSw = Stopwatch.StartNew();
+                int lookupIters = 0;
+                while (lookupIters < maxLookupIters)
                 {
                     int id = lookupRng.Next(0, targetRowCount);
                     var sw = Stopwatch.StartNew();
@@ -61,6 +72,10 @@ public static class RowCountScalingBenchmark
                     await result.ToListAsync();
                     sw.Stop();
                     lookupHist.Record(sw.Elapsed.TotalMilliseconds);
+                    lookupIters++;
+
+                    if (lookupIters >= minLookupIters && lookupSw.Elapsed.TotalMilliseconds >= minLookupDurationMs)
+                        break;
                 }
                 lookupSw.Stop();
 
@@ -85,20 +100,60 @@ public static class RowCountScalingBenchmark
                 results.Add(BenchmarkResult.FromHistogram(
                     $"RowScale_{targetRowCount}_Insert", insertHist, insertSw.Elapsed.TotalMilliseconds));
 
+                // Normalize scan phase against a checkpointed state to reduce WAL-related jitter.
+                await db.CheckpointAsync();
+
                 // --- Full Scan Benchmark (only for ≤ 100K rows) ---
                 if (targetRowCount <= 100_000)
                 {
                     var scanHist = new LatencyHistogram();
-                    int scanIters = 3;
-                    var scanSw = Stopwatch.StartNew();
+                    // Use COUNT(val) to force row visitation instead of metadata COUNT(*).
+                    const string scanSql = "SELECT COUNT(val) FROM t";
+                    int scanWarmupIters = targetRowCount switch
+                    {
+                        <= 1_000 => 8,
+                        <= 10_000 => 6,
+                        _ => 4
+                    };
+                    int minScanIters = targetRowCount switch
+                    {
+                        <= 1_000 => 120,
+                        <= 10_000 => 80,
+                        _ => 30
+                    };
+                    const int maxScanIters = 5_000_000;
+                    double minScanDurationMs = targetRowCount switch
+                    {
+                        <= 1_000 => 300,
+                        <= 10_000 => 500,
+                        _ => 1_000
+                    };
 
-                    for (int i = 0; i < scanIters; i++)
+                    for (int i = 0; i < scanWarmupIters; i++)
+                    {
+                        await using var warmup = await db.ExecuteAsync(scanSql);
+                        await warmup.ToListAsync();
+                    }
+
+                    // Reduce GC interference right before the measured scan window.
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+
+                    var scanSw = Stopwatch.StartNew();
+                    int scanIters = 0;
+
+                    while (scanIters < maxScanIters)
                     {
                         var sw = Stopwatch.StartNew();
-                        await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM t");
+                        await using var result = await db.ExecuteAsync(scanSql);
                         await result.ToListAsync();
                         sw.Stop();
                         scanHist.Record(sw.Elapsed.TotalMilliseconds);
+                        scanIters++;
+
+                        if (scanSw.Elapsed.TotalMilliseconds >= minScanDurationMs && scanIters >= minScanIters)
+                            break;
                     }
                     scanSw.Stop();
 

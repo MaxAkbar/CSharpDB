@@ -1,4 +1,5 @@
 using CSharpDB.Core;
+using CSharpDB.Storage.Caching;
 using System.Buffers;
 
 namespace CSharpDB.Storage.Paging;
@@ -56,8 +57,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         ValidateOptions(_options);
         _interceptor = _options.CreateInterceptor();
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
+        var cache = _options.CreatePageCache();
+        if (_options.OnCachePageEvicted != null && cache is IPageCacheEvictionEvents evictingCache)
+            evictingCache.PageEvicted += _options.OnCachePageEvicted;
         _buffers = new PageBufferManager(
-            _options.CreatePageCache(),
+            cache,
             _wal,
             _walIndex,
             readerSnapshot: null,
@@ -93,8 +97,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         _readerSnapshot = snapshot;
         _isSnapshotReader = true;
+        var cache = _options.CreatePageCache();
+        if (_options.OnCachePageEvicted != null && cache is IPageCacheEvictionEvents evictingCache)
+            evictingCache.PageEvicted += _options.OnCachePageEvicted;
         _buffers = new PageBufferManager(
-            _options.CreatePageCache(),
+            cache,
             _wal,
             _walIndex,
             _readerSnapshot,
