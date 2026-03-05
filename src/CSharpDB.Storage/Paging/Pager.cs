@@ -269,19 +269,23 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 for (int i = 0; i < orderedDirtyCount; i++)
                 {
                     uint pageId = orderedDirtyPageIds[i];
-                    if (_buffers.TryGetDirtyPage(pageId, out var data))
+                    if (!_buffers.TryGetDirtyPage(pageId, out var data))
                     {
-                        bool writeSucceeded = false;
-                        await _interceptor.OnBeforeWriteAsync(pageId, ct);
-                        try
-                        {
-                            await _wal.AppendFrameAsync(pageId, data, ct);
-                            writeSucceeded = true;
-                        }
-                        finally
-                        {
-                            await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
-                        }
+                        throw new CSharpDbException(
+                            ErrorCode.Unknown,
+                            $"Dirty page {pageId} could not be materialized during commit.");
+                    }
+
+                    bool writeSucceeded = false;
+                    await _interceptor.OnBeforeWriteAsync(pageId, ct);
+                    try
+                    {
+                        await _wal.AppendFrameAsync(pageId, data, ct);
+                        writeSucceeded = true;
+                    }
+                    finally
+                    {
+                        await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
                     }
                 }
 
@@ -311,10 +315,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 for (int i = 0; i < orderedDirtyCount; i++)
                 {
                     uint pageId = orderedDirtyPageIds[i];
-                    if (_buffers.TryGetDirtyPage(pageId, out var data))
+                    if (!_buffers.TryGetDirtyPage(pageId, out var data))
                     {
-                        frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
+                        throw new CSharpDbException(
+                            ErrorCode.Unknown,
+                            $"Dirty page {pageId} could not be materialized during commit.");
                     }
+
+                    frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
                 }
 
                 if (frameCount > 0)

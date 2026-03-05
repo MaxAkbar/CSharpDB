@@ -40,15 +40,35 @@ internal sealed class PageBufferManager
 
     public byte[]? TryGetCachedPage(uint pageId)
     {
-        _cache.TryGet(pageId, out var page);
-        return page;
+        if (_cache.TryGet(pageId, out var page))
+            return page;
+
+        // Dirty pages can outlive bounded-cache eviction until commit.
+        if (_dirtyBuffers.TryGetValue(pageId, out page!))
+        {
+            _cache.Set(pageId, page);
+            return page;
+        }
+
+        return null;
     }
 
     public bool TryGetDirtyPage(uint pageId, out byte[] page)
     {
-        if (_dirtyBuffers.TryGetValue(pageId, out page!))
+        // Prefer the cache copy when present, then refresh the pinned reference.
+        if (_cache.TryGet(pageId, out page))
+        {
+            _dirtyBuffers[pageId] = page;
             return true;
-        return _cache.TryGet(pageId, out page);
+        }
+
+        if (_dirtyBuffers.TryGetValue(pageId, out page!))
+        {
+            _cache.Set(pageId, page);
+            return true;
+        }
+
+        return false;
     }
 
     public ValueTask<byte[]> GetPageAsync(IStorageDevice device, uint pageId, CancellationToken ct = default)
@@ -70,6 +90,14 @@ internal sealed class PageBufferManager
             if (_hasInterceptor)
                 await _interceptor.OnAfterReadAsync(pageId, PageReadSource.Cache, ct);
             return cached;
+        }
+
+        if (_dirtyBuffers.TryGetValue(pageId, out var dirtyBuffer))
+        {
+            _cache.Set(pageId, dirtyBuffer);
+            if (_hasInterceptor)
+                await _interceptor.OnAfterReadAsync(pageId, PageReadSource.Cache, ct);
+            return dirtyBuffer;
         }
 
         if (_isSnapshotReader && _readerSnapshot != null)
@@ -118,7 +146,13 @@ internal sealed class PageBufferManager
         // Pin the page buffer so it survives LRU cache eviction before commit.
         if (_cache.TryGet(pageId, out var buffer))
         {
-            _dirtyBuffers.TryAdd(pageId, buffer);
+            _dirtyBuffers[pageId] = buffer;
+            return ValueTask.CompletedTask;
+        }
+
+        if (_dirtyBuffers.TryGetValue(pageId, out var pinned))
+        {
+            _cache.Set(pageId, pinned);
             return ValueTask.CompletedTask;
         }
 
@@ -129,7 +163,7 @@ internal sealed class PageBufferManager
     {
         _dirtyPages.Add(pageId);
         if (_cache.TryGet(pageId, out var buffer))
-            _dirtyBuffers.TryAdd(pageId, buffer);
+            _dirtyBuffers[pageId] = buffer;
     }
 
     public void SetCached(uint pageId, byte[] page) => _cache.Set(pageId, page);
@@ -155,6 +189,6 @@ internal sealed class PageBufferManager
         CancellationToken ct)
     {
         var page = await getPageAsync(pageId, ct);
-        _dirtyBuffers.TryAdd(pageId, page);
+        _dirtyBuffers[pageId] = page;
     }
 }
