@@ -15,9 +15,10 @@ Thread-safe service layer for hosting [CSharpDB](https://github.com/MaxAkbar/CSh
 - **DI-ready**: Constructor takes `IConfiguration`, reads the `"CSharpDB"` connection string
 - **Full schema operations**: Tables, indexes, views, triggers (create, update, drop)
 - **CRUD**: Browse (paginated), get by PK, insert, update, delete
+- **Procedure catalog**: Table-backed procedure definitions with strict typed parameter validation and transactional execution
 - **SQL console**: `ExecuteSqlAsync` with multi-statement splitting and timing
 - **Storage diagnostics**: Database inspection, WAL checking, page inspection, index verification
-- **Events**: `TablesChanged` and `SchemaChanged` for UI refresh
+- **Events**: `TablesChanged`, `SchemaChanged`, and `ProceduresChanged` for UI refresh
 
 ## Usage
 
@@ -95,6 +96,36 @@ var pageInfo = await db.InspectPageAsync(pageId: 5);
 var indexReport = await db.CheckIndexesAsync();
 ```
 
+### Procedure Catalog
+
+```csharp
+using CSharpDB.Core;
+using CSharpDB.Service.Models;
+
+await db.CreateProcedureAsync(new ProcedureDefinition
+{
+    Name = "GetUserById",
+    BodySql = "SELECT * FROM users WHERE id = @id;",
+    Parameters =
+    [
+        new ProcedureParameterDefinition
+        {
+            Name = "id",
+            Type = DbType.Integer,
+            Required = true,
+        }
+    ],
+    IsEnabled = true,
+    CreatedUtc = DateTime.UtcNow,
+    UpdatedUtc = DateTime.UtcNow,
+});
+
+var execution = await db.ExecuteProcedureAsync("GetUserById", new Dictionary<string, object?>
+{
+    ["id"] = 1L,
+});
+```
+
 ## Result Models
 
 | Model | Description |
@@ -103,6 +134,8 @@ var indexReport = await db.CheckIndexesAsync();
 | `TableBrowseResult` | Paginated table data with `Schema`, `Rows`, `TotalRows`, `Page`, `PageSize`, `TotalPages` |
 | `ViewBrowseResult` | View query results |
 | `ViewDefinition` | View name and defining SQL |
+| `ProcedureDefinition` | Procedure metadata: name, body SQL, params, enabled flag, timestamps |
+| `ProcedureExecutionResult` | Procedure execution summary with per-statement results and rollback-safe error info |
 
 ## Installation
 

@@ -6,6 +6,7 @@ public enum TabKind
     Query,
     TableData,
     ViewData,
+    Procedure,
     Storage
 }
 

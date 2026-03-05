@@ -17,6 +17,7 @@
     <Project Path="tests/CSharpDB.Tests/CSharpDB.Tests.csproj" />
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
+    <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj" />
   </Folder>
 </Solution>

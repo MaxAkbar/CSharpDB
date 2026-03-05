@@ -8,7 +8,7 @@ public static class InspectEndpoints
     {
         group.MapGet("/inspect", InspectStorage);
         group.MapGet("/inspect/wal", InspectWal);
-        group.MapGet("/inspect/page/{id:uint}", InspectPage);
+        group.MapGet("/inspect/page/{id}", InspectPage);
         group.MapGet("/inspect/indexes", CheckIndexes);
         return group;
     }

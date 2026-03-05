@@ -45,7 +45,8 @@ Returns a summary of the database.
   "tableCount": 3,
   "indexCount": 2,
   "viewCount": 1,
-  "triggerCount": 1
+  "triggerCount": 1,
+  "procedureCount": 2
 }
 ```
 
@@ -441,6 +442,96 @@ Execute an arbitrary SQL statement.
   "elapsed": 0.87
 }
 ```
+
+---
+
+### Procedures
+
+Table-backed procedure catalog (`__procedures`) with strict parameter metadata validation and transactional execution.
+
+#### `GET /api/procedures`
+
+List procedure metadata.
+
+#### `GET /api/procedures/{name}`
+
+Get one procedure definition.
+
+#### `POST /api/procedures`
+
+Create a procedure.
+
+**Request:**
+```json
+{
+  "name": "GetUserById",
+  "bodySql": "SELECT * FROM users WHERE id = @id;",
+  "parameters": [
+    { "name": "id", "type": "INTEGER", "required": true, "default": null, "description": "User ID" }
+  ],
+  "description": "Lookup user by ID",
+  "isEnabled": true
+}
+```
+
+#### `PUT /api/procedures/{name}`
+
+Update (or rename) a procedure.
+
+**Request:**
+```json
+{
+  "newName": "GetUserById",
+  "bodySql": "SELECT * FROM users WHERE id = @id;",
+  "parameters": [
+    { "name": "id", "type": "INTEGER", "required": true }
+  ],
+  "description": "Updated description",
+  "isEnabled": true
+}
+```
+
+#### `DELETE /api/procedures/{name}`
+
+Delete a procedure.
+
+#### `POST /api/procedures/{name}/execute`
+
+Execute a stored procedure by name.
+
+**Request:**
+```json
+{
+  "args": {
+    "id": 123
+  }
+}
+```
+
+**Response (success):**
+```json
+{
+  "procedureName": "GetUserById",
+  "succeeded": true,
+  "statements": [
+    {
+      "statementIndex": 0,
+      "statementText": "SELECT * FROM users WHERE id = @id;",
+      "isQuery": true,
+      "columnNames": ["id", "name"],
+      "rows": [{ "id": 123, "name": "Alice" }],
+      "rowsAffected": 1,
+      "elapsedMs": 0.34
+    }
+  ],
+  "error": null,
+  "failedStatementIndex": null,
+  "elapsedMs": 0.51
+}
+```
+
+**Response (validation/runtime failure):**
+`400 Bad Request` with the same shape and `succeeded = false`.
 
 ---
 

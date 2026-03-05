@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using CSharpDB.Service.Models;
 using CSharpDB.Core;
 using CSharpDB.Data;
@@ -12,8 +13,15 @@ namespace CSharpDB.Service;
 
 public sealed class CSharpDbService : IAsyncDisposable
 {
+    private const string ProcedureTableName = "__procedures";
+    private const string ProcedureEnabledIndexName = "idx___procedures_is_enabled";
+
     private readonly CSharpDbConnection _connection;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     public CSharpDbService(IConfiguration configuration)
     {
@@ -25,6 +33,13 @@ public sealed class CSharpDbService : IAsyncDisposable
     public async Task InitializeAsync()
     {
         await _connection.OpenAsync();
+
+        await _lock.WaitAsync();
+        try
+        {
+            await EnsureProcedureCatalogAsync();
+        }
+        finally { _lock.Release(); }
     }
 
     public string DataSource => _connection.DataSource;
@@ -33,6 +48,8 @@ public sealed class CSharpDbService : IAsyncDisposable
     public event Action? TablesChanged;
     /// <summary>Raised after schema objects (tables, indexes, views, triggers) change.</summary>
     public event Action? SchemaChanged;
+    /// <summary>Raised after procedure definitions change.</summary>
+    public event Action? ProceduresChanged;
 
     private void NotifySchemaChanged(bool tablesMayHaveChanged)
     {
@@ -41,19 +58,31 @@ public sealed class CSharpDbService : IAsyncDisposable
             TablesChanged?.Invoke();
     }
 
+    private void NotifyProceduresChanged() => ProceduresChanged?.Invoke();
+
     // ─── Schema ────────────────────────────────────────────────────
 
     public async Task<IReadOnlyCollection<string>> GetTableNamesAsync()
     {
         await _lock.WaitAsync();
-        try { return _connection.GetTableNames(); }
+        try
+        {
+            return _connection.GetTableNames()
+                .Where(name => !IsInternalTable(name))
+                .ToArray();
+        }
         finally { _lock.Release(); }
     }
 
     public async Task<TableSchema?> GetTableSchemaAsync(string tableName)
     {
         await _lock.WaitAsync();
-        try { return _connection.GetTableSchema(tableName); }
+        try
+        {
+            if (IsInternalTable(tableName))
+                return null;
+            return _connection.GetTableSchema(tableName);
+        }
         finally { _lock.Release(); }
     }
 
@@ -162,6 +191,263 @@ public sealed class CSharpDbService : IAsyncDisposable
             return _connection.GetTriggers()
                 .OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+        }
+        finally { _lock.Release(); }
+    }
+
+    // ─── Procedures ────────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<ProcedureDefinition>> GetProceduresAsync(bool includeDisabled = true)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var procedures = new List<ProcedureDefinition>();
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = includeDisabled
+                ? $"SELECT name, body_sql, params_json, description, is_enabled, created_utc, updated_utc FROM {ProcedureTableName} ORDER BY name;"
+                : $"SELECT name, body_sql, params_json, description, is_enabled, created_utc, updated_utc FROM {ProcedureTableName} WHERE is_enabled = 1 ORDER BY name;";
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                procedures.Add(ReadProcedureDefinition(reader));
+
+            return procedures;
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<ProcedureDefinition?> GetProcedureAsync(string name)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            ValidateIdentifier(name, "procedure name");
+            return await GetProcedureInternalAsync(name);
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task CreateProcedureAsync(ProcedureDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+
+        await _lock.WaitAsync();
+        try
+        {
+            var normalized = NormalizeProcedureDefinition(definition, defaultCreatedUtc: DateTime.UtcNow);
+            if (await GetProcedureInternalAsync(normalized.Name) is not null)
+                throw new ArgumentException($"Procedure '{normalized.Name}' already exists.");
+
+            string paramsJson = SerializeProcedureParameters(normalized.Parameters);
+            string createdUtc = normalized.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
+            string updatedUtc = normalized.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture);
+
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = $"""
+                INSERT INTO {ProcedureTableName}
+                    (name, body_sql, params_json, description, is_enabled, created_utc, updated_utc)
+                VALUES
+                    (@name, @body, @params, @description, @enabled, @created, @updated);
+                """;
+            cmd.Parameters.AddWithValue("@name", normalized.Name);
+            cmd.Parameters.AddWithValue("@body", normalized.BodySql);
+            cmd.Parameters.AddWithValue("@params", paramsJson);
+            cmd.Parameters.AddWithValue("@description", normalized.Description is null ? DBNull.Value : normalized.Description);
+            cmd.Parameters.AddWithValue("@enabled", normalized.IsEnabled ? 1L : 0L);
+            cmd.Parameters.AddWithValue("@created", createdUtc);
+            cmd.Parameters.AddWithValue("@updated", updatedUtc);
+            await cmd.ExecuteNonQueryAsync();
+
+            NotifyProceduresChanged();
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task UpdateProcedureAsync(string existingName, ProcedureDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+
+        await _lock.WaitAsync();
+        try
+        {
+            ValidateIdentifier(existingName, "existing procedure name");
+            var existing = await GetProcedureInternalAsync(existingName);
+            if (existing is null)
+                throw new ArgumentException($"Procedure '{existingName}' not found.");
+
+            var normalized = NormalizeProcedureDefinition(definition, existing.CreatedUtc);
+            string paramsJson = SerializeProcedureParameters(normalized.Parameters);
+            string createdUtc = normalized.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
+            string updatedUtc = normalized.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture);
+
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = $"""
+                UPDATE {ProcedureTableName}
+                SET name = @newName,
+                    body_sql = @body,
+                    params_json = @params,
+                    description = @description,
+                    is_enabled = @enabled,
+                    created_utc = @created,
+                    updated_utc = @updated
+                WHERE name = @existing;
+                """;
+            cmd.Parameters.AddWithValue("@newName", normalized.Name);
+            cmd.Parameters.AddWithValue("@body", normalized.BodySql);
+            cmd.Parameters.AddWithValue("@params", paramsJson);
+            cmd.Parameters.AddWithValue("@description", normalized.Description is null ? DBNull.Value : normalized.Description);
+            cmd.Parameters.AddWithValue("@enabled", normalized.IsEnabled ? 1L : 0L);
+            cmd.Parameters.AddWithValue("@created", createdUtc);
+            cmd.Parameters.AddWithValue("@updated", updatedUtc);
+            cmd.Parameters.AddWithValue("@existing", existingName);
+            int affected = await cmd.ExecuteNonQueryAsync();
+            if (affected == 0)
+                throw new ArgumentException($"Procedure '{existingName}' not found.");
+
+            NotifyProceduresChanged();
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task DeleteProcedureAsync(string name)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            ValidateIdentifier(name, "procedure name");
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = $"DELETE FROM {ProcedureTableName} WHERE name = @name;";
+            cmd.Parameters.AddWithValue("@name", name);
+            int affected = await cmd.ExecuteNonQueryAsync();
+            if (affected == 0)
+                throw new ArgumentException($"Procedure '{name}' not found.");
+
+            NotifyProceduresChanged();
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<ProcedureExecutionResult> ExecuteProcedureAsync(
+        string name,
+        IReadOnlyDictionary<string, object?> args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        await _lock.WaitAsync();
+        try
+        {
+            ValidateIdentifier(name, "procedure name");
+
+            var procedure = await GetProcedureInternalAsync(name);
+            if (procedure is null)
+                throw new ArgumentException($"Procedure '{name}' not found.");
+
+            if (!procedure.IsEnabled)
+            {
+                return new ProcedureExecutionResult
+                {
+                    ProcedureName = name,
+                    Succeeded = false,
+                    Error = $"Procedure '{name}' is disabled.",
+                    Elapsed = TimeSpan.Zero,
+                };
+            }
+
+            var totalSw = Stopwatch.StartNew();
+            Dictionary<string, object?> boundArgs;
+            try
+            {
+                boundArgs = BindProcedureArguments(procedure, args);
+            }
+            catch (ArgumentException ex)
+            {
+                totalSw.Stop();
+                return new ProcedureExecutionResult
+                {
+                    ProcedureName = name,
+                    Succeeded = false,
+                    Error = ex.Message,
+                    Elapsed = totalSw.Elapsed,
+                };
+            }
+
+            IReadOnlyList<string> statements;
+            try
+            {
+                statements = SplitSqlStatements(procedure.BodySql);
+            }
+            catch (CSharpDbException ex)
+            {
+                totalSw.Stop();
+                return new ProcedureExecutionResult
+                {
+                    ProcedureName = name,
+                    Succeeded = false,
+                    Error = ex.Message,
+                    Elapsed = totalSw.Elapsed,
+                };
+            }
+
+            var results = new List<ProcedureStatementExecutionResult>(statements.Count);
+            bool schemaMutated = false;
+            bool tableMutated = false;
+            bool proceduresMutated = false;
+
+            await using var tx = await _connection.BeginTransactionAsync();
+            try
+            {
+                for (int i = 0; i < statements.Count; i++)
+                {
+                    string statement = statements[i];
+                    var single = await ExecuteSingleStatementWithArgumentsAsync(i, statement, boundArgs);
+                    results.Add(single);
+
+                    if (LooksLikeSchemaMutation(statement))
+                    {
+                        schemaMutated = true;
+                        tableMutated |= LooksLikeTableMutation(statement);
+                    }
+
+                    proceduresMutated |= LooksLikeProcedureMutation(statement);
+                }
+
+                await tx.CommitAsync();
+            }
+            catch (DbException ex)
+            {
+                await tx.RollbackAsync();
+                totalSw.Stop();
+                return new ProcedureExecutionResult
+                {
+                    ProcedureName = name,
+                    Succeeded = false,
+                    Statements = results,
+                    Error = ex.Message,
+                    FailedStatementIndex = results.Count,
+                    Elapsed = totalSw.Elapsed,
+                };
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+
+            totalSw.Stop();
+
+            if (schemaMutated)
+                NotifySchemaChanged(tablesMayHaveChanged: tableMutated);
+            if (proceduresMutated)
+                NotifyProceduresChanged();
+
+            return new ProcedureExecutionResult
+            {
+                ProcedureName = name,
+                Succeeded = true,
+                Statements = results,
+                Elapsed = totalSw.Elapsed,
+            };
         }
         finally { _lock.Release(); }
     }
@@ -616,6 +902,7 @@ public sealed class CSharpDbService : IAsyncDisposable
             int totalRowsAffected = 0;
             bool schemaMutated = false;
             bool tableMutated = false;
+            bool proceduresMutated = false;
 
             for (int i = 0; i < statements.Count; i++)
             {
@@ -634,6 +921,8 @@ public sealed class CSharpDbService : IAsyncDisposable
                         schemaMutated = true;
                         tableMutated |= LooksLikeTableMutation(statement);
                     }
+
+                    proceduresMutated |= LooksLikeProcedureMutation(statement);
                 }
                 catch (DbException ex)
                 {
@@ -641,6 +930,8 @@ public sealed class CSharpDbService : IAsyncDisposable
 
                     if (schemaMutated)
                         NotifySchemaChanged(tablesMayHaveChanged: tableMutated);
+                    if (proceduresMutated)
+                        NotifyProceduresChanged();
 
                     string error = statements.Count > 1
                         ? $"Statement {i + 1} failed: {ex.Message}"
@@ -658,6 +949,8 @@ public sealed class CSharpDbService : IAsyncDisposable
 
             if (schemaMutated)
                 NotifySchemaChanged(tablesMayHaveChanged: tableMutated);
+            if (proceduresMutated)
+                NotifyProceduresChanged();
 
             if (lastResult is null)
             {
@@ -772,8 +1065,520 @@ public sealed class CSharpDbService : IAsyncDisposable
         return Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
     }
 
+    private static bool IsInternalTable(string tableName)
+        => string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase);
+
+    private async Task EnsureProcedureCatalogAsync()
+    {
+        await ExecuteNonQueryAsync($"""
+            CREATE TABLE IF NOT EXISTS {ProcedureTableName} (
+                name TEXT PRIMARY KEY,
+                body_sql TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                description TEXT,
+                is_enabled INTEGER NOT NULL,
+                created_utc TEXT NOT NULL,
+                updated_utc TEXT NOT NULL
+            );
+            """);
+
+        await ExecuteNonQueryAsync($"""
+            CREATE INDEX IF NOT EXISTS {ProcedureEnabledIndexName}
+            ON {ProcedureTableName} (is_enabled);
+            """);
+    }
+
+    private async Task<ProcedureDefinition?> GetProcedureInternalAsync(string name)
+    {
+        using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT name, body_sql, params_json, description, is_enabled, created_utc, updated_utc
+            FROM {ProcedureTableName}
+            WHERE name = @name;
+            """;
+        cmd.Parameters.AddWithValue("@name", name);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            return null;
+
+        return ReadProcedureDefinition(reader);
+    }
+
+    private static ProcedureDefinition ReadProcedureDefinition(DbDataReader reader)
+    {
+        string name = reader.GetString(0);
+        string bodySql = reader.GetString(1);
+        string paramsJson = reader.GetString(2);
+        string? description = reader.IsDBNull(3) ? null : reader.GetString(3);
+        bool isEnabled = !reader.IsDBNull(4) && Convert.ToInt64(reader.GetValue(4), CultureInfo.InvariantCulture) != 0;
+        string createdRaw = reader.GetString(5);
+        string updatedRaw = reader.GetString(6);
+
+        if (!DateTime.TryParse(
+                createdRaw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var createdUtc))
+        {
+            createdUtc = DateTime.UtcNow;
+        }
+
+        if (!DateTime.TryParse(
+                updatedRaw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var updatedUtc))
+        {
+            updatedUtc = createdUtc;
+        }
+
+        return new ProcedureDefinition
+        {
+            Name = name,
+            BodySql = bodySql,
+            Parameters = DeserializeProcedureParameters(paramsJson),
+            Description = description,
+            IsEnabled = isEnabled,
+            CreatedUtc = createdUtc,
+            UpdatedUtc = updatedUtc,
+        };
+    }
+
+    private ProcedureDefinition NormalizeProcedureDefinition(
+        ProcedureDefinition definition,
+        DateTime defaultCreatedUtc)
+    {
+        ValidateIdentifier(definition.Name, "procedure name");
+
+        string normalizedBody = NormalizeSqlFragment(definition.BodySql, "procedure body");
+        var normalizedParameters = NormalizeProcedureParameters(definition.Parameters);
+        ValidateProcedureBodyReferences(normalizedBody, normalizedParameters);
+
+        return new ProcedureDefinition
+        {
+            Name = definition.Name.Trim(),
+            BodySql = normalizedBody,
+            Parameters = normalizedParameters,
+            Description = string.IsNullOrWhiteSpace(definition.Description) ? null : definition.Description.Trim(),
+            IsEnabled = definition.IsEnabled,
+            CreatedUtc = defaultCreatedUtc,
+            UpdatedUtc = DateTime.UtcNow,
+        };
+    }
+
+    private static IReadOnlyList<ProcedureParameterDefinition> NormalizeProcedureParameters(
+        IReadOnlyList<ProcedureParameterDefinition> parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+
+        var normalized = new List<ProcedureParameterDefinition>(parameters.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parameter in parameters)
+        {
+            if (parameter is null)
+                throw new ArgumentException("Procedure parameter entry cannot be null.");
+
+            string name = NormalizeProcedureParameterName(parameter.Name);
+            if (!seen.Add(name))
+                throw new ArgumentException($"Duplicate parameter '{name}' in procedure definition.");
+
+            object? normalizedDefault = parameter.Default is JsonElement je
+                ? ConvertJsonElement(je)
+                : parameter.Default;
+
+            normalized.Add(new ProcedureParameterDefinition
+            {
+                Name = name,
+                Type = parameter.Type,
+                Required = parameter.Required,
+                Default = normalizedDefault,
+                Description = string.IsNullOrWhiteSpace(parameter.Description) ? null : parameter.Description.Trim(),
+            });
+        }
+
+        return normalized;
+    }
+
+    private static void ValidateProcedureBodyReferences(
+        string bodySql,
+        IReadOnlyList<ProcedureParameterDefinition> parameters)
+    {
+        var defined = new HashSet<string>(parameters.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+        foreach (string bodyParameter in ExtractParameterNamesFromSql(bodySql))
+        {
+            if (!defined.Contains(bodyParameter))
+            {
+                throw new ArgumentException(
+                    $"Procedure SQL references parameter '@{bodyParameter}' but it is missing from params metadata.");
+            }
+        }
+    }
+
+    private static Dictionary<string, object?> BindProcedureArguments(
+        ProcedureDefinition procedure,
+        IReadOnlyDictionary<string, object?> args)
+    {
+        var incoming = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (rawName, rawValue) in args)
+        {
+            string normalized = NormalizeProcedureParameterName(rawName);
+            incoming[normalized] = rawValue is JsonElement je ? ConvertJsonElement(je) : rawValue;
+        }
+
+        var known = new HashSet<string>(procedure.Parameters.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+        foreach (string provided in incoming.Keys)
+        {
+            if (!known.Contains(provided))
+                throw new ArgumentException($"Unknown argument '{provided}'.");
+        }
+
+        var bound = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in procedure.Parameters)
+        {
+            if (incoming.TryGetValue(parameter.Name, out var providedValue))
+            {
+                if (providedValue is null)
+                {
+                    if (parameter.Default is not null)
+                    {
+                        bound[parameter.Name] = CoerceProcedureParameterValue(parameter.Name, parameter.Type, parameter.Default);
+                        continue;
+                    }
+
+                    if (parameter.Required)
+                        throw new ArgumentException($"Required parameter '{parameter.Name}' cannot be null.");
+
+                    bound[parameter.Name] = null;
+                    continue;
+                }
+
+                bound[parameter.Name] = CoerceProcedureParameterValue(parameter.Name, parameter.Type, providedValue);
+                continue;
+            }
+
+            if (parameter.Default is not null)
+            {
+                bound[parameter.Name] = CoerceProcedureParameterValue(parameter.Name, parameter.Type, parameter.Default);
+                continue;
+            }
+
+            if (parameter.Required)
+                throw new ArgumentException($"Missing required parameter '{parameter.Name}'.");
+
+            bound[parameter.Name] = null;
+        }
+
+        return bound;
+    }
+
+    private async Task<ProcedureStatementExecutionResult> ExecuteSingleStatementWithArgumentsAsync(
+        int statementIndex,
+        string sql,
+        IReadOnlyDictionary<string, object?> args)
+    {
+        var sw = Stopwatch.StartNew();
+        using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+        cmd.CommandText = sql;
+
+        foreach (string parameterName in ExtractParameterNamesFromSql(sql))
+        {
+            if (!args.TryGetValue(parameterName, out object? value))
+                throw new ArgumentException($"Missing argument for SQL parameter '@{parameterName}'.");
+
+            cmd.Parameters.AddWithValue($"@{parameterName}", value ?? DBNull.Value);
+        }
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        if (reader.FieldCount > 0)
+        {
+            var colNames = new string[reader.FieldCount];
+            for (int i = 0; i < reader.FieldCount; i++)
+                colNames[i] = reader.GetName(i);
+
+            var rows = new List<object?[]>();
+            while (await reader.ReadAsync())
+            {
+                var row = new object?[reader.FieldCount];
+                for (int i = 0; i < reader.FieldCount; i++)
+                    row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                rows.Add(row);
+            }
+
+            sw.Stop();
+            return new ProcedureStatementExecutionResult
+            {
+                StatementIndex = statementIndex,
+                StatementText = sql,
+                IsQuery = true,
+                ColumnNames = colNames,
+                Rows = rows,
+                RowsAffected = rows.Count,
+                Elapsed = sw.Elapsed,
+            };
+        }
+
+        sw.Stop();
+        return new ProcedureStatementExecutionResult
+        {
+            StatementIndex = statementIndex,
+            StatementText = sql,
+            IsQuery = false,
+            RowsAffected = reader.RecordsAffected,
+            Elapsed = sw.Elapsed,
+        };
+    }
+
+    private static string SerializeProcedureParameters(IReadOnlyList<ProcedureParameterDefinition> parameters)
+    {
+        var storage = parameters.Select(p => new ProcedureParameterStorage
+        {
+            Name = p.Name,
+            Type = p.Type.ToString().ToUpperInvariant(),
+            Required = p.Required,
+            Default = p.Type == DbType.Blob && p.Default is byte[] bytes
+                ? Convert.ToBase64String(bytes)
+                : p.Default,
+            Description = p.Description,
+        });
+
+        return JsonSerializer.Serialize(storage, s_jsonOptions);
+    }
+
+    private static IReadOnlyList<ProcedureParameterDefinition> DeserializeProcedureParameters(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        List<ProcedureParameterStorage>? storage;
+        try
+        {
+            storage = JsonSerializer.Deserialize<List<ProcedureParameterStorage>>(json, s_jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"Invalid procedure params_json payload: {ex.Message}");
+        }
+
+        if (storage is null || storage.Count == 0)
+            return [];
+
+        var result = new List<ProcedureParameterDefinition>(storage.Count);
+        foreach (var item in storage)
+        {
+            if (item is null)
+                continue;
+
+            string name = NormalizeProcedureParameterName(item.Name ?? string.Empty);
+            if (!Enum.TryParse<DbType>(item.Type, ignoreCase: true, out var type))
+                throw new ArgumentException($"Unsupported parameter type '{item.Type}' in params_json.");
+
+            object? defaultValue = item.Default is JsonElement je
+                ? ConvertJsonElement(je)
+                : item.Default;
+
+            result.Add(new ProcedureParameterDefinition
+            {
+                Name = name,
+                Type = type,
+                Required = item.Required,
+                Default = defaultValue,
+                Description = string.IsNullOrWhiteSpace(item.Description) ? null : item.Description.Trim(),
+            });
+        }
+
+        return NormalizeProcedureParameters(result);
+    }
+
+    private static string NormalizeProcedureParameterName(string rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            throw new ArgumentException("Procedure parameter name is required.");
+
+        string trimmed = rawName.Trim();
+        if (trimmed.StartsWith('@'))
+            trimmed = trimmed[1..];
+
+        ValidateIdentifier(trimmed, "procedure parameter name");
+        return trimmed;
+    }
+
+    private static HashSet<string> ExtractParameterNamesFromSql(string sql)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in new Tokenizer(sql).Tokenize())
+        {
+            if (token.Type == TokenType.Parameter)
+                names.Add(token.Value);
+        }
+        return names;
+    }
+
+    private static object? ConvertJsonElement(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Null => null,
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number => element.TryGetInt64(out long l) ? l : element.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        _ => element.ToString(),
+    };
+
+    private static object? CoerceProcedureParameterValue(string name, DbType type, object? value)
+    {
+        if (value is null)
+            return null;
+
+        if (value is JsonElement element)
+            value = ConvertJsonElement(element);
+        if (value is null)
+            return null;
+
+        switch (type)
+        {
+            case DbType.Integer:
+                if (TryCoerceInteger(value, out long integerValue))
+                    return integerValue;
+                throw new ArgumentException($"Parameter '{name}' expects INTEGER.");
+
+            case DbType.Real:
+                if (TryCoerceReal(value, out double realValue))
+                    return realValue;
+                throw new ArgumentException($"Parameter '{name}' expects REAL.");
+
+            case DbType.Text:
+                if (value is string textValue)
+                    return textValue;
+                throw new ArgumentException($"Parameter '{name}' expects TEXT.");
+
+            case DbType.Blob:
+                if (value is byte[] blob)
+                    return blob;
+                if (value is string b64)
+                {
+                    try
+                    {
+                        return Convert.FromBase64String(b64);
+                    }
+                    catch (FormatException)
+                    {
+                        throw new ArgumentException($"Parameter '{name}' expects BLOB as base64 string.");
+                    }
+                }
+                throw new ArgumentException($"Parameter '{name}' expects BLOB.");
+
+            default:
+                throw new ArgumentException($"Unsupported parameter type '{type}' for '{name}'.");
+        }
+    }
+
+    private static bool TryCoerceInteger(object value, out long result)
+    {
+        switch (value)
+        {
+            case long l:
+                result = l;
+                return true;
+            case int i:
+                result = i;
+                return true;
+            case short s:
+                result = s;
+                return true;
+            case byte b:
+                result = b;
+                return true;
+            case sbyte sb:
+                result = sb;
+                return true;
+            case uint ui:
+                result = ui;
+                return true;
+            case ulong ul when ul <= long.MaxValue:
+                result = (long)ul;
+                return true;
+            case double d when IsWholeNumberInRange(d):
+                result = (long)d;
+                return true;
+            case float f when IsWholeNumberInRange(f):
+                result = (long)f;
+                return true;
+            case decimal m when m >= long.MinValue && m <= long.MaxValue && decimal.Truncate(m) == m:
+                result = (long)m;
+                return true;
+            case string text when long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed):
+                result = parsed;
+                return true;
+            default:
+                result = 0;
+                return false;
+        }
+    }
+
+    private static bool IsWholeNumberInRange(double value)
+        => !double.IsNaN(value)
+           && !double.IsInfinity(value)
+           && value >= long.MinValue
+           && value <= long.MaxValue
+           && Math.Truncate(value) == value;
+
+    private static bool IsWholeNumberInRange(float value)
+        => !float.IsNaN(value)
+           && !float.IsInfinity(value)
+           && value >= long.MinValue
+           && value <= long.MaxValue
+           && MathF.Truncate(value) == value;
+
+    private static bool TryCoerceReal(object value, out double result)
+    {
+        switch (value)
+        {
+            case double d:
+                result = d;
+                return true;
+            case float f:
+                result = f;
+                return true;
+            case decimal m:
+                result = (double)m;
+                return true;
+            case long l:
+                result = l;
+                return true;
+            case int i:
+                result = i;
+                return true;
+            case short s:
+                result = s;
+                return true;
+            case byte b:
+                result = b;
+                return true;
+            case sbyte sb:
+                result = sb;
+                return true;
+            case uint ui:
+                result = ui;
+                return true;
+            case ulong ul:
+                result = ul;
+                return true;
+            case string text when double.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double parsed):
+                result = parsed;
+                return true;
+            default:
+                result = 0;
+                return false;
+        }
+    }
+
     private void ValidateTableName(string tableName)
     {
+        if (IsInternalTable(tableName))
+            throw new ArgumentException($"Table '{tableName}' is internal and not available through table endpoints.");
+
         var known = _connection.GetTableNames();
         if (!known.Any(t => string.Equals(t, tableName, StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException($"Table '{tableName}' does not exist.");
@@ -966,6 +1771,27 @@ public sealed class CSharpDbService : IAsyncDisposable
         return upper.StartsWith("CREATE TABLE", StringComparison.Ordinal)
             || upper.StartsWith("DROP TABLE", StringComparison.Ordinal)
             || upper.StartsWith("ALTER TABLE", StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeProcedureMutation(string sql)
+    {
+        string upper = sql.TrimStart().ToUpperInvariant();
+        return upper.StartsWith($"INSERT INTO {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"UPDATE {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"DELETE FROM {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"CREATE TABLE {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"CREATE TABLE IF NOT EXISTS {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"DROP TABLE {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal)
+            || upper.StartsWith($"ALTER TABLE {ProcedureTableName.ToUpperInvariant()}", StringComparison.Ordinal);
+    }
+
+    private sealed class ProcedureParameterStorage
+    {
+        public string? Name { get; init; }
+        public string? Type { get; init; }
+        public bool Required { get; init; }
+        public object? Default { get; init; }
+        public string? Description { get; init; }
     }
 
     private string ResolveDatabasePath(string? databasePath)

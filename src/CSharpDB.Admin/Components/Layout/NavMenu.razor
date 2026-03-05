@@ -110,11 +110,37 @@
                 </div>
             }
         </div>
+
+        @* Procedures *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("procedures")'>
+                <i class="bi @(_expandedGroups.Contains("procedures") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-gear-wide-connected icon-trigger"></i>
+                <span>Procedures</span>
+                <span class="group-count">@(_procedures?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("procedures") && _procedures is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var procedure in FilterProcedures())
+                    {
+                        <div class="tree-item @(IsActive("procedure", procedure.Name) ? "active" : "")"
+                             @onclick="() => TabManager.OpenProcedureTab(procedure.Name)">
+                            <i class="bi bi-gear-wide-connected icon-trigger"></i>
+                            <span class="item-label">@procedure.Name</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
     </div>
 
     <div class="sidebar-footer">
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query">
             <i class="bi bi-plus"></i> New Query
+        </button>
+        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenNewProcedureTab()" title="New Procedure">
+            <i class="bi bi-gear-wide-connected"></i> New Procedure
         </button>
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenStorageTab()" title="Storage Inspector">
             <i class="bi bi-hdd-stack"></i> Storage
@@ -129,13 +155,15 @@
     private IReadOnlyCollection<string>? _viewNames;
     private IReadOnlyList<CSharpDB.Core.IndexSchema>? _indexes;
     private IReadOnlyList<CSharpDB.Core.TriggerSchema>? _triggers;
+    private IReadOnlyList<CSharpDB.Service.Models.ProcedureDefinition>? _procedures;
     private string _searchQuery = string.Empty;
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "views" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "views", "procedures" };
 
     protected override async Task OnInitializedAsync()
     {
         DbService.TablesChanged += OnSchemaChanged;
         DbService.SchemaChanged += OnSchemaChanged;
+        DbService.ProceduresChanged += OnSchemaChanged;
         TabManager.StateChanged += OnTabChanged;
         await LoadObjects();
     }
@@ -156,6 +184,7 @@
             _viewNames = (await DbService.GetViewNamesAsync()).OrderBy(n => n).ToList();
             _indexes = (await DbService.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
             _triggers = (await DbService.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
+            _procedures = (await DbService.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
         }
         catch
         {
@@ -163,6 +192,7 @@
             _viewNames = null;
             _indexes = null;
             _triggers = null;
+            _procedures = null;
         }
     }
 
@@ -197,6 +227,14 @@
                                   || t.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
+    private IEnumerable<CSharpDB.Service.Models.ProcedureDefinition> FilterProcedures()
+    {
+        if (_procedures is null) return Enumerable.Empty<CSharpDB.Service.Models.ProcedureDefinition>();
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return _procedures;
+        return _procedures.Where(p => p.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                                   || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
     private bool IsActive(string type, string name)
     {
         var activeTab = TabManager.ActiveTab;
@@ -225,6 +263,7 @@
     {
         DbService.TablesChanged -= OnSchemaChanged;
         DbService.SchemaChanged -= OnSchemaChanged;
+        DbService.ProceduresChanged -= OnSchemaChanged;
         TabManager.StateChanged -= OnTabChanged;
     }
 }

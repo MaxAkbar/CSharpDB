@@ -1,0 +1,30 @@
+[
+  {
+    "name": "GetPatientOutstandingBills",
+    "bodySql": "SELECT b.id, b.amount, b.insurance_covered, b.patient_owes, b.status, b.billing_date\nFROM billing b\nWHERE b.patient_id = @patientId AND b.status = 'pending'\nORDER BY b.billing_date DESC;",
+    "parameters": [
+      {
+        "name": "patientId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Patient identifier."
+      }
+    ],
+    "description": "Returns pending bills for a single patient.",
+    "isEnabled": true
+  },
+  {
+    "name": "MarkBillPaid",
+    "bodySql": "UPDATE billing SET status = 'paid' WHERE id = @billingId;\nSELECT id, patient_id, patient_owes, status FROM billing WHERE id = @billingId;",
+    "parameters": [
+      {
+        "name": "billingId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Billing row identifier."
+      }
+    ],
+    "description": "Marks a billing record as paid and returns the updated row.",
+    "isEnabled": true
+  }
+]

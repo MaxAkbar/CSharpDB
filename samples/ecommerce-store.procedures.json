@@ -1,0 +1,36 @@
+[
+  {
+    "name": "GetCustomerOrderHistory",
+    "bodySql": "SELECT o.id, o.order_date, o.status, o.total\nFROM orders o\nWHERE o.customer_id = @customerId\nORDER BY o.order_date DESC;",
+    "parameters": [
+      {
+        "name": "customerId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Customer identifier."
+      }
+    ],
+    "description": "Fetches recent orders for a customer.",
+    "isEnabled": true
+  },
+  {
+    "name": "AdjustProductStock",
+    "bodySql": "UPDATE products SET stock = stock + @delta WHERE id = @productId;\nSELECT id, name, stock FROM products WHERE id = @productId;",
+    "parameters": [
+      {
+        "name": "productId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Product identifier."
+      },
+      {
+        "name": "delta",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Positive or negative stock adjustment."
+      }
+    ],
+    "description": "Adjusts product inventory and returns the updated row.",
+    "isEnabled": true
+  }
+]

@@ -52,4 +52,5 @@ public sealed record DatabaseInfoResponse(
     int TableCount,
     int IndexCount,
     int ViewCount,
-    int TriggerCount);
+    int TriggerCount,
+    int ProcedureCount);
