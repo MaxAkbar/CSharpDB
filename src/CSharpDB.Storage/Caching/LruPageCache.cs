@@ -3,11 +3,12 @@ namespace CSharpDB.Storage.Caching;
 /// <summary>
 /// Bounded page cache with LRU eviction semantics.
 /// </summary>
-public sealed class LruPageCache : IPageCache
+public sealed class LruPageCache : IPageCache, IPageCacheEvictionEvents
 {
     private readonly int _capacity;
     private readonly Dictionary<uint, CacheEntry> _entries;
     private readonly LinkedList<uint> _usageOrder = new();
+    public event Action<uint, byte[]>? PageEvicted;
 
     private sealed class CacheEntry
     {
@@ -41,6 +42,9 @@ public sealed class LruPageCache : IPageCache
     {
         if (_entries.TryGetValue(pageId, out var existing))
         {
+            if (!ReferenceEquals(existing.Page, page))
+                PageEvicted?.Invoke(pageId, existing.Page);
+
             _entries[pageId] = new CacheEntry
             {
                 Page = page,
@@ -70,11 +74,18 @@ public sealed class LruPageCache : IPageCache
 
         _usageOrder.Remove(entry.Node);
         _entries.Remove(pageId);
+        PageEvicted?.Invoke(pageId, entry.Page);
         return true;
     }
 
     public void Clear()
     {
+        if (PageEvicted != null)
+        {
+            foreach (var entry in _entries)
+                PageEvicted(entry.Key, entry.Value.Page);
+        }
+
         _usageOrder.Clear();
         _entries.Clear();
     }
@@ -86,7 +97,9 @@ public sealed class LruPageCache : IPageCache
             return;
 
         _usageOrder.RemoveFirst();
-        _entries.Remove(first.Value);
+        uint pageId = first.Value;
+        if (_entries.Remove(pageId, out var entry))
+            PageEvicted?.Invoke(pageId, entry.Page);
     }
 
     private void Touch(LinkedListNode<uint> node)
