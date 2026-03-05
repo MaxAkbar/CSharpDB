@@ -2,26 +2,26 @@
 
 - Baseline: `C:\Users\maxim\source\Code\CSharpDB\tests\CSharpDB.Benchmarks\baselines\20260302-001757`
 - Note: one or more checks use per-check `baselineSnapshot` overrides
-- Current: `C:\Users\maxim\source\Code\CSharpDB\BenchmarkDotNet.Artifacts\\results`
+- Current: `C:\Users\maxim\source\Code\CSharpDB\tests\CSharpDB.Benchmarks\results\.tmp-current-micro`
 - Thresholds: `C:\Users\maxim\source\Code\CSharpDB\tests\CSharpDB.Benchmarks\perf-thresholds.json`
-- Generated (UTC): 2026-03-04 13:59:38Z
+- Generated (UTC): 2026-03-05 06:49:12Z
 
 Compared 88 rows against baseline. PASS=88, FAIL=0
 
 | CSV | Key | Mean Δ% | Alloc Δ% | Alloc Δ B | Status |
 |---|---|---:|---:|---:|---|
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=100 | -33.82 | -12.71 | -30,863 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=1000 | -35.19 | -12.70 | -30,843 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=10000 | -38.23 | -12.69 | -30,833 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=100 | -30.00 | -12.49 | -301,189 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=1000 | -26.70 | -12.49 | -301,486 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=10000 | -21.43 | -12.49 | -301,414 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=100 | -56.14 | -22.20 | -1,116 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=1000 | -57.14 | -22.20 | -1,116 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=10000 | -60.12 | -22.20 | -1,116 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=100 | -56.77 | -20.04 | -973 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=1000 | -52.20 | -20.00 | -973 | PASS |
-| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=10000 | -57.44 | -20.00 | -973 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=100 | -35.03 | -12.72 | -30,884 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=1000 | -35.32 | -12.70 | -30,843 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x100 in transaction'; PreSeededRows=10000 | -44.59 | -12.69 | -30,833 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=100 | -28.89 | -12.49 | -301,189 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=1000 | -25.92 | -12.49 | -301,486 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Batch INSERT x1000 in transaction'; PreSeededRows=10000 | -29.05 | -12.49 | -301,414 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=100 | -53.60 | -22.00 | -1,106 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=1000 | -52.67 | -22.00 | -1,106 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT (auto-commit)'; PreSeededRows=10000 | -55.13 | -21.79 | -1,096 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=100 | -54.22 | -20.04 | -973 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=1000 | -56.36 | -20.21 | -983 | PASS |
+| CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv | Method='Single INSERT in explicit transaction'; PreSeededRows=10000 | -58.36 | -20.00 | -973 | PASS |
 | CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv | Method='CROSS JOIN 100x100' | -94.50 | -66.84 | -1,976,914 | PASS |
 | CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv | Method='INNER JOIN 1Kx1K (forced nested-loop)' | -74.49 | -99.91 | -288,168,991 | PASS |
 | CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv | Method='INNER JOIN 1Kx1K LIMIT 1' | -80.62 | -60.52 | -243,036 | PASS |
@@ -47,12 +47,12 @@ Compared 88 rows against baseline. PASS=88, FAIL=0
 | CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv | Method='ORDER BY value + LIMIT 100 (no index)'; RowCount=1000 | -3.77 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv | Method='ORDER BY value + LIMIT 100 (no index)'; RowCount=10000 | -8.00 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv | Method='ORDER BY value + LIMIT 100 (no index)'; RowCount=100000 | -14.01 | 0.00 | 0 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=1000 | -40.04 | -50.87 | -1,081 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=10000 | -48.15 | -60.63 | -1,517 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=100000 | -52.09 | -62.17 | -1,579 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=1000 | -30.73 | -34.77 | -396 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=10000 | -28.72 | -40.25 | -539 | PASS |
-| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=100000 | -39.69 | -41.13 | -559 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=1000 | -21.72 | -50.87 | -1,081 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=10000 | -42.29 | -60.63 | -1,517 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by PK with residual conjunct'; RowCount=100000 | -44.92 | -62.17 | -1,579 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=1000 | -24.90 | -34.77 | -396 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=10000 | -23.23 | -40.25 | -539 | PASS |
+| CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv | Method='SELECT by primary key'; RowCount=100000 | -33.30 | -41.13 | -559 | PASS |
 | CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv | Method='Hash SUM(value) via GROUP BY 1'; RowCount=1000 | -7.42 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv | Method='Hash SUM(value) via GROUP BY 1'; RowCount=10000 | 6.35 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv | Method='Hash SUM(value) via GROUP BY 1'; RowCount=100000 | -9.65 | 0.00 | 0 | PASS |
@@ -89,12 +89,12 @@ Compared 88 rows against baseline. PASS=88, FAIL=0
 | CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv | Method='PK lookup scalar SUM(value)'; RowCount=1000 | -5.88 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv | Method='PK lookup scalar SUM(value)'; RowCount=10000 | -3.50 | 0.00 | 0 | PASS |
 | CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv | Method='PK lookup scalar SUM(value)'; RowCount=100000 | -3.69 | 0.00 | 0 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=100 | -11.65 | -12.83 | -30,536 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=1000 | -34.12 | -12.83 | -30,536 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=500 | -33.37 | -12.84 | -30,556 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=100 | 18.74 | -12.07 | -31,345 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=1000 | -13.81 | -12.72 | -303,483 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=500 | 5.00 | -12.65 | -152,463 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=100 | -60.31 | -20.84 | -809 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=1000 | -68.10 | -21.58 | -840 | PASS |
-| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=500 | -66.91 | -21.99 | -860 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=100 | -44.89 | -12.85 | -30,577 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=1000 | -34.70 | -12.85 | -30,577 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='100-row batch commit'; WalFramesBeforeCheckpoint=500 | -22.21 | -12.82 | -30,515 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=100 | 12.72 | -12.06 | -31,314 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=1000 | -7.73 | -12.71 | -303,421 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Manual checkpoint after N writes'; WalFramesBeforeCheckpoint=500 | -0.38 | -12.65 | -152,433 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=100 | -63.32 | -21.11 | -819 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=1000 | -63.98 | -21.58 | -840 | PASS |
+| CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv | Method='Single-row commit (WAL flush)'; WalFramesBeforeCheckpoint=500 | -62.94 | -21.99 | -860 | PASS |

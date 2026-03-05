@@ -40,6 +40,12 @@ public sealed class PagerOptions
     /// </summary>
     public long? MaxWalBytesWhenReadersActive { get; init; }
 
+    /// <summary>
+    /// Optional callback invoked when a page cache entry is evicted/replaced/removed.
+    /// This is intended for diagnostics or deferred reclamation pipelines.
+    /// </summary>
+    public Action<uint, byte[]>? OnCachePageEvicted { get; init; }
+
     internal IPageCache CreatePageCache()
     {
         if (PageCacheFactory != null)

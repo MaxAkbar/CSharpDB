@@ -319,21 +319,39 @@ public sealed class BTree
             // Preserve the stack-built cell for split handling.
             byte[] splitCell = GC.AllocateUninitializedArray<byte>(leafCellLength);
             stackCell.CopyTo(splitCell);
-            return await SplitLeafAsync(pageId, page, sp, insertIdx, splitCell, ct);
+            return await SplitLeafAsync(pageId, page, sp, insertIdx, splitCell, splitCell.Length, ct);
         }
 
-        byte[] heapCell = BuildLeafCell(key, payload.Span);
-        if (sp.InsertCell(insertIdx, heapCell))
+        // For larger payloads, rent a temporary buffer instead of allocating per insert.
+        byte[] pooledCell = ArrayPool<byte>.Shared.Rent(leafCellLength);
+        try
         {
-            await _pager.MarkDirtyAsync(pageId, ct);
-            return new InsertResult { Split = false };
-        }
+            var pooledCellSpan = pooledCell.AsSpan(0, leafCellLength);
+            WriteLeafCell(pooledCellSpan, key, payload.Span);
 
-        // Page is full — split
-        return await SplitLeafAsync(pageId, page, sp, insertIdx, heapCell, ct);
+            if (sp.InsertCell(insertIdx, pooledCellSpan))
+            {
+                await _pager.MarkDirtyAsync(pageId, ct);
+                return new InsertResult { Split = false };
+            }
+
+            // Page is full — split
+            return await SplitLeafAsync(pageId, page, sp, insertIdx, pooledCell, leafCellLength, ct);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pooledCell, clearArray: false);
+        }
     }
 
-    private async ValueTask<InsertResult> SplitLeafAsync(uint pageId, byte[] page, SlottedPage sp, int insertIdx, byte[] newCell, CancellationToken ct)
+    private async ValueTask<InsertResult> SplitLeafAsync(
+        uint pageId,
+        byte[] page,
+        SlottedPage sp,
+        int insertIdx,
+        byte[] newCell,
+        int newCellLength,
+        CancellationToken ct)
     {
         int existingCellCount = sp.CellCount;
         int totalCellCount = existingCellCount + 1;
@@ -341,7 +359,13 @@ public sealed class BTree
         byte[]? splitCellBuffer = null;
         try
         {
-            splitCellBuffer = BuildSplitCellBuffer(page, sp, insertIdx, newCell, cellOffsets, out int totalCellBytes);
+            splitCellBuffer = BuildSplitCellBuffer(
+                page,
+                sp,
+                insertIdx,
+                newCell.AsSpan(0, newCellLength),
+                cellOffsets,
+                out int totalCellBytes);
             cellOffsets[totalCellCount] = totalCellBytes;
             int mid = totalCellCount / 2;
 

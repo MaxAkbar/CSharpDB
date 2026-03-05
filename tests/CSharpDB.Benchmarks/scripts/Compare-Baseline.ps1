@@ -154,6 +154,82 @@ function Format-Bytes
     return ("{0:N0} B" -f $Bytes)
 }
 
+function Resolve-CurrentMicroResultsDirectory
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$BenchDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $false)][string]$ConfiguredPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath))
+    {
+        $resolvedConfiguredPath = $ConfiguredPath
+        if (-not [System.IO.Path]::IsPathRooted($resolvedConfiguredPath))
+        {
+            $resolvedConfiguredPath = Join-Path $RepoRoot $resolvedConfiguredPath
+        }
+
+        if (-not (Test-Path $resolvedConfiguredPath))
+        {
+            throw "Current micro-results directory not found: $resolvedConfiguredPath"
+        }
+
+        return (Resolve-Path $resolvedConfiguredPath).Path
+    }
+
+    $candidateDirs = @(
+        (Join-Path $RepoRoot "BenchmarkDotNet.Artifacts\\results"),
+        (Join-Path $BenchDir "BenchmarkDotNet.Artifacts\\results")
+    )
+
+    $existingCandidates = @(
+        $candidateDirs |
+        Where-Object { Test-Path $_ } |
+        ForEach-Object { (Resolve-Path $_).Path } |
+        Select-Object -Unique
+    )
+
+    if ($existingCandidates.Count -eq 0)
+    {
+        throw "Current micro-results directory not found in expected locations: $($candidateDirs -join '; ')"
+    }
+
+    if ($existingCandidates.Count -eq 1)
+    {
+        return $existingCandidates[0]
+    }
+
+    $stagingDir = Join-Path $BenchDir "results\\.tmp-current-micro"
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    Get-ChildItem -Path $stagingDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
+    $latestByName = @{}
+    foreach ($candidate in $existingCandidates)
+    {
+        foreach ($file in Get-ChildItem -Path $candidate -File -Filter "*.csv")
+        {
+            if (-not $latestByName.ContainsKey($file.Name) -or
+                $file.LastWriteTimeUtc -gt $latestByName[$file.Name].LastWriteTimeUtc)
+            {
+                $latestByName[$file.Name] = $file
+            }
+        }
+    }
+
+    if ($latestByName.Count -eq 0)
+    {
+        throw "No benchmark CSV files found across candidate result directories: $($existingCandidates -join '; ')"
+    }
+
+    foreach ($entry in $latestByName.GetEnumerator())
+    {
+        Copy-Item -Path $entry.Value.FullName -Destination (Join-Path $stagingDir $entry.Key) -Force
+    }
+
+    return (Resolve-Path $stagingDir).Path
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
@@ -222,19 +298,10 @@ if (-not $baselineResolved)
     Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
 }
 
-if ([string]::IsNullOrWhiteSpace($CurrentMicroResultsDir))
-{
-    $CurrentMicroResultsDir = Join-Path $repoRoot "BenchmarkDotNet.Artifacts\\results"
-}
-elseif (-not [System.IO.Path]::IsPathRooted($CurrentMicroResultsDir))
-{
-    $CurrentMicroResultsDir = Join-Path $repoRoot $CurrentMicroResultsDir
-}
-
-if (-not (Test-Path $CurrentMicroResultsDir))
-{
-    throw "Current micro-results directory not found: $CurrentMicroResultsDir"
-}
+$CurrentMicroResultsDir = Resolve-CurrentMicroResultsDirectory `
+    -BenchDir $benchDir `
+    -RepoRoot $repoRoot `
+    -ConfiguredPath $CurrentMicroResultsDir
 
 if (-not $baselineResolved)
 {
