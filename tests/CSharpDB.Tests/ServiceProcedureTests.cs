@@ -212,6 +212,32 @@ public sealed class ServiceProcedureTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteProcedure_BlobParameterBindingFailure_ReturnsStructuredFailure()
+    {
+        await _service.CreateProcedureAsync(new ProcedureDefinition
+        {
+            Name = "BlobProc",
+            BodySql = "SELECT @payload;",
+            Parameters =
+            [
+                new ProcedureParameterDefinition { Name = "payload", Type = DbType.Blob, Required = true },
+            ],
+            IsEnabled = true,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+
+        var result = await _service.ExecuteProcedureAsync("BlobProc", new Dictionary<string, object?>
+        {
+            ["payload"] = Convert.FromBase64String("AQID"),
+        });
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(0, result.FailedStatementIndex);
+        Assert.Contains("Blob parameters are not supported", result.Error ?? string.Empty);
+    }
+
+    [Fact]
     public async Task ExecuteProcedure_IntegerArg_FromJsonNumber_Succeeds()
     {
         await _service.ExecuteSqlAsync("CREATE TABLE int_args_json (id INTEGER PRIMARY KEY); INSERT INTO int_args_json VALUES (1);");

@@ -428,10 +428,24 @@ public sealed class CSharpDbService : IAsyncDisposable
                     Elapsed = totalSw.Elapsed,
                 };
             }
-            catch
+            catch (OperationCanceledException)
             {
                 await tx.RollbackAsync();
                 throw;
+            }
+            catch (Exception ex)
+            {
+                await tx.RollbackAsync();
+                totalSw.Stop();
+                return new ProcedureExecutionResult
+                {
+                    ProcedureName = name,
+                    Succeeded = false,
+                    Statements = results,
+                    Error = ex.Message,
+                    FailedStatementIndex = results.Count,
+                    Elapsed = totalSw.Elapsed,
+                };
             }
 
             totalSw.Stop();

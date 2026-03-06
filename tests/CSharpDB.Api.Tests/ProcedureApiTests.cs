@@ -88,6 +88,27 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteProcedure_BlobBindingError_ReturnsBadRequestWithStructuredPayload()
+    {
+        var create = new CreateProcedureRequest(
+            Name: "BlobProc",
+            BodySql: "SELECT @payload;",
+            Parameters: [new ProcedureParameterRequest("payload", "BLOB", true)]);
+        var createResp = await _client.PostAsJsonAsync("/api/procedures", create, Ct);
+        Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
+
+        var execResp = await _client.PostAsJsonAsync("/api/procedures/BlobProc/execute",
+            new ExecuteProcedureRequest(new Dictionary<string, object?> { ["payload"] = "AQID" }),
+            Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, execResp.StatusCode);
+        var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
+        Assert.NotNull(payload);
+        Assert.False(payload.Succeeded);
+        Assert.Contains("Blob parameters are not supported", payload.Error ?? string.Empty);
+    }
+
+    [Fact]
     public async Task MissingProcedure_ReturnsNotFound()
     {
         var getResp = await _client.GetAsync("/api/procedures/Nope", Ct);
