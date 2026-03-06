@@ -1,0 +1,521 @@
+@using System.Text.Json
+@using CSharpDB.Core
+@using CSharpDB.Service.Models
+@inject CSharpDbService DbService
+@inject ToastService Toast
+@inject ModalService Modal
+@inject TabManagerService TabManager
+
+<div class="procedure-tab">
+    <div class="toolbar">
+        <button class="toolbar-btn primary" @onclick="SaveAsync" disabled="@_submitting">
+            <i class="bi bi-check-lg"></i> Save
+        </button>
+        @if (!_isNew)
+        {
+            <button class="toolbar-btn danger" @onclick="DeleteAsync" disabled="@_submitting">
+                <i class="bi bi-trash"></i> Delete
+            </button>
+        }
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="ExecuteAsync" disabled="@_submitting">
+            <i class="bi bi-play-fill"></i> Run
+        </button>
+        <button class="toolbar-btn" @onclick="ReloadAsync" disabled="@_submitting || _isNew">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">@(_isNew ? "New Procedure" : _name)</div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="query-error">
+            <i class="bi bi-exclamation-triangle"></i> @_error
+        </div>
+    }
+
+    <div class="procedure-grid">
+        <div class="schema-section">
+            <h3>Definition</h3>
+            <div class="schema-edit-grid cols-2">
+                <div class="schema-field">
+                    <label>Name</label>
+                    <input class="schema-input mono" @bind="_name" />
+                </div>
+                <div class="schema-field">
+                    <label>Description</label>
+                    <input class="schema-input" @bind="_description" />
+                </div>
+                <div class="schema-field">
+                    <label class="schema-check">
+                        <input type="checkbox" @bind="_isEnabled" />
+                        Enabled
+                    </label>
+                </div>
+            </div>
+
+            <div class="schema-field" style="margin-top:10px;">
+                <label>Body SQL</label>
+                <textarea class="schema-textarea procedure-sql" @bind="_bodySql" @bind:event="oninput" placeholder="SQL body with @@param references..."></textarea>
+            </div>
+        </div>
+
+        <div class="schema-section">
+            <div class="schema-section-header">
+                <h3>Parameters</h3>
+                <button class="toolbar-btn" @onclick="AddParameter">
+                    <i class="bi bi-plus"></i> Add
+                </button>
+            </div>
+
+            @if (_parameters.Count == 0)
+            {
+                <p class="text-secondary">No parameters defined.</p>
+            }
+            else
+            {
+                <table class="schema-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Required</th>
+                            <th>Default</th>
+                            <th>Description</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (int i = 0; i < _parameters.Count; i++)
+                        {
+                            var p = _parameters[i];
+                            <tr>
+                                <td><input class="schema-input mono" @bind="p.Name" /></td>
+                                <td>
+                                    <select class="schema-input" @bind="p.Type">
+                                        <option value="@DbType.Integer.ToString().ToUpperInvariant()">INTEGER</option>
+                                        <option value="@DbType.Real.ToString().ToUpperInvariant()">REAL</option>
+                                        <option value="@DbType.Text.ToString().ToUpperInvariant()">TEXT</option>
+                                        <option value="@DbType.Blob.ToString().ToUpperInvariant()">BLOB</option>
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="checkbox" @bind="p.Required" />
+                                </td>
+                                <td><input class="schema-input mono" @bind="p.DefaultText" /></td>
+                                <td><input class="schema-input" @bind="p.Description" /></td>
+                                <td>
+                                    <button class="schema-icon-btn danger" @onclick="() => RemoveParameter(i)">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+
+        <div class="schema-section">
+            <h3>Execution</h3>
+            <div class="schema-field">
+                <label>Args JSON</label>
+                <textarea class="schema-textarea procedure-args" @bind="_argsJson" @bind:event="oninput" placeholder="{ &quot;id&quot;: 1 }"></textarea>
+            </div>
+
+            @if (_executionResult is not null)
+            {
+                <div class="procedure-exec-summary">
+                    <strong>@(_executionResult.Succeeded ? "Succeeded" : "Failed")</strong>
+                    <span>@_executionResult.Elapsed.TotalMilliseconds.ToString("F1") ms</span>
+                    @if (!string.IsNullOrWhiteSpace(_executionResult.Error))
+                    {
+                        <span class="query-error">@_executionResult.Error</span>
+                    }
+                </div>
+
+                @foreach (var statement in _executionResult.Statements)
+                {
+                    <div class="procedure-stmt">
+                        <div class="procedure-stmt-head">
+                            <span>Statement @statement.StatementIndex</span>
+                            <span>@statement.Elapsed.TotalMilliseconds.ToString("F1") ms</span>
+                            @if (statement.IsQuery)
+                            {
+                                <span>@statement.RowsAffected row(s)</span>
+                            }
+                            else
+                            {
+                                <span>@statement.RowsAffected affected</span>
+                            }
+                        </div>
+                        <pre class="procedure-sql-preview">@statement.StatementText</pre>
+
+                        @if (statement.IsQuery && statement.ColumnNames is not null && statement.Rows is not null)
+                        {
+                            <table class="data-grid query-results">
+                                <thead>
+                                    <tr>
+                                        @foreach (var col in statement.ColumnNames)
+                                        {
+                                            <th>@col</th>
+                                        }
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in statement.Rows)
+                                    {
+                                        <tr>
+                                            @foreach (var value in row)
+                                            {
+                                                <td>@RenderCell(value)</td>
+                                            }
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private bool _isNew = true;
+    private bool _submitting;
+    private string? _error;
+
+    private string _name = string.Empty;
+    private string _description = string.Empty;
+    private bool _isEnabled = true;
+    private string _bodySql = string.Empty;
+    private readonly List<ProcedureParameterEditor> _parameters = [];
+
+    private string _argsJson = "{}";
+    private ProcedureExecutionResult? _executionResult;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _isNew = Tab?.State.TryGetValue("IsNewProcedure", out var raw) == true
+            && raw is bool b && b;
+
+        if (_isNew)
+        {
+            if (string.IsNullOrWhiteSpace(_name))
+                ResetEditor();
+            return;
+        }
+
+        string? targetName = Tab?.ObjectName;
+        if (string.IsNullOrWhiteSpace(targetName))
+            return;
+
+        if (!string.Equals(_name, targetName, StringComparison.Ordinal))
+            await LoadProcedureAsync(targetName);
+    }
+
+    private async Task LoadProcedureAsync(string name)
+    {
+        try
+        {
+            var procedure = await DbService.GetProcedureAsync(name);
+            if (procedure is null)
+            {
+                _error = $"Procedure '{name}' not found.";
+                return;
+            }
+
+            _name = procedure.Name;
+            _description = procedure.Description ?? string.Empty;
+            _isEnabled = procedure.IsEnabled;
+            _bodySql = procedure.BodySql;
+            _parameters.Clear();
+            _parameters.AddRange(procedure.Parameters.Select(p => new ProcedureParameterEditor
+            {
+                Name = p.Name,
+                Type = p.Type.ToString().ToUpperInvariant(),
+                Required = p.Required,
+                DefaultText = FormatDefaultValue(p.Default, p.Type),
+                Description = p.Description ?? string.Empty,
+            }));
+            _argsJson = BuildArgsTemplateJson(procedure.Parameters);
+
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_isNew || string.IsNullOrWhiteSpace(_name))
+            return;
+        await LoadProcedureAsync(_name);
+    }
+
+    private async Task SaveAsync()
+    {
+        _submitting = true;
+        _error = null;
+        try
+        {
+            var definition = BuildDefinition();
+
+            if (_isNew)
+            {
+                await DbService.CreateProcedureAsync(definition);
+                Toast.Success($"Procedure '{definition.Name}' created.");
+                OpenNamedTab(definition.Name);
+            }
+            else
+            {
+                string existingName = Tab?.ObjectName ?? _name;
+                await DbService.UpdateProcedureAsync(existingName, definition);
+                Toast.Success($"Procedure '{existingName}' updated.");
+                OpenNamedTab(definition.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_isNew || string.IsNullOrWhiteSpace(_name))
+            return;
+
+        bool confirmed = await Modal.ConfirmAsync(
+            "Delete Procedure",
+            $"Delete procedure '{_name}'?",
+            "Delete",
+            isDanger: true);
+        if (!confirmed)
+            return;
+
+        _submitting = true;
+        _error = null;
+        try
+        {
+            await DbService.DeleteProcedureAsync(_name);
+            Toast.Success($"Procedure '{_name}' deleted.");
+            if (Tab is not null)
+                TabManager.CloseTab(Tab.Id);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task ExecuteAsync()
+    {
+        _submitting = true;
+        _error = null;
+        _executionResult = null;
+
+        try
+        {
+            if (_isNew)
+            {
+                _error = "Save the procedure before executing.";
+                return;
+            }
+
+            var args = ParseArgsJson(_argsJson);
+            _executionResult = await DbService.ExecuteProcedureAsync(_name, args);
+
+            if (_executionResult.Succeeded)
+                Toast.Success($"Procedure '{_name}' executed.");
+            else
+                _error = _executionResult.Error ?? "Execution failed.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private ProcedureDefinition BuildDefinition()
+    {
+        var mapped = new List<ProcedureParameterDefinition>();
+        foreach (var p in _parameters)
+        {
+            if (!Enum.TryParse<DbType>(p.Type, ignoreCase: true, out var type))
+                throw new ArgumentException($"Invalid parameter type '{p.Type}'.");
+
+            mapped.Add(new ProcedureParameterDefinition
+            {
+                Name = p.Name,
+                Type = type,
+                Required = p.Required,
+                Default = ParseDefaultValue(p.DefaultText, type),
+                Description = string.IsNullOrWhiteSpace(p.Description) ? null : p.Description.Trim(),
+            });
+        }
+
+        return new ProcedureDefinition
+        {
+            Name = _name,
+            BodySql = _bodySql,
+            Parameters = mapped,
+            Description = _description,
+            IsEnabled = _isEnabled,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        };
+    }
+
+    private static Dictionary<string, object?> ParseArgsJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        var args = JsonSerializer.Deserialize<Dictionary<string, object?>>(json)
+            ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        return new Dictionary<string, object?>(args, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string BuildArgsTemplateJson(IReadOnlyList<ProcedureParameterDefinition> parameters)
+    {
+        var template = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in parameters)
+        {
+            template[parameter.Name] = NormalizeTemplateValue(parameter.Default, parameter.Type);
+        }
+
+        return JsonSerializer.Serialize(template, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+        });
+    }
+
+    private static object? NormalizeTemplateValue(object? value, DbType type)
+    {
+        if (value is null)
+            return null;
+
+        if (value is JsonElement element)
+            value = element.ValueKind switch
+            {
+                JsonValueKind.Null => null,
+                JsonValueKind.String => element.GetString(),
+                JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => element.ToString(),
+            };
+
+        if (type == DbType.Blob && value is byte[] bytes)
+            return Convert.ToBase64String(bytes);
+
+        return value;
+    }
+
+    private void OpenNamedTab(string name)
+    {
+        if (Tab is not null)
+            TabManager.CloseTab(Tab.Id);
+        var newTab = TabManager.OpenProcedureTab(name);
+        _isNew = false;
+        _name = newTab.ObjectName ?? name;
+    }
+
+    private void AddParameter()
+    {
+        _parameters.Add(new ProcedureParameterEditor
+        {
+            Type = DbType.Text.ToString().ToUpperInvariant()
+        });
+    }
+
+    private void RemoveParameter(int index)
+    {
+        if (index < 0 || index >= _parameters.Count)
+            return;
+        _parameters.RemoveAt(index);
+    }
+
+    private void ResetEditor()
+    {
+        _name = string.Empty;
+        _description = string.Empty;
+        _isEnabled = true;
+        _bodySql = string.Empty;
+        _argsJson = "{}";
+        _parameters.Clear();
+        _executionResult = null;
+        _error = null;
+    }
+
+    private static object? ParseDefaultValue(string? value, DbType type)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        string trimmed = value.Trim();
+        return type switch
+        {
+            DbType.Integer => long.Parse(trimmed, System.Globalization.CultureInfo.InvariantCulture),
+            DbType.Real => double.Parse(trimmed, System.Globalization.CultureInfo.InvariantCulture),
+            DbType.Text => trimmed,
+            DbType.Blob => trimmed,
+            _ => trimmed,
+        };
+    }
+
+    private static string FormatDefaultValue(object? value, DbType type)
+    {
+        if (value is null)
+            return string.Empty;
+
+        return type switch
+        {
+            DbType.Integer => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            DbType.Real => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            DbType.Text => value.ToString() ?? string.Empty,
+            DbType.Blob => value is byte[] bytes ? Convert.ToBase64String(bytes) : value.ToString() ?? string.Empty,
+            _ => value.ToString() ?? string.Empty,
+        };
+    }
+
+    private static MarkupString RenderCell(object? value)
+    {
+        if (value is null)
+            return new MarkupString("<span class=\"null-val\">NULL</span>");
+        if (value is byte[] bytes)
+            return new MarkupString($"<span class=\"blob-val\">[{bytes.Length} bytes]</span>");
+        string encoded = System.Net.WebUtility.HtmlEncode(value.ToString() ?? string.Empty);
+        return new MarkupString(encoded);
+    }
+
+    private sealed class ProcedureParameterEditor
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Type { get; set; } = DbType.Text.ToString().ToUpperInvariant();
+        public bool Required { get; set; }
+        public string DefaultText { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+    }
+}

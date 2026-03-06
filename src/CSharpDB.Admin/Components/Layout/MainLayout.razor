@@ -35,6 +35,10 @@
                                      ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
                                      IsView="true" />
                             break;
+                        case TabKind.Procedure:
+                            <ProcedureTab @key="TabManager.ActiveTab.Id"
+                                          Tab="TabManager.ActiveTab" />
+                            break;
                         case TabKind.Storage:
                             <StorageTab @key="TabManager.ActiveTab.Id" />
                             break;

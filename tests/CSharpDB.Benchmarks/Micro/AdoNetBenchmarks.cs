@@ -12,6 +12,10 @@ namespace CSharpDB.Benchmarks.Micro;
 public class AdoNetBenchmarks
 {
     private string _dbPath = null!;
+    private string _openCloseNoPoolPath = null!;
+    private string _openClosePoolPath = null!;
+    private string _openCloseNoPoolConnectionString = null!;
+    private string _openClosePoolConnectionString = null!;
     private CSharpDbConnection _conn = null!;
     private CSharpDbCommand _preparedSelectCmd = null!;
     private CSharpDbParameter _preparedSelectMinVal = null!;
@@ -40,6 +44,24 @@ public class AdoNetBenchmarks
         _preparedSelectMinVal = _preparedSelectCmd.Parameters.AddWithValue("@minVal", 5000);
         _preparedSelectCmd.Prepare();
 
+        _openCloseNoPoolPath = Path.Combine(Path.GetTempPath(), $"csharpdb_adonet_oc_nopool_{Guid.NewGuid():N}.db");
+        _openClosePoolPath = Path.Combine(Path.GetTempPath(), $"csharpdb_adonet_oc_pool_{Guid.NewGuid():N}.db");
+        _openCloseNoPoolConnectionString = $"Data Source={_openCloseNoPoolPath};Pooling=false";
+        _openClosePoolConnectionString = $"Data Source={_openClosePoolPath};Pooling=true;Max Pool Size=16";
+
+        using (var noPoolConn = new CSharpDbConnection(_openCloseNoPoolConnectionString))
+        {
+            noPoolConn.Open();
+            noPoolConn.Close();
+        }
+
+        using (var pooledConn = new CSharpDbConnection(_openClosePoolConnectionString))
+        {
+            pooledConn.Open();
+            pooledConn.Close();
+        }
+
+        CSharpDbConnection.ClearPool(_openClosePoolConnectionString);
         _nextId = 1_000_000;
     }
 
@@ -48,26 +70,29 @@ public class AdoNetBenchmarks
     {
         _preparedSelectCmd.Dispose();
         _conn.Dispose();
+        CSharpDbConnection.ClearAllPools();
         try { File.Delete(_dbPath); } catch { }
         try { File.Delete(_dbPath + ".wal"); } catch { }
+        try { File.Delete(_openCloseNoPoolPath); } catch { }
+        try { File.Delete(_openCloseNoPoolPath + ".wal"); } catch { }
+        try { File.Delete(_openClosePoolPath); } catch { }
+        try { File.Delete(_openClosePoolPath + ".wal"); } catch { }
     }
 
-    [Benchmark(Description = "ADO.NET Connection Open+Close")]
-    public async Task ConnectionOpenClose()
+    [Benchmark(Baseline = true, Description = "ADO.NET Connection Open+Close (Pooling Off)")]
+    public async Task ConnectionOpenClose_PoolingOff()
     {
-        // Uses a unique file per invocation because CSharpDB holds an exclusive file lock
-        var tempPath = Path.Combine(Path.GetTempPath(), $"csharpdb_oc_{Guid.NewGuid():N}.db");
-        try
-        {
-            await using var conn = new CSharpDbConnection($"Data Source={tempPath}");
-            await conn.OpenAsync();
-            await conn.CloseAsync();
-        }
-        finally
-        {
-            try { File.Delete(tempPath); } catch { }
-            try { File.Delete(tempPath + ".wal"); } catch { }
-        }
+        await using var conn = new CSharpDbConnection(_openCloseNoPoolConnectionString);
+        await conn.OpenAsync();
+        await conn.CloseAsync();
+    }
+
+    [Benchmark(Description = "ADO.NET Connection Open+Close (Pooling On)")]
+    public async Task ConnectionOpenClose_PoolingOn()
+    {
+        await using var conn = new CSharpDbConnection(_openClosePoolConnectionString);
+        await conn.OpenAsync();
+        await conn.CloseAsync();
     }
 
     [Benchmark(Description = "ADO.NET ExecuteNonQuery (INSERT)")]

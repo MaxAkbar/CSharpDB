@@ -99,6 +99,25 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenProcedureTab(string procedureName)
+    {
+        var tab = new TabDescriptor($"procedure:{procedureName}", procedureName, "bi-gear-wide-connected", TabKind.Procedure)
+        {
+            ObjectName = procedureName
+        };
+        tab.State["IsNewProcedure"] = false;
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public TabDescriptor OpenNewProcedureTab()
+    {
+        var tab = new TabDescriptor("procedure:new", "New Procedure", "bi-gear-wide-connected", TabKind.Procedure);
+        tab.State["IsNewProcedure"] = true;
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenStorageTab()
     {
         var tab = new TabDescriptor("storage:inspect", "Storage", "bi-hdd-stack", TabKind.Storage);
