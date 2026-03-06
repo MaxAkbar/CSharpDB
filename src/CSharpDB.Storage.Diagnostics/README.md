@@ -64,7 +64,7 @@ dotnet add package CSharpDB.Storage.Diagnostics
 
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system
+- `CSharpDB.Primitives` - shared type system
 - `CSharpDB.Storage` - storage engine types and page format definitions
 
 ## Related Packages

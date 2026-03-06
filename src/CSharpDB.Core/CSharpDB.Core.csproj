@@ -4,7 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>Shared types, schema definitions, and error codes for the CSharpDB embedded database engine.</Description>
+    <PackageId>CSharpDB.Primitives</PackageId>
+    <Description>Internal/shared primitives for the CSharpDB package family: value system, schema definitions, and error codes.</Description>
   </PropertyGroup>
 
 </Project>

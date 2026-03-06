@@ -92,9 +92,15 @@ var result = await reader.ExecuteAsync("SELECT * FROM users");
 dotnet add package CSharpDB.Engine
 ```
 
+For the recommended all-in-one package:
+
+```
+dotnet add package CSharpDB
+```
+
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system
+- `CSharpDB.Primitives` - shared type system
 - `CSharpDB.Sql` - SQL parser
 - `CSharpDB.Storage` - B+tree storage engine
 - `CSharpDB.Execution` - query planner and operators

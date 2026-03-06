@@ -65,7 +65,7 @@ dotnet add package CSharpDB.Sql
 
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system and schema definitions
+- `CSharpDB.Primitives` - shared type system and schema definitions
 
 ## Related Packages
 

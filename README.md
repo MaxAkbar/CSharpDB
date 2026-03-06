@@ -46,6 +46,12 @@ See the product first, then dive into the API and internals:
 
 ## Quick Start
 
+Install the recommended entry package:
+
+```bash
+dotnet add package CSharpDB
+```
+
 ### Engine API
 
 ```csharp
@@ -188,7 +194,8 @@ The SQL path goes through tokenizer → parser → planner → operators → B+t
 ```
 CSharpDB.slnx
 ├── src/
-│   ├── CSharpDB.Core/        Core types: DbValue, Schema, ErrorCodes
+│   ├── CSharpDB.Core/        Primitives package source (DbValue, Schema, ErrorCodes)
+│   ├── CSharpDB/             All-in-one NuGet package metadata
 │   ├── CSharpDB.Storage/     Pager, B+tree, WAL, file I/O
 │   ├── CSharpDB.Sql/         Tokenizer, parser, AST
 │   ├── CSharpDB.Execution/   Query planner, operators, expression evaluator

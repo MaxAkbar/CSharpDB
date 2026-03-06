@@ -1,13 +1,19 @@
-# CSharpDB.Core
+# CSharpDB.Primitives
 
 Shared types, schema definitions, and error codes for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
 
-[![NuGet](https://img.shields.io/nuget/v/CSharpDB.Core)](https://www.nuget.org/packages/CSharpDB.Core)
+[![NuGet](https://img.shields.io/nuget/v/CSharpDB.Primitives)](https://www.nuget.org/packages/CSharpDB.Primitives)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
 
-`CSharpDB.Core` is the foundation package for CSharpDB. It defines the database type system, schema model, and error codes used by every other package in the CSharpDB ecosystem. If you are building a library or tool that works with CSharpDB schemas or values, this is the only dependency you need.
+`CSharpDB.Primitives` is the low-level foundation package for CSharpDB. It defines the database type system, schema model, and error codes used by higher-level CSharpDB packages.
+
+If you are building an application, prefer the top-level package:
+
+```
+dotnet add package CSharpDB
+```
 
 ## Key Types
 
@@ -51,13 +57,14 @@ var schema = new TableSchema
 ## Installation
 
 ```
-dotnet add package CSharpDB.Core
+dotnet add package CSharpDB.Primitives
 ```
 
 ## Related Packages
 
 | Package | Description |
 |---------|-------------|
+| [CSharpDB](https://www.nuget.org/packages/CSharpDB) | All-in-one package for application developers |
 | [CSharpDB.Engine](https://www.nuget.org/packages/CSharpDB.Engine) | Embedded database engine with SQL and NoSQL APIs |
 | [CSharpDB.Data](https://www.nuget.org/packages/CSharpDB.Data) | ADO.NET provider |
 | [CSharpDB.Storage](https://www.nuget.org/packages/CSharpDB.Storage) | B+tree storage engine |

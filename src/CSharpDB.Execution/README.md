@@ -63,7 +63,7 @@ dotnet add package CSharpDB.Execution
 
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system
+- `CSharpDB.Primitives` - shared type system
 - `CSharpDB.Sql` - SQL parser and AST
 - `CSharpDB.Storage` - B+tree storage engine
 

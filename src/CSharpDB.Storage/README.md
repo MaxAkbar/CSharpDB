@@ -104,7 +104,7 @@ dotnet add package CSharpDB.Storage
 
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system and schema definitions
+- `CSharpDB.Primitives` - shared type system and schema definitions
 
 ## Related Packages
 
