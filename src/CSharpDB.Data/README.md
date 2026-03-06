@@ -9,14 +9,14 @@ ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedd
 
 ## Overview
 
-`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your embedded database. Supports parameterized queries, transactions, prepared statements, and schema introspection.
+`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your embedded database. Supports parameterized queries, transactions, prepared statements, prepared-template caching, and schema introspection.
 
 ## Key Types
 
 | Type | Description |
 |------|-------------|
 | `CSharpDbConnection` | `DbConnection` that opens a `Database` instance from a file path |
-| `CSharpDbCommand` | `DbCommand` with prepared statement support and parameter binding |
+| `CSharpDbCommand` | `DbCommand` with prepared statement support, template caching, and parameter binding |
 | `CSharpDbDataReader` | `DbDataReader` with async iteration, typed getters, and `HasRows` |
 | `CSharpDbTransaction` | `DbTransaction` with auto-rollback on dispose |
 | `CSharpDbFactory` | Singleton `DbProviderFactory` for creating connections and commands |

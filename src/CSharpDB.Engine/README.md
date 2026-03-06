@@ -18,7 +18,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 - **Single-file storage**: All data in one `.db` file with 4 KB B+tree pages
 - **WAL durability**: Write-ahead log with crash recovery
 - **Concurrent readers**: Snapshot-isolated readers alongside a single writer
-- **Statement cache**: LRU cache (512 capacity) for parsed and planned queries
+- **Statement + plan caching**: bounded caches for parsed SQL statements and SELECT plan reuse
 - **Fast-path lookups**: Direct B+tree access for `SELECT ... WHERE pk = value`
 - **Async-first**: All APIs are `async`/`await` from top to bottom
 

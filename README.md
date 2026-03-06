@@ -229,7 +229,7 @@ CSharpDB.slnx
 | **JOINs** | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` |
 | **Aggregates** | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
-| **Expressions** | `=`, `<>`, `<`, `>`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
+| **Expressions** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
 
 ### System Catalog Queries
@@ -284,12 +284,20 @@ Each script creates 7 tables with sample data, indexes, views, and triggers. See
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Highlights:
+See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 
-**Near-term**
+**Recently completed (Near-term)**
 - `SELECT DISTINCT` support
 - Composite (multi-column) indexes
-- Index range scans (`<`, `>`, `BETWEEN`)
+- Prepared statement and SELECT plan caching
+- In-memory next-rowid caching for inserts
+
+**In progress**
+- Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`) beyond current ordered index path optimizations
+
+**Still planned**
+- B+tree delete rebalancing
+- Architecture enforcement (single API gateway + HTTP client SDK)
 
 **Mid-term**
 - Subqueries and `EXISTS`

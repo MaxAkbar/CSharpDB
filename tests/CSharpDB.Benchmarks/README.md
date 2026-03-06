@@ -536,9 +536,9 @@ The .NET 10 upgrade combined with engine improvements delivered consistent gains
 
 Based on the current benchmark data, the highest-impact future optimizations would be:
 
-1. **Prepared statement cache**: Each query re-parses SQL and re-plans. Caching parsed ASTs or compiled plans would further boost point lookup throughput, especially at larger datasets where CSharpDB already matches or exceeds SQLite's ~275-484K range.
+1. **Generalized index range-scan planning**: Expand index pushdown for `<`, `>`, `<=`, `>=`, and `BETWEEN` across more query shapes, not only current ordered-index paths.
 
-2. **Connection pooling**: Connection Open+Close takes ~5.6ms. A connection pool would amortize this for high-frequency short-lived operations.
+2. **Connection pooling tuning**: Connection pooling is implemented; next leverage point is tuning defaults and expanding pooled-vs-unpooled benchmark coverage.
 
 3. **Memory-mapped I/O (mmap)**: SQLite's key advantage for reads is zero-copy page access via mmap. The current `byte[]` copy per page read adds GC pressure and copy cost that mmap would eliminate.
 
@@ -612,5 +612,5 @@ Results are timestamped, so previous runs are preserved for comparison.
 ## See Also
 
 - [Project README](../../README.md) — Overview and quick start
-- [Roadmap](../../docs/roadmap.md) — Planned optimizations informed by this benchmark data
+- [Roadmap](../../docs/roadmap.md) — Optimization status and future priorities informed by this benchmark data
 - [Architecture Guide](../../docs/architecture.md) — How the engine is structured
