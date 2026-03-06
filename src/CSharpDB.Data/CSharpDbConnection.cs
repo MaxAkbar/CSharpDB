@@ -52,23 +52,37 @@ public sealed class CSharpDbConnection : DbConnection
 
         try
         {
+            CSharpDbConnectionPool? openedPool = null;
+            Database openedDatabase;
+
             if (builder.Pooling)
             {
                 var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
-                _pool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
-                _database = await _pool.RentAsync(cancellationToken);
+                openedPool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
+                openedDatabase = await openedPool.RentAsync(cancellationToken);
             }
             else
             {
-                _database = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
+                openedDatabase = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
             }
 
+            _pool = openedPool;
+            _database = openedDatabase;
             _state = ConnectionState.Open;
         }
         catch (Core.CSharpDbException ex)
         {
+            _database = null;
             _pool = null;
+            _state = ConnectionState.Closed;
             throw new CSharpDbDataException(ex);
+        }
+        catch
+        {
+            _database = null;
+            _pool = null;
+            _state = ConnectionState.Closed;
+            throw;
         }
     }
 

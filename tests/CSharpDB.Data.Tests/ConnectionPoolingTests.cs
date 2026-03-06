@@ -84,6 +84,28 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenAsync_CanceledPooledOpen_DoesNotReturnLaterDatabaseToStalePool()
+    {
+        string pooledCs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        string nonPooledCs = $"Data Source={_dbPathNoPool};Pooling=false";
+
+        await using var conn = new CSharpDbConnection(pooledCs);
+        using (var cts = new CancellationTokenSource())
+        {
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => conn.OpenAsync(cts.Token));
+        }
+
+        Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(pooledCs));
+
+        conn.ConnectionString = nonPooledCs;
+        await conn.OpenAsync(Ct);
+        await conn.CloseAsync();
+
+        Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(pooledCs));
+    }
+
+    [Fact]
     public void ConnectionStringBuilder_ParsesPoolingOptions()
     {
         var csb = new CSharpDbConnectionStringBuilder("Data Source=my.db;Pooling=true;Max Pool Size=7");
