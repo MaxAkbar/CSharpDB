@@ -3,6 +3,8 @@
 Thread-safe service layer for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB) in ASP.NET Core, Blazor, or MCP server applications.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
@@ -141,6 +143,12 @@ var execution = await db.ExecuteProcedureAsync("GetUserById", new Dictionary<str
 
 ```
 dotnet add package CSharpDB.Service
+```
+
+For the recommended all-in-one package:
+
+```
+dotnet add package CSharpDB
 ```
 
 ## Dependencies

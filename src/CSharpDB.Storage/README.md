@@ -3,6 +3,8 @@
 B+tree storage engine with page cache, write-ahead log (WAL), crash recovery, and concurrent snapshot-isolated readers for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Storage)](https://www.nuget.org/packages/CSharpDB.Storage)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
@@ -100,6 +102,12 @@ WAL:    [WalHeader:32][Frame:24+4096][Frame:24+4096]...
 
 ```
 dotnet add package CSharpDB.Storage
+```
+
+For the recommended all-in-one package:
+
+```
+dotnet add package CSharpDB
 ```
 
 ## Dependencies

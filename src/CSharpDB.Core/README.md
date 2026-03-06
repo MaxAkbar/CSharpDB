@@ -3,6 +3,8 @@
 Shared types, schema definitions, and error codes for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Primitives)](https://www.nuget.org/packages/CSharpDB.Primitives)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
