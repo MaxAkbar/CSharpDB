@@ -154,6 +154,82 @@ function Format-Bytes
     return ("{0:N0} B" -f $Bytes)
 }
 
+function Resolve-CurrentMicroResultsDirectory
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$BenchDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $false)][string]$ConfiguredPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath))
+    {
+        $resolvedConfiguredPath = $ConfiguredPath
+        if (-not [System.IO.Path]::IsPathRooted($resolvedConfiguredPath))
+        {
+            $resolvedConfiguredPath = Join-Path $RepoRoot $resolvedConfiguredPath
+        }
+
+        if (-not (Test-Path $resolvedConfiguredPath))
+        {
+            throw "Current micro-results directory not found: $resolvedConfiguredPath"
+        }
+
+        return (Resolve-Path $resolvedConfiguredPath).Path
+    }
+
+    $candidateDirs = @(
+        (Join-Path $RepoRoot "BenchmarkDotNet.Artifacts\\results"),
+        (Join-Path $BenchDir "BenchmarkDotNet.Artifacts\\results")
+    )
+
+    $existingCandidates = @(
+        $candidateDirs |
+        Where-Object { Test-Path $_ } |
+        ForEach-Object { (Resolve-Path $_).Path } |
+        Select-Object -Unique
+    )
+
+    if ($existingCandidates.Count -eq 0)
+    {
+        throw "Current micro-results directory not found in expected locations: $($candidateDirs -join '; ')"
+    }
+
+    if ($existingCandidates.Count -eq 1)
+    {
+        return $existingCandidates[0]
+    }
+
+    $stagingDir = Join-Path $BenchDir "results\\.tmp-current-micro"
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    Get-ChildItem -Path $stagingDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
+    $latestByName = @{}
+    foreach ($candidate in $existingCandidates)
+    {
+        foreach ($file in Get-ChildItem -Path $candidate -File -Filter "*.csv")
+        {
+            if (-not $latestByName.ContainsKey($file.Name) -or
+                $file.LastWriteTimeUtc -gt $latestByName[$file.Name].LastWriteTimeUtc)
+            {
+                $latestByName[$file.Name] = $file
+            }
+        }
+    }
+
+    if ($latestByName.Count -eq 0)
+    {
+        throw "No benchmark CSV files found across candidate result directories: $($existingCandidates -join '; ')"
+    }
+
+    foreach ($entry in $latestByName.GetEnumerator())
+    {
+        Copy-Item -Path $entry.Value.FullName -Destination (Join-Path $stagingDir $entry.Key) -Force
+    }
+
+    return (Resolve-Path $stagingDir).Path
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
@@ -176,6 +252,7 @@ $config = Get-Content -Path $ThresholdsPath -Raw | ConvertFrom-Json
 $baselineRoot = Join-Path $benchDir "baselines"
 
 $configuredBaseline = [string](Get-OptionalProperty -Object $config -Name "baselineSnapshot" -DefaultValue "")
+$baselineResolved = $false
 if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     if (-not [string]::IsNullOrWhiteSpace($configuredBaseline))
@@ -184,48 +261,82 @@ if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
     }
     else
     {
-        $latest = Get-ChildItem -Path $baselineRoot -Directory |
-            Where-Object { $_.Name -match "^\d{8}-\d{6}$" } |
-            Sort-Object Name |
-            Select-Object -Last 1
-
-        if ($null -eq $latest)
+        if (Test-Path $baselineRoot)
         {
-            throw "No baseline snapshots found under $baselineRoot."
-        }
+            $latest = Get-ChildItem -Path $baselineRoot -Directory |
+                Where-Object { $_.Name -match "^\d{8}-\d{6}$" } |
+                Sort-Object Name |
+                Select-Object -Last 1
 
-        $BaselineSnapshot = $latest.FullName
+            if ($null -ne $latest)
+            {
+                $BaselineSnapshot = $latest.FullName
+            }
+        }
     }
 }
 
-if (-not [System.IO.Path]::IsPathRooted($BaselineSnapshot))
+if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
-    $BaselineSnapshot = Join-Path $baselineRoot $BaselineSnapshot
+    if (-not [System.IO.Path]::IsPathRooted($BaselineSnapshot))
+    {
+        $BaselineSnapshot = Join-Path $baselineRoot $BaselineSnapshot
+    }
+
+    if ((Test-Path $BaselineSnapshot))
+    {
+        $baselineMicroDir = Join-Path $BaselineSnapshot "micro-results"
+        if ((Test-Path $baselineMicroDir))
+        {
+            $baselineResolved = $true
+        }
+    }
 }
 
-if (-not (Test-Path $BaselineSnapshot))
+if (-not $baselineResolved)
 {
-    throw "Baseline snapshot not found: $BaselineSnapshot"
+    Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
 }
 
-$baselineMicroDir = Join-Path $BaselineSnapshot "micro-results"
-if (-not (Test-Path $baselineMicroDir))
-{
-    throw "Baseline micro-results directory not found: $baselineMicroDir"
-}
+$CurrentMicroResultsDir = Resolve-CurrentMicroResultsDirectory `
+    -BenchDir $benchDir `
+    -RepoRoot $repoRoot `
+    -ConfiguredPath $CurrentMicroResultsDir
 
-if ([string]::IsNullOrWhiteSpace($CurrentMicroResultsDir))
+if (-not $baselineResolved)
 {
-    $CurrentMicroResultsDir = Join-Path $repoRoot "BenchmarkDotNet.Artifacts\\results"
-}
-elseif (-not [System.IO.Path]::IsPathRooted($CurrentMicroResultsDir))
-{
-    $CurrentMicroResultsDir = Join-Path $repoRoot $CurrentMicroResultsDir
-}
+    $summary = "No baseline snapshot available. Benchmark run completed but no regression comparison performed."
+    Write-Host $summary
 
-if (-not (Test-Path $CurrentMicroResultsDir))
-{
-    throw "Current micro-results directory not found: $CurrentMicroResultsDir"
+    if (-not [string]::IsNullOrWhiteSpace($ReportPath))
+    {
+        if (-not [System.IO.Path]::IsPathRooted($ReportPath))
+        {
+            $ReportPath = Join-Path $repoRoot $ReportPath
+        }
+
+        $reportDir = Split-Path -Parent $ReportPath
+        if (-not [string]::IsNullOrWhiteSpace($reportDir))
+        {
+            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+        }
+
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add("# Performance Guardrail Report")
+        $lines.Add("")
+        $lines.Add("- Baseline: **not available** (baselines directory is not present)")
+        $lines.Add("- Current: ``$CurrentMicroResultsDir``")
+        $lines.Add("- Thresholds: ``$ThresholdsPath``")
+        $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
+        $lines.Add("")
+        $lines.Add($summary)
+        $lines.Add("")
+        $lines.Add("To enable regression comparison, run ``Capture-Baseline.ps1`` on this machine and commit or make available the resulting snapshot.")
+        Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
+        Write-Host "Report written to $ReportPath"
+    }
+
+    return
 }
 
 $defaults = Get-OptionalProperty -Object $config -Name "defaults" -DefaultValue $null

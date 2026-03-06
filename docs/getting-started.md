@@ -183,7 +183,7 @@ await using var result = await db.ExecuteAsync(
 
 ### System catalog metadata (`sys.*`)
 
-You can inspect tables, columns, indexes, views, and triggers with SQL:
+You can inspect tables, columns, indexes, views, triggers, and object inventory with SQL:
 
 ```csharp
 await using var tables = await db.ExecuteAsync(
@@ -192,6 +192,9 @@ await using var tables = await db.ExecuteAsync(
 await using var columns = await db.ExecuteAsync(
     "SELECT column_name, data_type, is_nullable FROM sys.columns " +
     "WHERE table_name = 'products' ORDER BY ordinal_position");
+
+await using var objects = await db.ExecuteAsync(
+    "SELECT object_name, object_type, parent_table_name FROM sys.objects ORDER BY object_type, object_name");
 ```
 
 Catalog sources:
@@ -200,6 +203,7 @@ Catalog sources:
 - `sys.indexes`
 - `sys.views`
 - `sys.triggers`
+- `sys.objects`
 
 Underscored aliases are also available (`sys_tables`, `sys_columns`, etc.).
 

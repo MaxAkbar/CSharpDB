@@ -10,6 +10,9 @@ namespace CSharpDB.Benchmarks.Stress;
 /// </summary>
 public static class WalGrowthBenchmark
 {
+    private const int WarmupReadIterations = 300;
+    private const int MeasuredReadIterations = 2_000;
+
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
         var results = new List<BenchmarkResult>();
@@ -55,8 +58,10 @@ public static class WalGrowthBenchmark
                 // Measure read latency at this WAL size
                 var readHist = new LatencyHistogram();
                 var lookupRng = new Random(123);
+                await WarmupPointReadsAsync(db, lookupRng, nextId);
+                var readTotalSw = Stopwatch.StartNew();
 
-                for (int i = 0; i < 200; i++)
+                for (int i = 0; i < MeasuredReadIterations; i++)
                 {
                     int lookupId = lookupRng.Next(0, nextId);
                     var sw = Stopwatch.StartNew();
@@ -65,10 +70,11 @@ public static class WalGrowthBenchmark
                     sw.Stop();
                     readHist.Record(sw.Elapsed.TotalMilliseconds);
                 }
+                readTotalSw.Stop();
 
                 long walSize = File.Exists(walPath) ? new FileInfo(walPath).Length : 0;
                 var readResult = BenchmarkResult.FromHistogram(
-                    $"WalGrowth_{targetFrames}frames_ReadLatency", readHist, 0);
+                    $"WalGrowth_{targetFrames}frames_ReadLatency", readHist, readTotalSw.Elapsed.TotalMilliseconds);
                 readResult = new BenchmarkResult
                 {
                     Name = readResult.Name,
@@ -98,7 +104,9 @@ public static class WalGrowthBenchmark
 
             var postCkptHist = new LatencyHistogram();
             var postRng = new Random(123);
-            for (int i = 0; i < 200; i++)
+            await WarmupPointReadsAsync(db, postRng, nextId);
+            var postCkptTotalSw = Stopwatch.StartNew();
+            for (int i = 0; i < MeasuredReadIterations; i++)
             {
                 int lookupId = postRng.Next(0, nextId);
                 var sw = Stopwatch.StartNew();
@@ -107,9 +115,10 @@ public static class WalGrowthBenchmark
                 sw.Stop();
                 postCkptHist.Record(sw.Elapsed.TotalMilliseconds);
             }
+            postCkptTotalSw.Stop();
 
             var postResult = BenchmarkResult.FromHistogram(
-                "WalGrowth_PostCheckpoint_ReadLatency", postCkptHist, 0);
+                "WalGrowth_PostCheckpoint_ReadLatency", postCkptHist, postCkptTotalSw.Elapsed.TotalMilliseconds);
             postResult = new BenchmarkResult
             {
                 Name = postResult.Name,
@@ -138,5 +147,15 @@ public static class WalGrowthBenchmark
         }
 
         return results;
+    }
+
+    private static async ValueTask WarmupPointReadsAsync(Database db, Random rng, int maxIdExclusive)
+    {
+        for (int i = 0; i < WarmupReadIterations; i++)
+        {
+            int lookupId = rng.Next(0, maxIdExclusive);
+            await using var result = await db.ExecuteAsync($"SELECT * FROM t WHERE id = {lookupId}");
+            await result.ToListAsync();
+        }
     }
 }

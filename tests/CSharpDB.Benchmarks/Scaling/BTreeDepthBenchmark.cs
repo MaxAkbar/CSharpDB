@@ -59,10 +59,22 @@ public static class BTreeDepthBenchmark
                 // Measure point lookup latency
                 var hist = new LatencyHistogram();
                 var rng = new Random(42);
-                const int lookupCount = 1000;
-                var totalSw = Stopwatch.StartNew();
+                const int lookupWarmupCount = 1_000;
+                const int minLookupCount = 2_000;
+                const int maxLookupCount = 100_000;
+                const double minLookupDurationMs = 250;
 
-                for (int i = 0; i < lookupCount; i++)
+                for (int i = 0; i < lookupWarmupCount; i++)
+                {
+                    int id = rng.Next(0, targetRows);
+                    await using var warmup = await db.ExecuteAsync($"SELECT * FROM t WHERE id = {id}");
+                    await warmup.ToListAsync();
+                }
+
+                var totalSw = Stopwatch.StartNew();
+                int lookupCount = 0;
+
+                while (lookupCount < maxLookupCount)
                 {
                     int id = rng.Next(0, targetRows);
                     var sw = Stopwatch.StartNew();
@@ -70,6 +82,10 @@ public static class BTreeDepthBenchmark
                     await result.ToListAsync();
                     sw.Stop();
                     hist.Record(sw.Elapsed.TotalMilliseconds);
+                    lookupCount++;
+
+                    if (lookupCount >= minLookupCount && totalSw.Elapsed.TotalMilliseconds >= minLookupDurationMs)
+                        break;
                 }
                 totalSw.Stop();
 

@@ -10,10 +10,12 @@ namespace CSharpDB.Data;
 
 public sealed class CSharpDbDataReader : DbDataReader
 {
+    private const int OrdinalLookupThreshold = 8;
     private readonly QueryResult _queryResult;
     private readonly CommandBehavior _behavior;
     private readonly CSharpDbConnection? _connection;
     private readonly ColumnDefinition[] _schema;
+    private readonly Dictionary<string, int>? _ordinalLookup;
 
     private DbValue[]? _currentRow;
     private int _currentRowIndex = -1;
@@ -30,6 +32,7 @@ public sealed class CSharpDbDataReader : DbDataReader
         _behavior = behavior;
         _connection = connection;
         _schema = queryResult.Schema;
+        _ordinalLookup = BuildOrdinalLookupIfNeeded(_schema);
     }
 
     private DbValue[] CurrentRow
@@ -80,12 +83,31 @@ public sealed class CSharpDbDataReader : DbDataReader
 
     public override int GetOrdinal(string name)
     {
+        if (_ordinalLookup != null && _ordinalLookup.TryGetValue(name, out int ordinal))
+            return ordinal;
+
         for (int i = 0; i < _schema.Length; i++)
         {
             if (string.Equals(_schema[i].Name, name, StringComparison.OrdinalIgnoreCase))
                 return i;
         }
         throw new IndexOutOfRangeException($"Column '{name}' not found.");
+    }
+
+    private static Dictionary<string, int>? BuildOrdinalLookupIfNeeded(ColumnDefinition[] schema)
+    {
+        if (schema.Length < OrdinalLookupThreshold)
+            return null;
+
+        var lookup = new Dictionary<string, int>(schema.Length, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < schema.Length; i++)
+        {
+            string columnName = schema[i].Name;
+            if (!lookup.ContainsKey(columnName))
+                lookup[columnName] = i;
+        }
+
+        return lookup;
     }
 
     public override string GetDataTypeName(int ordinal)

@@ -51,6 +51,13 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "event", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "body_sql", Type = DbType.Text, Nullable = false },
     ];
+
+    private static readonly ColumnDefinition[] SystemObjectsColumns =
+    [
+        new ColumnDefinition { Name = "object_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "object_type", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "parent_table_name", Type = DbType.Text, Nullable = true },
+    ];
     private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
     [
         new ColumnDefinition
@@ -88,6 +95,7 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemIndexesRowsCache;
     private List<DbValue[]>? _systemViewsRowsCache;
     private List<DbValue[]>? _systemTriggersRowsCache;
+    private List<DbValue[]>? _systemObjectsRowsCache;
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
@@ -197,6 +205,7 @@ public sealed class QueryPlanner
         _systemIndexesRowsCache = null;
         _systemViewsRowsCache = null;
         _systemTriggersRowsCache = null;
+        _systemObjectsRowsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
         _selectPlanCache.Clear();
@@ -1772,6 +1781,7 @@ public sealed class QueryPlanner
             "sys.indexes" => CountSystemIndexes(),
             "sys.views" => _catalog.GetViewNames().Count,
             "sys.triggers" => _catalog.GetTriggers().Count,
+            "sys.objects" => CountSystemObjects(),
             _ => 0,
         };
 
@@ -1821,6 +1831,12 @@ public sealed class QueryPlanner
         _systemIndexesCountCache = count;
         return count;
     }
+
+    private long CountSystemObjects() =>
+        _catalog.GetTableNames().Count
+        + _catalog.GetIndexes().Count
+        + _catalog.GetViewNames().Count
+        + _catalog.GetTriggers().Count;
 
     private bool TryBuildSimpleScalarAggregateColumnQuery(SelectStatement stmt, out QueryResult result)
     {
@@ -4973,6 +4989,13 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.objects", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_objects", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.objects";
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
@@ -5011,6 +5034,11 @@ public sealed class QueryPlanner
             case "sys.triggers":
                 columns = SystemTriggersColumns;
                 rows = BuildSystemTriggersRows();
+                break;
+
+            case "sys.objects":
+                columns = SystemObjectsColumns;
+                rows = BuildSystemObjectsRows();
                 break;
 
             default:
@@ -5179,6 +5207,64 @@ public sealed class QueryPlanner
         }
 
         _systemTriggersRowsCache = rows;
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemObjectsRows()
+    {
+        if (_systemObjectsRowsCache != null)
+            return _systemObjectsRowsCache;
+
+        int capacity = _catalog.GetTableNames().Count
+            + _catalog.GetIndexes().Count
+            + _catalog.GetViewNames().Count
+            + _catalog.GetTriggers().Count;
+
+        var rows = new List<DbValue[]>(capacity);
+
+        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(tableName),
+                DbValue.FromText("TABLE"),
+                DbValue.Null,
+            ]);
+        }
+
+        foreach (var index in _catalog.GetIndexes()
+                     .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(index.IndexName),
+                DbValue.FromText("INDEX"),
+                DbValue.FromText(index.TableName),
+            ]);
+        }
+
+        foreach (string viewName in _catalog.GetViewNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(viewName),
+                DbValue.FromText("VIEW"),
+                DbValue.Null,
+            ]);
+        }
+
+        foreach (var trigger in _catalog.GetTriggers().OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(trigger.TriggerName),
+                DbValue.FromText("TRIGGER"),
+                DbValue.FromText(trigger.TableName),
+            ]);
+        }
+
+        _systemObjectsRowsCache = rows;
         return rows;
     }
 

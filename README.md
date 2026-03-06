@@ -29,7 +29,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **REST API** | ASP.NET Core Minimal API with 34 endpoints, OpenAPI/Scalar UI |
+| **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
 | **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode |
@@ -193,6 +193,7 @@ CSharpDB.slnx
 │   ├── CSharpDB.Execution/   Query planner, operators, expression evaluator
 │   ├── CSharpDB.Engine/      Top-level Database API + Collection<T> (NoSQL)
 │   ├── CSharpDB.Data/        ADO.NET provider (DbConnection, DbCommand, DbDataReader)
+│   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
 │   ├── CSharpDB.Cli/         Interactive REPL
 │   ├── CSharpDB.Service/     Shared service layer for Admin and API
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
@@ -233,9 +234,10 @@ SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
 SELECT * FROM sys.indexes WHERE table_name = 'users';
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
+SELECT * FROM sys.objects ORDER BY object_type, object_name;
 ```
 
-Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`.
+Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`.
 
 ## Building and Testing
 
@@ -277,16 +279,14 @@ Each script creates 7 tables with sample data, indexes, views, and triggers. See
 See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Highlights:
 
 **Near-term**
-- `DISTINCT` keyword
+- `SELECT DISTINCT` support
 - Composite (multi-column) indexes
 - Index range scans (`<`, `>`, `BETWEEN`)
-- Prepared statement cache
 
 **Mid-term**
 - Subqueries and `EXISTS`
 - `UNION` / `INTERSECT` / `EXCEPT`
 - Window functions (`ROW_NUMBER`, `RANK`)
-- NuGet package publishing
 
 **Long-term**
 - Memory-mapped I/O (mmap) read path
@@ -301,7 +301,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Highlights:
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
-| [REST API Reference](docs/rest-api.md) | All 34 API endpoints with request/response examples |
+| [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
 | [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
