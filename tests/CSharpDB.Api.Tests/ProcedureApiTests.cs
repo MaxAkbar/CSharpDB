@@ -12,6 +12,7 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     private string _dbPath = null!;
     private TestApiFactory _factory = null!;
     private HttpClient _client = null!;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     public ValueTask InitializeAsync()
     {
@@ -47,18 +48,19 @@ public sealed class ProcedureApiTests : IAsyncLifetime
             Description: "API test",
             IsEnabled: true);
 
-        var createResp = await _client.PostAsJsonAsync("/api/procedures", create);
+        var createResp = await _client.PostAsJsonAsync("/api/procedures", create, Ct);
         Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
 
-        var listResp = await _client.GetFromJsonAsync<List<ProcedureSummaryResponse>>("/api/procedures");
+        var listResp = await _client.GetFromJsonAsync<List<ProcedureSummaryResponse>>("/api/procedures", Ct);
         Assert.NotNull(listResp);
         Assert.Contains(listResp, p => p.Name == "ApiProc");
 
         var execResp = await _client.PostAsJsonAsync("/api/procedures/ApiProc/execute",
-            new ExecuteProcedureRequest(new Dictionary<string, object?> { ["id"] = 10L }));
+            new ExecuteProcedureRequest(new Dictionary<string, object?> { ["id"] = 10L }),
+            Ct);
         Assert.Equal(HttpStatusCode.OK, execResp.StatusCode);
 
-        var execution = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>();
+        var execution = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
         Assert.NotNull(execution);
         Assert.True(execution.Succeeded);
         Assert.NotEmpty(execution.Statements);
@@ -71,14 +73,15 @@ public sealed class ProcedureApiTests : IAsyncLifetime
             Name: "TypeProc",
             BodySql: "SELECT @id;",
             Parameters: [new ProcedureParameterRequest("id", "INTEGER", true)]);
-        var createResp = await _client.PostAsJsonAsync("/api/procedures", create);
+        var createResp = await _client.PostAsJsonAsync("/api/procedures", create, Ct);
         Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
 
         var execResp = await _client.PostAsJsonAsync("/api/procedures/TypeProc/execute",
-            new ExecuteProcedureRequest(new Dictionary<string, object?> { ["id"] = "bad" }));
+            new ExecuteProcedureRequest(new Dictionary<string, object?> { ["id"] = "bad" }),
+            Ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, execResp.StatusCode);
-        var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>();
+        var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
         Assert.NotNull(payload);
         Assert.False(payload.Succeeded);
         Assert.Contains("expects INTEGER", payload.Error ?? string.Empty);
@@ -87,20 +90,21 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     [Fact]
     public async Task MissingProcedure_ReturnsNotFound()
     {
-        var getResp = await _client.GetAsync("/api/procedures/Nope");
+        var getResp = await _client.GetAsync("/api/procedures/Nope", Ct);
         Assert.Equal(HttpStatusCode.NotFound, getResp.StatusCode);
 
         var execResp = await _client.PostAsJsonAsync("/api/procedures/Nope/execute",
-            new ExecuteProcedureRequest(new Dictionary<string, object?>()));
+            new ExecuteProcedureRequest(new Dictionary<string, object?>()),
+            Ct);
         Assert.Equal(HttpStatusCode.NotFound, execResp.StatusCode);
     }
 
     [Fact]
     public async Task TablesEndpoint_HidesProcedureCatalogTable()
     {
-        var resp = await _client.GetAsync("/api/tables");
+        var resp = await _client.GetAsync("/api/tables", Ct);
         resp.EnsureSuccessStatusCode();
-        var tables = await resp.Content.ReadFromJsonAsync<List<string>>();
+        var tables = await resp.Content.ReadFromJsonAsync<List<string>>(Ct);
         Assert.NotNull(tables);
         Assert.DoesNotContain("__procedures", tables, StringComparer.OrdinalIgnoreCase);
     }
