@@ -128,6 +128,7 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         var tables = await resp.Content.ReadFromJsonAsync<List<string>>(Ct);
         Assert.NotNull(tables);
         Assert.DoesNotContain("__procedures", tables, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("__saved_queries", tables, StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]

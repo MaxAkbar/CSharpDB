@@ -11,6 +11,8 @@ namespace CSharpDB.Execution;
 /// </summary>
 public sealed class QueryPlanner
 {
+    private const string InternalSavedQueriesTableName = "__saved_queries";
+
     private static readonly ColumnDefinition[] SystemTablesColumns =
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
@@ -59,6 +61,16 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "object_type", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "parent_table_name", Type = DbType.Text, Nullable = true },
     ];
+
+    private static readonly ColumnDefinition[] SystemSavedQueriesColumns =
+    [
+        new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
+        new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "sql_text", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "updated_utc", Type = DbType.Text, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
     [
         new ColumnDefinition
@@ -1761,6 +1773,10 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (!TryNormalizeSystemCatalogTableName(simpleRef.TableName, out string normalized))
+            return false;
+
+        // Backed by row data, not static metadata; use the normal aggregate pipeline for correctness.
+        if (string.Equals(normalized, "sys.saved_queries", StringComparison.Ordinal))
             return false;
 
         if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
@@ -5121,6 +5137,13 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.saved_queries", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_saved_queries", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.saved_queries";
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
@@ -5164,6 +5187,28 @@ public sealed class QueryPlanner
             case "sys.objects":
                 columns = SystemObjectsColumns;
                 rows = BuildSystemObjectsRows();
+                break;
+
+            case "sys.saved_queries":
+                if (_catalog.GetTable(InternalSavedQueriesTableName) is TableSchema savedQueriesSchema)
+                {
+                    var tableTree = _catalog.GetTableTree(InternalSavedQueriesTableName, _pager);
+                    var scanOp = new TableScanOperator(
+                        tableTree,
+                        savedQueriesSchema,
+                        _recordSerializer,
+                        TryGetCachedTreeRowCountCapacityHint(tableTree));
+                    var scanSchema = GetOrCreateSystemCatalogSchema(
+                        normalized,
+                        tableRef.TableName,
+                        tableRef.Alias,
+                        savedQueriesSchema.Columns.ToArray());
+                    source = (scanOp, scanSchema);
+                    return true;
+                }
+
+                columns = SystemSavedQueriesColumns;
+                rows = new List<DbValue[]>();
                 break;
 
             default:

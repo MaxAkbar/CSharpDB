@@ -12,10 +12,10 @@ Focused improvements to SQL completeness and query performance.
 |---------|-------------|--------|
 | **`DISTINCT` keyword** | Deduplicate rows in SELECT output | Done |
 | **Composite indexes** | Multi-column indexes for covering more query patterns | Done |
-| **Index range scans** | Use indexes for `<`, `>`, `<=`, `>=`, `BETWEEN` — not just equality | In progress |
+| **Index range scans** | Use indexes for `<`, `>`, `<=`, `>=`, `BETWEEN` — not just equality | Done |
 | **Prepared statement cache** | Cache parsed ASTs and query plans to avoid re-parsing identical SQL | Done |
-| **Cached max rowid** | Avoid repeated O(n) scans when generating row IDs on insert (in-memory high-water cache) | In progress |
-| **B+tree delete rebalancing** | Merge underflowed pages on delete to reclaim space | Planned |
+| **Cached max rowid** | Avoid repeated O(n) scans when generating row IDs on insert (in-memory + persisted high-water mark) | Done |
+| **B+tree delete rebalancing** | Merge underflowed pages on delete to reclaim space | Done |
 | **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Planned |
 
 ---
@@ -65,12 +65,11 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **B+tree** | Delete does not rebalance or merge underflowed pages |
 | **Query** | No subqueries, no UNION/INTERSECT/EXCEPT |
 | **Query** | No window functions |
 | **Schema** | No DEFAULT values, CHECK constraints, or foreign keys |
-| **Indexes** | Range-scan pushdown is limited (best support today is ordered single-column INTEGER index paths) |
-| **RowId** | Next rowid is cached in-memory per table, but initial high-water load still scans existing keys |
+| **Indexes** | Range-scan pushdown is still limited outside ordered single-column INTEGER index paths |
+| **RowId** | Legacy schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No mmap read path |
@@ -89,13 +88,17 @@ Major features already implemented:
 - JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs
 - `SELECT DISTINCT` and DISTINCT aggregates
 - Composite (multi-column) indexes
+- Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - SQL statement and SELECT plan caching
+- First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
+- Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
 - Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
 - Document Collection API (NoSQL) with typed Put/Get/Delete/Scan/Find
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
+- B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)
 - Comprehensive benchmark suite (micro, macro, stress, scaling)
 
 ---

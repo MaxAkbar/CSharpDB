@@ -99,6 +99,17 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenSystemCatalogTab(string catalogName, string sql)
+    {
+        var tab = new TabDescriptor($"system:{catalogName}", $"System: {catalogName}", "bi-hdd-stack", TabKind.Query)
+        {
+            SqlText = sql
+        };
+
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenProcedureTab(string procedureName)
     {
         var tab = new TabDescriptor($"procedure:{procedureName}", procedureName, "bi-gear-wide-connected", TabKind.Procedure)

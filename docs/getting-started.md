@@ -205,6 +205,7 @@ Catalog sources:
 - `sys.views`
 - `sys.triggers`
 - `sys.objects`
+- `sys.saved_queries`
 
 Underscored aliases are also available (`sys_tables`, `sys_columns`, etc.).
 
@@ -380,6 +381,38 @@ await db.ExecuteAsync("ALTER TABLE products RENAME COLUMN category TO department
 // Rename a table
 await db.ExecuteAsync("ALTER TABLE products RENAME TO inventory");
 ```
+
+### Schema migration pattern (PRIMARY KEY / IDENTITY changes)
+
+`ALTER TABLE` does not currently support changing an existing column to/from `PRIMARY KEY` or `IDENTITY`.
+Use a create-copy-swap migration:
+
+```sql
+BEGIN TRANSACTION;
+
+-- 1) Create target schema
+CREATE TABLE users_v2 (
+    id INTEGER PRIMARY KEY IDENTITY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL
+);
+
+-- 2) Copy data
+-- For small tables, insert explicit values:
+INSERT INTO users_v2 (id, name, email) VALUES (1, 'Alice', 'alice@acme.io');
+INSERT INTO users_v2 (id, name, email) VALUES (2, 'Bob', 'bob@acme.io');
+
+-- 3) Swap tables
+DROP TABLE users;
+ALTER TABLE users_v2 RENAME TO users;
+
+COMMIT;
+```
+
+Notes:
+- Explicit identity values are allowed, so preserving old IDs is supported.
+- If you omit `id` during insert, CSharpDB auto-generates identity values.
+- Bulk `INSERT INTO ... SELECT ...` copy is not yet supported, so large-table copy should be done via application code (read rows, then insert into the new table).
 
 ---
 

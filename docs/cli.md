@@ -108,9 +108,10 @@ SELECT * FROM sys.indexes WHERE table_name = 'users';
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
+SELECT * FROM sys.saved_queries ORDER BY name;
 ```
 
-Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`.
+Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_saved_queries`.
 `sys.columns` includes `is_identity` (0/1) in addition to `is_primary_key`.
 
 ---

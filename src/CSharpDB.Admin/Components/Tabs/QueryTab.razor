@@ -2,6 +2,7 @@
 @using System.Globalization
 @using System.Text
 @using System.Text.RegularExpressions
+@using CSharpDB.Service.Models
 @inject CSharpDbService DbService
 @inject ToastService Toast
 
@@ -29,6 +30,39 @@
                 <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
             </div>
         }
+    </div>
+
+    <div class="query-saved-bar">
+        <span class="query-saved-label">
+            <i class="bi bi-bookmark-star"></i> Saved
+        </span>
+        <input class="query-saved-input"
+               @bind="_savedQueryName"
+               placeholder="Query name..."
+               title="Name for save/update" />
+        <button class="toolbar-btn"
+                @onclick="SaveQueryAsync"
+                disabled="@(_loading || _loadingSavedQueries || string.IsNullOrWhiteSpace(_savedQueryName) || string.IsNullOrWhiteSpace(_sqlText))">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <select class="query-saved-select" @bind="_selectedSavedQueryName" disabled="@_loadingSavedQueries">
+            <option value="">Load saved query...</option>
+            @foreach (var saved in _savedQueries)
+            {
+                <option value="@saved.Name">@saved.Name</option>
+            }
+        </select>
+        <button class="toolbar-btn"
+                @onclick="LoadSelectedQueryAsync"
+                disabled="@(_loadingSavedQueries || string.IsNullOrWhiteSpace(_selectedSavedQueryName))">
+            <i class="bi bi-download"></i> Load
+        </button>
+        <button class="toolbar-btn"
+                @onclick="RefreshSavedQueriesAsync"
+                disabled="@_loadingSavedQueries"
+                title="Refresh saved query list">
+            <i class="bi bi-arrow-clockwise"></i>
+        </button>
     </div>
 
     <SqlEditor @ref="_editor"
@@ -120,6 +154,15 @@
     private List<object?[]>? _resultRows;
     private string? _nonQueryMessage;
     private TimeSpan? _elapsed;
+    private IReadOnlyList<SavedQueryDefinition> _savedQueries = [];
+    private string _savedQueryName = string.Empty;
+    private string? _selectedSavedQueryName;
+    private bool _loadingSavedQueries;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshSavedQueriesAsync();
+    }
 
     protected override void OnParametersSet()
     {
@@ -199,6 +242,108 @@
     private void FormatSql()
     {
         _sqlText = SqlFormatter.Format(_sqlText);
+    }
+
+    private async Task SaveQueryAsync()
+    {
+        string name = _savedQueryName.Trim();
+        if (name.Length == 0)
+        {
+            Toast.Warning("Saved query name is required.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_sqlText))
+        {
+            Toast.Warning("Cannot save an empty query.");
+            return;
+        }
+
+        try
+        {
+            var saved = await DbService.UpsertSavedQueryAsync(name, _sqlText);
+            _savedQueryName = saved.Name;
+            _selectedSavedQueryName = saved.Name;
+            if (Tab is not null)
+                Tab.SqlText = _sqlText;
+
+            await RefreshSavedQueriesAsync();
+            Toast.Success($"Saved query '{saved.Name}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to save query: {ex.Message}");
+        }
+    }
+
+    private async Task LoadSelectedQueryAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedSavedQueryName))
+        {
+            Toast.Warning("Select a saved query to load.");
+            return;
+        }
+
+        try
+        {
+            var saved = await DbService.GetSavedQueryAsync(_selectedSavedQueryName);
+            if (saved is null)
+            {
+                Toast.Warning($"Saved query '{_selectedSavedQueryName}' was not found.");
+                await RefreshSavedQueriesAsync();
+                return;
+            }
+
+            _sqlText = saved.SqlText;
+            _savedQueryName = saved.Name;
+            _error = null;
+            _nonQueryMessage = null;
+            _resultColumns = null;
+            _resultRows = null;
+            _elapsed = null;
+
+            if (Tab is not null)
+                Tab.SqlText = _sqlText;
+
+            Toast.Info($"Loaded query '{saved.Name}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load query: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshSavedQueriesAsync()
+    {
+        string? keepSelection = _selectedSavedQueryName;
+        _loadingSavedQueries = true;
+
+        try
+        {
+            _savedQueries = await DbService.GetSavedQueriesAsync();
+            if (!string.IsNullOrWhiteSpace(keepSelection)
+                && _savedQueries.Any(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase)))
+            {
+                _selectedSavedQueryName = _savedQueries
+                    .First(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase))
+                    .Name;
+            }
+            else
+            {
+                _selectedSavedQueryName = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to refresh saved queries: {ex.Message}");
+            _savedQueries = [];
+            _selectedSavedQueryName = null;
+        }
+        finally
+        {
+            _loadingSavedQueries = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task RunExecuteCommandAsync(string procedureName, IReadOnlyDictionary<string, object?> args)

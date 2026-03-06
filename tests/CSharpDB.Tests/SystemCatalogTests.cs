@@ -180,6 +180,53 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_SavedQueriesVirtualTable_EmptyWhenBackingTableMissing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var dotted = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.saved_queries", ct);
+        Assert.Equal(0L, Assert.Single(await dotted.ToListAsync(ct))[0].AsInteger);
+
+        await using var underscored = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_saved_queries", ct);
+        Assert.Equal(0L, Assert.Single(await underscored.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_SavedQueriesVirtualTable_ProjectsBackingRows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE __saved_queries (
+                id INTEGER PRIMARY KEY IDENTITY,
+                name TEXT NOT NULL,
+                sql_text TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                updated_utc TEXT NOT NULL
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx___saved_queries_name ON __saved_queries(name)", ct);
+        await _db.ExecuteAsync(
+            """
+            INSERT INTO __saved_queries (name, sql_text, created_utc, updated_utc)
+            VALUES ('recent_users', 'SELECT * FROM users ORDER BY id DESC LIMIT 25;', '2026-03-06T00:00:00Z', '2026-03-06T00:00:00Z')
+            """,
+            ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, name, sql_text, created_utc, updated_utc FROM sys.saved_queries", ct);
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(1L, row[0].AsInteger);
+        Assert.Equal("recent_users", row[1].AsText);
+        Assert.Contains("SELECT * FROM users", row[2].AsText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("2026-03-06T00:00:00Z", row[3].AsText);
+        Assert.Equal("2026-03-06T00:00:00Z", row[4].AsText);
+    }
+
+    [Fact]
     public async Task SystemCatalog_SchemaVersion_AdvancesOnDdlOnly()
     {
         var ct = TestContext.Current.CancellationToken;
