@@ -32,6 +32,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
 | **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
+| **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
 
@@ -44,6 +45,12 @@ See the product first, then dive into the API and internals:
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
 
 ## Quick Start
+
+Install the recommended entry package:
+
+```bash
+dotnet add package CSharpDB
+```
 
 ### Engine API
 
@@ -187,7 +194,8 @@ The SQL path goes through tokenizer → parser → planner → operators → B+t
 ```
 CSharpDB.slnx
 ├── src/
-│   ├── CSharpDB.Core/        Core types: DbValue, Schema, ErrorCodes
+│   ├── CSharpDB.Core/        Primitives package source (DbValue, Schema, ErrorCodes)
+│   ├── CSharpDB/             All-in-one NuGet package metadata
 │   ├── CSharpDB.Storage/     Pager, B+tree, WAL, file I/O
 │   ├── CSharpDB.Sql/         Tokenizer, parser, AST
 │   ├── CSharpDB.Execution/   Query planner, operators, expression evaluator

@@ -1,5 +1,14 @@
 # What's New
 
+## Procedure Catalog v1
+- Added table-backed stored procedures via internal `__procedures` catalog
+- New `CSharpDbService` procedure APIs: list/get/create/update/delete/execute
+- Strict typed parameter validation (`INTEGER`, `REAL`, `TEXT`, `BLOB`) with JSON metadata
+- Transactional multi-statement execution with per-statement result payloads and rollback on error
+- New REST endpoints under `/api/procedures/*` including `POST /api/procedures/{name}/execute`
+- Admin Web now includes a Procedures explorer section and full CRUD + run tab
+- `__procedures` is hidden from generic table/object browsing flows
+
 ## New Package: CSharpDB.Storage.Diagnostics
 Read-only inspection and integrity checking for CSharpDB database files:
 - **DatabaseInspector** — validate headers, walk B+trees, produce page-type histograms

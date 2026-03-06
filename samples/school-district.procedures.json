@@ -1,0 +1,69 @@
+[
+  {
+    "name": "GetStudentCourses",
+    "bodySql": "SELECT e.id, c.name AS course_name, e.semester, e.year, e.grade\nFROM enrollments e\nINNER JOIN courses c ON c.id = e.course_id\nWHERE e.student_id = @studentId\n  AND e.semester = @semester\n  AND e.year = @year\nORDER BY c.name;",
+    "parameters": [
+      {
+        "name": "studentId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Student identifier."
+      },
+      {
+        "name": "semester",
+        "type": "TEXT",
+        "required": false,
+        "default": "Fall",
+        "description": "Semester label (Fall/Spring)."
+      },
+      {
+        "name": "year",
+        "type": "INTEGER",
+        "required": false,
+        "default": 2024,
+        "description": "School year."
+      }
+    ],
+    "description": "Lists a student's course enrollments for a semester and year.",
+    "isEnabled": true
+  },
+  {
+    "name": "RecordAttendance",
+    "bodySql": "INSERT INTO attendance (id, student_id, course_id, attendance_date, status)\nVALUES (@attendanceId, @studentId, @courseId, @attendanceDate, @status);\nSELECT id, student_id, course_id, attendance_date, status FROM attendance WHERE id = @attendanceId;",
+    "parameters": [
+      {
+        "name": "attendanceId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Attendance row identifier."
+      },
+      {
+        "name": "studentId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Student identifier."
+      },
+      {
+        "name": "courseId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Course identifier."
+      },
+      {
+        "name": "attendanceDate",
+        "type": "TEXT",
+        "required": true,
+        "description": "Attendance date (YYYY-MM-DD)."
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "required": false,
+        "default": "present",
+        "description": "Attendance status."
+      }
+    ],
+    "description": "Creates an attendance record and returns the inserted row.",
+    "isEnabled": true
+  }
+]

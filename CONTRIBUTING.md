@@ -40,6 +40,14 @@ dotnet run --project tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj --
 dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --
 ```
 
+## Failure-Path Regression Checklist
+
+When behavior changes touch connection lifecycle, argument binding, or execution flow, include failure-path coverage in addition to happy-path tests.
+
+- Verify cancellation/error paths do not leave stale internal state (for example pooled connection state after `OpenAsync` failure).
+- Verify unsupported/invalid argument types return structured errors instead of unhandled exceptions (for example procedure execution with unsupported parameter payloads).
+- Verify non-`DbException` failures in service execution paths are handled according to API contract.
+
 ## Pull Request Guidelines
 
 1. Keep PRs focused and reasonably small.

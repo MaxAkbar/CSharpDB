@@ -234,7 +234,7 @@ public interface ICSharpDbClient : IAsyncDisposable
 
 #### DTO Models (`CSharpDB.Client.Models/`)
 
-These are the **only** types consumers interact with. No dependency on `CSharpDB.Core`:
+These are the **only** types consumers interact with. No dependency on the `CSharpDB.Primitives` package (namespace remains `CSharpDB.Core`):
 
 - `TableSchemaDto`, `ColumnDto`
 - `IndexDto`, `ViewDto`, `TriggerDto`
@@ -380,7 +380,7 @@ A new `SchemaWatcherService` replaces direct event subscriptions:
 | `DataTab.razor` | `BrowseTableAsync`, `BrowseViewAsync`, `GetTableSchemaAsync`, row CRUD |
 | `StorageTab.razor` | `InspectStorageAsync`, `CheckWalAsync`, `InspectPageAsync`, `CheckIndexesAsync` |
 
-`CSharpDB.Core` types (`IndexSchema`, `TriggerSchema`) are replaced with client DTOs (`IndexDto`, `TriggerDto`).
+`CSharpDB.Core` namespace types (`IndexSchema`, `TriggerSchema`, packaged via `CSharpDB.Primitives`) are replaced with client DTOs (`IndexDto`, `TriggerDto`).
 
 **Project reference change:** Remove `CSharpDB.Service`, add `CSharpDB.Client`.
 
@@ -524,7 +524,7 @@ tests/
 | SSE connection reliability | Admin loses real-time updates if SSE drops | Auto-reconnect with exponential backoff in `SchemaWatcherService` |
 | CLI `serve` couples CLI to Api | CLI references both Client and Api | Acceptable. `serve` is convenience; REPL only uses Client. |
 | Breaking change for CLI users | `csharpdb mydata.db` no longer works directly | Migration: `csharpdb serve mydata.db` + `csharpdb --server ...` |
-| Admin loses `CSharpDB.Core` types | Components use `IndexSchema`, `TriggerSchema` | Client DTOs (`IndexDto`, `TriggerDto`) replace these 1:1 |
+| Admin loses `CSharpDB.Core` namespace types | Components use `IndexSchema`, `TriggerSchema` | Client DTOs (`IndexDto`, `TriggerDto`) replace these 1:1 |
 | JSON type coercion | JSON has no integer vs long, no blob | API already handles this via `JsonHelper.CoerceDictionary` |
 
 ---

@@ -61,8 +61,11 @@ api.MapRowEndpoints();
 api.MapIndexEndpoints();
 api.MapViewEndpoints();
 api.MapTriggerEndpoints();
+api.MapProcedureEndpoints();
 api.MapSqlEndpoints();
 api.MapSchemaEndpoints();
 api.MapInspectEndpoints();
 
 app.Run();
+
+public partial class Program;

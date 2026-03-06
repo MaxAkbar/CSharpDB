@@ -19,7 +19,7 @@ A phased plan to distribute CSharpDB across Windows, macOS, and Linux via multip
 | **Windows** | `dotnet tool install -g CSharpDB.Cli` | `irm .../install.ps1 \| iex` | `winget install CSharpDB` | `docker run csharpdb/server` |
 | **macOS** | `dotnet tool install -g CSharpDB.Cli` | `curl .../install.sh \| sh` | `brew install csharpdb` | `docker run csharpdb/server` |
 | **Linux** | `dotnet tool install -g CSharpDB.Cli` | `curl .../install.sh \| sh` | `brew install csharpdb` | `docker run csharpdb/server` |
-| **NuGet** | `dotnet add package CSharpDB.Engine` | — | — | — |
+| **NuGet** | `dotnet add package CSharpDB` | — | — | — |
 
 ---
 

@@ -17,12 +17,14 @@ public static class SchemaEndpoints
         var indexes = await db.GetIndexesAsync();
         var views = await db.GetViewsAsync();
         var triggers = await db.GetTriggersAsync();
+        var procedures = await db.GetProceduresAsync();
 
         return Results.Ok(new DatabaseInfoResponse(
             db.DataSource,
             tables.Count,
             indexes.Count,
             views.Count,
-            triggers.Count));
+            triggers.Count,
+            procedures.Count));
     }
 }

@@ -1645,6 +1645,76 @@ body {
     margin-right: 2px;
 }
 
+/* Procedure editor */
+.procedure-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.procedure-grid {
+    overflow: auto;
+    padding: 0 0 12px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.procedure-sql {
+    min-height: 180px;
+    font-family: var(--font-mono);
+}
+
+.procedure-args {
+    min-height: 80px;
+    font-family: var(--font-mono);
+}
+
+.schema-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.procedure-exec-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0 10px;
+    font-size: 12px;
+}
+
+.procedure-stmt {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    margin-bottom: 8px;
+    background: var(--bg-elevated);
+}
+
+.procedure-stmt-head {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.procedure-sql-preview {
+    margin: 0 0 8px;
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* ═══════════════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════════════ */

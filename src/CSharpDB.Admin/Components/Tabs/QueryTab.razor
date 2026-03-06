@@ -1,3 +1,7 @@
+@using System.Text.Json
+@using System.Globalization
+@using System.Text
+@using System.Text.RegularExpressions
 @inject CSharpDbService DbService
 @inject ToastService Toast
 
@@ -102,6 +106,10 @@
 </div>
 
 @code {
+    private static readonly Regex s_execRegex = new(
+        @"^\s*EXEC(?:UTE)?\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<rest>[\s\S]*)$",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
     [Parameter] public TabDescriptor? Tab { get; set; }
 
     private SqlEditor? _editor;
@@ -132,22 +140,37 @@
 
         try
         {
-            var result = await DbService.ExecuteSqlAsync(_sqlText.Trim());
-            _elapsed = result.Elapsed;
-
-            if (result.Error is not null)
+            string trimmedSql = _sqlText.Trim();
+            if (TryParseExecuteCommand(trimmedSql, out var procedureName, out var args, out var parseError))
             {
-                _error = result.Error;
-            }
-            else if (result.IsQuery)
-            {
-                _resultColumns = result.ColumnNames;
-                _resultRows = result.Rows;
+                if (parseError is not null)
+                {
+                    _error = parseError;
+                }
+                else
+                {
+                    await RunExecuteCommandAsync(procedureName!, args!);
+                }
             }
             else
             {
-                _nonQueryMessage = $"{result.RowsAffected} row(s) affected";
-                Toast.Success(_nonQueryMessage);
+                var result = await DbService.ExecuteSqlAsync(trimmedSql);
+                _elapsed = result.Elapsed;
+
+                if (result.Error is not null)
+                {
+                    _error = result.Error;
+                }
+                else if (result.IsQuery)
+                {
+                    _resultColumns = result.ColumnNames;
+                    _resultRows = result.Rows;
+                }
+                else
+                {
+                    _nonQueryMessage = $"{result.RowsAffected} row(s) affected";
+                    Toast.Success(_nonQueryMessage);
+                }
             }
         }
         catch (Exception ex)
@@ -176,5 +199,315 @@
     private void FormatSql()
     {
         _sqlText = SqlFormatter.Format(_sqlText);
+    }
+
+    private async Task RunExecuteCommandAsync(string procedureName, IReadOnlyDictionary<string, object?> args)
+    {
+        var result = await DbService.ExecuteProcedureAsync(procedureName, args);
+        _elapsed = result.Elapsed;
+
+        if (!result.Succeeded)
+        {
+            _error = result.FailedStatementIndex is int failedIndex
+                ? $"Procedure '{procedureName}' failed at statement {failedIndex + 1}: {result.Error}"
+                : result.Error ?? $"Procedure '{procedureName}' execution failed.";
+            return;
+        }
+
+        if (result.Statements.Count == 0)
+        {
+            _nonQueryMessage = $"Procedure '{procedureName}' executed (no statements).";
+            Toast.Success(_nonQueryMessage);
+            return;
+        }
+
+        var last = result.Statements[^1];
+        if (last.IsQuery)
+        {
+            _resultColumns = last.ColumnNames;
+            _resultRows = last.Rows;
+            return;
+        }
+
+        int affected = result.Statements.Where(s => !s.IsQuery).Sum(s => s.RowsAffected);
+        _nonQueryMessage = $"Procedure '{procedureName}' executed. {affected} row(s) affected.";
+        Toast.Success(_nonQueryMessage);
+    }
+
+    private static bool TryParseExecuteCommand(
+        string sql,
+        out string? procedureName,
+        out Dictionary<string, object?>? args,
+        out string? error)
+    {
+        procedureName = null;
+        args = null;
+        error = null;
+
+        var match = s_execRegex.Match(sql);
+        if (!match.Success)
+            return false;
+
+        procedureName = match.Groups["name"].Value;
+        string rest = match.Groups["rest"].Value.Trim();
+        if (rest.EndsWith(';'))
+            rest = rest[..^1].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(rest))
+        {
+            args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            return true;
+        }
+
+        if (rest.StartsWith('{'))
+        {
+            try
+            {
+                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(rest)
+                    ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException ex)
+            {
+                error = $"Invalid EXEC args JSON: {ex.Message}";
+                return true;
+            }
+
+            return true;
+        }
+
+        if (!TryParseSqlStyleArgs(rest, out var parsedArgs, out var parseError))
+        {
+            error = parseError;
+            return true;
+        }
+
+        args = parsedArgs;
+        return true;
+    }
+
+    private static bool TryParseSqlStyleArgs(
+        string text,
+        out Dictionary<string, object?> args,
+        out string? error)
+    {
+        args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        error = null;
+
+        int index = 0;
+        SkipWhitespace(text, ref index);
+
+        while (index < text.Length)
+        {
+            if (!TryReadIdentifier(text, ref index, out var name))
+            {
+                error = $"Invalid EXEC args near position {index + 1}: expected parameter name (e.g. @id).";
+                return false;
+            }
+
+            SkipWhitespace(text, ref index);
+            if (index >= text.Length || text[index] != '=')
+            {
+                error = $"Invalid EXEC args near position {index + 1}: expected '=' after '{name}'.";
+                return false;
+            }
+
+            index++;
+            SkipWhitespace(text, ref index);
+
+            if (!TryReadArgumentValue(text, ref index, out var value, out error))
+                return false;
+
+            if (!args.TryAdd(name!, value))
+            {
+                error = $"Duplicate EXEC argument '{name}'.";
+                return false;
+            }
+
+            SkipWhitespace(text, ref index);
+            if (index >= text.Length)
+                break;
+
+            if (text[index] != ',')
+            {
+                error = $"Invalid EXEC args near position {index + 1}: expected ',' between arguments.";
+                return false;
+            }
+
+            index++;
+            SkipWhitespace(text, ref index);
+            if (index >= text.Length)
+            {
+                error = "Invalid EXEC args: trailing comma.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void SkipWhitespace(string text, ref int index)
+    {
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+            index++;
+    }
+
+    private static bool TryReadIdentifier(string text, ref int index, out string? identifier)
+    {
+        identifier = null;
+        if (index < text.Length && text[index] == '@')
+            index++;
+
+        if (index >= text.Length || !(char.IsLetter(text[index]) || text[index] == '_'))
+            return false;
+
+        int start = index;
+        index++;
+        while (index < text.Length)
+        {
+            char c = text[index];
+            if (!(char.IsLetterOrDigit(c) || c == '_'))
+                break;
+            index++;
+        }
+
+        identifier = text[start..index];
+        return true;
+    }
+
+    private static bool TryReadArgumentValue(
+        string text,
+        ref int index,
+        out object? value,
+        out string? error)
+    {
+        value = null;
+        error = null;
+
+        if (index >= text.Length)
+        {
+            error = "Invalid EXEC args: missing value.";
+            return false;
+        }
+
+        char c = text[index];
+        if (c == '\'')
+            return TryReadSingleQuotedString(text, ref index, out value, out error);
+
+        if (c == '"')
+            return TryReadDoubleQuotedString(text, ref index, out value, out error);
+
+        int start = index;
+        while (index < text.Length && !char.IsWhiteSpace(text[index]) && text[index] != ',')
+            index++;
+
+        string token = text[start..index];
+        if (token.Length == 0)
+        {
+            error = "Invalid EXEC args: missing value.";
+            return false;
+        }
+
+        if (token.Equals("null", StringComparison.OrdinalIgnoreCase))
+        {
+            value = null;
+            return true;
+        }
+
+        if (token.Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            value = 1L;
+            return true;
+        }
+
+        if (token.Equals("false", StringComparison.OrdinalIgnoreCase))
+        {
+            value = 0L;
+            return true;
+        }
+
+        if (long.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longValue))
+        {
+            value = longValue;
+            return true;
+        }
+
+        if (double.TryParse(token, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var doubleValue))
+        {
+            value = doubleValue;
+            return true;
+        }
+
+        error = $"Invalid EXEC args token '{token}'. Use single quotes for text literals.";
+        return false;
+    }
+
+    private static bool TryReadSingleQuotedString(
+        string text,
+        ref int index,
+        out object? value,
+        out string? error)
+    {
+        var sb = new StringBuilder();
+        index++; // skip opening '
+        while (index < text.Length)
+        {
+            char c = text[index];
+            if (c == '\'')
+            {
+                if (index + 1 < text.Length && text[index + 1] == '\'')
+                {
+                    sb.Append('\'');
+                    index += 2;
+                    continue;
+                }
+
+                index++; // skip closing '
+                value = sb.ToString();
+                error = null;
+                return true;
+            }
+
+            sb.Append(c);
+            index++;
+        }
+
+        value = null;
+        error = "Invalid EXEC args: unterminated single-quoted string literal.";
+        return false;
+    }
+
+    private static bool TryReadDoubleQuotedString(
+        string text,
+        ref int index,
+        out object? value,
+        out string? error)
+    {
+        var sb = new StringBuilder();
+        index++; // skip opening "
+        while (index < text.Length)
+        {
+            char c = text[index];
+            if (c == '"')
+            {
+                if (index + 1 < text.Length && text[index + 1] == '"')
+                {
+                    sb.Append('"');
+                    index += 2;
+                    continue;
+                }
+
+                index++; // skip closing "
+                value = sb.ToString();
+                error = null;
+                return true;
+            }
+
+            sb.Append(c);
+            index++;
+        }
+
+        value = null;
+        error = "Invalid EXEC args: unterminated double-quoted string literal.";
+        return false;
     }
 }

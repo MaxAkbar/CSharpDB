@@ -3,6 +3,8 @@
 Lightweight embedded SQL database engine for .NET with single-file storage, WAL durability, concurrent readers, and a typed `Collection<T>` NoSQL API.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Engine)](https://www.nuget.org/packages/CSharpDB.Engine)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
@@ -92,9 +94,15 @@ var result = await reader.ExecuteAsync("SELECT * FROM users");
 dotnet add package CSharpDB.Engine
 ```
 
+For the recommended all-in-one package:
+
+```
+dotnet add package CSharpDB
+```
+
 ## Dependencies
 
-- `CSharpDB.Core` - shared type system
+- `CSharpDB.Primitives` - shared type system
 - `CSharpDB.Sql` - SQL parser
 - `CSharpDB.Storage` - B+tree storage engine
 - `CSharpDB.Execution` - query planner and operators

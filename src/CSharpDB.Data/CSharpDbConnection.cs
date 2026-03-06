@@ -11,6 +11,7 @@ public sealed class CSharpDbConnection : DbConnection
     private string _connectionString = "";
     private ConnectionState _state = ConnectionState.Closed;
     private Database? _database;
+    private CSharpDbConnectionPool? _pool;
     private CSharpDbTransaction? _currentTransaction;
 
     public CSharpDbConnection() { }
@@ -42,18 +43,46 @@ public sealed class CSharpDbConnection : DbConnection
         if (_state == ConnectionState.Open)
             throw new InvalidOperationException("Connection is already open.");
 
-        string path = new CSharpDbConnectionStringBuilder(_connectionString).DataSource;
+        var builder = new CSharpDbConnectionStringBuilder(_connectionString);
+        string path = builder.DataSource;
         if (string.IsNullOrWhiteSpace(path))
             throw new InvalidOperationException("Data Source is required in the connection string.");
 
+        string normalizedPath = NormalizeDataSourcePath(path);
+
         try
         {
-            _database = await Engine.Database.OpenAsync(path, cancellationToken);
+            CSharpDbConnectionPool? openedPool = null;
+            Database openedDatabase;
+
+            if (builder.Pooling)
+            {
+                var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
+                openedPool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
+                openedDatabase = await openedPool.RentAsync(cancellationToken);
+            }
+            else
+            {
+                openedDatabase = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
+            }
+
+            _pool = openedPool;
+            _database = openedDatabase;
             _state = ConnectionState.Open;
         }
         catch (Core.CSharpDbException ex)
         {
+            _database = null;
+            _pool = null;
+            _state = ConnectionState.Closed;
             throw new CSharpDbDataException(ex);
+        }
+        catch
+        {
+            _database = null;
+            _pool = null;
+            _state = ConnectionState.Closed;
+            throw;
         }
     }
 
@@ -64,19 +93,31 @@ public sealed class CSharpDbConnection : DbConnection
     {
         if (_state == ConnectionState.Closed) return;
 
-        if (_currentTransaction is not null)
+        try
         {
-            await _currentTransaction.DisposeAsync();
-            _currentTransaction = null;
-        }
+            if (_currentTransaction is not null)
+            {
+                await _currentTransaction.DisposeAsync();
+                _currentTransaction = null;
+            }
 
-        if (_database is not null)
-        {
-            await _database.DisposeAsync();
+            var database = _database;
+            var pool = _pool;
             _database = null;
-        }
+            _pool = null;
 
-        _state = ConnectionState.Closed;
+            if (database is null)
+                return;
+
+            if (pool is null)
+                await database.DisposeAsync();
+            else
+                await pool.ReturnAsync(database);
+        }
+        finally
+        {
+            _state = ConnectionState.Closed;
+        }
     }
 
     // ─── Transactions ────────────────────────────────────────────────
@@ -117,6 +158,27 @@ public sealed class CSharpDbConnection : DbConnection
     public override void ChangeDatabase(string databaseName)
         => throw new NotSupportedException("CSharpDB is a single-file database.");
 
+    public static void ClearPool(string connectionString)
+        => ClearPoolAsync(connectionString).GetAwaiter().GetResult();
+
+    public static async ValueTask ClearPoolAsync(string connectionString)
+    {
+        var builder = new CSharpDbConnectionStringBuilder(connectionString);
+        string path = builder.DataSource;
+        if (!builder.Pooling || string.IsNullOrWhiteSpace(path))
+            return;
+
+        string normalizedPath = NormalizeDataSourcePath(path);
+        var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
+        await CSharpDbConnectionPoolRegistry.ClearPoolAsync(key);
+    }
+
+    public static void ClearAllPools()
+        => ClearAllPoolsAsync().GetAwaiter().GetResult();
+
+    public static ValueTask ClearAllPoolsAsync()
+        => CSharpDbConnectionPoolRegistry.ClearAllAsync();
+
     // ─── Internal access ─────────────────────────────────────────────
 
     internal Database GetDatabase()
@@ -127,6 +189,19 @@ public sealed class CSharpDbConnection : DbConnection
     }
 
     internal void ClearTransaction() => _currentTransaction = null;
+
+    internal static int GetPoolCountForTest() => CSharpDbConnectionPoolRegistry.GetPoolCountForTest();
+
+    internal static int GetIdlePoolSizeForTest(string connectionString)
+    {
+        var builder = new CSharpDbConnectionStringBuilder(connectionString);
+        string path = builder.DataSource;
+        if (!builder.Pooling || string.IsNullOrWhiteSpace(path))
+            return 0;
+
+        string normalizedPath = NormalizeDataSourcePath(path);
+        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(new PoolKey(normalizedPath, builder.MaxPoolSize));
+    }
 
     // ─── Schema introspection ─────────────────────────────────────
 
@@ -161,5 +236,11 @@ public sealed class CSharpDbConnection : DbConnection
     {
         if (_state == ConnectionState.Open)
             await CloseAsync();
+    }
+
+    private static string NormalizeDataSourcePath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        return OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
     }
 }
