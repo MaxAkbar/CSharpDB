@@ -96,9 +96,13 @@ public class TokenizerTests
     [InlineData("INDEX", TokenType.Index)]
     [InlineData("UNIQUE", TokenType.Unique)]
     [InlineData("VIEW", TokenType.View)]
+    [InlineData("IDENTITY", TokenType.Identity)]
+    [InlineData("AUTOINCREMENT", TokenType.Autoincrement)]
     [InlineData("index", TokenType.Index)]
     [InlineData("unique", TokenType.Unique)]
     [InlineData("view", TokenType.View)]
+    [InlineData("identity", TokenType.Identity)]
+    [InlineData("autoincrement", TokenType.Autoincrement)]
     public void Tokenize_NewKeywords(string keyword, TokenType expected)
     {
         var tokens = new Tokenizer(keyword).Tokenize();

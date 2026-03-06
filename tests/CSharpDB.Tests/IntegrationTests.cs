@@ -194,6 +194,51 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Select_OrderByIndexedColumn_WithBetweenFilter()
+    {
+        await _db.ExecuteAsync("CREATE TABLE sorted_between_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE INDEX idx_sorted_between_idx_val ON sorted_between_idx(val)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (1, 50)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (2, 10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (3, 40)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (4, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (5, 60)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (6, 30)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM sorted_between_idx WHERE val BETWEEN 20 AND 50 ORDER BY val ASC LIMIT 10",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(20L, rows[0][0].AsInteger);
+        Assert.Equal(30L, rows[1][0].AsInteger);
+        Assert.Equal(40L, rows[2][0].AsInteger);
+        Assert.Equal(50L, rows[3][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Select_IndexedColumn_NotBetween_PreservesSemantics()
+    {
+        await _db.ExecuteAsync("CREATE TABLE sorted_not_between_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE INDEX idx_sorted_not_between_idx_val ON sorted_not_between_idx(val)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (1, 50)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (2, 10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (3, 40)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (4, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (5, 60)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (6, 30)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM sorted_not_between_idx WHERE val NOT BETWEEN 20 AND 40 ORDER BY val ASC",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+        Assert.Equal(50L, rows[1][0].AsInteger);
+        Assert.Equal(60L, rows[2][0].AsInteger);
+    }
+
+    [Fact]
     public async Task Select_OrderByIndexedNullableColumn_IncludesNullRows()
     {
         await _db.ExecuteAsync("CREATE TABLE sorted_nullable_idx (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);

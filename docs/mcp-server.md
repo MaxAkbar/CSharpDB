@@ -168,6 +168,8 @@ The `valuesJson` parameter accepts a JSON object string with column names as key
 
 Values are automatically coerced to CSharpDB types: integers become `INTEGER`, decimals become `REAL`, strings become `TEXT`, null stays `NULL`.
 
+`DescribeTable` and `BrowseTable` include `isIdentity` metadata for identity columns.
+
 ### SQL Tool
 
 | Tool | Description | Parameters |

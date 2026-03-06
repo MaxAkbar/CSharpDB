@@ -55,6 +55,7 @@ Supported column types:
 
 Column constraints:
 - `PRIMARY KEY` — marks the column as the primary key
+- `IDENTITY` / `AUTOINCREMENT` — mark an `INTEGER PRIMARY KEY` as an identity column (explicit ID inserts are still allowed)
 - `NOT NULL` — disallows NULL values
 
 Use `IF NOT EXISTS` to avoid errors when the table already exists:

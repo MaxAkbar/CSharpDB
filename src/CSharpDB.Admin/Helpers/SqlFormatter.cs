@@ -35,6 +35,7 @@ public static partial class SqlFormatter
         "PRIMARY", "KEY", "UNIQUE", "DEFAULT", "CHECK", "FOREIGN", "REFERENCES",
         "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "ADD", "RENAME", "TO",
         "BEFORE", "AFTER", "FOR", "EACH", "ROW",
+        "IDENTITY", "AUTOINCREMENT",
         "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",
         "TRUE", "FALSE", "NOT"
     };

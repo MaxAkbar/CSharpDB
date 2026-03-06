@@ -162,7 +162,7 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndOrderedRangeScan()
+    public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndRangeScans()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = NewTempDbPath();
@@ -205,9 +205,83 @@ public sealed class StorageEngineExtensibilityTests
                     Assert.Equal(30, rows[1][0].AsInteger);
                     Assert.Equal(40, rows[2][0].AsInteger);
                 }
+
+                int cursorCallsAfterOrderedRange = indexProvider.CreateCursorCallCount;
+                Assert.True(cursorCallsAfterOrderedRange > 0);
+
+                await using (var between = await db.ExecuteAsync(
+                                 "SELECT v FROM t WHERE v BETWEEN 20 AND 40",
+                                 ct))
+                {
+                    var rows = await between.ToListAsync(ct);
+                    Assert.Equal(3, rows.Count);
+                    var values = rows.Select(r => r[0].AsInteger).OrderBy(v => v).ToArray();
+                    Assert.Equal(new[] { 20L, 30L, 40L }, values);
+                }
+
+                Assert.True(indexProvider.CreateCursorCallCount > cursorCallsAfterOrderedRange);
             }
 
             Assert.True(indexProvider.CreateCursorCallCount > 0);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task PersistedNextRowId_AvoidsFullScanOnFirstInsertAfterReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+        var interceptor = new RecordingPageOperationInterceptor();
+
+        try
+        {
+            var options = new DatabaseOptions
+            {
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        Interceptors = new[] { interceptor },
+                    }
+                }
+            };
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)", ct);
+                await db.BeginTransactionAsync(ct);
+                for (int i = 1; i <= 5000; i++)
+                    await db.ExecuteAsync($"INSERT INTO t (v) VALUES ({i})", ct);
+                await db.CommitAsync(ct);
+            }
+
+            interceptor.ResetCounts();
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                int readsBeforeFirst = interceptor.BeforeReadCount;
+                await db.ExecuteAsync("INSERT INTO t (v) VALUES (6000)", ct);
+                int firstInsertReadDelta = interceptor.BeforeReadCount - readsBeforeFirst;
+
+                int readsBeforeSecond = interceptor.BeforeReadCount;
+                await db.ExecuteAsync("INSERT INTO t (v) VALUES (7000)", ct);
+                int secondInsertReadDelta = interceptor.BeforeReadCount - readsBeforeSecond;
+
+                await using var result = await db.ExecuteAsync("SELECT id FROM t WHERE v = 7000", ct);
+                var rows = await result.ToListAsync(ct);
+                var row = Assert.Single(rows);
+                Assert.Equal(5002L, row[0].AsInteger);
+
+                // If rowid allocation performs a full tree scan on cache miss, the first delta is far higher.
+                Assert.True(
+                    firstInsertReadDelta <= secondInsertReadDelta + 25,
+                    $"Unexpected read amplification on first insert after reopen: first={firstInsertReadDelta}, second={secondInsertReadDelta}");
+            }
         }
         finally
         {
@@ -313,6 +387,21 @@ public sealed class StorageEngineExtensibilityTests
         {
             Interlocked.Increment(ref RecoveryEndCount);
             return ValueTask.CompletedTask;
+        }
+
+        public void ResetCounts()
+        {
+            BeforeReadCount = 0;
+            AfterReadCount = 0;
+            BeforeWriteCount = 0;
+            AfterWriteCount = 0;
+            CommitStartCount = 0;
+            CommitEndCount = 0;
+            CheckpointStartCount = 0;
+            CheckpointEndCount = 0;
+            RecoveryStartCount = 0;
+            RecoveryEndCount = 0;
+            _readSources.Clear();
         }
     }
 

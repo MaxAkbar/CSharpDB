@@ -13,8 +13,9 @@ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the 
 
 ## Features
 
-- **108 token types** covering SQL keywords, literals, identifiers, `@parameters`, operators, and punctuation
+- **110 token types** covering SQL keywords, literals, identifiers, `@parameters`, operators, and punctuation
 - **Full DDL/DML parsing**: CREATE/DROP/ALTER TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE/DROP TRIGGER
+- **Identity syntax support**: `IDENTITY` and `AUTOINCREMENT` modifiers on `INTEGER PRIMARY KEY` columns
 - **Rich query support**: SELECT with JOINs (INNER, LEFT, RIGHT, CROSS), WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, CTEs (WITH)
 - **Expression tree**: binary/unary operators, LIKE, IN, BETWEEN, IS NULL, aggregate functions (COUNT, SUM, AVG, MIN, MAX with DISTINCT)
 - **Fast-path optimizers**: `TryParseSimpleSelect` and `TryParseSimplePrimaryKeyLookup` detect common patterns and skip full AST construction

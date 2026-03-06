@@ -40,6 +40,8 @@ public enum TokenType
     Blob,
     Primary,
     Key,
+    Identity,
+    Autoincrement,
     If,
     Exists,
     Like,

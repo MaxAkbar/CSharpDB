@@ -28,6 +28,7 @@ internal sealed class CatalogService
     private Dictionary<string, TableSchema> _cache => _cacheState.Tables;
     private Dictionary<string, uint> _tableRootPages => _cacheState.TableRootPages;
     private Dictionary<string, BTree> _tableTrees => _cacheState.TableTrees;
+    private readonly Dictionary<string, long> _persistedTableNextRowIds = new(StringComparer.OrdinalIgnoreCase);
 
     // Index catalog
     private BTree? _indexCatalogTree;
@@ -187,6 +188,7 @@ internal sealed class CatalogService
             var schema = _schemaSerializer.Deserialize(data.Span[4..]);
             _cache[schema.TableName] = schema;
             _tableRootPages[schema.TableName] = rootPage;
+            _persistedTableNextRowIds[schema.TableName] = schema.NextRowId;
         }
 
         // Load index entries
@@ -279,20 +281,23 @@ internal sealed class CatalogService
 
         await EnsureCatalogTreeAsync(ct);
 
+        var storedSchema = NormalizeStoredTableSchema(schema, fallbackNextRowId: 1);
+
         // Create a new B+tree for the table's data
         uint tableRootPage = await BTree.CreateNewAsync(_pager, ct);
 
         // Serialize: [rootPage:4 bytes] [schema bytes]
-        var schemaBytes = _schemaSerializer.Serialize(schema);
+        var schemaBytes = _schemaSerializer.Serialize(storedSchema);
         var payload = _catalogStore.WriteRootPayload(tableRootPage, schemaBytes);
 
-        long key = _schemaSerializer.TableNameToKey(schema.TableName);
+        long key = _schemaSerializer.TableNameToKey(storedSchema.TableName);
         await _catalogTree!.InsertAsync(key, payload, ct);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
 
-        _cache[schema.TableName] = schema;
-        _tableRootPages[schema.TableName] = tableRootPage;
-        _tableTrees[schema.TableName] = new BTree(_pager, tableRootPage);
+        _cache[storedSchema.TableName] = storedSchema;
+        _tableRootPages[storedSchema.TableName] = tableRootPage;
+        _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage);
+        _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
         IncrementSchemaVersion();
     }
 
@@ -313,6 +318,7 @@ internal sealed class CatalogService
         _cache.Remove(tableName);
         _tableRootPages.Remove(tableName);
         _tableTrees.Remove(tableName);
+        _persistedTableNextRowIds.Remove(tableName);
         IncrementSchemaVersion();
     }
 
@@ -325,25 +331,33 @@ internal sealed class CatalogService
         if (!_tableRootPages.TryGetValue(oldTableName, out uint rootPage))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
 
+        if (!_cache.TryGetValue(oldTableName, out var oldSchema))
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
+
+        long fallbackNextRowId = oldSchema.NextRowId > 0 ? oldSchema.NextRowId : 1;
+        var storedSchema = NormalizeStoredTableSchema(newSchema, fallbackNextRowId);
+
         // Delete old catalog entry
         long oldKey = _schemaSerializer.TableNameToKey(oldTableName);
         await _catalogTree!.DeleteAsync(oldKey, ct);
         _cache.Remove(oldTableName);
         _tableRootPages.Remove(oldTableName);
+        _persistedTableNextRowIds.Remove(oldTableName);
 
         // Insert new catalog entry with same root page
-        var schemaBytes = _schemaSerializer.Serialize(newSchema);
+        var schemaBytes = _schemaSerializer.Serialize(storedSchema);
         var payload = _catalogStore.WriteRootPayload(rootPage, schemaBytes);
 
-        long newKey = _schemaSerializer.TableNameToKey(newSchema.TableName);
+        long newKey = _schemaSerializer.TableNameToKey(storedSchema.TableName);
         await _catalogTree!.InsertAsync(newKey, payload, ct);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
 
-        _cache[newSchema.TableName] = newSchema;
-        _tableRootPages[newSchema.TableName] = rootPage;
+        _cache[storedSchema.TableName] = storedSchema;
+        _tableRootPages[storedSchema.TableName] = rootPage;
+        _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
-            _tableTrees[newSchema.TableName] = existingTree;
+            _tableTrees[storedSchema.TableName] = existingTree;
 
         IncrementSchemaVersion();
     }
@@ -609,6 +623,24 @@ internal sealed class CatalogService
         _cacheState.RemoveTriggerFromTable(schema);
     }
 
+    private static TableSchema NormalizeStoredTableSchema(TableSchema schema, long fallbackNextRowId)
+    {
+        long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : fallbackNextRowId;
+        if (normalizedNextRowId <= 0)
+            normalizedNextRowId = 1;
+
+        if (schema.NextRowId == normalizedNextRowId)
+            return schema;
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            QualifiedMappings = schema.QualifiedMappings,
+            NextRowId = normalizedNextRowId,
+        };
+    }
+
     private void IncrementSchemaVersion()
     {
         Interlocked.Increment(ref _schemaVersion);
@@ -622,11 +654,15 @@ internal sealed class CatalogService
         if (!_tableRootPages.TryGetValue(tableName, out uint persistedRootPage))
             return;
 
-        uint currentRootPage = tree.RootPageId;
-        if (currentRootPage == persistedRootPage)
+        if (!_cache.TryGetValue(tableName, out var schema))
             return;
 
-        var schema = _cache[tableName];
+        uint currentRootPage = tree.RootPageId;
+        _persistedTableNextRowIds.TryGetValue(tableName, out long persistedNextRowId);
+        bool metadataChanged = persistedNextRowId != schema.NextRowId;
+        if (currentRootPage == persistedRootPage && !metadataChanged)
+            return;
+
         var schemaBytes = _schemaSerializer.Serialize(schema);
         var payload = _catalogStore.WriteRootPayload(currentRootPage, schemaBytes);
 
@@ -635,6 +671,7 @@ internal sealed class CatalogService
         await _catalogTree.InsertAsync(key, payload, ct);
 
         _tableRootPages[tableName] = currentRootPage;
+        _persistedTableNextRowIds[tableName] = schema.NextRowId;
         _pager.SchemaRootPage = _catalogTree.RootPageId;
     }
 

@@ -41,7 +41,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("id", tableRow[2].AsText);
 
         await using var columns = await _db.ExecuteAsync(
-            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key " +
+            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity " +
             "FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position", ct);
         var columnRows = await columns.ToListAsync(ct);
         Assert.Equal(3, columnRows.Count);
@@ -49,10 +49,12 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(1L, columnRows[0][1].AsInteger);
         Assert.Equal("INTEGER", columnRows[0][2].AsText);
         Assert.Equal(1L, columnRows[0][4].AsInteger);
+        Assert.Equal(1L, columnRows[0][5].AsInteger);
         Assert.Equal("name", columnRows[1][0].AsText);
         Assert.Equal("TEXT", columnRows[1][2].AsText);
         Assert.Equal(0L, columnRows[1][3].AsInteger);
         Assert.Equal(0L, columnRows[1][4].AsInteger);
+        Assert.Equal(0L, columnRows[1][5].AsInteger);
 
         await using var indexes = await _db.ExecuteAsync(
             "SELECT index_name, table_name, column_name, ordinal_position, is_unique " +

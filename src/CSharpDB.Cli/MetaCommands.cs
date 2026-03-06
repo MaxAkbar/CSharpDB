@@ -160,9 +160,10 @@ internal sealed class SchemaCommand : IMetaCommand
 
             string type = Ansi.Colorize(col.Type.ToString().ToUpperInvariant(), Ansi.Yellow);
             string pk = col.IsPrimaryKey ? Ansi.Colorize(" PRIMARY KEY", Ansi.Magenta) : string.Empty;
+            string identity = col.IsIdentity ? Ansi.Colorize(" IDENTITY", Ansi.Magenta) : string.Empty;
             string nn = !col.Nullable ? Ansi.Colorize(" NOT NULL", Ansi.Magenta) : string.Empty;
 
-            output.WriteLine($"  {col.Name} {type}{pk}{nn}{comma}");
+            output.WriteLine($"  {col.Name} {type}{pk}{identity}{nn}{comma}");
         }
 
         output.WriteLine(");");

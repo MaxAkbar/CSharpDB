@@ -16,6 +16,7 @@ public sealed class ColumnDef
     public required string Name { get; init; }
     public required TokenType TypeToken { get; init; } // Integer, Real, Text, Blob
     public bool IsPrimaryKey { get; init; }
+    public bool IsIdentity { get; init; }
     public bool IsNullable { get; init; } = true;
 }
 

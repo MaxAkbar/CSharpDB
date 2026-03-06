@@ -111,6 +111,7 @@ SELECT * FROM sys.objects ORDER BY object_type, object_name;
 ```
 
 Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`.
+`sys.columns` includes `is_identity` (0/1) in addition to `is_primary_key`.
 
 ---
 
@@ -146,7 +147,7 @@ csdb> .tables
 
 csdb> .schema users
 CREATE TABLE users (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY IDENTITY,
   name TEXT NOT NULL,
   age INTEGER
 )

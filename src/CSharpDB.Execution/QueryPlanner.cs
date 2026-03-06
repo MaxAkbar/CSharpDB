@@ -26,6 +26,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "data_type", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "is_identity", Type = DbType.Integer, Nullable = false },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -226,10 +227,11 @@ public sealed class QueryPlanner
             Name = c.Name,
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
+            IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
             Nullable = c.IsNullable,
         }).ToArray();
 
-        var schema = new TableSchema { TableName = stmt.TableName, Columns = columns };
+        var schema = new TableSchema { TableName = stmt.TableName, Columns = columns, NextRowId = 1 };
         await _catalog.CreateTableAsync(schema, ct);
         _nextRowIdCache.Remove(stmt.TableName);
         return new QueryResult(0);
@@ -263,6 +265,7 @@ public sealed class QueryPlanner
                     Name = add.Column.Name,
                     Type = MapType(add.Column.TypeToken),
                     IsPrimaryKey = add.Column.IsPrimaryKey,
+                    IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
                     Nullable = add.Column.IsNullable,
                 });
 
@@ -346,7 +349,14 @@ public sealed class QueryPlanner
 
                 var newCols = schema.Columns.Select((col, i) =>
                     i == colIdx
-                        ? new ColumnDefinition { Name = renameCol.NewColumnName, Type = col.Type, IsPrimaryKey = col.IsPrimaryKey, Nullable = col.Nullable }
+                        ? new ColumnDefinition
+                        {
+                            Name = renameCol.NewColumnName,
+                            Type = col.Type,
+                            IsPrimaryKey = col.IsPrimaryKey,
+                            IsIdentity = col.IsIdentity,
+                            Nullable = col.Nullable,
+                        }
                         : col
                 ).ToArray();
 
@@ -3478,7 +3488,7 @@ public sealed class QueryPlanner
         if (orderColumn.Nullable)
             return false;
 
-        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere);
+        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere, out _);
 
         var indexes = _catalog.GetIndexesForTable(tableRef.TableName);
         foreach (var idx in indexes)
@@ -3499,8 +3509,9 @@ public sealed class QueryPlanner
     }
 
     /// <summary>
-    /// Fast path for simple secondary-index equality lookups:
-    /// SELECT * / columns FROM table WHERE indexed_col = literal [AND ...].
+    /// Fast path for simple secondary-index lookups:
+    /// SELECT * / columns FROM table WHERE indexed_col = literal [AND ...],
+    /// or integer range predicates on indexed INTEGER columns.
     /// Bypasses BuildFromOperator and broad planner setup.
     /// </summary>
     private bool TryFastIndexedLookup(SelectStatement stmt, out QueryResult result)
@@ -3528,7 +3539,8 @@ public sealed class QueryPlanner
         if (schema == null)
             return false;
 
-        var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
+        var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
+            ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
         if (indexOp == null)
             return false;
 
@@ -3654,13 +3666,72 @@ public sealed class QueryPlanner
         return false;
     }
 
+    private IOperator? TryBuildIntegerIndexRangeScan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out Expression? remaining)
+    {
+        remaining = where;
+        var indexes = _catalog.GetIndexesForTable(tableName);
+        if (indexes.Count == 0)
+            return null;
+
+        IndexSchema? selectedIndex = null;
+        IndexScanRange selectedRange = default;
+        Expression? selectedRemaining = where;
+        int selectedScore = int.MinValue;
+
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var idx = indexes[i];
+            if (!UsesDirectIntegerIndexKey(idx, schema))
+                continue;
+
+            int columnIndex = schema.GetColumnIndex(idx.Columns[0]);
+            if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
+                continue;
+
+            ExtractOrderedIndexRange(
+                where,
+                schema,
+                columnIndex,
+                out var scanRange,
+                out var residualWhere,
+                out int consumedTermCount);
+
+            if (consumedTermCount == 0)
+                continue;
+
+            int score = consumedTermCount * 10 + (idx.IsUnique ? 1 : 0);
+            if (score <= selectedScore)
+                continue;
+
+            selectedScore = score;
+            selectedIndex = idx;
+            selectedRange = scanRange;
+            selectedRemaining = residualWhere;
+        }
+
+        if (selectedIndex == null)
+            return null;
+
+        remaining = selectedRemaining;
+        var indexStore = _catalog.GetIndexStore(selectedIndex.IndexName, _pager);
+        var tableTree = _catalog.GetTableTree(tableName, _pager);
+        return new IndexOrderedScanOperator(indexStore, tableTree, schema, selectedRange, _recordSerializer);
+    }
+
     private static void ExtractOrderedIndexRange(
         Expression? where,
         TableSchema schema,
         int orderColumnIndex,
         out IndexScanRange range,
-        out Expression? remaining)
+        out Expression? remaining,
+        out int consumedTermCount)
     {
+        consumedTermCount = 0;
+
         if (where == null)
         {
             range = IndexScanRange.All;
@@ -3679,12 +3750,26 @@ public sealed class QueryPlanner
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
+            if (TryExtractOrderedIndexBetweenRange(
+                    conjuncts[i],
+                    schema,
+                    orderColumnIndex,
+                    out long betweenLow,
+                    out long betweenHigh))
+            {
+                consumedTermCount++;
+                ApplyLowerBound(ref lowerBound, ref lowerInclusive, betweenLow, inclusive: true);
+                ApplyUpperBound(ref upperBound, ref upperInclusive, betweenHigh, inclusive: true);
+                continue;
+            }
+
             if (!TryExtractOrderedIndexRangeTerm(conjuncts[i], schema, orderColumnIndex, out var term))
             {
                 residualTerms.Add(conjuncts[i]);
                 continue;
             }
 
+            consumedTermCount++;
             switch (term.Kind)
             {
                 case RangeTermKind.Equal:
@@ -3709,6 +3794,45 @@ public sealed class QueryPlanner
 
         range = new IndexScanRange(lowerBound, lowerInclusive, upperBound, upperInclusive);
         remaining = CombineConjuncts(residualTerms);
+    }
+
+    private static bool TryExtractOrderedIndexBetweenRange(
+        Expression expression,
+        TableSchema schema,
+        int orderColumnIndex,
+        out long lowValue,
+        out long highValue)
+    {
+        lowValue = 0;
+        highValue = 0;
+
+        if (expression is not BetweenExpression { Negated: false } between)
+            return false;
+
+        if (!TryExtractColumnIntegerLiteralPair(
+                between.Operand,
+                between.Low,
+                schema,
+                out int lowColumnIndex,
+                out lowValue))
+        {
+            return false;
+        }
+
+        if (lowColumnIndex != orderColumnIndex)
+            return false;
+
+        if (!TryExtractColumnIntegerLiteralPair(
+                between.Operand,
+                between.High,
+                schema,
+                out int highColumnIndex,
+                out highValue))
+        {
+            return false;
+        }
+
+        return highColumnIndex == orderColumnIndex;
     }
 
     private enum RangeTermKind
@@ -4701,6 +4825,7 @@ public sealed class QueryPlanner
                     Type = sourceColumn.Type,
                     Nullable = sourceColumn.Nullable,
                     IsPrimaryKey = sourceColumn.IsPrimaryKey,
+                    IsIdentity = sourceColumn.IsIdentity,
                 }
                 : sourceColumn;
         }
@@ -5131,6 +5256,7 @@ public sealed class QueryPlanner
                     DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
                     DbValue.FromInteger(col.Nullable ? 1 : 0),
                     DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
+                    DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                 ]);
             }
         }
@@ -5335,30 +5461,45 @@ public sealed class QueryPlanner
         string tableName, TableSchema schema, BTree tree, DbValue[] row, CancellationToken ct)
     {
         int pkIdx = schema.PrimaryKeyColumnIndex;
-        if (pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer)
+        if (pkIdx >= 0 &&
+            schema.Columns[pkIdx].Type == DbType.Integer &&
+            schema.Columns[pkIdx].IsIdentity)
         {
             if (!row[pkIdx].IsNull)
             {
                 long explicitKey = row[pkIdx].AsInteger;
-                if (_nextRowIdCache.TryGetValue(tableName, out long next) && explicitKey >= next)
-                    _nextRowIdCache[tableName] = checked(explicitKey + 1);
+                if (explicitKey >= 0 && explicitKey < long.MaxValue)
+                    UpdateNextRowIdState(tableName, schema, checked(explicitKey + 1));
                 return (explicitKey, false);
             }
 
-            long generatedKey = await AllocateRowIdAsync(tableName, tree, ct);
+            long generatedKey = await AllocateRowIdAsync(tableName, schema, tree, ct);
             row[pkIdx] = DbValue.FromInteger(generatedKey);
             return (generatedKey, true);
         }
 
-        return (await AllocateRowIdAsync(tableName, tree, ct), true);
+        if (pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer)
+        {
+            if (row[pkIdx].IsNull)
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"Primary key column '{schema.Columns[pkIdx].Name}' requires an explicit value.");
+
+            long explicitKey = row[pkIdx].AsInteger;
+            if (explicitKey >= 0 && explicitKey < long.MaxValue)
+                UpdateNextRowIdState(tableName, schema, checked(explicitKey + 1));
+            return (explicitKey, false);
+        }
+
+        return (await AllocateRowIdAsync(tableName, schema, tree, ct), true);
     }
 
-    private async ValueTask<long> AllocateRowIdAsync(string tableName, BTree tree, CancellationToken ct)
+    private async ValueTask<long> AllocateRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
     {
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
-            nextRowId = await LoadNextRowIdAsync(tree, ct);
+            nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
-        _nextRowIdCache[tableName] = checked(nextRowId + 1);
+        UpdateNextRowIdState(tableName, schema, checked(nextRowId + 1));
         return nextRowId;
     }
 
@@ -5367,7 +5508,20 @@ public sealed class QueryPlanner
         _nextRowIdCache.Remove(tableName);
     }
 
-    private static async ValueTask<long> LoadNextRowIdAsync(BTree tree, CancellationToken ct)
+    private async ValueTask<long> LoadNextRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
+    {
+        if (schema.NextRowId > 0)
+        {
+            _nextRowIdCache[tableName] = schema.NextRowId;
+            return schema.NextRowId;
+        }
+
+        long loadedNextRowId = await ScanNextRowIdAsync(tree, ct);
+        UpdateNextRowIdState(tableName, schema, loadedNextRowId);
+        return loadedNextRowId;
+    }
+
+    private static async ValueTask<long> ScanNextRowIdAsync(BTree tree, CancellationToken ct)
     {
         long maxId = 0;
         var cursor = tree.CreateCursor();
@@ -5377,6 +5531,20 @@ public sealed class QueryPlanner
                 maxId = cursor.CurrentKey;
         }
         return maxId + 1;
+    }
+
+    private void UpdateNextRowIdState(string tableName, TableSchema schema, long nextRowId)
+    {
+        if (nextRowId <= 0)
+            return;
+
+        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
+            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        else
+            _nextRowIdCache[tableName] = nextRowId;
+
+        if (schema.NextRowId < nextRowId)
+            schema.NextRowId = nextRowId;
     }
 
     #endregion

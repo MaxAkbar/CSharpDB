@@ -16,6 +16,37 @@ public class ParserTests
         Assert.True(create.Columns[2].IsNullable);
     }
 
+    [Theory]
+    [InlineData("CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT)")]
+    [InlineData("CREATE TABLE users (id INTEGER AUTOINCREMENT PRIMARY KEY, name TEXT)")]
+    [InlineData("CREATE TABLE users (id INTEGER IDENTITY PRIMARY KEY, name TEXT)")]
+    public void Parse_CreateTable_IdentityModifiers(string sql)
+    {
+        var stmt = Parser.Parse(sql);
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.True(create.Columns[0].IsPrimaryKey);
+        Assert.True(create.Columns[0].IsIdentity);
+        Assert.False(create.Columns[0].IsNullable);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_IdentityWithoutPrimaryKey_ImplicitPrimaryKey()
+    {
+        var stmt = Parser.Parse("CREATE TABLE users (id INTEGER IDENTITY, name TEXT)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.True(create.Columns[0].IsPrimaryKey);
+        Assert.True(create.Columns[0].IsIdentity);
+        Assert.False(create.Columns[0].IsNullable);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_IdentityOnNonInteger_Throws()
+    {
+        Assert.Throws<CSharpDB.Core.CSharpDbException>(() => Parser.Parse("CREATE TABLE users (id TEXT PRIMARY KEY IDENTITY, name TEXT)"));
+    }
+
     [Fact]
     public void Parse_Insert()
     {
