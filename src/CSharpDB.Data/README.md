@@ -3,6 +3,8 @@
 ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedded database engine. Standard `DbConnection`, `DbCommand`, and `DbDataReader` with parameterized queries and transactions.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Data)](https://www.nuget.org/packages/CSharpDB.Data)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/MaxAkbar/CSharpDB/blob/main/LICENSE)
 
 ## Overview
@@ -80,10 +82,31 @@ conn.ConnectionString = "Data Source=myapp.db";
 await conn.OpenAsync();
 ```
 
+## Connection Pooling (Opt-In)
+
+Connection pooling is disabled by default. Enable it explicitly in the connection string:
+
+```bash
+Data Source=myapp.db;Pooling=true;Max Pool Size=16
+```
+
+To force-release pooled physical connections (for example before deleting database files):
+
+```csharp
+CSharpDbConnection.ClearPool("Data Source=myapp.db;Pooling=true;Max Pool Size=16");
+CSharpDbConnection.ClearAllPools();
+```
+
 ## Installation
 
 ```
 dotnet add package CSharpDB.Data
+```
+
+For the recommended all-in-one package:
+
+```
+dotnet add package CSharpDB
 ```
 
 ## Dependencies
@@ -94,6 +117,7 @@ dotnet add package CSharpDB.Data
 
 | Package | Description |
 |---------|-------------|
+| [CSharpDB](https://www.nuget.org/packages/CSharpDB) | All-in-one package for application development |
 | [CSharpDB.Engine](https://www.nuget.org/packages/CSharpDB.Engine) | Underlying embedded database engine |
 | [CSharpDB.Service](https://www.nuget.org/packages/CSharpDB.Service) | Thread-safe service layer built on this provider |
 
