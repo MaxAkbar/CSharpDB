@@ -135,7 +135,21 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f RELEASE_NOTES.md ]]; then
-            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+            notes_file="release-notes-current.md"
+            awk '
+              /^## / {
+                if (started) exit
+                started=1
+              }
+              started { print }
+            ' RELEASE_NOTES.md > "$notes_file"
+
+            if [[ -s "$notes_file" ]]; then
+              echo "has_notes=true" >> "$GITHUB_OUTPUT"
+              echo "path=$notes_file" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_notes=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "has_notes=false" >> "$GITHUB_OUTPUT"
           fi
@@ -145,7 +159,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
-          body_path: RELEASE_NOTES.md
+          body_path: ${{ steps.notes.outputs.path }}
           files: artifacts/nuget/*.nupkg
 
       - name: Create release (auto-generated notes)

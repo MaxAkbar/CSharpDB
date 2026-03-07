@@ -94,6 +94,90 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_ParameterizedInsert_WithLiteralValue_ReusesAcrossValues()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, kind TEXT, name TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t VALUES (@id, 'fixed', @name);";
+        var id = cmd.Parameters.AddWithValue("@id", 1);
+        var name = cmd.Parameters.AddWithValue("@name", "Alice");
+        cmd.Prepare();
+
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        id.Value = 2;
+        name.Value = "Bob";
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT kind, name FROM t ORDER BY id;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal("fixed", reader.GetString(0));
+        Assert.Equal("Alice", reader.GetString(1));
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal("fixed", reader.GetString(0));
+        Assert.Equal("Bob", reader.GetString(1));
+        Assert.False(await reader.ReadAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Prepare_ParameterizedMultiRowInsert_ReusesAcrossExecutions()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t VALUES (@id1, @name1), (@id2, @name2);";
+        var id1 = cmd.Parameters.AddWithValue("@id1", 1);
+        var name1 = cmd.Parameters.AddWithValue("@name1", "Alice");
+        var id2 = cmd.Parameters.AddWithValue("@id2", 2);
+        var name2 = cmd.Parameters.AddWithValue("@name2", "Bob");
+        cmd.Prepare();
+
+        Assert.Equal(2, await cmd.ExecuteNonQueryAsync(Ct));
+
+        id1.Value = 3;
+        name1.Value = "Cara";
+        id2.Value = 4;
+        name2.Value = "Drew";
+        Assert.Equal(2, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT COUNT(*) FROM t;";
+        Assert.Equal(4L, await cmd.ExecuteScalarAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Prepare_ParameterizedColumnListInsert_StillExecutes()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t (id, name, age) VALUES (@id, @name, @age);";
+        var id = cmd.Parameters.AddWithValue("@id", 1);
+        var name = cmd.Parameters.AddWithValue("@name", "Alice");
+        var age = cmd.Parameters.AddWithValue("@age", 30);
+        cmd.Prepare();
+
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        id.Value = 2;
+        name.Value = "Bob";
+        age.Value = 31;
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT age FROM t WHERE id = 2;";
+        Assert.Equal(31L, await cmd.ExecuteScalarAsync(Ct));
+    }
+
+    [Fact]
     public async Task Prepare_InvalidatedWhenCommandTextChanges()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

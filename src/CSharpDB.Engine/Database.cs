@@ -77,6 +77,9 @@ public sealed class Database : IAsyncDisposable
         if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
             return ExecuteStatementAsync(cachedStmt, ct);
 
+        if (LooksLikeInsert(sql) && Parser.TryParseSimpleInsert(sql, out var simpleInsert))
+            return ExecuteSimpleInsertAsync(simpleInsert, ct);
+
         if (bypassParse)
         {
             if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
@@ -97,6 +100,26 @@ public sealed class Database : IAsyncDisposable
     public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
         => ExecuteStatementAsync(statement, ct);
 
+    internal ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken ct = default)
+        => ExecuteSimpleInsertAsync(insert, ct);
+
+    /// <summary>
+    /// Prepare a reusable full-row insert batch for a single table.
+    /// The batch accepts DbValue rows and executes them through the simple insert path.
+    /// </summary>
+    public InsertBatch PrepareInsertBatch(string tableName, int initialCapacity = 0)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        ArgumentOutOfRangeException.ThrowIfNegative(initialCapacity);
+
+        InvalidateCachesIfSchemaChanged();
+        var schema = _catalog.GetTable(tableName);
+        if (schema == null)
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+
+        return new InsertBatch(this, tableName, schema.Columns.Count, _catalog.SchemaVersion, initialCapacity);
+    }
+
     private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
     {
         if (stmt is SelectStatement)
@@ -107,18 +130,52 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
+        bool explicitTransaction = _inTransaction;
         if (!_inTransaction)
             await _pager.BeginTransactionAsync(ct);
 
         try
         {
-            var result = await _planner.ExecuteAsync(stmt, ct);
+            QueryResult result = stmt switch
+            {
+                InsertStatement insert => await _planner.ExecuteInsertAsync(
+                    insert,
+                    persistRootChanges: !explicitTransaction,
+                    ct),
+                _ => await _planner.ExecuteAsync(stmt, ct),
+            };
 
             if (!_inTransaction)
             {
                 // Auto-commit
                 await CommitWithCatalogSyncAsync(ct);
             }
+
+            return result;
+        }
+        catch
+        {
+            if (!_inTransaction)
+                await _pager.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
+    {
+        bool explicitTransaction = _inTransaction;
+        if (!_inTransaction)
+            await _pager.BeginTransactionAsync(ct);
+
+        try
+        {
+            var result = await _planner.ExecuteSimpleInsertAsync(
+                insert,
+                persistRootChanges: !explicitTransaction,
+                ct);
+
+            if (!_inTransaction)
+                await CommitWithCatalogSyncAsync(ct);
 
             return result;
         }
@@ -332,6 +389,20 @@ public sealed class Database : IAsyncDisposable
         _statementCache.GetOrAdd(
             sql,
             static s => Parser.TryParseSimpleSelect(s, out var stmt) ? stmt : Parser.Parse(s));
+
+    private static bool LooksLikeInsert(string sql)
+    {
+        ReadOnlySpan<char> span = sql.AsSpan();
+        int pos = 0;
+        while (pos < span.Length && char.IsWhiteSpace(span[pos]))
+            pos++;
+
+        ReadOnlySpan<char> keyword = "INSERT";
+        if (pos + keyword.Length > span.Length)
+            return false;
+
+        return span.Slice(pos, keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase);
+    }
 
     private void InvalidateCachesIfSchemaChanged()
     {

@@ -4,6 +4,9 @@ namespace CSharpDB.Execution;
 
 public sealed class QueryResult : IAsyncDisposable
 {
+    private static readonly QueryResult ZeroRowsAffectedResult = new(0);
+    private static readonly QueryResult OneRowAffectedResult = new(1);
+
     private readonly IOperator? _operator;
     private bool _opened;
 
@@ -57,6 +60,14 @@ public sealed class QueryResult : IAsyncDisposable
     /// </summary>
     internal static QueryResult FromSyncLookup(DbValue[]? row, ColumnDefinition[] schema)
         => new(row, schema);
+
+    internal static QueryResult FromRowsAffected(int rowsAffected)
+        => rowsAffected switch
+        {
+            0 => ZeroRowsAffectedResult,
+            1 => OneRowAffectedResult,
+            _ => new QueryResult(rowsAffected),
+        };
 
     public async IAsyncEnumerable<DbValue[]> GetRowsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {

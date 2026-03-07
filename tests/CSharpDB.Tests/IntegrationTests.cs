@@ -53,6 +53,57 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Insert_SimpleFastPath_WithEscapedStringAndSemicolon()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE fast_insert (id INTEGER PRIMARY KEY, name TEXT, price REAL, note TEXT)",
+            TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync(
+            "INSERT INTO fast_insert VALUES (1, 'O''Reilly', 9.5, NULL);",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT * FROM fast_insert WHERE id = 1",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal("O'Reilly", rows[0][1].AsText);
+        Assert.Equal(9.5, rows[0][2].AsReal);
+        Assert.True(rows[0][3].IsNull);
+    }
+
+    [Fact]
+    public async Task Insert_SimpleFastPath_WithMultipleValueRows()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE fast_insert_many (id INTEGER PRIMARY KEY, name TEXT, price REAL, note TEXT)",
+            TestContext.Current.CancellationToken);
+
+        var result = await _db.ExecuteAsync(
+            "INSERT INTO fast_insert_many VALUES (1, 'Alice', 1.5, NULL), (2, 'O''Reilly', -2.5, 'note')",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.RowsAffected);
+
+        await using var query = await _db.ExecuteAsync(
+            "SELECT * FROM fast_insert_many ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await query.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal("Alice", rows[0][1].AsText);
+        Assert.Equal(1.5, rows[0][2].AsReal);
+        Assert.True(rows[0][3].IsNull);
+        Assert.Equal(2, rows[1][0].AsInteger);
+        Assert.Equal("O'Reilly", rows[1][1].AsText);
+        Assert.Equal(-2.5, rows[1][2].AsReal);
+        Assert.Equal("note", rows[1][3].AsText);
+    }
+
+    [Fact]
     public async Task Select_WithLimit()
     {
         await _db.ExecuteAsync("CREATE TABLE nums (val INTEGER)", TestContext.Current.CancellationToken);
@@ -139,6 +190,90 @@ public class IntegrationTests : IAsyncLifetime
         var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
         Assert.Single(rows);
         Assert.Equal(49990, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Persistence_ColumnListInsertManyRows_AcrossReopen()
+    {
+        await _db.ExecuteAsync("CREATE TABLE persist_cols (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);
+
+        await _db.BeginTransactionAsync(TestContext.Current.CancellationToken);
+        for (int i = 0; i < 5000; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO persist_cols (id, val) VALUES ({i}, {i * 10})",
+                TestContext.Current.CancellationToken);
+        }
+        await _db.CommitAsync(TestContext.Current.CancellationToken);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM persist_cols WHERE id = 4999",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Single(rows);
+        Assert.Equal(49990, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_ReusesBuffersAcrossExecutions()
+    {
+        await _db.ExecuteAsync("CREATE TABLE batch_rows (id INTEGER PRIMARY KEY, val INTEGER, text_col TEXT)", TestContext.Current.CancellationToken);
+
+        var batch = _db.PrepareInsertBatch("batch_rows", initialCapacity: 2);
+        batch.AddRow(DbValue.FromInteger(1), DbValue.FromInteger(10), DbValue.FromText("one"));
+        batch.AddRow(DbValue.FromInteger(2), DbValue.FromInteger(20), DbValue.FromText("two"));
+        Assert.Equal(2, await batch.ExecuteAsync(TestContext.Current.CancellationToken));
+
+        batch.AddRow(DbValue.FromInteger(3), DbValue.FromInteger(30), DbValue.FromText("three"));
+        batch.AddRow(DbValue.FromInteger(4), DbValue.FromInteger(40), DbValue.FromText("four"));
+        Assert.Equal(2, await batch.ExecuteAsync(TestContext.Current.CancellationToken));
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT text_col FROM batch_rows WHERE id >= 3 ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("three", rows[0][0].AsText);
+        Assert.Equal("four", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_AllowsIdentityPrimaryKeyGeneration()
+    {
+        await _db.ExecuteAsync("CREATE TABLE batch_identity (id INTEGER PRIMARY KEY IDENTITY, name TEXT)", TestContext.Current.CancellationToken);
+
+        var batch = _db.PrepareInsertBatch("batch_identity", initialCapacity: 2);
+        batch.AddRow(DbValue.Null, DbValue.FromText("alice"));
+        batch.AddRow(DbValue.Null, DbValue.FromText("bob"));
+
+        await _db.BeginTransactionAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, await batch.ExecuteAsync(TestContext.Current.CancellationToken));
+        await _db.CommitAsync(TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, name FROM batch_identity ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal("alice", rows[0][1].AsText);
+        Assert.Equal(2, rows[1][0].AsInteger);
+        Assert.Equal("bob", rows[1][1].AsText);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_InvalidatedBySchemaChange()
+    {
+        await _db.ExecuteAsync("CREATE TABLE batch_schema (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);
+
+        var batch = _db.PrepareInsertBatch("batch_schema", initialCapacity: 1);
+        await _db.ExecuteAsync("ALTER TABLE batch_schema ADD COLUMN text_col TEXT", TestContext.Current.CancellationToken);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => batch.AddRow(DbValue.FromInteger(1), DbValue.FromInteger(2)));
+        Assert.Contains("schema changed", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -258,17 +258,17 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
 
     internal async ValueTask<DbValue[]?> DecodeFullRowByRowIdAsync(long rowId, CancellationToken ct = default)
     {
-        byte[]? payload;
-        if (_tree.TryFindCached(rowId, out var cachedPayload))
+        ReadOnlyMemory<byte>? payload;
+        if (_tree.TryFindCachedMemory(rowId, out var cachedPayload))
         {
             payload = cachedPayload;
         }
         else
         {
-            payload = await _tree.FindAsync(rowId, ct);
+            payload = await _tree.FindMemoryAsync(rowId, ct);
         }
 
-        return payload == null ? null : DecodeFullRow(payload);
+        return payload is { } payloadMemory ? DecodeFullRow(payloadMemory.Span) : null;
     }
 }
 
@@ -4011,19 +4011,19 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
             {
                 while (TryReadPendingRowId(out long rowId))
                 {
-                    byte[]? payload;
-                    if (_innerTableTree.TryFindCached(rowId, out var cachedPayload))
+                    ReadOnlyMemory<byte>? payload;
+                    if (_innerTableTree.TryFindCachedMemory(rowId, out var cachedPayload))
                     {
                         payload = cachedPayload;
                     }
                     else
                     {
-                        payload = await _innerTableTree.FindAsync(rowId, ct);
+                        payload = await _innerTableTree.FindMemoryAsync(rowId, ct);
                     }
-                    if (payload == null)
+                    if (payload is not { } payloadMemory)
                         continue;
 
-                    var rightRow = DecodeRightRowIntoBuffer(payload);
+                    var rightRow = DecodeRightRowIntoBuffer(payloadMemory.Span);
                     if (!PassesResidual(_activeOuterRow, rightRow))
                         continue;
 
@@ -4233,7 +4233,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
         _pendingIndexOffset = 0;
     }
 
-    private DbValue[] DecodeRightRowIntoBuffer(byte[] payload)
+    private DbValue[] DecodeRightRowIntoBuffer(ReadOnlySpan<byte> payload)
     {
         var row = _rightRowBuffer;
         if (row == null)
@@ -4885,15 +4885,15 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
             _rowIdPayloadOffset += 8;
             CurrentRowId = rowId;
 
-            if (_tableTree.TryFindCached(rowId, out var cachedPayload))
+            if (_tableTree.TryFindCachedMemory(rowId, out var cachedPayload))
             {
-                if (cachedPayload == null)
+                if (cachedPayload is not { } cachedPayloadMemory)
                     continue; // deleted row
 
-                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayload))
+                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
 
-                PopulateCurrentFromPayload(cachedPayload);
+                PopulateCurrentFromPayload(cachedPayloadMemory.Span);
                 return ValueTask.FromResult(true);
             }
 
@@ -4905,11 +4905,11 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     {
         while (true)
         {
-            var payload = await _tableTree.FindAsync(rowId, ct);
-            if (payload != null &&
-                (!_hasPreDecodeFilter || EvaluatePreDecodeFilter(payload)))
+            var payload = await _tableTree.FindMemoryAsync(rowId, ct);
+            if (payload is { } payloadMemory &&
+                (!_hasPreDecodeFilter || EvaluatePreDecodeFilter(payloadMemory.Span)))
             {
-                PopulateCurrentFromPayload(payload);
+                PopulateCurrentFromPayload(payloadMemory.Span);
                 return true;
             }
 
@@ -4921,15 +4921,15 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
             _rowIdPayloadOffset += 8;
             CurrentRowId = rowId;
 
-            if (_tableTree.TryFindCached(rowId, out var cachedPayload))
+            if (_tableTree.TryFindCachedMemory(rowId, out var cachedPayload))
             {
-                if (cachedPayload == null)
+                if (cachedPayload is not { } cachedPayloadMemory)
                     continue;
 
-                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayload))
+                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
 
-                PopulateCurrentFromPayload(cachedPayload);
+                PopulateCurrentFromPayload(cachedPayloadMemory.Span);
                 return true;
             }
         }
@@ -5097,29 +5097,29 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
             return false;
 
         long rowId = BinaryPrimitives.ReadInt64LittleEndian(indexPayload.AsSpan(0, 8));
-        byte[]? rowPayload;
-        if (_tableTree.TryFindCached(rowId, out var cachedRowPayload))
+        ReadOnlyMemory<byte>? rowPayload;
+        if (_tableTree.TryFindCachedMemory(rowId, out var cachedRowPayload))
         {
             rowPayload = cachedRowPayload;
         }
         else
         {
-            rowPayload = await _tableTree.FindAsync(rowId, ct);
+            rowPayload = await _tableTree.FindMemoryAsync(rowId, ct);
         }
 
-        if (rowPayload == null)
+        if (rowPayload is not { } rowPayloadMemory)
             return false;
 
         if (_hasPreDecodeFilter)
         {
-            if (!EvaluatePreDecodeFilter(rowPayload))
+            if (!EvaluatePreDecodeFilter(rowPayloadMemory.Span))
                 return false;
         }
 
         CurrentRowId = rowId;
         var decoded = _maxDecodedColumnIndex.HasValue
-            ? _recordSerializer.DecodeUpTo(rowPayload, _maxDecodedColumnIndex.Value)
-            : _recordSerializer.Decode(rowPayload);
+            ? _recordSerializer.DecodeUpTo(rowPayloadMemory.Span, _maxDecodedColumnIndex.Value)
+            : _recordSerializer.Decode(rowPayloadMemory.Span);
 
         if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
         {
@@ -5256,24 +5256,24 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
                     _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
                 _rowIdPayloadOffset += 8;
 
-                byte[]? payload;
-                if (_tableTree.TryFindCached(rowId, out var cachedPayload))
+                ReadOnlyMemory<byte>? payload;
+                if (_tableTree.TryFindCachedMemory(rowId, out var cachedPayload))
                 {
                     payload = cachedPayload;
                 }
                 else
                 {
-                    payload = await _tableTree.FindAsync(rowId, ct);
+                    payload = await _tableTree.FindMemoryAsync(rowId, ct);
                 }
 
-                if (payload == null)
+                if (payload is not { } payloadMemory)
                     continue;
 
-                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
+                if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payloadMemory.Span))
                     continue;
 
                 CurrentRowId = rowId;
-                PopulateCurrentFromPayload(payload);
+                PopulateCurrentFromPayload(payloadMemory.Span);
                 return true;
             }
 
@@ -5431,7 +5431,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         if (_consumed) return ValueTask.FromResult(false);
         _consumed = true;
 
-        if (_tableTree.TryFindCached(_seekKey, out var cachedPayload))
+        if (_tableTree.TryFindCachedMemory(_seekKey, out var cachedPayload))
             return ValueTask.FromResult(EmitFromPayload(cachedPayload));
 
         return MoveNextUncachedAsync(ct);
@@ -5439,16 +5439,17 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
 
     private async ValueTask<bool> MoveNextUncachedAsync(CancellationToken ct)
     {
-        var payload = await _tableTree.FindAsync(_seekKey, ct);
+        var payload = await _tableTree.FindMemoryAsync(_seekKey, ct);
         return EmitFromPayload(payload);
     }
 
-    private bool EmitFromPayload(byte[]? payload)
+    private bool EmitFromPayload(ReadOnlyMemory<byte>? payload)
     {
-        if (payload == null)
+        if (payload is not { } payloadMemory)
             return false;
 
-        if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
+        var payloadSpan = payloadMemory.Span;
+        if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payloadSpan))
             return false;
 
         CurrentRowId = _seekKey;
@@ -5460,7 +5461,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
                 : _schema.Columns.Count;
             if (_rowBuffer == null || _rowBuffer.Length < targetCount)
                 _rowBuffer = new DbValue[targetCount];
-            int decoded = _recordSerializer.DecodeInto(payload, _rowBuffer.AsSpan(0, targetCount));
+            int decoded = _recordSerializer.DecodeInto(payloadSpan, _rowBuffer.AsSpan(0, targetCount));
             for (int i = decoded; i < targetCount; i++)
                 _rowBuffer[i] = DbValue.Null;
             Current = _rowBuffer;
@@ -5468,8 +5469,8 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         else
         {
             var decoded = _maxDecodedColumnIndex.HasValue
-                ? _recordSerializer.DecodeUpTo(payload, _maxDecodedColumnIndex.Value)
-                : _recordSerializer.Decode(payload);
+                ? _recordSerializer.DecodeUpTo(payloadSpan, _maxDecodedColumnIndex.Value)
+                : _recordSerializer.Decode(payloadSpan);
 
             if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
             {
@@ -5566,7 +5567,7 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRo
         if (_consumed) return ValueTask.FromResult(false);
         _consumed = true;
 
-        if (_tableTree.TryFindCached(_seekKey, out var cachedPayload))
+        if (_tableTree.TryFindCachedMemory(_seekKey, out var cachedPayload))
         {
             if (cachedPayload == null)
                 return ValueTask.FromResult(false);
@@ -5581,7 +5582,7 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRo
     private async ValueTask<bool> MoveNextUncachedAsync(CancellationToken ct)
     {
         // Preserve semantics by checking that the row actually exists.
-        var payload = await _tableTree.FindAsync(_seekKey, ct);
+        var payload = await _tableTree.FindMemoryAsync(_seekKey, ct);
         if (payload == null)
             return false;
 
@@ -5745,9 +5746,9 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
 
         if (_lookupKind == LookupKind.PrimaryKey)
         {
-            var payload = await _tableTree.FindAsync(_lookupValue, ct);
-            if (payload != null)
-                Accumulate(payload.AsSpan());
+            var payload = await _tableTree.FindMemoryAsync(_lookupValue, ct);
+            if (payload is { } payloadMemory)
+                Accumulate(payloadMemory.Span);
         }
         else
         {
@@ -5758,9 +5759,9 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
                 for (int i = 0; i < rowIdCount; i++)
                 {
                     long rowId = BinaryPrimitives.ReadInt64LittleEndian(indexPayload.AsSpan(i * 8, 8));
-                    var payload = await _tableTree.FindAsync(rowId, ct);
-                    if (payload == null) continue;
-                    Accumulate(payload.AsSpan());
+                    var payload = await _tableTree.FindMemoryAsync(rowId, ct);
+                    if (payload is not { } payloadMemory) continue;
+                    Accumulate(payloadMemory.Span);
                 }
             }
         }

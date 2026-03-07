@@ -1,5 +1,28 @@
 # What's New
 
+## v1.5.0 (2026-03-07)
+
+### Insert Performance and Batching
+- Added a reusable engine batch API via `Database.PrepareInsertBatch()` and `InsertBatch` for low-allocation transactional inserts.
+- Added simple SQL insert fast paths for `INSERT INTO ... VALUES (...)`, including multi-row value lists.
+- Deferred table and index root persistence inside explicit transactions so batched inserts do not pay that work per row.
+- Added a prepared ADO.NET simple-insert path so compatible `CSharpDbCommand` executions can bypass the full SQL parser and planner.
+
+### Storage Engine Allocation Reductions
+- Added zero-copy internal lookup paths for hot read callers to avoid unnecessary payload copies on primary-key and index hits.
+- Reworked slotted-page defragmentation and related B+tree rebalance paths to use span-based copies instead of per-cell heap allocations.
+- Tightened split-buffer sizing during leaf splits to reduce temporary pooled-buffer pressure.
+
+### Benchmark Highlights
+- SQL batched insert throughput improved to about **605K rows/sec** in the macro benchmark median-of-3 run, up from the previously published **~294K rows/sec**.
+- SQL single-row insert throughput now measures about **22.2K ops/sec** in the same macro run.
+- SQL concurrent reader throughput at 8 readers now measures about **250K ops/sec**.
+- Prepared ADO.NET insert batches reduce managed allocation by about **43%** for `Batch100` while improving throughput by about **11%**.
+
+### Validation and Coverage
+- Added parser, integration, and ADO.NET tests for prepared inserts, reusable insert batches, schema invalidation, and reopen persistence.
+- Expanded micro and macro benchmark coverage for prepared ADO.NET insert execution and engine-level prepared insert batches.
+
 ## v1.4.0 (2026-03-06)
 
 ### SQL Completeness and Schema Metadata

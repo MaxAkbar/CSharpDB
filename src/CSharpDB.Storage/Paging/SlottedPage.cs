@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 
 namespace CSharpDB.Storage.Paging;
@@ -156,34 +157,65 @@ public struct SlottedPage
             return;
         }
 
-        // Collect all live cells
-        var cells = new (int index, byte[] data)[count];
-        for (int i = 0; i < count; i++)
+        CellMove[] rentedMoves = ArrayPool<CellMove>.Shared.Rent(count);
+        try
         {
-            ushort off = GetCellOffset(i);
-            cells[i] = (i, GetCellRawBytes(off));
-        }
+            var moves = rentedMoves.AsSpan(0, count);
+            for (int i = 0; i < count; i++)
+            {
+                ushort offset = GetCellOffset(i);
+                moves[i] = new CellMove(i, offset, GetCellTotalSize(offset));
+            }
 
-        // Rewrite cells from end of page
-        ushort writePos = (ushort)PageConstants.PageSize;
-        for (int i = 0; i < count; i++)
+            SortByOffsetDescending(moves);
+
+            var pageSpan = Span;
+            ushort writePos = (ushort)PageConstants.PageSize;
+            for (int i = 0; i < moves.Length; i++)
+            {
+                ref readonly CellMove move = ref moves[i];
+                writePos -= (ushort)move.Length;
+                pageSpan.Slice(move.Offset, move.Length).CopyTo(pageSpan.Slice(writePos, move.Length));
+                SetCellOffset(move.Index, writePos);
+            }
+
+            int pointerEnd = CellPointerArrayStart + count * PageConstants.CellPointerSize;
+            pageSpan[pointerEnd..writePos].Clear();
+            CellContentStart = writePos;
+        }
+        finally
         {
-            writePos -= (ushort)cells[i].data.Length;
-            cells[i].data.AsSpan().CopyTo(Span[writePos..]);
-            SetCellOffset(i, writePos);
+            ArrayPool<CellMove>.Shared.Return(rentedMoves, clearArray: false);
         }
-
-        // Clear freed space
-        int pointerEnd = CellPointerArrayStart + count * PageConstants.CellPointerSize;
-        Span[pointerEnd..writePos].Clear();
-        CellContentStart = writePos;
     }
 
-    private byte[] GetCellRawBytes(ushort offset)
+    private int GetCellTotalSize(ushort offset)
     {
         var cellData = Span[offset..];
         ulong payloadSize = Varint.Read(cellData, out int headerBytes);
-        int totalSize = headerBytes + (int)payloadSize;
-        return Span[offset..(offset + totalSize)].ToArray();
+        return headerBytes + (int)payloadSize;
+    }
+
+    private static void SortByOffsetDescending(Span<CellMove> moves)
+    {
+        for (int i = 1; i < moves.Length; i++)
+        {
+            CellMove current = moves[i];
+            int j = i - 1;
+            while (j >= 0 && moves[j].Offset < current.Offset)
+            {
+                moves[j + 1] = moves[j];
+                j--;
+            }
+
+            moves[j + 1] = current;
+        }
+    }
+
+    private readonly struct CellMove(int index, ushort offset, int length)
+    {
+        public int Index { get; } = index;
+        public ushort Offset { get; } = offset;
+        public int Length { get; } = length;
     }
 }

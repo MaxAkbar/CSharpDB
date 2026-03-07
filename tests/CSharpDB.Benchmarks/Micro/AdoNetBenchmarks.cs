@@ -17,6 +17,10 @@ public class AdoNetBenchmarks
     private string _openCloseNoPoolConnectionString = null!;
     private string _openClosePoolConnectionString = null!;
     private CSharpDbConnection _conn = null!;
+    private CSharpDbCommand _preparedInsertCmd = null!;
+    private CSharpDbParameter _preparedInsertId = null!;
+    private CSharpDbParameter _preparedInsertName = null!;
+    private CSharpDbParameter _preparedInsertVal = null!;
     private CSharpDbCommand _preparedSelectCmd = null!;
     private CSharpDbParameter _preparedSelectMinVal = null!;
     private int _nextId;
@@ -44,6 +48,13 @@ public class AdoNetBenchmarks
         _preparedSelectMinVal = _preparedSelectCmd.Parameters.AddWithValue("@minVal", 5000);
         _preparedSelectCmd.Prepare();
 
+        _preparedInsertCmd = (CSharpDbCommand)_conn.CreateCommand();
+        _preparedInsertCmd.CommandText = "INSERT INTO t VALUES (@id, @name, @val)";
+        _preparedInsertId = _preparedInsertCmd.Parameters.AddWithValue("@id", 0);
+        _preparedInsertName = _preparedInsertCmd.Parameters.AddWithValue("@name", "");
+        _preparedInsertVal = _preparedInsertCmd.Parameters.AddWithValue("@val", 0);
+        _preparedInsertCmd.Prepare();
+
         _openCloseNoPoolPath = Path.Combine(Path.GetTempPath(), $"csharpdb_adonet_oc_nopool_{Guid.NewGuid():N}.db");
         _openClosePoolPath = Path.Combine(Path.GetTempPath(), $"csharpdb_adonet_oc_pool_{Guid.NewGuid():N}.db");
         _openCloseNoPoolConnectionString = $"Data Source={_openCloseNoPoolPath};Pooling=false";
@@ -68,6 +79,7 @@ public class AdoNetBenchmarks
     [GlobalCleanup]
     public void GlobalCleanup()
     {
+        _preparedInsertCmd.Dispose();
         _preparedSelectCmd.Dispose();
         _conn.Dispose();
         CSharpDbConnection.ClearAllPools();
@@ -106,6 +118,51 @@ public class AdoNetBenchmarks
         cmd.Parameters.AddWithValue("@val", id * 10);
         await cmd.ExecuteNonQueryAsync();
         cmd.Dispose();
+    }
+
+    [Benchmark(Description = "ADO.NET Prepared INSERT (reused command)")]
+    public async Task PreparedExecuteNonQuery_Insert_ReusedCommand()
+    {
+        int id = Interlocked.Increment(ref _nextId);
+        _preparedInsertId.Value = id;
+        _preparedInsertName.Value = $"row_{id}";
+        _preparedInsertVal.Value = id * 10;
+        await _preparedInsertCmd.ExecuteNonQueryAsync();
+    }
+
+    [Benchmark(Description = "ADO.NET ExecuteNonQuery Batch100 (new command)")]
+    public async Task ExecuteNonQuery_Insert_Batch100()
+    {
+        await using var tx = await _conn.BeginTransactionAsync();
+        for (int i = 0; i < 100; i++)
+        {
+            int id = Interlocked.Increment(ref _nextId);
+            var cmd = new CSharpDbCommand { Connection = _conn };
+            cmd.CommandText = "INSERT INTO t VALUES (@id, @name, @val)";
+            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Parameters.AddWithValue("@name", $"row_{id}");
+            cmd.Parameters.AddWithValue("@val", id * 10);
+            await cmd.ExecuteNonQueryAsync();
+            cmd.Dispose();
+        }
+
+        await tx.CommitAsync();
+    }
+
+    [Benchmark(Description = "ADO.NET Prepared INSERT Batch100 (reused command)")]
+    public async Task PreparedExecuteNonQuery_Insert_ReusedCommand_Batch100()
+    {
+        await using var tx = await _conn.BeginTransactionAsync();
+        for (int i = 0; i < 100; i++)
+        {
+            int id = Interlocked.Increment(ref _nextId);
+            _preparedInsertId.Value = id;
+            _preparedInsertName.Value = $"row_{id}";
+            _preparedInsertVal.Value = id * 10;
+            await _preparedInsertCmd.ExecuteNonQueryAsync();
+        }
+
+        await tx.CommitAsync();
     }
 
     [Benchmark(Description = "ADO.NET ExecuteScalar (COUNT)")]
