@@ -16,6 +16,37 @@ public class ParserTests
         Assert.True(create.Columns[2].IsNullable);
     }
 
+    [Theory]
+    [InlineData("CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT)")]
+    [InlineData("CREATE TABLE users (id INTEGER AUTOINCREMENT PRIMARY KEY, name TEXT)")]
+    [InlineData("CREATE TABLE users (id INTEGER IDENTITY PRIMARY KEY, name TEXT)")]
+    public void Parse_CreateTable_IdentityModifiers(string sql)
+    {
+        var stmt = Parser.Parse(sql);
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.True(create.Columns[0].IsPrimaryKey);
+        Assert.True(create.Columns[0].IsIdentity);
+        Assert.False(create.Columns[0].IsNullable);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_IdentityWithoutPrimaryKey_ImplicitPrimaryKey()
+    {
+        var stmt = Parser.Parse("CREATE TABLE users (id INTEGER IDENTITY, name TEXT)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.True(create.Columns[0].IsPrimaryKey);
+        Assert.True(create.Columns[0].IsIdentity);
+        Assert.False(create.Columns[0].IsNullable);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_IdentityOnNonInteger_Throws()
+    {
+        Assert.Throws<CSharpDB.Core.CSharpDbException>(() => Parser.Parse("CREATE TABLE users (id TEXT PRIMARY KEY IDENTITY, name TEXT)"));
+    }
+
     [Fact]
     public void Parse_Insert()
     {
@@ -46,6 +77,15 @@ public class ParserTests
         Assert.Equal("users", from.TableName);
         Assert.NotNull(select.Where);
         Assert.Equal(10, select.Limit);
+    }
+
+    [Fact]
+    public void Parse_SelectDistinct()
+    {
+        var stmt = Parser.Parse("SELECT DISTINCT name, age FROM users");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        Assert.True(select.IsDistinct);
+        Assert.Equal(2, select.Columns.Count);
     }
 
     [Fact]
@@ -527,6 +567,17 @@ public class ParserTests
         Assert.Equal("age", create.Columns[0]);
         Assert.False(create.IsUnique);
         Assert.False(create.IfNotExists);
+    }
+
+    [Fact]
+    public void Parse_CreateIndex_MultiColumn()
+    {
+        var stmt = Parser.Parse("CREATE INDEX idx_ab ON users (a, b)");
+        var create = Assert.IsType<CreateIndexStatement>(stmt);
+        Assert.Equal("idx_ab", create.IndexName);
+        Assert.Equal("users", create.TableName);
+        Assert.Equal(["a", "b"], create.Columns);
+        Assert.False(create.IsUnique);
     }
 
     [Fact]

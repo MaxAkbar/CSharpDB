@@ -194,6 +194,51 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Select_OrderByIndexedColumn_WithBetweenFilter()
+    {
+        await _db.ExecuteAsync("CREATE TABLE sorted_between_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE INDEX idx_sorted_between_idx_val ON sorted_between_idx(val)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (1, 50)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (2, 10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (3, 40)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (4, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (5, 60)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_between_idx VALUES (6, 30)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM sorted_between_idx WHERE val BETWEEN 20 AND 50 ORDER BY val ASC LIMIT 10",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(20L, rows[0][0].AsInteger);
+        Assert.Equal(30L, rows[1][0].AsInteger);
+        Assert.Equal(40L, rows[2][0].AsInteger);
+        Assert.Equal(50L, rows[3][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Select_IndexedColumn_NotBetween_PreservesSemantics()
+    {
+        await _db.ExecuteAsync("CREATE TABLE sorted_not_between_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE INDEX idx_sorted_not_between_idx_val ON sorted_not_between_idx(val)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (1, 50)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (2, 10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (3, 40)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (4, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (5, 60)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO sorted_not_between_idx VALUES (6, 30)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM sorted_not_between_idx WHERE val NOT BETWEEN 20 AND 40 ORDER BY val ASC",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+        Assert.Equal(50L, rows[1][0].AsInteger);
+        Assert.Equal(60L, rows[2][0].AsInteger);
+    }
+
+    [Fact]
     public async Task Select_OrderByIndexedNullableColumn_IncludesNullRows()
     {
         await _db.ExecuteAsync("CREATE TABLE sorted_nullable_idx (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);
@@ -853,6 +898,50 @@ public class IntegrationTests : IAsyncLifetime
         await using var result = await _db.ExecuteAsync("SELECT COUNT(DISTINCT tag) FROM tags", TestContext.Current.CancellationToken);
         var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
         Assert.Equal(3, rows[0][0].AsInteger); // a, b, c
+    }
+
+    [Fact]
+    public async Task SelectDistinct_WithNullsAndOrderBy()
+    {
+        await _db.ExecuteAsync("CREATE TABLE tags_distinct (id INTEGER, tag TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (1, 'a')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (2, 'b')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (3, 'a')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (4, NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (5, NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO tags_distinct VALUES (6, 'c')", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT DISTINCT tag FROM tags_distinct ORDER BY tag",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, rows.Count);
+        Assert.True(rows[0][0].IsNull);
+        Assert.Equal("a", rows[1][0].AsText);
+        Assert.Equal("b", rows[2][0].AsText);
+        Assert.Equal("c", rows[3][0].AsText);
+    }
+
+    [Fact]
+    public async Task SelectDistinct_AppliesBeforeLimitAndOffset()
+    {
+        await _db.ExecuteAsync("CREATE TABLE nums_distinct (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO nums_distinct VALUES (4)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT DISTINCT val FROM nums_distinct ORDER BY val LIMIT 2 OFFSET 1",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[1][0].AsInteger);
     }
 
     [Fact]
@@ -1765,21 +1854,113 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_OnNonIntegerColumn_Fails()
+    public async Task Index_OnTextColumn_Works()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'Alice')", TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", TestContext.Current.CancellationToken));
+        await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id FROM t WHERE name = 'Alice' ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[1][0].AsInteger);
     }
 
     [Fact]
-    public async Task Index_MultiColumn_Fails()
+    public async Task Index_OnUnsupportedColumnType_Fails()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, score REAL)", TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync("CREATE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken));
+            await _db.ExecuteAsync("CREATE INDEX idx_score ON t (score)", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Index_MultiColumn_CanCreateAndQuery()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 100)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 101)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 11, 20, 102)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (4, 10, 20, 103)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("CREATE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, payload FROM t WHERE a = 10 AND b = 20 ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(4, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_EnforcesTupleUniqueness()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("INSERT INTO t VALUES (3, 10, 20)", TestContext.Current.CancellationToken));
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 11, 20)", TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_CreateOnDuplicateData_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 20)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_ViolationOnUpdate_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("UPDATE t SET b = 20 WHERE id = 2", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task UniqueIndex_Text_EnforcesUniqueness()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_email ON t (email)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'a@x.com')", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'a@x.com')", TestContext.Current.CancellationToken));
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'b@x.com')", TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_Text_ViolationOnUpdate_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'a@x.com')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'b@x.com')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_email ON t (email)", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("UPDATE t SET email = 'a@x.com' WHERE id = 2", TestContext.Current.CancellationToken));
     }
 
     #endregion

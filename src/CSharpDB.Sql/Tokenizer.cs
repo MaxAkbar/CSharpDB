@@ -38,6 +38,8 @@ public sealed class Tokenizer
         ["BLOB"] = TokenType.Blob,
         ["PRIMARY"] = TokenType.Primary,
         ["KEY"] = TokenType.Key,
+        ["IDENTITY"] = TokenType.Identity,
+        ["AUTOINCREMENT"] = TokenType.Autoincrement,
         ["IF"] = TokenType.If,
         ["EXISTS"] = TokenType.Exists,
         ["LIKE"] = TokenType.Like,

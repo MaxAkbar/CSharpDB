@@ -15,6 +15,8 @@ public sealed class CSharpDbService : IAsyncDisposable
 {
     private const string ProcedureTableName = "__procedures";
     private const string ProcedureEnabledIndexName = "idx___procedures_is_enabled";
+    private const string SavedQueryTableName = "__saved_queries";
+    private const string SavedQueryNameIndexName = "idx___saved_queries_name";
 
     private readonly CSharpDbConnection _connection;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -38,6 +40,7 @@ public sealed class CSharpDbService : IAsyncDisposable
         try
         {
             await EnsureProcedureCatalogAsync();
+            await EnsureSavedQueryCatalogAsync();
         }
         finally { _lock.Release(); }
     }
@@ -191,6 +194,103 @@ public sealed class CSharpDbService : IAsyncDisposable
             return _connection.GetTriggers()
                 .OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+        }
+        finally { _lock.Release(); }
+    }
+
+    // ─── Saved Queries ────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<SavedQueryDefinition>> GetSavedQueriesAsync()
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var savedQueries = new List<SavedQueryDefinition>();
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT id, name, sql_text, created_utc, updated_utc
+                FROM {SavedQueryTableName}
+                ORDER BY name;
+                """;
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                savedQueries.Add(ReadSavedQueryDefinition(reader));
+
+            return savedQueries;
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<SavedQueryDefinition?> GetSavedQueryAsync(string name)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string normalizedName = NormalizeSavedQueryName(name);
+            return await GetSavedQueryInternalAsync(normalizedName);
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<SavedQueryDefinition> UpsertSavedQueryAsync(string name, string sqlText)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string normalizedName = NormalizeSavedQueryName(name);
+            string normalizedSql = NormalizeSqlFragment(sqlText, "saved query SQL");
+
+            var existing = await GetSavedQueryInternalAsync(normalizedName);
+            var now = DateTime.UtcNow;
+            string nowText = now.ToString("O", CultureInfo.InvariantCulture);
+
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            if (existing is null)
+            {
+                cmd.CommandText = $"""
+                    INSERT INTO {SavedQueryTableName} (name, sql_text, created_utc, updated_utc)
+                    VALUES (@name, @sql, @created, @updated);
+                    """;
+                cmd.Parameters.AddWithValue("@name", normalizedName);
+                cmd.Parameters.AddWithValue("@sql", normalizedSql);
+                cmd.Parameters.AddWithValue("@created", nowText);
+                cmd.Parameters.AddWithValue("@updated", nowText);
+            }
+            else
+            {
+                cmd.CommandText = $"""
+                    UPDATE {SavedQueryTableName}
+                    SET sql_text = @sql,
+                        updated_utc = @updated
+                    WHERE name = @name;
+                    """;
+                cmd.Parameters.AddWithValue("@name", normalizedName);
+                cmd.Parameters.AddWithValue("@sql", normalizedSql);
+                cmd.Parameters.AddWithValue("@updated", nowText);
+            }
+
+            await cmd.ExecuteNonQueryAsync();
+
+            return await GetSavedQueryInternalAsync(normalizedName)
+                ?? throw new InvalidOperationException($"Saved query '{normalizedName}' could not be loaded after save.");
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task DeleteSavedQueryAsync(string name)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            string normalizedName = NormalizeSavedQueryName(name);
+
+            using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+            cmd.CommandText = $"DELETE FROM {SavedQueryTableName} WHERE name = @name;";
+            cmd.Parameters.AddWithValue("@name", normalizedName);
+            int affected = await cmd.ExecuteNonQueryAsync();
+            if (affected == 0)
+                throw new ArgumentException($"Saved query '{normalizedName}' not found.");
         }
         finally { _lock.Release(); }
     }
@@ -1080,7 +1180,8 @@ public sealed class CSharpDbService : IAsyncDisposable
     }
 
     private static bool IsInternalTable(string tableName)
-        => string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase);
+        => string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase);
 
     private async Task EnsureProcedureCatalogAsync()
     {
@@ -1102,6 +1203,41 @@ public sealed class CSharpDbService : IAsyncDisposable
             """);
     }
 
+    private async Task EnsureSavedQueryCatalogAsync()
+    {
+        await ExecuteNonQueryAsync($"""
+            CREATE TABLE IF NOT EXISTS {SavedQueryTableName} (
+                id INTEGER PRIMARY KEY IDENTITY,
+                name TEXT NOT NULL,
+                sql_text TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                updated_utc TEXT NOT NULL
+            );
+            """);
+
+        await ExecuteNonQueryAsync($"""
+            CREATE UNIQUE INDEX IF NOT EXISTS {SavedQueryNameIndexName}
+            ON {SavedQueryTableName} (name);
+            """);
+    }
+
+    private async Task<SavedQueryDefinition?> GetSavedQueryInternalAsync(string normalizedName)
+    {
+        using var cmd = (CSharpDbCommand)_connection.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT id, name, sql_text, created_utc, updated_utc
+            FROM {SavedQueryTableName}
+            WHERE name = @name;
+            """;
+        cmd.Parameters.AddWithValue("@name", normalizedName);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            return null;
+
+        return ReadSavedQueryDefinition(reader);
+    }
+
     private async Task<ProcedureDefinition?> GetProcedureInternalAsync(string name)
     {
         using var cmd = (CSharpDbCommand)_connection.CreateCommand();
@@ -1117,6 +1253,42 @@ public sealed class CSharpDbService : IAsyncDisposable
             return null;
 
         return ReadProcedureDefinition(reader);
+    }
+
+    private static SavedQueryDefinition ReadSavedQueryDefinition(DbDataReader reader)
+    {
+        long id = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+        string name = reader.GetString(1);
+        string sqlText = reader.GetString(2);
+        string createdRaw = reader.GetString(3);
+        string updatedRaw = reader.GetString(4);
+
+        if (!DateTime.TryParse(
+                createdRaw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var createdUtc))
+        {
+            createdUtc = DateTime.UtcNow;
+        }
+
+        if (!DateTime.TryParse(
+                updatedRaw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var updatedUtc))
+        {
+            updatedUtc = createdUtc;
+        }
+
+        return new SavedQueryDefinition
+        {
+            Id = id,
+            Name = name,
+            SqlText = sqlText,
+            CreatedUtc = createdUtc,
+            UpdatedUtc = updatedUtc,
+        };
     }
 
     private static ProcedureDefinition ReadProcedureDefinition(DbDataReader reader)
@@ -1626,6 +1798,20 @@ public sealed class CSharpDbService : IAsyncDisposable
             if (!IsIdentifierPart(trimmed[i]))
                 throw new ArgumentException($"{label} can only contain letters, digits, and underscore.");
         }
+    }
+
+    private static string NormalizeSavedQueryName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("saved query name is required.");
+
+        string trimmed = name.Trim();
+        if (trimmed.Length > 256)
+            throw new ArgumentException("saved query name cannot exceed 256 characters.");
+        if (trimmed.Any(char.IsControl))
+            throw new ArgumentException("saved query name cannot contain control characters.");
+
+        return trimmed;
     }
 
     private static string NormalizeSqlFragment(string sql, string label)

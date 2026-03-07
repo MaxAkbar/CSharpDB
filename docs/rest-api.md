@@ -112,9 +112,9 @@ Get the full schema for a table.
 {
   "tableName": "users",
   "columns": [
-    { "name": "id", "type": "INTEGER", "isPrimaryKey": true, "isNotNull": false },
-    { "name": "name", "type": "TEXT", "isPrimaryKey": false, "isNotNull": true },
-    { "name": "age", "type": "INTEGER", "isPrimaryKey": false, "isNotNull": false }
+    { "name": "id", "type": "Integer", "nullable": false, "isPrimaryKey": true, "isIdentity": true },
+    { "name": "name", "type": "Text", "nullable": false, "isPrimaryKey": false, "isIdentity": false },
+    { "name": "age", "type": "Integer", "nullable": true, "isPrimaryKey": false, "isIdentity": false }
   ]
 }
 ```

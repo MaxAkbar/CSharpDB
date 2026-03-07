@@ -24,7 +24,7 @@ dotnet add package CSharpDB
 | `DbType` | Enum of supported database types: `Null`, `Integer`, `Real`, `Text`, `Blob` |
 | `DbValue` | Discriminated-union struct representing a single database value with comparison, equality, and truthiness semantics |
 | `TableSchema` | Table structure definition including columns, primary key, and qualified mappings for JOINs |
-| `ColumnDefinition` | Column metadata: name, type, nullability, and primary key flag |
+| `ColumnDefinition` | Column metadata: name, type, nullability, primary key flag, and identity flag |
 | `IndexSchema` | Index metadata: name, table, columns, uniqueness |
 | `TriggerSchema` | Trigger metadata: name, table, timing, event, and body SQL |
 | `CSharpDbException` | Typed exception with `ErrorCode` covering 15+ error conditions |

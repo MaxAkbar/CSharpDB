@@ -128,6 +128,24 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         var tables = await resp.Content.ReadFromJsonAsync<List<string>>(Ct);
         Assert.NotNull(tables);
         Assert.DoesNotContain("__procedures", tables, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("__saved_queries", tables, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TableSchemaEndpoint_ExposesIdentityFlag()
+    {
+        var createResp = await _client.PostAsJsonAsync(
+            "/api/sql/execute",
+            new ExecuteSqlRequest("CREATE TABLE api_identity (id INTEGER PRIMARY KEY IDENTITY, name TEXT)"),
+            Ct);
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+
+        var schema = await _client.GetFromJsonAsync<TableSchemaResponse>("/api/tables/api_identity/schema", Ct);
+        Assert.NotNull(schema);
+
+        var idColumn = Assert.Single(schema.Columns, c => c.Name.Equals("id", StringComparison.OrdinalIgnoreCase));
+        Assert.True(idColumn.IsPrimaryKey);
+        Assert.True(idColumn.IsIdentity);
     }
 
     private sealed class TestApiFactory(string dbPath) : WebApplicationFactory<Program>

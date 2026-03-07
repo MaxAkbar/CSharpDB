@@ -19,7 +19,10 @@ public sealed class BTree
     private const int InteriorCellHeaderBytes = 1; // varint(12)
     private const int InteriorCellLeftChildOffset = InteriorCellHeaderBytes;
     private const int InteriorCellKeyOffset = InteriorCellHeaderBytes + 4;
+    private const int InteriorCellSize = 13;
     private const int MaxStackLeafCellBytes = 256;
+    private const int MinLeafCells = 1;
+    private const int MinInteriorCells = 1;
 
     private readonly Pager _pager;
     private uint _rootPageId;
@@ -200,13 +203,14 @@ public sealed class BTree
 
     /// <summary>
     /// Delete a key. Returns true if the key was found and deleted.
-    /// Note: This is a simplified delete that doesn't rebalance/merge underflowed pages.
     /// </summary>
     public async ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
     {
-        bool deleted = await DeleteRecursiveAsync(_rootPageId, key, ct);
+        var result = await DeleteRecursiveAsync(_rootPageId, key, isRoot: true, ct);
+        bool deleted = result.Deleted;
         if (deleted)
         {
+            await CollapseRootIfNeededAsync(ct);
             _cachedEntryCount = null;
             _hintValid = false;
         }
@@ -513,24 +517,253 @@ public sealed class BTree
 
     #region Internal Delete
 
-    private async ValueTask<bool> DeleteRecursiveAsync(uint pageId, long key, CancellationToken ct)
+    private readonly struct DeleteResult
+    {
+        public DeleteResult(bool deleted, bool underflow)
+        {
+            Deleted = deleted;
+            Underflow = underflow;
+        }
+
+        public bool Deleted { get; }
+        public bool Underflow { get; }
+    }
+
+    private async ValueTask<DeleteResult> DeleteRecursiveAsync(
+        uint pageId,
+        long key,
+        bool isRoot,
+        CancellationToken ct)
     {
         var page = await _pager.GetPageAsync(pageId, ct);
         var sp = new SlottedPage(page, pageId);
-
         if (sp.PageType == PageConstants.PageTypeLeaf)
         {
             int idx = FindKeyInLeaf(sp, key);
-            if (idx < 0) return false;
+            if (idx < 0)
+                return default;
 
             sp.DeleteCell(idx);
+            sp.Defragment();
             await _pager.MarkDirtyAsync(pageId, ct);
-            return true;
+            bool underflow = !isRoot && sp.CellCount < MinLeafCells;
+            return new DeleteResult(deleted: true, underflow);
+        }
+
+        uint childPageId = FindChildPageWithIndex(sp, key, out int childIndex);
+        var childResult = await DeleteRecursiveAsync(childPageId, key, isRoot: false, ct);
+        if (!childResult.Deleted)
+            return default;
+
+        if (childResult.Underflow)
+            await RebalanceUnderflowedChildAsync(pageId, sp, childIndex, childPageId, ct);
+
+        bool interiorUnderflow = !isRoot && sp.CellCount < MinInteriorCells;
+        return new DeleteResult(deleted: true, interiorUnderflow);
+    }
+
+    private async ValueTask RebalanceUnderflowedChildAsync(
+        uint parentPageId,
+        SlottedPage parentSp,
+        int childIndex,
+        uint childPageId,
+        CancellationToken ct)
+    {
+        var childPage = await _pager.GetPageAsync(childPageId, ct);
+        var childSp = new SlottedPage(childPage, childPageId);
+
+        if (childSp.PageType == PageConstants.PageTypeLeaf)
+        {
+            await RebalanceUnderflowedLeafChildAsync(
+                parentPageId,
+                parentSp,
+                childIndex,
+                childPageId,
+                childSp,
+                ct);
+            return;
+        }
+
+        if (childSp.PageType == PageConstants.PageTypeInterior)
+        {
+            await CollapseUnderflowedInteriorChildAsync(
+                parentPageId,
+                parentSp,
+                childIndex,
+                childPageId,
+                childSp,
+                ct);
+            return;
+        }
+
+        throw new CSharpDbException(
+            ErrorCode.CorruptDatabase,
+            $"Invalid child page type 0x{childSp.PageType:X2} during delete rebalance.");
+    }
+
+    private async ValueTask RebalanceUnderflowedLeafChildAsync(
+        uint parentPageId,
+        SlottedPage parentSp,
+        int childIndex,
+        uint childPageId,
+        SlottedPage childSp,
+        CancellationToken ct)
+    {
+        if (childSp.CellCount >= MinLeafCells)
+            return;
+
+        if (childIndex > 0)
+        {
+            uint leftPageId = FindChildAtIndex(parentSp, childIndex - 1);
+            var leftPage = await _pager.GetPageAsync(leftPageId, ct);
+            var leftSp = new SlottedPage(leftPage, leftPageId);
+
+            if (leftSp.PageType != PageConstants.PageTypeLeaf)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Expected leaf sibling page {leftPageId}, found type 0x{leftSp.PageType:X2}.");
+            }
+
+            if (leftSp.CellCount > MinLeafCells)
+            {
+                byte[] borrowedCell = leftSp.GetCellMemory(leftSp.CellCount - 1).ToArray();
+                leftSp.DeleteCell(leftSp.CellCount - 1);
+                leftSp.Defragment();
+                InsertLeafCellAt(childSp, 0, borrowedCell);
+                WriteInteriorKey(parentSp, childIndex - 1, ReadLeafKey(childSp, 0));
+
+                await _pager.MarkDirtyAsync(leftPageId, ct);
+                await _pager.MarkDirtyAsync(childPageId, ct);
+                await _pager.MarkDirtyAsync(parentPageId, ct);
+                return;
+            }
+        }
+
+        if (childIndex < parentSp.CellCount)
+        {
+            uint rightPageId = FindChildAtIndex(parentSp, childIndex + 1);
+            var rightPage = await _pager.GetPageAsync(rightPageId, ct);
+            var rightSp = new SlottedPage(rightPage, rightPageId);
+
+            if (rightSp.PageType != PageConstants.PageTypeLeaf)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Expected leaf sibling page {rightPageId}, found type 0x{rightSp.PageType:X2}.");
+            }
+
+            if (rightSp.CellCount > MinLeafCells)
+            {
+                byte[] borrowedCell = rightSp.GetCellMemory(0).ToArray();
+                rightSp.DeleteCell(0);
+                rightSp.Defragment();
+                InsertLeafCellAt(childSp, childSp.CellCount, borrowedCell);
+                WriteInteriorKey(parentSp, childIndex, ReadLeafKey(rightSp, 0));
+
+                await _pager.MarkDirtyAsync(childPageId, ct);
+                await _pager.MarkDirtyAsync(rightPageId, ct);
+                await _pager.MarkDirtyAsync(parentPageId, ct);
+                return;
+            }
+        }
+
+        if (childIndex > 0)
+        {
+            uint leftPageId = FindChildAtIndex(parentSp, childIndex - 1);
+            var leftPage = await _pager.GetPageAsync(leftPageId, ct);
+            var leftSp = new SlottedPage(leftPage, leftPageId);
+
+            if (leftSp.PageType != PageConstants.PageTypeLeaf)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Expected leaf sibling page {leftPageId}, found type 0x{leftSp.PageType:X2}.");
+            }
+
+            AppendLeafCells(leftSp, childSp);
+            leftSp.RightChildOrNextLeaf = childSp.RightChildOrNextLeaf;
+            RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove: childIndex - 1, childIndexToRemove: childIndex);
+
+            await _pager.MarkDirtyAsync(leftPageId, ct);
+            await _pager.MarkDirtyAsync(parentPageId, ct);
+            await _pager.FreePageAsync(childPageId, ct);
+            return;
+        }
+
+        if (childIndex < parentSp.CellCount)
+        {
+            uint rightPageId = FindChildAtIndex(parentSp, childIndex + 1);
+            var rightPage = await _pager.GetPageAsync(rightPageId, ct);
+            var rightSp = new SlottedPage(rightPage, rightPageId);
+
+            if (rightSp.PageType != PageConstants.PageTypeLeaf)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Expected leaf sibling page {rightPageId}, found type 0x{rightSp.PageType:X2}.");
+            }
+
+            AppendLeafCells(childSp, rightSp);
+            childSp.RightChildOrNextLeaf = rightSp.RightChildOrNextLeaf;
+            RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove: childIndex, childIndexToRemove: childIndex + 1);
+
+            await _pager.MarkDirtyAsync(childPageId, ct);
+            await _pager.MarkDirtyAsync(parentPageId, ct);
+            await _pager.FreePageAsync(rightPageId, ct);
+        }
+    }
+
+    private async ValueTask CollapseUnderflowedInteriorChildAsync(
+        uint parentPageId,
+        SlottedPage parentSp,
+        int childIndex,
+        uint childPageId,
+        SlottedPage childSp,
+        CancellationToken ct)
+    {
+        if (childSp.CellCount >= MinInteriorCells)
+            return;
+
+        uint replacementChildPageId = childSp.RightChildOrNextLeaf;
+        if (replacementChildPageId == PageConstants.NullPageId)
+        {
+            int keyIndexToRemove = childIndex == 0 ? 0 : childIndex - 1;
+            RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove, childIndex);
         }
         else
         {
-            uint childPageId = FindChildPage(sp, key);
-            return await DeleteRecursiveAsync(childPageId, key, ct);
+            ReplaceInteriorChildPointer(parentSp, childIndex, replacementChildPageId);
+        }
+
+        await _pager.MarkDirtyAsync(parentPageId, ct);
+        await _pager.FreePageAsync(childPageId, ct);
+    }
+
+    private async ValueTask CollapseRootIfNeededAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            var rootPage = await _pager.GetPageAsync(_rootPageId, ct);
+            var rootSp = new SlottedPage(rootPage, _rootPageId);
+
+            if (rootSp.PageType == PageConstants.PageTypeLeaf)
+                return;
+
+            if (rootSp.CellCount > 0)
+                return;
+
+            uint promotedRootPageId = rootSp.RightChildOrNextLeaf;
+            if (promotedRootPageId == PageConstants.NullPageId)
+            {
+                rootSp.Initialize(PageConstants.PageTypeLeaf);
+                await _pager.MarkDirtyAsync(_rootPageId, ct);
+                return;
+            }
+
+            uint previousRootPageId = _rootPageId;
+            _rootPageId = promotedRootPageId;
+            await _pager.FreePageAsync(previousRootPageId, ct);
         }
     }
 
@@ -681,6 +914,116 @@ public sealed class BTree
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
         return BinaryPrimitives.ReadUInt32LittleEndian(page.AsSpan(offset + InteriorCellLeftChildOffset));
+    }
+
+    private static void WriteInteriorKey(SlottedPage sp, int index, long key)
+    {
+        byte[] page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        BinaryPrimitives.WriteInt64LittleEndian(page.AsSpan(offset + InteriorCellKeyOffset), key);
+    }
+
+    private static void InsertLeafCellAt(SlottedPage leaf, int index, ReadOnlySpan<byte> cell)
+    {
+        if (leaf.InsertCell(index, cell))
+            return;
+
+        leaf.Defragment();
+        if (leaf.InsertCell(index, cell))
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.CorruptDatabase,
+            "Leaf page rebalance failed: could not insert moved cell.");
+    }
+
+    private static void AppendLeafCells(SlottedPage destination, SlottedPage source)
+    {
+        int sourceCount = source.CellCount;
+        for (int i = 0; i < sourceCount; i++)
+        {
+            byte[] cell = source.GetCellMemory(i).ToArray();
+            InsertLeafCellAt(destination, destination.CellCount, cell);
+        }
+    }
+
+    private static void RemoveInteriorKeyAndChild(SlottedPage interior, int keyIndexToRemove, int childIndexToRemove)
+    {
+        var keys = new List<long>(interior.CellCount);
+        var children = new List<uint>(interior.CellCount + 1);
+        ReadInteriorNode(interior, keys, children);
+
+        if ((uint)keyIndexToRemove >= (uint)keys.Count || (uint)childIndexToRemove >= (uint)children.Count)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Interior rebalance failed: invalid key/child index removal.");
+        }
+
+        keys.RemoveAt(keyIndexToRemove);
+        children.RemoveAt(childIndexToRemove);
+        WriteInteriorNode(interior, keys, children);
+    }
+
+    private static void ReplaceInteriorChildPointer(SlottedPage interior, int childIndex, uint replacementChildPageId)
+    {
+        var keys = new List<long>(interior.CellCount);
+        var children = new List<uint>(interior.CellCount + 1);
+        ReadInteriorNode(interior, keys, children);
+
+        if ((uint)childIndex >= (uint)children.Count)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Interior rebalance failed: child index is out of range.");
+        }
+
+        children[childIndex] = replacementChildPageId;
+        WriteInteriorNode(interior, keys, children);
+    }
+
+    private static void ReadInteriorNode(SlottedPage interior, List<long> keys, List<uint> children)
+    {
+        keys.Clear();
+        children.Clear();
+
+        int keyCount = interior.CellCount;
+        for (int i = 0; i < keyCount; i++)
+        {
+            keys.Add(ReadInteriorKey(interior, i));
+            children.Add(ReadInteriorLeftChild(interior, i));
+        }
+
+        children.Add(interior.RightChildOrNextLeaf);
+    }
+
+    private static void WriteInteriorNode(SlottedPage interior, IReadOnlyList<long> keys, IReadOnlyList<uint> children)
+    {
+        if (children.Count != keys.Count + 1)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Interior rebalance failed: children count must be keys count + 1.");
+        }
+
+        interior.Initialize(PageConstants.PageTypeInterior);
+        interior.RightChildOrNextLeaf = children[^1];
+
+        Span<byte> cell = stackalloc byte[InteriorCellSize];
+        for (int i = 0; i < keys.Count; i++)
+        {
+            WriteInteriorCell(cell, children[i], keys[i]);
+            if (interior.InsertCell(i, cell))
+                continue;
+
+            interior.Defragment();
+            if (!interior.InsertCell(i, cell))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    "Interior rebalance failed: could not insert rebuilt cell.");
+            }
+        }
     }
 
     #endregion

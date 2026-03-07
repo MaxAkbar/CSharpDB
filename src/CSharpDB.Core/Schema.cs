@@ -6,12 +6,19 @@ public sealed class ColumnDefinition
     public required DbType Type { get; init; }
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
+    public bool IsIdentity { get; init; }
 }
 
 public sealed class TableSchema
 {
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
+    
+    /// <summary>
+    /// Persisted next auto rowid high-water mark for INSERT allocation.
+    /// 0 means unknown/uninitialized (legacy metadata), so allocator will compute once.
+    /// </summary>
+    public long NextRowId { get; set; }
 
     /// <summary>
     /// Optional mapping of "tablealias.columnname" → column index for JOIN queries.

@@ -11,6 +11,8 @@ namespace CSharpDB.Execution;
 /// </summary>
 public sealed class QueryPlanner
 {
+    private const string InternalSavedQueriesTableName = "__saved_queries";
+
     private static readonly ColumnDefinition[] SystemTablesColumns =
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
@@ -26,6 +28,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "data_type", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "is_identity", Type = DbType.Integer, Nullable = false },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -58,6 +61,16 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "object_type", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "parent_table_name", Type = DbType.Text, Nullable = true },
     ];
+
+    private static readonly ColumnDefinition[] SystemSavedQueriesColumns =
+    [
+        new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
+        new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "sql_text", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "updated_utc", Type = DbType.Text, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
     [
         new ColumnDefinition
@@ -99,9 +112,36 @@ public sealed class QueryPlanner
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<SelectStatement, SelectPlanKind> _selectPlanCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Queue<SelectStatement> _selectPlanInsertionOrder = new();
+    private long _selectPlanCacheHitCount;
+    private long _selectPlanCacheMissCount;
+    private long _selectPlanCacheReclassificationCount;
+    private long _selectPlanCacheStoreCount;
     private long _observedSchemaVersion;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
+    private const int MaxSelectPlanCacheEntries = 1024;
+
+    private enum SelectPlanKind
+    {
+        FastPrimaryKeyLookup,
+        FastIndexedLookup,
+        FastSimpleTableScan,
+        SimpleSystemCatalogCountStar,
+        SimpleCountStar,
+        SimpleScalarAggregateColumn,
+        SimpleLookupScalarAggregateColumn,
+        SimpleConstantGroupAggregateColumn,
+        General,
+    }
+
+    internal readonly record struct SelectPlanCacheDiagnostics(
+        long HitCount,
+        long MissCount,
+        long ReclassificationCount,
+        long StoreCount,
+        int EntryCount);
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * / PK-only projection WHERE pk = N) will try a synchronous
@@ -144,6 +184,22 @@ public sealed class QueryPlanner
         };
     }
 
+    internal SelectPlanCacheDiagnostics GetSelectPlanCacheDiagnostics()
+        => new(
+            _selectPlanCacheHitCount,
+            _selectPlanCacheMissCount,
+            _selectPlanCacheReclassificationCount,
+            _selectPlanCacheStoreCount,
+            _selectPlanCache.Count);
+
+    internal void ResetSelectPlanCacheDiagnostics()
+    {
+        _selectPlanCacheHitCount = 0;
+        _selectPlanCacheMissCount = 0;
+        _selectPlanCacheReclassificationCount = 0;
+        _selectPlanCacheStoreCount = 0;
+    }
+
     private void InvalidateSchemaSensitiveCachesIfNeeded()
     {
         long currentVersion = _catalog.SchemaVersion;
@@ -165,6 +221,8 @@ public sealed class QueryPlanner
         _systemObjectsRowsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
+        _selectPlanCache.Clear();
+        _selectPlanInsertionOrder.Clear();
 
         _observedSchemaVersion = currentVersion;
     }
@@ -181,10 +239,11 @@ public sealed class QueryPlanner
             Name = c.Name,
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
+            IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
             Nullable = c.IsNullable,
         }).ToArray();
 
-        var schema = new TableSchema { TableName = stmt.TableName, Columns = columns };
+        var schema = new TableSchema { TableName = stmt.TableName, Columns = columns, NextRowId = 1 };
         await _catalog.CreateTableAsync(schema, ct);
         _nextRowIdCache.Remove(stmt.TableName);
         return new QueryResult(0);
@@ -218,6 +277,7 @@ public sealed class QueryPlanner
                     Name = add.Column.Name,
                     Type = MapType(add.Column.TypeToken),
                     IsPrimaryKey = add.Column.IsPrimaryKey,
+                    IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
                     Nullable = add.Column.IsNullable,
                 });
 
@@ -301,7 +361,14 @@ public sealed class QueryPlanner
 
                 var newCols = schema.Columns.Select((col, i) =>
                     i == colIdx
-                        ? new ColumnDefinition { Name = renameCol.NewColumnName, Type = col.Type, IsPrimaryKey = col.IsPrimaryKey, Nullable = col.Nullable }
+                        ? new ColumnDefinition
+                        {
+                            Name = renameCol.NewColumnName,
+                            Type = col.Type,
+                            IsPrimaryKey = col.IsPrimaryKey,
+                            IsIdentity = col.IsIdentity,
+                            Nullable = col.Nullable,
+                        }
                         : col
                 ).ToArray();
 
@@ -328,16 +395,30 @@ public sealed class QueryPlanner
 
         var tableSchema = GetSchema(stmt.TableName);
 
-        // Validate columns exist and are INTEGER type (MVP: single-column integer indexes)
-        if (stmt.Columns.Count != 1)
-            throw new CSharpDbException(ErrorCode.SyntaxError, "Only single-column indexes are supported.");
+        if (stmt.Columns.Count == 0)
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Index must reference at least one column.");
 
-        int colIdx = tableSchema.GetColumnIndex(stmt.Columns[0]);
-        if (colIdx < 0)
-            throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{stmt.Columns[0]}' not found in table '{stmt.TableName}'.");
+        // Validate columns exist, are supported index types, and are not duplicated.
+        var indexColumnIndices = new int[stmt.Columns.Count];
+        for (int i = 0; i < stmt.Columns.Count; i++)
+        {
+            string columnName = stmt.Columns[i];
+            int colIdx = tableSchema.GetColumnIndex(columnName);
+            if (colIdx < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{stmt.TableName}'.");
 
-        if (tableSchema.Columns[colIdx].Type != DbType.Integer)
-            throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER column indexes are supported.");
+            DbType columnType = tableSchema.Columns[colIdx].Type;
+            if (columnType is not (DbType.Integer or DbType.Text))
+                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
+
+            for (int j = 0; j < i; j++)
+            {
+                if (indexColumnIndices[j] == colIdx)
+                    throw new CSharpDbException(ErrorCode.SyntaxError, $"Duplicate column '{columnName}' in index definition.");
+            }
+
+            indexColumnIndices[i] = colIdx;
+        }
 
         var indexSchema = new IndexSchema
         {
@@ -358,25 +439,44 @@ public sealed class QueryPlanner
             _recordSerializer,
             TryGetCachedTreeRowCountCapacityHint(tableTree));
         await scan.OpenAsync(ct);
+        bool usesDirectIntegerKey =
+            indexColumnIndices.Length == 1 &&
+            tableSchema.Columns[indexColumnIndices[0]].Type == DbType.Integer;
 
         while (await scan.MoveNextAsync(ct))
         {
-            var value = scan.Current[colIdx];
-            if (value.IsNull) continue; // Don't index NULL values
-
-            long indexKey = value.AsInteger;
+            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+                continue; // Don't index entries that include NULL.
 
             if (stmt.IsUnique)
             {
-                // Check for duplicate
-                var existing = await indexStore.FindAsync(indexKey, ct);
-                if (existing != null)
-                    throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                        $"Duplicate key value in unique index '{stmt.IndexName}'.");
+                if (usesDirectIntegerKey)
+                {
+                    // Single-column unique index: key is exact integer value.
+                    var existing = await indexStore.FindAsync(indexKey, ct);
+                    if (existing != null)
+                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                            $"Duplicate key value in unique index '{stmt.IndexName}'.");
 
-                var payload = new byte[8];
-                BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
-                await indexStore.InsertAsync(indexKey, payload, ct);
+                    var payload = new byte[8];
+                    BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
+                    await indexStore.InsertAsync(indexKey, payload, ct);
+                }
+                else
+                {
+                    // Hashed index keys are collision-prone; verify uniqueness by comparing
+                    // the actual indexed column values for rows in the hash bucket.
+                    await EnsureHashedUniqueConstraintAsync(
+                        indexStore,
+                        tableTree,
+                        indexColumnIndices,
+                        keyComponents!,
+                        indexKey,
+                        stmt.IndexName,
+                        ct);
+
+                    await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
+                }
             }
             else
             {
@@ -435,6 +535,8 @@ public sealed class QueryPlanner
     {
         var parts = new List<string>();
         parts.Add("SELECT");
+        if (stmt.IsDistinct)
+            parts.Add("DISTINCT");
 
         // Columns
         var colParts = new List<string>();
@@ -942,33 +1044,154 @@ public sealed class QueryPlanner
 
     private QueryResult ExecuteSelect(SelectStatement stmt)
     {
-        // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
-        if (TryFastPkLookup(stmt, out var fastResult))
-            return fastResult;
-        // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
-        if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
-            return fastIndexedResult;
-        // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
-        if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
-            return fastTableScanResult;
+        if (_cteData != null)
+            return ExecuteSelectGeneral(stmt);
 
-        if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
-            return systemCountResult;
-        if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
-            return countResult;
-        if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
-            return scalarAggResult;
-        if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
-            return lookupScalarAggResult;
-        if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
-            return constantGroupAggResult;
+        if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
+        {
+            _selectPlanCacheHitCount++;
+            return ExecuteSelectWithCachedPlan(stmt, cachedPlan);
+        }
 
+        _selectPlanCacheMissCount++;
+
+        var result = ClassifyAndExecuteSelect(stmt, out var selectedPlan);
+        CacheSelectPlan(stmt, selectedPlan);
+        return result;
+    }
+
+    private QueryResult ExecuteSelectWithCachedPlan(SelectStatement stmt, SelectPlanKind cachedPlan)
+    {
+        switch (cachedPlan)
+        {
+            case SelectPlanKind.FastPrimaryKeyLookup:
+                if (TryFastPkLookup(stmt, out var fastPkResult))
+                    return fastPkResult;
+                break;
+            case SelectPlanKind.FastIndexedLookup:
+                if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+                    return fastIndexedResult;
+                break;
+            case SelectPlanKind.FastSimpleTableScan:
+                if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+                    return fastTableScanResult;
+                break;
+            case SelectPlanKind.SimpleSystemCatalogCountStar:
+                if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+                    return systemCountResult;
+                break;
+            case SelectPlanKind.SimpleCountStar:
+                if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
+                    return countResult;
+                break;
+            case SelectPlanKind.SimpleScalarAggregateColumn:
+                if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
+                    return scalarAggResult;
+                break;
+            case SelectPlanKind.SimpleLookupScalarAggregateColumn:
+                if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
+                    return lookupScalarAggResult;
+                break;
+            case SelectPlanKind.SimpleConstantGroupAggregateColumn:
+                if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
+                    return constantGroupAggResult;
+                break;
+            case SelectPlanKind.General:
+                return ExecuteSelectGeneral(stmt);
+            default:
+                throw new InvalidOperationException($"Unknown select plan kind: {cachedPlan}");
+        }
+
+        // Plan assumptions no longer hold (typically after cache invalidation edge cases).
+        // Reclassify and refresh the cache entry.
+        _selectPlanCacheReclassificationCount++;
+        var result = ClassifyAndExecuteSelect(stmt, out var updatedPlan);
+        CacheSelectPlan(stmt, updatedPlan);
+        return result;
+    }
+
+    private QueryResult ClassifyAndExecuteSelect(SelectStatement stmt, out SelectPlanKind selectedPlan)
+    {
+        if (!stmt.IsDistinct)
+        {
+            // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
+            if (TryFastPkLookup(stmt, out var fastResult))
+            {
+                selectedPlan = SelectPlanKind.FastPrimaryKeyLookup;
+                return fastResult;
+            }
+            // Fast-path for simple indexed equality lookups — bypasses BuildFromOperator and planner setup.
+            if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
+            {
+                selectedPlan = SelectPlanKind.FastIndexedLookup;
+                return fastIndexedResult;
+            }
+            // Fast-path for simple table scans with optional WHERE filter — bypasses BuildFromOperator and planner setup.
+            if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
+            {
+                selectedPlan = SelectPlanKind.FastSimpleTableScan;
+                return fastTableScanResult;
+            }
+
+            if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleSystemCatalogCountStar;
+                return systemCountResult;
+            }
+            if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleCountStar;
+                return countResult;
+            }
+            if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleScalarAggregateColumn;
+                return scalarAggResult;
+            }
+            if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleLookupScalarAggregateColumn;
+                return lookupScalarAggResult;
+            }
+            if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleConstantGroupAggregateColumn;
+                return constantGroupAggResult;
+            }
+        }
+
+        selectedPlan = SelectPlanKind.General;
+        return ExecuteSelectGeneral(stmt);
+    }
+
+    private void CacheSelectPlan(SelectStatement stmt, SelectPlanKind kind)
+    {
+        _selectPlanCacheStoreCount++;
+        if (_selectPlanCache.TryAdd(stmt, kind))
+        {
+            _selectPlanInsertionOrder.Enqueue(stmt);
+        }
+        else
+        {
+            _selectPlanCache[stmt] = kind;
+        }
+
+        while (_selectPlanCache.Count > MaxSelectPlanCacheEntries &&
+               _selectPlanInsertionOrder.Count > 0)
+        {
+            var evicted = _selectPlanInsertionOrder.Dequeue();
+            _selectPlanCache.Remove(evicted);
+        }
+    }
+
+    private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
+    {
         // Build the FROM operator (single table scan, join tree, or view expansion)
         var (op, schema) = BuildFromOperator(stmt.From);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
-        int? orderByTopN = GetOrderByTopN(stmt);
+        int? orderByTopN = stmt.IsDistinct ? null : GetOrderByTopN(stmt);
         bool sourceProvidesRequestedOrder = false;
 
         // Try index-based scan for simple equality WHERE on a single table
@@ -1059,6 +1282,9 @@ public sealed class QueryPlanner
                 Columns = outputCols,
             };
 
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
+
             op = ApplyOrdering(op, stmt.OrderBy, aggSchema, orderByTopN);
         }
         else
@@ -1104,6 +1330,9 @@ public sealed class QueryPlanner
                         GetOrCompileExpressions(expressions, schema));
                 }
             }
+
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
         }
 
         if (stmt.Offset.HasValue)
@@ -1544,6 +1773,10 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (!TryNormalizeSystemCatalogTableName(simpleRef.TableName, out string normalized))
+            return false;
+
+        // Backed by row data, not static metadata; use the normal aggregate pipeline for correctness.
+        if (string.Equals(normalized, "sys.saved_queries", StringComparison.Ordinal))
             return false;
 
         if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
@@ -2742,7 +2975,7 @@ public sealed class QueryPlanner
         // Fast path: single equality lookup term.
         if (TryPickLookupCandidate(where, schema, indexes, hasIntegerPk, pkIdx, out var singleCandidate))
         {
-            remaining = null;
+            remaining = singleCandidate.RequiresResidualPredicate ? where : null;
             return BuildLookupOperator(tableName, schema, singleCandidate.IsPrimaryKey, singleCandidate.Index, singleCandidate.LookupValue);
         }
 
@@ -2756,7 +2989,9 @@ public sealed class QueryPlanner
             {
                 bool useLeft = hasLeft && (!hasRight || leftCandidate.Rank <= rightCandidate.Rank);
                 var selected = useLeft ? leftCandidate : rightCandidate;
-                remaining = useLeft ? andExpr.Right : andExpr.Left;
+                remaining = selected.RequiresResidualPredicate
+                    ? where
+                    : (useLeft ? andExpr.Right : andExpr.Left);
                 return BuildLookupOperator(tableName, schema, selected.IsPrimaryKey, selected.Index, selected.LookupValue);
             }
         }
@@ -2785,9 +3020,36 @@ public sealed class QueryPlanner
             }
         }
 
+        bool hasCompositeCandidate = TryPickCompositeLookupCandidate(
+            conjuncts,
+            schema,
+            indexes,
+            out var compositeIndex,
+            out long compositeLookupKey);
+
+        if (hasCompositeCandidate &&
+            (selectedConjunctIndex < 0 || (compositeIndex!.IsUnique ? 1 : 2) < selectedRank))
+        {
+            // Composite index keys are hashed; keep the full predicate as residual
+            // so hash collisions are filtered out by expression evaluation.
+            remaining = where;
+            return BuildLookupOperator(
+                tableName,
+                schema,
+                isPrimaryKey: false,
+                compositeIndex,
+                compositeLookupKey);
+        }
+
         if (selectedConjunctIndex < 0)
             return null;
         IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
+
+        if (selectedCandidate.RequiresResidualPredicate)
+        {
+            remaining = where;
+            return lookupOp;
+        }
 
         if (conjuncts.Count == 1)
         {
@@ -2812,7 +3074,8 @@ public sealed class QueryPlanner
         long LookupValue,
         bool IsPrimaryKey,
         IndexSchema? Index,
-        int Rank);
+        int Rank,
+        bool RequiresResidualPredicate);
 
     private static bool TryPickLookupCandidate(
         Expression expression,
@@ -2824,12 +3087,19 @@ public sealed class QueryPlanner
     {
         candidate = default;
 
-        if (!TryExtractIntegerEqualityLookupTerm(expression, schema, out int columnIndex, out long lookupValue))
+        if (!TryExtractIndexEqualityLookupTerm(expression, schema, out int columnIndex, out DbValue lookupLiteral))
             return false;
 
-        if (hasIntegerPk && columnIndex == pkIdx)
+        if (hasIntegerPk &&
+            columnIndex == pkIdx &&
+            lookupLiteral.Type == DbType.Integer)
         {
-            candidate = new LookupCandidate(lookupValue, IsPrimaryKey: true, Index: null, Rank: 0);
+            candidate = new LookupCandidate(
+                LookupValue: lookupLiteral.AsInteger,
+                IsPrimaryKey: true,
+                Index: null,
+                Rank: 0,
+                RequiresResidualPredicate: false);
             return true;
         }
 
@@ -2838,12 +3108,140 @@ public sealed class QueryPlanner
         if (matchedIndex == null)
             return false;
 
+        bool usesDirectIntegerKey =
+            lookupLiteral.Type == DbType.Integer &&
+            schema.Columns[columnIndex].Type == DbType.Integer;
+        long lookupValue = usesDirectIntegerKey
+            ? lookupLiteral.AsInteger
+            : ComputeIndexKey(new[] { lookupLiteral });
+
         candidate = new LookupCandidate(
             lookupValue,
             IsPrimaryKey: false,
             Index: matchedIndex,
-            Rank: matchedIndex.IsUnique ? 1 : 2);
+            Rank: matchedIndex.IsUnique ? 1 : 2,
+            RequiresResidualPredicate: !usesDirectIntegerKey);
         return true;
+    }
+
+    private static bool TryPickCompositeLookupCandidate(
+        IReadOnlyList<Expression> conjuncts,
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> indexes,
+        out IndexSchema? selectedIndex,
+        out long lookupKey)
+    {
+        selectedIndex = null;
+        lookupKey = 0;
+
+        if (conjuncts.Count == 0)
+            return false;
+
+        Dictionary<int, DbValue>? equalityLiteralsByColumn = null;
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractIndexEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out DbValue literal))
+                continue;
+
+            equalityLiteralsByColumn ??= new Dictionary<int, DbValue>();
+            if (equalityLiteralsByColumn.TryGetValue(columnIndex, out DbValue existing))
+            {
+                if (DbValue.Compare(existing, literal) != 0)
+                    return false;
+
+                continue;
+            }
+
+            equalityLiteralsByColumn[columnIndex] = literal;
+        }
+
+        if (equalityLiteralsByColumn == null || equalityLiteralsByColumn.Count < 2)
+            return false;
+
+        IndexSchema? bestUnique = null;
+        long bestUniqueKey = 0;
+        int bestUniqueColumnCount = -1;
+
+        IndexSchema? bestNonUnique = null;
+        long bestNonUniqueKey = 0;
+        int bestNonUniqueColumnCount = -1;
+
+        foreach (var idx in indexes)
+        {
+            if (idx.Columns.Count <= 1)
+                continue;
+
+            var keyComponents = new DbValue[idx.Columns.Count];
+            bool matches = true;
+
+            for (int i = 0; i < idx.Columns.Count; i++)
+            {
+                int colIndex = schema.GetColumnIndex(idx.Columns[i]);
+                if (colIndex < 0 || colIndex >= schema.Columns.Count)
+                {
+                    matches = false;
+                    break;
+                }
+
+                DbType colType = schema.Columns[colIndex].Type;
+                if (colType is not (DbType.Integer or DbType.Text))
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (!equalityLiteralsByColumn.TryGetValue(colIndex, out DbValue literal))
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (literal.Type != colType)
+                {
+                    matches = false;
+                    break;
+                }
+
+                keyComponents[i] = literal;
+            }
+
+            if (!matches)
+                continue;
+
+            long key = ComputeIndexKey(keyComponents);
+
+            if (idx.IsUnique)
+            {
+                if (idx.Columns.Count > bestUniqueColumnCount)
+                {
+                    bestUnique = idx;
+                    bestUniqueKey = key;
+                    bestUniqueColumnCount = idx.Columns.Count;
+                }
+            }
+            else if (idx.Columns.Count > bestNonUniqueColumnCount)
+            {
+                bestNonUnique = idx;
+                bestNonUniqueKey = key;
+                bestNonUniqueColumnCount = idx.Columns.Count;
+            }
+        }
+
+        if (bestUnique != null)
+        {
+            selectedIndex = bestUnique;
+            lookupKey = bestUniqueKey;
+            return true;
+        }
+
+        if (bestNonUnique != null)
+        {
+            selectedIndex = bestNonUnique;
+            lookupKey = bestNonUniqueKey;
+            return true;
+        }
+
+        return false;
     }
 
     private IOperator BuildLookupOperator(
@@ -2858,9 +3256,20 @@ public sealed class QueryPlanner
             return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
 
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
-        return index.IsUnique
+        return index.IsUnique && UsesDirectIntegerIndexKey(index, schema)
             ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
             : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
+    }
+
+    private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)
+    {
+        if (index.Columns.Count != 1)
+            return false;
+
+        int colIdx = schema.GetColumnIndex(index.Columns[0]);
+        return colIdx >= 0 &&
+            colIdx < schema.Columns.Count &&
+            schema.Columns[colIdx].Type == DbType.Integer;
     }
 
     private static bool TryExtractIntegerEqualityLookupTerm(
@@ -2908,6 +3317,57 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static bool TryExtractIndexEqualityLookupTerm(
+        Expression expression,
+        TableSchema schema,
+        out int columnIndex,
+        out DbValue lookupLiteral)
+    {
+        columnIndex = -1;
+        lookupLiteral = DbValue.Null;
+
+        if (expression is not BinaryExpression { Op: BinaryOp.Equals } eq)
+            return false;
+
+        if (TryExtractColumnIndexLiteralPair(eq.Left, eq.Right, schema, out columnIndex, out lookupLiteral))
+            return true;
+
+        return TryExtractColumnIndexLiteralPair(eq.Right, eq.Left, schema, out columnIndex, out lookupLiteral);
+    }
+
+    private static bool TryExtractColumnIndexLiteralPair(
+        Expression columnSide,
+        Expression literalSide,
+        TableSchema schema,
+        out int columnIndex,
+        out DbValue lookupLiteral)
+    {
+        columnIndex = -1;
+        lookupLiteral = DbValue.Null;
+
+        if (columnSide is not ColumnRefExpression col || literalSide is not LiteralExpression lit)
+            return false;
+        if (!TryConvertLiteral(lit, out var literal) || literal.IsNull)
+            return false;
+
+        int resolvedIndex = col.TableAlias != null
+            ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
+            : schema.GetColumnIndex(col.ColumnName);
+        if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
+            return false;
+
+        DbType columnType = schema.Columns[resolvedIndex].Type;
+        if (columnType is not (DbType.Integer or DbType.Text))
+            return false;
+
+        if (literal.Type != columnType)
+            return false;
+
+        columnIndex = resolvedIndex;
+        lookupLiteral = literal;
+        return true;
+    }
+
     private static IndexSchema? FindLookupIndexForColumn(
         IReadOnlyList<IndexSchema> indexes,
         string columnName)
@@ -2930,6 +3390,55 @@ public sealed class QueryPlanner
         }
 
         return firstNonUnique;
+    }
+
+    private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
+    {
+        if (keyComponents.Length == 1 && keyComponents[0].Type == DbType.Integer)
+            return keyComponents[0].AsInteger;
+
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        ulong hash = offsetBasis;
+        for (int i = 0; i < keyComponents.Length; i++)
+            hash = HashIndexKeyComponent(hash, keyComponents[i], prime);
+
+        return unchecked((long)hash);
+    }
+
+    private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
+    {
+        hash ^= (byte)value.Type;
+        hash *= prime;
+
+        switch (value.Type)
+        {
+            case DbType.Integer:
+                hash ^= unchecked((ulong)value.AsInteger);
+                hash *= prime;
+                return hash;
+
+            case DbType.Text:
+            {
+                string text = value.AsText;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char c = text[i];
+                    hash ^= (byte)c;
+                    hash *= prime;
+                    hash ^= (byte)(c >> 8);
+                    hash *= prime;
+                }
+
+                return hash;
+            }
+
+            default:
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"Unsupported indexed value type '{value.Type}'.");
+        }
     }
 
     /// <summary>
@@ -2995,7 +3504,7 @@ public sealed class QueryPlanner
         if (orderColumn.Nullable)
             return false;
 
-        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere);
+        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere, out _);
 
         var indexes = _catalog.GetIndexesForTable(tableRef.TableName);
         foreach (var idx in indexes)
@@ -3016,8 +3525,9 @@ public sealed class QueryPlanner
     }
 
     /// <summary>
-    /// Fast path for simple secondary-index equality lookups:
-    /// SELECT * / columns FROM table WHERE indexed_col = literal [AND ...].
+    /// Fast path for simple secondary-index lookups:
+    /// SELECT * / columns FROM table WHERE indexed_col = literal [AND ...],
+    /// or integer range predicates on indexed INTEGER columns.
     /// Bypasses BuildFromOperator and broad planner setup.
     /// </summary>
     private bool TryFastIndexedLookup(SelectStatement stmt, out QueryResult result)
@@ -3045,7 +3555,8 @@ public sealed class QueryPlanner
         if (schema == null)
             return false;
 
-        var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
+        var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
+            ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
         if (indexOp == null)
             return false;
 
@@ -3171,13 +3682,72 @@ public sealed class QueryPlanner
         return false;
     }
 
+    private IOperator? TryBuildIntegerIndexRangeScan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out Expression? remaining)
+    {
+        remaining = where;
+        var indexes = _catalog.GetIndexesForTable(tableName);
+        if (indexes.Count == 0)
+            return null;
+
+        IndexSchema? selectedIndex = null;
+        IndexScanRange selectedRange = default;
+        Expression? selectedRemaining = where;
+        int selectedScore = int.MinValue;
+
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var idx = indexes[i];
+            if (!UsesDirectIntegerIndexKey(idx, schema))
+                continue;
+
+            int columnIndex = schema.GetColumnIndex(idx.Columns[0]);
+            if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
+                continue;
+
+            ExtractOrderedIndexRange(
+                where,
+                schema,
+                columnIndex,
+                out var scanRange,
+                out var residualWhere,
+                out int consumedTermCount);
+
+            if (consumedTermCount == 0)
+                continue;
+
+            int score = consumedTermCount * 10 + (idx.IsUnique ? 1 : 0);
+            if (score <= selectedScore)
+                continue;
+
+            selectedScore = score;
+            selectedIndex = idx;
+            selectedRange = scanRange;
+            selectedRemaining = residualWhere;
+        }
+
+        if (selectedIndex == null)
+            return null;
+
+        remaining = selectedRemaining;
+        var indexStore = _catalog.GetIndexStore(selectedIndex.IndexName, _pager);
+        var tableTree = _catalog.GetTableTree(tableName, _pager);
+        return new IndexOrderedScanOperator(indexStore, tableTree, schema, selectedRange, _recordSerializer);
+    }
+
     private static void ExtractOrderedIndexRange(
         Expression? where,
         TableSchema schema,
         int orderColumnIndex,
         out IndexScanRange range,
-        out Expression? remaining)
+        out Expression? remaining,
+        out int consumedTermCount)
     {
+        consumedTermCount = 0;
+
         if (where == null)
         {
             range = IndexScanRange.All;
@@ -3196,12 +3766,26 @@ public sealed class QueryPlanner
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
+            if (TryExtractOrderedIndexBetweenRange(
+                    conjuncts[i],
+                    schema,
+                    orderColumnIndex,
+                    out long betweenLow,
+                    out long betweenHigh))
+            {
+                consumedTermCount++;
+                ApplyLowerBound(ref lowerBound, ref lowerInclusive, betweenLow, inclusive: true);
+                ApplyUpperBound(ref upperBound, ref upperInclusive, betweenHigh, inclusive: true);
+                continue;
+            }
+
             if (!TryExtractOrderedIndexRangeTerm(conjuncts[i], schema, orderColumnIndex, out var term))
             {
                 residualTerms.Add(conjuncts[i]);
                 continue;
             }
 
+            consumedTermCount++;
             switch (term.Kind)
             {
                 case RangeTermKind.Equal:
@@ -3226,6 +3810,45 @@ public sealed class QueryPlanner
 
         range = new IndexScanRange(lowerBound, lowerInclusive, upperBound, upperInclusive);
         remaining = CombineConjuncts(residualTerms);
+    }
+
+    private static bool TryExtractOrderedIndexBetweenRange(
+        Expression expression,
+        TableSchema schema,
+        int orderColumnIndex,
+        out long lowValue,
+        out long highValue)
+    {
+        lowValue = 0;
+        highValue = 0;
+
+        if (expression is not BetweenExpression { Negated: false } between)
+            return false;
+
+        if (!TryExtractColumnIntegerLiteralPair(
+                between.Operand,
+                between.Low,
+                schema,
+                out int lowColumnIndex,
+                out lowValue))
+        {
+            return false;
+        }
+
+        if (lowColumnIndex != orderColumnIndex)
+            return false;
+
+        if (!TryExtractColumnIntegerLiteralPair(
+                between.Operand,
+                between.High,
+                schema,
+                out int highColumnIndex,
+                out highValue))
+        {
+            return false;
+        }
+
+        return highColumnIndex == orderColumnIndex;
     }
 
     private enum RangeTermKind
@@ -3546,27 +4169,43 @@ public sealed class QueryPlanner
     private async ValueTask InsertIntoAllIndexesAsync(
         IReadOnlyList<IndexSchema> indexes, TableSchema schema, DbValue[] row, long rowId, CancellationToken ct)
     {
+        var tableTree = _catalog.GetTableTree(schema.TableName);
+
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+                continue;
+            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+                continue; // Don't index entries that include NULL.
 
-            var value = row[colIdx];
-            if (value.IsNull) continue; // Don't index NULL values
-
-            long indexKey = value.AsInteger;
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
 
             if (idx.IsUnique)
             {
-                var existing = await indexStore.FindAsync(indexKey, ct);
-                if (existing != null)
-                    throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                        $"Duplicate key value in unique index '{idx.IndexName}'.");
+                if (usesDirectIntegerKey)
+                {
+                    var existing = await indexStore.FindAsync(indexKey, ct);
+                    if (existing != null)
+                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                            $"Duplicate key value in unique index '{idx.IndexName}'.");
 
-                var payload = new byte[8];
-                BitConverter.TryWriteBytes(payload, rowId);
-                await indexStore.InsertAsync(indexKey, payload, ct);
+                    var payload = new byte[8];
+                    BitConverter.TryWriteBytes(payload, rowId);
+                    await indexStore.InsertAsync(indexKey, payload, ct);
+                }
+                else
+                {
+                    await EnsureHashedUniqueConstraintAsync(
+                        indexStore,
+                        tableTree,
+                        columnIndices,
+                        keyComponents!,
+                        indexKey,
+                        idx.IndexName,
+                        ct);
+
+                    await InsertIntoIndexAsync(indexStore, indexKey, rowId, ct);
+                }
             }
             else
             {
@@ -3580,13 +4219,11 @@ public sealed class QueryPlanner
     {
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+                continue;
+            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                continue;
 
-            var value = row[colIdx];
-            if (value.IsNull) continue;
-
-            long indexKey = value.AsInteger;
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
             await DeleteFromIndexAsync(indexStore, indexKey, rowId, ct);
         }
@@ -3596,41 +4233,61 @@ public sealed class QueryPlanner
         IReadOnlyList<IndexSchema> indexes, TableSchema schema,
         DbValue[] oldRow, DbValue[] newRow, long oldRowId, long newRowId, CancellationToken ct)
     {
+        var tableTree = _catalog.GetTableTree(schema.TableName);
+
         foreach (var idx in indexes)
         {
-            int colIdx = schema.GetColumnIndex(idx.Columns[0]);
-            if (colIdx < 0) continue;
+            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+                continue;
 
-            var oldValue = oldRow[colIdx];
-            var newValue = newRow[colIdx];
+            bool hasOldKey = TryBuildIndexKey(oldRow, columnIndices, usesDirectIntegerKey, out long oldKey, out DbValue[]? oldComponents);
+            bool hasNewKey = TryBuildIndexKey(newRow, columnIndices, usesDirectIntegerKey, out long newKey, out DbValue[]? newComponents);
 
-            // If neither indexed value nor rowid changed, no maintenance needed.
-            if (oldValue.Equals(newValue) && oldRowId == newRowId) continue;
-
-            // Remove old entry
-            if (!oldValue.IsNull)
+            // If neither index presence, key value, nor rowid changed, no maintenance needed.
+            if (hasOldKey == hasNewKey &&
+                oldRowId == newRowId &&
+                (!hasOldKey || (oldKey == newKey && IndexKeyComponentsEqual(oldComponents, newComponents))))
             {
-                long oldKey = oldValue.AsInteger;
-                var indexStore = _catalog.GetIndexStore(idx.IndexName);
+                continue;
+            }
+
+            var indexStore = _catalog.GetIndexStore(idx.IndexName);
+
+            // Remove old entry.
+            if (hasOldKey)
+            {
                 await DeleteFromIndexAsync(indexStore, oldKey, oldRowId, ct);
             }
 
-            // Add new entry
-            if (!newValue.IsNull)
+            // Add new entry.
+            if (hasNewKey)
             {
-                long newKey = newValue.AsInteger;
-                var indexStore = _catalog.GetIndexStore(idx.IndexName);
-
                 if (idx.IsUnique)
                 {
-                    var existing = await indexStore.FindAsync(newKey, ct);
-                    if (existing != null)
-                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                            $"Duplicate key value in unique index '{idx.IndexName}'.");
+                    if (usesDirectIntegerKey)
+                    {
+                        var existing = await indexStore.FindAsync(newKey, ct);
+                        if (existing != null)
+                            throw new CSharpDbException(ErrorCode.ConstraintViolation,
+                                $"Duplicate key value in unique index '{idx.IndexName}'.");
 
-                    var payload = new byte[8];
-                    BitConverter.TryWriteBytes(payload, newRowId);
-                    await indexStore.InsertAsync(newKey, payload, ct);
+                        var payload = new byte[8];
+                        BitConverter.TryWriteBytes(payload, newRowId);
+                        await indexStore.InsertAsync(newKey, payload, ct);
+                    }
+                    else
+                    {
+                        await EnsureHashedUniqueConstraintAsync(
+                            indexStore,
+                            tableTree,
+                            columnIndices,
+                            newComponents!,
+                            newKey,
+                            idx.IndexName,
+                            ct);
+
+                        await InsertIntoIndexAsync(indexStore, newKey, newRowId, ct);
+                    }
                 }
                 else
                 {
@@ -3638,6 +4295,155 @@ public sealed class QueryPlanner
                 }
             }
         }
+    }
+
+    private async ValueTask EnsureHashedUniqueConstraintAsync(
+        IIndexStore indexStore,
+        BTree tableTree,
+        int[] indexColumnIndices,
+        DbValue[] keyComponents,
+        long indexKey,
+        string indexName,
+        CancellationToken ct)
+    {
+        var existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null || existing.Length < 8)
+            return;
+
+        int entryCount = existing.Length / 8;
+        int maxIndexedColumn = indexColumnIndices.Max();
+
+        for (int i = 0; i < entryCount; i++)
+        {
+            long existingRowId = BitConverter.ToInt64(existing, i * 8);
+            var existingRowPayload = await tableTree.FindAsync(existingRowId, ct);
+            if (existingRowPayload == null)
+                continue;
+
+            var existingRow = _recordSerializer.DecodeUpTo(existingRowPayload, maxIndexedColumn);
+            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Duplicate key value in unique index '{indexName}'.");
+            }
+        }
+    }
+
+    private static bool TryResolveIndexColumnIndices(
+        IndexSchema index,
+        TableSchema schema,
+        out int[] columnIndices,
+        out bool usesDirectIntegerKey)
+    {
+        int count = index.Columns.Count;
+        columnIndices = new int[count];
+        usesDirectIntegerKey = false;
+        if (count == 0)
+            return false;
+
+        for (int i = 0; i < count; i++)
+        {
+            int colIdx = schema.GetColumnIndex(index.Columns[i]);
+            if (colIdx < 0 || colIdx >= schema.Columns.Count)
+                return false;
+            if (schema.Columns[colIdx].Type is not (DbType.Integer or DbType.Text))
+                return false;
+
+            columnIndices[i] = colIdx;
+        }
+
+        usesDirectIntegerKey = count == 1 && schema.Columns[columnIndices[0]].Type == DbType.Integer;
+        return true;
+    }
+
+    private static bool TryBuildIndexKey(
+        DbValue[] row,
+        int[] indexColumnIndices,
+        bool usesDirectIntegerKey,
+        out long indexKey,
+        out DbValue[]? keyComponents)
+    {
+        indexKey = 0;
+        keyComponents = null;
+
+        if (indexColumnIndices.Length == 0)
+            return false;
+
+        if (usesDirectIntegerKey)
+        {
+            int colIdx = indexColumnIndices[0];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull || value.Type != DbType.Integer)
+                return false;
+
+            indexKey = value.AsInteger;
+            return true;
+        }
+
+        var components = new DbValue[indexColumnIndices.Length];
+        for (int i = 0; i < indexColumnIndices.Length; i++)
+        {
+            int colIdx = indexColumnIndices[i];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull)
+                return false;
+            if (value.Type is not (DbType.Integer or DbType.Text))
+                return false;
+
+            components[i] = value;
+        }
+
+        indexKey = ComputeIndexKey(components);
+        keyComponents = components;
+        return true;
+    }
+
+    private static bool IndexRowMatchesKeyComponents(
+        DbValue[] row,
+        int[] indexColumnIndices,
+        DbValue[] keyComponents)
+    {
+        if (indexColumnIndices.Length != keyComponents.Length)
+            return false;
+
+        for (int i = 0; i < indexColumnIndices.Length; i++)
+        {
+            int colIdx = indexColumnIndices[i];
+            if (colIdx < 0 || colIdx >= row.Length)
+                return false;
+
+            var value = row[colIdx];
+            if (value.IsNull)
+                return false;
+
+            if (DbValue.Compare(value, keyComponents[i]) != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left == null || right == null)
+            return false;
+        if (left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+            if (DbValue.Compare(left[i], right[i]) != 0)
+                return false;
+
+        return true;
     }
 
     /// <summary>
@@ -4035,6 +4841,7 @@ public sealed class QueryPlanner
                     Type = sourceColumn.Type,
                     Nullable = sourceColumn.Nullable,
                     IsPrimaryKey = sourceColumn.IsPrimaryKey,
+                    IsIdentity = sourceColumn.IsIdentity,
                 }
                 : sourceColumn;
         }
@@ -4330,6 +5137,13 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.saved_queries", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_saved_queries", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.saved_queries";
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
@@ -4373,6 +5187,28 @@ public sealed class QueryPlanner
             case "sys.objects":
                 columns = SystemObjectsColumns;
                 rows = BuildSystemObjectsRows();
+                break;
+
+            case "sys.saved_queries":
+                if (_catalog.GetTable(InternalSavedQueriesTableName) is TableSchema savedQueriesSchema)
+                {
+                    var tableTree = _catalog.GetTableTree(InternalSavedQueriesTableName, _pager);
+                    var scanOp = new TableScanOperator(
+                        tableTree,
+                        savedQueriesSchema,
+                        _recordSerializer,
+                        TryGetCachedTreeRowCountCapacityHint(tableTree));
+                    var scanSchema = GetOrCreateSystemCatalogSchema(
+                        normalized,
+                        tableRef.TableName,
+                        tableRef.Alias,
+                        savedQueriesSchema.Columns.ToArray());
+                    source = (scanOp, scanSchema);
+                    return true;
+                }
+
+                columns = SystemSavedQueriesColumns;
+                rows = new List<DbValue[]>();
                 break;
 
             default:
@@ -4465,6 +5301,7 @@ public sealed class QueryPlanner
                     DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
                     DbValue.FromInteger(col.Nullable ? 1 : 0),
                     DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
+                    DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                 ]);
             }
         }
@@ -4669,30 +5506,45 @@ public sealed class QueryPlanner
         string tableName, TableSchema schema, BTree tree, DbValue[] row, CancellationToken ct)
     {
         int pkIdx = schema.PrimaryKeyColumnIndex;
-        if (pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer)
+        if (pkIdx >= 0 &&
+            schema.Columns[pkIdx].Type == DbType.Integer &&
+            schema.Columns[pkIdx].IsIdentity)
         {
             if (!row[pkIdx].IsNull)
             {
                 long explicitKey = row[pkIdx].AsInteger;
-                if (_nextRowIdCache.TryGetValue(tableName, out long next) && explicitKey >= next)
-                    _nextRowIdCache[tableName] = checked(explicitKey + 1);
+                if (explicitKey >= 0 && explicitKey < long.MaxValue)
+                    UpdateNextRowIdState(tableName, schema, checked(explicitKey + 1));
                 return (explicitKey, false);
             }
 
-            long generatedKey = await AllocateRowIdAsync(tableName, tree, ct);
+            long generatedKey = await AllocateRowIdAsync(tableName, schema, tree, ct);
             row[pkIdx] = DbValue.FromInteger(generatedKey);
             return (generatedKey, true);
         }
 
-        return (await AllocateRowIdAsync(tableName, tree, ct), true);
+        if (pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer)
+        {
+            if (row[pkIdx].IsNull)
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"Primary key column '{schema.Columns[pkIdx].Name}' requires an explicit value.");
+
+            long explicitKey = row[pkIdx].AsInteger;
+            if (explicitKey >= 0 && explicitKey < long.MaxValue)
+                UpdateNextRowIdState(tableName, schema, checked(explicitKey + 1));
+            return (explicitKey, false);
+        }
+
+        return (await AllocateRowIdAsync(tableName, schema, tree, ct), true);
     }
 
-    private async ValueTask<long> AllocateRowIdAsync(string tableName, BTree tree, CancellationToken ct)
+    private async ValueTask<long> AllocateRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
     {
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
-            nextRowId = await LoadNextRowIdAsync(tree, ct);
+            nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
-        _nextRowIdCache[tableName] = checked(nextRowId + 1);
+        UpdateNextRowIdState(tableName, schema, checked(nextRowId + 1));
         return nextRowId;
     }
 
@@ -4701,7 +5553,20 @@ public sealed class QueryPlanner
         _nextRowIdCache.Remove(tableName);
     }
 
-    private static async ValueTask<long> LoadNextRowIdAsync(BTree tree, CancellationToken ct)
+    private async ValueTask<long> LoadNextRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
+    {
+        if (schema.NextRowId > 0)
+        {
+            _nextRowIdCache[tableName] = schema.NextRowId;
+            return schema.NextRowId;
+        }
+
+        long loadedNextRowId = await ScanNextRowIdAsync(tree, ct);
+        UpdateNextRowIdState(tableName, schema, loadedNextRowId);
+        return loadedNextRowId;
+    }
+
+    private static async ValueTask<long> ScanNextRowIdAsync(BTree tree, CancellationToken ct)
     {
         long maxId = 0;
         var cursor = tree.CreateCursor();
@@ -4711,6 +5576,20 @@ public sealed class QueryPlanner
                 maxId = cursor.CurrentKey;
         }
         return maxId + 1;
+    }
+
+    private void UpdateNextRowIdState(string tableName, TableSchema schema, long nextRowId)
+    {
+        if (nextRowId <= 0)
+            return;
+
+        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
+            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        else
+            _nextRowIdCache[tableName] = nextRowId;
+
+        if (schema.NextRowId < nextRowId)
+            schema.NextRowId = nextRowId;
     }
 
     #endregion

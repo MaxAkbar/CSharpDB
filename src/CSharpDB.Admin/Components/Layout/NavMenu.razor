@@ -17,12 +17,12 @@
     </div>
 
     <div class="tree-container">
-        @* Tables *@
+        @* User Tables *@
         <div class="tree-group">
             <div class="tree-group-header" @onclick='() => ToggleGroup("tables")'>
                 <i class="bi @(_expandedGroups.Contains("tables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-table icon-table"></i>
-                <span>Tables</span>
+                <span>User Tables</span>
                 <span class="group-count">@(_tableNames?.Count ?? 0)</span>
             </div>
             @if (_expandedGroups.Contains("tables") && _tableNames is not null)
@@ -34,6 +34,30 @@
                              @onclick="() => TabManager.OpenTableTab(name)">
                             <i class="bi bi-table icon-table"></i>
                             <span class="item-label">@name</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* System Catalog (Virtual) *@
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("system")'>
+                <i class="bi @(_expandedGroups.Contains("system") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-hdd-stack icon-system"></i>
+                <span>System (Virtual)</span>
+                <span class="group-count">@s_systemCatalogItems.Count</span>
+            </div>
+            @if (_expandedGroups.Contains("system"))
+            {
+                <div class="tree-items">
+                    @foreach (var item in FilterSystemCatalogItems())
+                    {
+                        <div class="tree-item @(IsActive("system", item.Name) ? "active" : "")"
+                             @onclick="() => OpenSystemCatalogTab(item)">
+                            <i class="bi bi-hdd-stack icon-system"></i>
+                            <span class="item-label">@item.Name</span>
+                            <span class="item-hint">@item.Description</span>
                         </div>
                     }
                 </div>
@@ -151,13 +175,26 @@
 </aside>
 
 @code {
+    private sealed record SystemCatalogItem(string Name, string Description, string Sql);
+
+    private static readonly IReadOnlyList<SystemCatalogItem> s_systemCatalogItems = new[]
+    {
+        new SystemCatalogItem("sys.tables", "tables", "SELECT * FROM sys.tables ORDER BY table_name;"),
+        new SystemCatalogItem("sys.columns", "columns", "SELECT * FROM sys.columns ORDER BY table_name, ordinal_position;"),
+        new SystemCatalogItem("sys.indexes", "indexes", "SELECT * FROM sys.indexes ORDER BY table_name, index_name, ordinal_position;"),
+        new SystemCatalogItem("sys.views", "views", "SELECT * FROM sys.views ORDER BY view_name;"),
+        new SystemCatalogItem("sys.triggers", "triggers", "SELECT * FROM sys.triggers ORDER BY trigger_name;"),
+        new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
+        new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
+    };
+
     private IReadOnlyCollection<string>? _tableNames;
     private IReadOnlyCollection<string>? _viewNames;
     private IReadOnlyList<CSharpDB.Core.IndexSchema>? _indexes;
     private IReadOnlyList<CSharpDB.Core.TriggerSchema>? _triggers;
     private IReadOnlyList<CSharpDB.Service.Models.ProcedureDefinition>? _procedures;
     private string _searchQuery = string.Empty;
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "views", "procedures" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "system", "views", "procedures" };
 
     protected override async Task OnInitializedAsync()
     {
@@ -234,6 +271,19 @@
         return _procedures.Where(p => p.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                    || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
     }
+
+    private IEnumerable<SystemCatalogItem> FilterSystemCatalogItems()
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return s_systemCatalogItems;
+
+        return s_systemCatalogItems.Where(i =>
+            i.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+            || i.Description.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OpenSystemCatalogTab(SystemCatalogItem item)
+        => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
     private bool IsActive(string type, string name)
     {

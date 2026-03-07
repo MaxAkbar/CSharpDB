@@ -119,6 +119,7 @@ public sealed class Parser
 
             statement = new SelectStatement
             {
+                IsDistinct = false,
                 Columns = columns,
                 From = new SimpleTableRef { TableName = tableName },
                 Where = where,
@@ -807,28 +808,57 @@ public sealed class Parser
         Advance();
 
         bool isPK = false;
+        bool isIdentity = false;
         bool isNullable = true;
 
-        // Check for PRIMARY KEY and NOT NULL modifiers
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
             {
                 Advance();
                 Expect(TokenType.Key);
+                if (isPK)
+                    throw Error($"PRIMARY KEY specified multiple times for column '{name}'.");
                 isPK = true;
                 isNullable = false;
+            }
+            else if (Peek().Type is TokenType.Identity or TokenType.Autoincrement)
+            {
+                if (isIdentity)
+                    throw Error($"IDENTITY/AUTOINCREMENT specified multiple times for column '{name}'.");
+                Advance();
+                isIdentity = true;
             }
             else if (Peek().Type == TokenType.Not)
             {
                 Advance();
                 Expect(TokenType.Null);
+                if (!isNullable)
+                    throw Error($"NOT NULL specified multiple times for column '{name}'.");
                 isNullable = false;
             }
             else break;
         }
 
-        return new ColumnDef { Name = name, TypeToken = typeToken, IsPrimaryKey = isPK, IsNullable = isNullable };
+        if (isIdentity)
+        {
+            if (typeToken != TokenType.Integer)
+                throw Error($"IDENTITY/AUTOINCREMENT requires INTEGER type for column '{name}'.");
+
+            // Identity always implies PK semantics in CSharpDB.
+            isPK = true;
+            isNullable = false;
+        }
+
+        return new ColumnDef
+        {
+            Name = name,
+            TypeToken = typeToken,
+            IsPrimaryKey = isPK,
+            IsIdentity = isIdentity,
+            IsNullable = isNullable,
+        };
     }
 
     private Statement ParseDrop()
@@ -1093,6 +1123,7 @@ public sealed class Parser
     private SelectStatement ParseSelect()
     {
         Expect(TokenType.Select);
+        bool isDistinct = TryConsume(TokenType.Distinct);
 
         var columns = new List<SelectColumn>();
         if (Peek().Type == TokenType.Star)
@@ -1184,6 +1215,7 @@ public sealed class Parser
 
         return new SelectStatement
         {
+            IsDistinct = isDistinct,
             Columns = columns,
             From = from,
             Where = where,

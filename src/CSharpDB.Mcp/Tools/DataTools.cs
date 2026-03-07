@@ -22,6 +22,9 @@ public static class DataTools
         {
             name = c.Name,
             type = c.Type.ToString(),
+            nullable = c.Nullable,
+            isPrimaryKey = c.IsPrimaryKey,
+            isIdentity = c.IsIdentity,
         });
 
         return JsonHelper.Serialize(new

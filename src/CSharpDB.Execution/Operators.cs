@@ -440,6 +440,94 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
 }
 
 /// <summary>
+/// DISTINCT operator — emits each unique row once.
+/// </summary>
+public sealed class DistinctOperator : IOperator
+{
+    private readonly IOperator _source;
+    private readonly HashSet<DistinctRowKey> _seenRows = new(new DistinctRowKeyComparer());
+
+    public ColumnDefinition[] OutputSchema => _source.OutputSchema;
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public DistinctOperator(IOperator source)
+    {
+        _source = source;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _seenRows.Clear();
+        Current = Array.Empty<DbValue>();
+        await _source.OpenAsync(ct);
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        while (await _source.MoveNextAsync(ct))
+        {
+            DbValue[] sourceRow = _source.Current;
+            var ownedRow = _source.ReusesCurrentRowBuffer
+                ? (DbValue[])sourceRow.Clone()
+                : sourceRow;
+
+            var rowKey = new DistinctRowKey(ownedRow, ComputeHashCode(ownedRow));
+            if (_seenRows.Add(rowKey))
+            {
+                Current = ownedRow;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public ValueTask DisposeAsync() => _source.DisposeAsync();
+
+    private static int ComputeHashCode(DbValue[] row)
+    {
+        var hash = new HashCode();
+        for (int i = 0; i < row.Length; i++)
+            hash.Add(row[i]);
+        return hash.ToHashCode();
+    }
+
+    private readonly struct DistinctRowKey
+    {
+        public DbValue[] Values { get; }
+        public int HashCode { get; }
+
+        public DistinctRowKey(DbValue[] values, int hashCode)
+        {
+            Values = values;
+            HashCode = hashCode;
+        }
+    }
+
+    private sealed class DistinctRowKeyComparer : IEqualityComparer<DistinctRowKey>
+    {
+        public bool Equals(DistinctRowKey x, DistinctRowKey y)
+        {
+            if (x.HashCode != y.HashCode)
+                return false;
+            if (x.Values.Length != y.Values.Length)
+                return false;
+
+            for (int i = 0; i < x.Values.Length; i++)
+            {
+                if (!x.Values[i].Equals(y.Values[i]))
+                    return false;
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(DistinctRowKey obj) => obj.HashCode;
+    }
+}
+
+/// <summary>
 /// Offset operator — skips the first N rows from the source.
 /// </summary>
 public sealed class OffsetOperator : IOperator, IRowBufferReuseController

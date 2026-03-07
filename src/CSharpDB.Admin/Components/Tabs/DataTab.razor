@@ -72,6 +72,7 @@
                                     <th>Name</th>
                                     <th>Type</th>
                                     <th>Primary Key</th>
+                                    <th>Identity</th>
                                     <th>Nullable</th>
                                 </tr>
                             </thead>
@@ -82,6 +83,7 @@
                                         <td class="@(col.IsPrimaryKey ? "pk-val" : "")">@col.Name</td>
                                         <td><span class="col-type-badge @GetTypeBadgeClass(col.Type.ToString())">@col.Type.ToString().ToUpperInvariant()</span></td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
+                                        <td>@(col.IsIdentity ? "Yes" : "No")</td>
                                         <td>@(col.Nullable ? "Yes" : "No")</td>
                                     </tr>
                                 }

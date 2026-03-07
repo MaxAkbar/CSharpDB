@@ -51,12 +51,75 @@ function Get-BenchmarkFilterFromCheck
     return ""
 }
 
+function Add-SelectPlanDiagnosticsToReport
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportPath,
+        [Parameter(Mandatory = $true)]$Diagnostics
+    )
+
+    if (-not (Test-Path $ReportPath))
+    {
+        return
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("")
+    $lines.Add("## Select Plan Cache Diagnostics")
+    $lines.Add("")
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    if ($null -ne $Diagnostics)
+    {
+        foreach ($entry in $Diagnostics)
+        {
+            $entries.Add($entry) | Out-Null
+        }
+    }
+
+    if ($entries.Count -eq 0)
+    {
+        $lines.Add("No select-plan cache diagnostics were emitted by the executed benchmark runs.")
+    }
+    else
+    {
+        $lines.Add("| Run | Sample | Hits | Misses | Reclassifications | Stores | Entries |")
+        $lines.Add("|---|---:|---:|---:|---:|---:|---:|")
+        foreach ($entry in $entries)
+        {
+            $runCell = [string]$entry.RunLabel
+            if ([string]::IsNullOrWhiteSpace($runCell))
+            {
+                $runCell = "<unknown>"
+            }
+            $runCell = $runCell -replace "\|", "\\|"
+
+            $lines.Add(
+                "| $runCell | $($entry.Sequence) | $($entry.Hits) | $($entry.Misses) | $($entry.Reclassifications) | $($entry.Stores) | $($entry.Entries) |")
+        }
+    }
+
+    Add-Content -Path $ReportPath -Value $lines -Encoding UTF8
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
 $compareScript = Join-Path $scriptDir "Compare-Baseline.ps1"
 $reportPath = Join-Path $benchDir "results\\perf-guardrails-last.md"
+$runLogsDir = Join-Path $benchDir "results\\perf-guardrails-run-logs"
+
+$script:SelectPlanStatsPattern =
+    'Select plan cache stats:\s*hits=(?<hits>\d+),\s*misses=(?<misses>\d+),\s*reclassifications=(?<reclass>\d+),\s*stores=(?<stores>\d+),\s*entries=(?<entries>\d+)'
+$script:BenchmarkRunDiagnostics = New-Object System.Collections.Generic.List[object]
+$script:BenchmarkRunOrdinal = 0
+
+if (Test-Path $runLogsDir)
+{
+    Remove-Item -Path (Join-Path $runLogsDir "*.log") -Force -ErrorAction SilentlyContinue
+}
+New-Item -ItemType Directory -Path $runLogsDir -Force | Out-Null
 
 $resolvedThresholdsPath = $ThresholdsPath
 if ([string]::IsNullOrWhiteSpace($resolvedThresholdsPath))
@@ -84,10 +147,45 @@ function Invoke-BenchmarkRun
 
     Write-Host ""
     Write-Host "=== $Label ==="
-    & dotnet run -c $Configuration --project $benchmarkProject -- @Arguments
+    $script:BenchmarkRunOrdinal++
+    $safeLabel = ($Label -replace "[^A-Za-z0-9._-]+", "_").Trim("_")
+    if ([string]::IsNullOrWhiteSpace($safeLabel))
+    {
+        $safeLabel = "benchmark-run"
+    }
+    $runLogPath = Join-Path $runLogsDir ("{0:D2}-{1}.log" -f $script:BenchmarkRunOrdinal, $safeLabel)
+
+    & dotnet run -c $Configuration --project $benchmarkProject -- @Arguments 2>&1 |
+        Tee-Object -FilePath $runLogPath
     if ($LASTEXITCODE -ne 0)
     {
         throw "Benchmark step failed: $Label"
+    }
+
+    $runStatsCount = 0
+    foreach ($line in (Get-Content -Path $runLogPath))
+    {
+        $m = [regex]::Match($line, $script:SelectPlanStatsPattern)
+        if (-not $m.Success)
+        {
+            continue
+        }
+
+        $runStatsCount++
+        $script:BenchmarkRunDiagnostics.Add([pscustomobject]@{
+                RunLabel = $Label
+                Sequence = $runStatsCount
+                Hits = [long]$m.Groups["hits"].Value
+                Misses = [long]$m.Groups["misses"].Value
+                Reclassifications = [long]$m.Groups["reclass"].Value
+                Stores = [long]$m.Groups["stores"].Value
+                Entries = [int]$m.Groups["entries"].Value
+            }) | Out-Null
+    }
+
+    if ($runStatsCount -gt 0)
+    {
+        Write-Host "Captured $runStatsCount select-plan cache diagnostic line(s) for '$Label'."
     }
 }
 
@@ -132,7 +230,45 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 
 Write-Host ""
 Write-Host "=== Compare Baseline ==="
-& $compareScript @compareParams
+$compareException = $null
+$reportWriteTimeBefore = $null
+if (Test-Path $reportPath)
+{
+    $reportWriteTimeBefore = (Get-Item -Path $reportPath).LastWriteTimeUtc
+}
+try
+{
+    & $compareScript @compareParams
+}
+catch
+{
+    $compareException = $_
+}
+finally
+{
+    $reportWasUpdated = $false
+    if (Test-Path $reportPath)
+    {
+        $reportWriteTimeAfter = (Get-Item -Path $reportPath).LastWriteTimeUtc
+        $reportWasUpdated =
+            ($null -eq $reportWriteTimeBefore) -or
+            ($reportWriteTimeAfter -gt $reportWriteTimeBefore)
+    }
+
+    if ($reportWasUpdated)
+    {
+        Add-SelectPlanDiagnosticsToReport -ReportPath $reportPath -Diagnostics $script:BenchmarkRunDiagnostics
+    }
+    else
+    {
+        Write-Warning "Skipping diagnostics append because guardrail report was not updated."
+    }
+}
+
+if ($null -ne $compareException)
+{
+    throw $compareException
+}
 
 Write-Host ""
 Write-Host "Perf guardrail report: $reportPath"

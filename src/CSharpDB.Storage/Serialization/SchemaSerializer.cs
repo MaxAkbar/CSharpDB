@@ -6,10 +6,14 @@ namespace CSharpDB.Storage.Serialization;
 /// <summary>
 /// Serializes/deserializes TableSchema to/from bytes for storage in the catalog B+tree.
 /// Format: [nameLen:varint][nameUtf8][colCount:varint] then per column:
-///   [nameLen:varint][nameUtf8][type:1][flags:1 (bit0=nullable, bit1=isPK)]
+///   [nameLen:varint][nameUtf8][type:1][flags:1 (bit0=nullable, bit1=isPK, bit2=isIdentity)]
 /// </summary>
 public static class SchemaSerializer
 {
+    private const byte NullableFlag = 0x01;
+    private const byte PrimaryKeyFlag = 0x02;
+    private const byte IdentityFlag = 0x04;
+
     public static byte[] Serialize(TableSchema schema)
     {
         var ms = new MemoryStream();
@@ -25,10 +29,16 @@ public static class SchemaSerializer
             ms.Write(colNameBytes);
             ms.WriteByte((byte)col.Type);
             byte flags = 0;
-            if (col.Nullable) flags |= 0x01;
-            if (col.IsPrimaryKey) flags |= 0x02;
+            if (col.Nullable) flags |= NullableFlag;
+            if (col.IsPrimaryKey) flags |= PrimaryKeyFlag;
+            if (col.IsIdentity) flags |= IdentityFlag;
             ms.WriteByte(flags);
         }
+
+        // Optional trailing metadata for forward-compatible schema evolution.
+        // 0 means unknown/uninitialized (legacy compatibility path).
+        ulong nextRowId = schema.NextRowId > 0 ? (ulong)schema.NextRowId : 0UL;
+        WriteVarint(ms, nextRowId);
 
         return ms.ToArray();
     }
@@ -53,16 +63,34 @@ public static class SchemaSerializer
             pos += colNameLen;
             var type = (DbType)data[pos++];
             byte flags = data[pos++];
+            bool isPrimaryKey = (flags & PrimaryKeyFlag) != 0;
+            bool hasIdentityFlag = (flags & IdentityFlag) != 0;
             columns[i] = new ColumnDefinition
             {
                 Name = colName,
                 Type = type,
-                Nullable = (flags & 0x01) != 0,
-                IsPrimaryKey = (flags & 0x02) != 0,
+                Nullable = (flags & NullableFlag) != 0,
+                IsPrimaryKey = isPrimaryKey,
+                // Backward compatibility: historical INTEGER PRIMARY KEY behavior auto-generated rowid.
+                // Legacy payloads lack the identity bit, so infer identity for INTEGER PK columns.
+                IsIdentity = hasIdentityFlag || (isPrimaryKey && type == DbType.Integer),
             };
         }
 
-        return new TableSchema { TableName = tableName, Columns = columns };
+        long nextRowId = 0;
+        if (pos < data.Length)
+        {
+            ulong storedNextRowId = Varint.Read(data[pos..], out _);
+            if (storedNextRowId <= long.MaxValue)
+                nextRowId = (long)storedNextRowId;
+        }
+
+        return new TableSchema
+        {
+            TableName = tableName,
+            Columns = columns,
+            NextRowId = nextRowId,
+        };
     }
 
     public static byte[] SerializeIndex(IndexSchema index)

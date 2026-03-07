@@ -153,6 +153,33 @@ public sealed class ReplTests
         }
     }
 
+    [Fact]
+    public async Task Repl_SchemaCommand_ShowsIdentityModifier()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE t (id INTEGER PRIMARY KEY IDENTITY, n INTEGER);",
+                ".schema t",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
+            Assert.Contains("PRIMARY KEY IDENTITY", plainOutput, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static async Task<long> QueryCountAsync(Database db, string sql, CancellationToken ct)
     {
         await using var result = await db.ExecuteAsync(sql, ct);

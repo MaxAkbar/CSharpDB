@@ -2,6 +2,8 @@
 
 Enforce a strict architecture where **only CSharpDB.Api** communicates with the database engine. All other consumers (CLI, Admin, MCP, external clients) go through HTTP using a new `CSharpDB.Client` SDK.
 
+> **Status (March 2026):** Planned and not yet fully enforced. CLI/Admin/MCP still use direct Engine/Service references today.
+
 ---
 
 ## Motivation

@@ -2,7 +2,7 @@ namespace CSharpDB.Api.Dtos;
 
 // ─── Column / Schema ────────────────────────────────────────
 
-public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey);
+public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity);
 
 public sealed record TableSchemaResponse(
     string TableName,

@@ -2,6 +2,7 @@ using CSharpDB.Core;
 using CSharpDB.Service;
 using CSharpDB.Service.Models;
 using Microsoft.Extensions.Configuration;
+using System.Globalization;
 using System.Text.Json;
 
 namespace CSharpDB.Tests;
@@ -44,6 +45,39 @@ public sealed class ServiceProcedureTests : IAsyncLifetime
 
         var tables = await _service.GetTableNamesAsync();
         Assert.DoesNotContain("__procedures", tables, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("__saved_queries", tables, StringComparer.OrdinalIgnoreCase);
+
+        var savedQueriesCount = await _service.ExecuteSqlAsync("SELECT COUNT(*) FROM __saved_queries;");
+        Assert.Null(savedQueriesCount.Error);
+        Assert.NotNull(savedQueriesCount.Rows);
+        Assert.Equal(0L, Convert.ToInt64(Assert.Single(savedQueriesCount.Rows)[0], CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task SavedQueryCrud_Lifecycle_Works()
+    {
+        var created = await _service.UpsertSavedQueryAsync("recent_users", "SELECT * FROM users ORDER BY id DESC;");
+        Assert.True(created.Id > 0);
+        Assert.Equal("recent_users", created.Name);
+        Assert.Equal("SELECT * FROM users ORDER BY id DESC", created.SqlText);
+
+        var loaded = await _service.GetSavedQueryAsync("recent_users");
+        Assert.NotNull(loaded);
+        Assert.Equal(created.Id, loaded!.Id);
+        Assert.Equal(created.SqlText, loaded.SqlText);
+
+        var updated = await _service.UpsertSavedQueryAsync("recent_users", "SELECT id, name FROM users ORDER BY id DESC;");
+        Assert.Equal(created.Id, updated.Id);
+        Assert.Equal("SELECT id, name FROM users ORDER BY id DESC", updated.SqlText);
+        Assert.True(updated.UpdatedUtc >= loaded.UpdatedUtc);
+
+        var all = await _service.GetSavedQueriesAsync();
+        var item = Assert.Single(all);
+        Assert.Equal("recent_users", item.Name);
+
+        await _service.DeleteSavedQueryAsync("recent_users");
+        Assert.Null(await _service.GetSavedQueryAsync("recent_users"));
+        Assert.Empty(await _service.GetSavedQueriesAsync());
     }
 
     [Fact]

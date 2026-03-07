@@ -103,6 +103,126 @@
       "maxMeanRegressionPercent": 15.0
     },
     {
+      "csv": "CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260304-000103",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'SELECT DISTINCT value'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value ORDER BY value + LIMIT 100'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'SELECT DISTINCT value ORDER BY value + LIMIT 100'",
+          "RowCount": "10000"
+        }
+      ],
+      "maxMeanRegressionPercent": 35.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 131072.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260304-005821",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'Stable SQL text (statement+plan cache hits)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Pre-parsed statement (plan cache hit)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Varying SQL text (limited plan reuse)'",
+          "RowCount": "10000"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 131072.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260304-013013",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'WHERE a+b (no index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE a+b (single-column index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE a+b (composite index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE a+b (no index)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'WHERE a+b (single-column index)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'WHERE a+b (composite index)'",
+          "RowCount": "100000"
+        }
+      ],
+      "maxMeanRegressionPercent": 40.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 262144.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260303-180221",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'WHERE text eq (no index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE text eq (text index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'WHERE text eq (no index)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'WHERE text eq (text index)'",
+          "RowCount": "100000"
+        }
+      ],
+      "maxMeanRegressionPercent": 40.0,
+      "maxAllocRegressionPercent": 35.0,
+      "maxAllocRegressionBytes": 65536.0
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
       "keyColumns": [
         "Method",

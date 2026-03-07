@@ -17,11 +17,13 @@ internal static class SqlReference
 
         ── CONSTRAINTS (column-level only) ──
         PRIMARY KEY   — one per table, auto-generates rowid if omitted
+        IDENTITY      — INTEGER PRIMARY KEY identity marker (explicit inserts still allowed)
+        AUTOINCREMENT — synonym for IDENTITY
         NOT NULL      — disallow NULL values
 
         ── CREATE TABLE ──
         CREATE TABLE [IF NOT EXISTS] name (
-          col1 TYPE [PRIMARY KEY] [NOT NULL],
+          col1 TYPE [PRIMARY KEY] [IDENTITY|AUTOINCREMENT] [NOT NULL],
           col2 TYPE [NOT NULL],
           ...
         )
