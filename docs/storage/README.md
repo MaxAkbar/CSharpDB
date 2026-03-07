@@ -2,6 +2,8 @@
 
 A low-level, high-performance storage engine for .NET 10 built on top of `RandomAccess` and `SafeFileHandle`. It provides random-access, async I/O to a binary file and is the foundation for the B+tree page cache and write-ahead log (WAL) layers.
 
+For the guided storage tutorial track, start with [docs/tutorials/storage/README.md](../tutorials/storage/README.md).
+
 ---
 
 ## Table of Contents
