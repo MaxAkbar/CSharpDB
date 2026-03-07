@@ -60,6 +60,16 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
     {
+        var payload = await FindMemoryAsync(key, ct);
+        return payload.HasValue ? payload.Value.ToArray() : null;
+    }
+
+    /// <summary>
+    /// Look up a single key. Returns a view over the page-backed payload or null if not found.
+    /// Callers should consume the returned memory immediately and not retain it across writes.
+    /// </summary>
+    public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(long key, CancellationToken ct = default)
+    {
         // Try leaf hint cache: if the key falls within the cached leaf's range, go directly to that leaf
         if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
         {
@@ -74,7 +84,7 @@ public sealed class BTree
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
                     if (idx < 0) return null;
-                    return ReadLeafPayload(hintSp, idx);
+                    return ReadLeafPayloadMemory(hintSp, idx);
                 }
             }
             // Hint is stale, clear it and fall through to normal traversal
@@ -101,7 +111,7 @@ public sealed class BTree
 
                 int idx = FindKeyInLeaf(sp, key);
                 if (idx < 0) return null;
-                return ReadLeafPayload(sp, idx);
+                return ReadLeafPayloadMemory(sp, idx);
             }
             else
             {
@@ -116,6 +126,22 @@ public sealed class BTree
     /// Returns false if any page was a cache miss (caller should fall back to async FindAsync).
     /// </summary>
     public bool TryFindCached(long key, out byte[]? payload)
+    {
+        if (TryFindCachedMemory(key, out var cachedPayload))
+        {
+            payload = cachedPayload.HasValue ? cachedPayload.Value.ToArray() : null;
+            return true;
+        }
+
+        payload = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Synchronous cache-only lookup that returns a page-backed payload view on cache hits.
+    /// Callers should consume the returned memory immediately and not retain it across writes.
+    /// </summary>
+    public bool TryFindCachedMemory(long key, out ReadOnlyMemory<byte>? payload)
     {
         payload = null;
 
@@ -133,7 +159,7 @@ public sealed class BTree
                 if (key >= actualMin && key <= actualMax)
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
-                    payload = idx >= 0 ? ReadLeafPayload(hintSp, idx) : null;
+                    payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
                     return true; // cache hit, definitive answer
                 }
             }
@@ -161,7 +187,7 @@ public sealed class BTree
                 }
 
                 int idx = FindKeyInLeaf(sp, key);
-                payload = idx >= 0 ? ReadLeafPayload(sp, idx) : null;
+                payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
                 return true; // cache hit, definitive answer
             }
             else
@@ -627,10 +653,10 @@ public sealed class BTree
 
             if (leftSp.CellCount > MinLeafCells)
             {
-                byte[] borrowedCell = leftSp.GetCellMemory(leftSp.CellCount - 1).ToArray();
+                ReadOnlyMemory<byte> borrowedCell = leftSp.GetCellMemory(leftSp.CellCount - 1);
+                InsertLeafCellAt(childSp, 0, borrowedCell.Span);
                 leftSp.DeleteCell(leftSp.CellCount - 1);
                 leftSp.Defragment();
-                InsertLeafCellAt(childSp, 0, borrowedCell);
                 WriteInteriorKey(parentSp, childIndex - 1, ReadLeafKey(childSp, 0));
 
                 await _pager.MarkDirtyAsync(leftPageId, ct);
@@ -655,10 +681,10 @@ public sealed class BTree
 
             if (rightSp.CellCount > MinLeafCells)
             {
-                byte[] borrowedCell = rightSp.GetCellMemory(0).ToArray();
+                ReadOnlyMemory<byte> borrowedCell = rightSp.GetCellMemory(0);
+                InsertLeafCellAt(childSp, childSp.CellCount, borrowedCell.Span);
                 rightSp.DeleteCell(0);
                 rightSp.Defragment();
-                InsertLeafCellAt(childSp, childSp.CellCount, borrowedCell);
                 WriteInteriorKey(parentSp, childIndex, ReadLeafKey(rightSp, 0));
 
                 await _pager.MarkDirtyAsync(childPageId, ct);
@@ -851,7 +877,11 @@ public sealed class BTree
     {
         int existingCellCount = sp.CellCount;
         int totalCellCount = existingCellCount + 1;
-        byte[] splitCellBuffer = ArrayPool<byte>.Shared.Rent(checked(page.Length + newCell.Length));
+        totalCellBytes = newCell.Length;
+        for (int i = 0; i < existingCellCount; i++)
+            totalCellBytes += GetCellTotalSize(page, sp.GetCellOffset(i));
+
+        byte[] splitCellBuffer = ArrayPool<byte>.Shared.Rent(totalCellBytes);
         int writeOffset = 0;
         for (int i = 0; i < totalCellCount; i++)
         {
@@ -871,7 +901,6 @@ public sealed class BTree
             writeOffset += sourceLength;
         }
 
-        totalCellBytes = writeOffset;
         return splitCellBuffer;
     }
 
@@ -941,10 +970,7 @@ public sealed class BTree
     {
         int sourceCount = source.CellCount;
         for (int i = 0; i < sourceCount; i++)
-        {
-            byte[] cell = source.GetCellMemory(i).ToArray();
-            InsertLeafCellAt(destination, destination.CellCount, cell);
-        }
+            InsertLeafCellAt(destination, destination.CellCount, source.GetCellMemory(i).Span);
     }
 
     private static void RemoveInteriorKeyAndChild(SlottedPage interior, int keyIndexToRemove, int childIndexToRemove)

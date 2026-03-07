@@ -154,6 +154,49 @@ public class ParserTests
     }
 
     [Fact]
+    public void TryParseSimpleInsert_ParsesLiteralValues()
+    {
+        bool parsed = Parser.TryParseSimpleInsert(
+            "INSERT INTO sys.tables VALUES (1, 'O''Reilly', NULL, -2.5);",
+            out var insert);
+
+        Assert.True(parsed);
+        Assert.Equal("sys.tables", insert.TableName);
+        Assert.Equal(4, insert.Values.Length);
+        Assert.Equal(1, insert.Values[0].AsInteger);
+        Assert.Equal("O'Reilly", insert.Values[1].AsText);
+        Assert.True(insert.Values[2].IsNull);
+        Assert.Equal(-2.5, insert.Values[3].AsReal);
+    }
+
+    [Fact]
+    public void TryParseSimpleInsert_ParsesMultipleRows()
+    {
+        bool parsed = Parser.TryParseSimpleInsert(
+            "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')",
+            out var insert);
+
+        Assert.True(parsed);
+        Assert.Equal("users", insert.TableName);
+        Assert.Equal(2, insert.RowCount);
+        Assert.Equal(2, insert.ValueRows.Length);
+        Assert.Equal(1, insert.ValueRows[0][0].AsInteger);
+        Assert.Equal("Alice", insert.ValueRows[0][1].AsText);
+        Assert.Equal(2, insert.ValueRows[1][0].AsInteger);
+        Assert.Equal("Bob", insert.ValueRows[1][1].AsText);
+    }
+
+    [Fact]
+    public void TryParseSimpleInsert_RejectsColumnList()
+    {
+        bool parsed = Parser.TryParseSimpleInsert(
+            "INSERT INTO users (name, age) VALUES ('Alice', 30)",
+            out _);
+
+        Assert.False(parsed);
+    }
+
+    [Fact]
     public void Parse_Delete()
     {
         var stmt = Parser.Parse("DELETE FROM users WHERE age < 18");

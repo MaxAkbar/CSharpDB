@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CSharpDB.Benchmarks.Infrastructure;
+using CSharpDB.Core;
 
 namespace CSharpDB.Benchmarks.Macro;
 
@@ -32,19 +33,28 @@ public static class SustainedWriteBenchmark
         // Test sustained batch inserts (100 per tx) for 15 seconds
         await using (var bench = await BenchmarkDatabase.CreateAsync())
         {
+            var batch = bench.Db.PrepareInsertBatch("bench", 100);
+            var text = DbValue.FromText("batch");
+            var category = DbValue.FromText("Beta");
             var result = await MacroBenchmarkRunner.RunForDurationAsync(
                 "SustainedWrite_Batch100_15s",
                 warmupDuration: TimeSpan.FromSeconds(2),
                 measuredDuration: TimeSpan.FromSeconds(15),
                 async () =>
                 {
+                    batch.Clear();
+                    var row = new DbValue[4];
                     await bench.Db.BeginTransactionAsync();
                     for (int i = 0; i < 100; i++)
                     {
                         int id = Interlocked.Increment(ref _idCounter);
-                        await bench.Db.ExecuteAsync(
-                            $"INSERT INTO bench VALUES ({id}, {id}, 'batch', 'Beta')");
+                        row[0] = DbValue.FromInteger(id);
+                        row[1] = DbValue.FromInteger(id);
+                        row[2] = text;
+                        row[3] = category;
+                        batch.AddRow(row);
                     }
+                    await batch.ExecuteAsync();
                     await bench.Db.CommitAsync();
                 });
             results.Add(result);

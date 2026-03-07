@@ -107,6 +107,9 @@ public sealed class CSharpDbCommand : DbCommand
                 }
             }
 
+            if (preparedTemplate.TryBindSimpleInsert(_parameters, out var simpleInsert))
+                return await db.ExecuteAsync(simpleInsert, cancellationToken);
+
             var preparedStatement = preparedTemplate.Bind(_parameters);
             return await db.ExecuteAsync(preparedStatement, cancellationToken);
         }

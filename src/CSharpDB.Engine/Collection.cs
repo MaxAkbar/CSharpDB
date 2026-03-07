@@ -60,16 +60,16 @@ public sealed class Collection<T>
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                byte[]? existing = await _tree.FindAsync(probeHash, ct);
+                var existing = await _tree.FindMemoryAsync(probeHash, ct);
 
-                if (existing == null)
+                if (existing is not { } existingPayload)
                 {
                     // Empty slot: insert here
                     await _tree.InsertAsync(probeHash, newPayload, ct);
                     return;
                 }
 
-                string storedKey = DecodeKey(existing);
+                string storedKey = DecodeKey(existingPayload.Span);
                 if (storedKey == key)
                 {
                     // Upsert: delete old entry and insert new
@@ -97,12 +97,12 @@ public sealed class Collection<T>
         for (int probe = 0; probe < MaxProbeDistance; probe++)
         {
             long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-            byte[]? payload = await _tree.FindAsync(probeHash, ct);
+            var payload = await _tree.FindMemoryAsync(probeHash, ct);
 
-            if (payload == null)
+            if (payload is not { } payloadMemory)
                 return default; // Empty slot means key doesn't exist
 
-            var (storedKey, doc) = DecodeDocument(payload);
+            var (storedKey, doc) = DecodeDocument(payloadMemory.Span);
             if (storedKey == key)
                 return doc;
             // Collision: continue probing
@@ -126,12 +126,12 @@ public sealed class Collection<T>
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                byte[]? payload = await _tree.FindAsync(probeHash, ct);
+                var payload = await _tree.FindMemoryAsync(probeHash, ct);
 
-                if (payload == null)
+                if (payload is not { } payloadMemory)
                     return; // Not found
 
-                string storedKey = DecodeKey(payload);
+                string storedKey = DecodeKey(payloadMemory.Span);
                 if (storedKey == key)
                 {
                     await _tree.DeleteAsync(probeHash, ct);

@@ -13,6 +13,67 @@ public readonly record struct SimplePrimaryKeyLookupSql(
     string ResidualPredicateColumn = "",
     DbValue ResidualPredicateLiteral = default);
 
+public readonly record struct SimpleInsertSql
+{
+    public string TableName { get; }
+    public DbValue[][] ValueRows { get; }
+    public DbValue[] Values => ValueRows[0];
+    public int RowCount { get; }
+
+    public SimpleInsertSql(string tableName, DbValue[] values)
+        : this(tableName, [values])
+    {
+    }
+
+    public SimpleInsertSql(string tableName, DbValue[][] valueRows)
+        : this(tableName, valueRows, valueRows.Length)
+    {
+    }
+
+    public SimpleInsertSql(string tableName, DbValue[][] valueRows, int rowCount)
+    {
+        ArgumentNullException.ThrowIfNull(valueRows);
+        if ((uint)rowCount > (uint)valueRows.Length)
+            throw new ArgumentOutOfRangeException(nameof(rowCount));
+
+        TableName = tableName;
+        ValueRows = valueRows;
+        RowCount = rowCount;
+    }
+
+    public InsertStatement ToStatement()
+    {
+        var valueRows = new List<List<Expression>>(RowCount);
+        for (int rowIndex = 0; rowIndex < RowCount; rowIndex++)
+        {
+            var valueRow = new List<Expression>(ValueRows[rowIndex].Length);
+            for (int i = 0; i < ValueRows[rowIndex].Length; i++)
+                valueRow.Add(ToLiteralExpression(ValueRows[rowIndex][i]));
+
+            valueRows.Add(valueRow);
+        }
+
+        return new InsertStatement
+        {
+            TableName = TableName,
+            ColumnNames = null,
+            ValueRows = valueRows,
+        };
+    }
+
+    private static LiteralExpression ToLiteralExpression(DbValue value)
+    {
+        return value.Type switch
+        {
+            DbType.Null => new LiteralExpression { LiteralType = TokenType.Null, Value = null },
+            DbType.Integer => new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = value.AsInteger },
+            DbType.Real => new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = value.AsReal },
+            DbType.Text => new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = value.AsText },
+            _ => throw new CSharpDbException(ErrorCode.SyntaxError, $"Unsupported fast INSERT literal type: {value.Type}."),
+        };
+    }
+}
+
 public sealed class Parser
 {
     private readonly List<Token> _tokens;
@@ -28,6 +89,8 @@ public sealed class Parser
     {
         if (TryParseSimpleSelect(sql, out var simpleSelect))
             return simpleSelect;
+        if (TryParseSimpleInsert(sql, out var simpleInsert))
+            return simpleInsert.ToStatement();
 
         var tokenizer = new Tokenizer(sql);
         var tokens = tokenizer.Tokenize();
@@ -55,6 +118,17 @@ public sealed class Parser
     {
         var fast = new FastPrimaryKeyLookupParser(sql);
         return fast.TryParse(out lookup);
+    }
+
+    /// <summary>
+    /// Fast-path parser for a narrow INSERT shape:
+    /// INSERT INTO table VALUES (literal [, literal ...]) [, (...)] [;]
+    /// Produces resolved values directly, bypassing tokenization and AST expression allocation.
+    /// </summary>
+    public static bool TryParseSimpleInsert(string sql, out SimpleInsertSql insert)
+    {
+        var fast = new FastSimpleInsertParser(sql);
+        return fast.TryParse(out insert);
     }
 
     public Statement ParseStatement()
@@ -636,6 +710,270 @@ public sealed class Parser
 
                 _pos++;
 
+                if (!TryReadIdentifier(out string part))
+                    return false;
+
+                identifier = $"{identifier}.{part}";
+            }
+
+            return true;
+        }
+
+        private bool TryConsumeChar(char ch)
+        {
+            SkipWhitespace();
+            if (_pos >= _text.Length || _text[_pos] != ch)
+                return false;
+
+            _pos++;
+            return true;
+        }
+
+        private bool TryConsumeOptionalSemicolonAndRequireEnd()
+        {
+            SkipWhitespace();
+            if (_pos < _text.Length && _text[_pos] == ';')
+                _pos++;
+
+            SkipWhitespace();
+            return _pos == _text.Length;
+        }
+
+        private void SkipWhitespace()
+        {
+            while (_pos < _text.Length && char.IsWhiteSpace(_text[_pos]))
+                _pos++;
+        }
+
+        private static bool IsIdentifierStart(char c) => char.IsLetter(c) || c == '_';
+        private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+    }
+
+    private ref struct FastSimpleInsertParser
+    {
+        private readonly ReadOnlySpan<char> _text;
+        private int _pos;
+
+        public FastSimpleInsertParser(string sql)
+        {
+            _text = sql.AsSpan();
+            _pos = 0;
+        }
+
+        public bool TryParse(out SimpleInsertSql insert)
+        {
+            insert = default;
+
+            if (!TryReadKeyword("INSERT"))
+                return false;
+
+            if (!TryReadKeyword("INTO"))
+                return false;
+
+            if (!TryReadMultipartIdentifier(out string tableName))
+                return false;
+
+            if (!TryReadKeyword("VALUES"))
+                return false;
+
+            var valueRows = new List<DbValue[]>();
+            int expectedValueCount = -1;
+            do
+            {
+                if (!TryConsumeChar('('))
+                    return false;
+
+                var values = new List<DbValue>();
+                do
+                {
+                    if (!TryReadLiteral(out var value))
+                        return false;
+
+                    values.Add(value);
+                } while (TryConsumeChar(','));
+
+                if (!TryConsumeChar(')'))
+                    return false;
+
+                if (values.Count == 0)
+                    return false;
+
+                if (expectedValueCount >= 0 && values.Count != expectedValueCount)
+                    return false;
+
+                expectedValueCount = values.Count;
+                valueRows.Add(values.ToArray());
+            } while (TryConsumeChar(','));
+
+            if (!TryConsumeOptionalSemicolonAndRequireEnd())
+                return false;
+
+            insert = new SimpleInsertSql(tableName, valueRows.ToArray());
+            return valueRows.Count > 0;
+        }
+
+        private bool TryReadLiteral(out DbValue literal)
+        {
+            literal = default;
+            SkipWhitespace();
+
+            if (_pos >= _text.Length)
+                return false;
+
+            if (_text[_pos] == '\'')
+            {
+                if (!TryReadStringLiteral(out string textValue))
+                    return false;
+
+                literal = DbValue.FromText(textValue);
+                return true;
+            }
+
+            if (TryReadKeyword("NULL"))
+            {
+                literal = DbValue.Null;
+                return true;
+            }
+
+            return TryReadNumericLiteral(out literal);
+        }
+
+        private bool TryReadStringLiteral(out string value)
+        {
+            value = string.Empty;
+            if (!TryConsumeChar('\''))
+                return false;
+
+            int segmentStart = _pos;
+            System.Text.StringBuilder? builder = null;
+
+            while (_pos < _text.Length)
+            {
+                char c = _text[_pos++];
+                if (c != '\'')
+                    continue;
+
+                if (_pos < _text.Length && _text[_pos] == '\'')
+                {
+                    builder ??= new System.Text.StringBuilder();
+                    builder.Append(_text.Slice(segmentStart, _pos - segmentStart - 1));
+                    builder.Append('\'');
+                    _pos++;
+                    segmentStart = _pos;
+                    continue;
+                }
+
+                if (builder == null)
+                {
+                    value = _text.Slice(segmentStart, _pos - segmentStart - 1).ToString();
+                    return true;
+                }
+
+                builder.Append(_text.Slice(segmentStart, _pos - segmentStart - 1));
+                value = builder.ToString();
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryReadNumericLiteral(out DbValue literal)
+        {
+            literal = default;
+            SkipWhitespace();
+            int start = _pos;
+
+            if (_pos < _text.Length && (_text[_pos] == '-' || _text[_pos] == '+'))
+                _pos++;
+
+            int intPartStart = _pos;
+            while (_pos < _text.Length && char.IsDigit(_text[_pos]))
+                _pos++;
+            bool hasIntDigits = _pos > intPartStart;
+
+            bool hasDot = false;
+            if (_pos < _text.Length && _text[_pos] == '.')
+            {
+                hasDot = true;
+                _pos++;
+                int fracStart = _pos;
+                while (_pos < _text.Length && char.IsDigit(_text[_pos]))
+                    _pos++;
+
+                if (!hasIntDigits && _pos == fracStart)
+                {
+                    _pos = start;
+                    return false;
+                }
+            }
+            else if (!hasIntDigits)
+            {
+                _pos = start;
+                return false;
+            }
+
+            var literalText = _text.Slice(start, _pos - start);
+            if (hasDot)
+            {
+                if (!double.TryParse(literalText, NumberStyles.Float, CultureInfo.InvariantCulture, out double realValue))
+                    return false;
+
+                literal = DbValue.FromReal(realValue);
+                return true;
+            }
+
+            if (!long.TryParse(literalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long intValue))
+                return false;
+
+            literal = DbValue.FromInteger(intValue);
+            return true;
+        }
+
+        private bool TryReadKeyword(string keyword)
+        {
+            SkipWhitespace();
+            if (_pos + keyword.Length > _text.Length)
+                return false;
+
+            var span = _text.Slice(_pos, keyword.Length);
+            if (!span.Equals(keyword.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            int end = _pos + keyword.Length;
+            if (end < _text.Length && IsIdentifierChar(_text[end]))
+                return false;
+
+            _pos = end;
+            return true;
+        }
+
+        private bool TryReadIdentifier(out string identifier)
+        {
+            identifier = string.Empty;
+            SkipWhitespace();
+            if (_pos >= _text.Length || !IsIdentifierStart(_text[_pos]))
+                return false;
+
+            int start = _pos++;
+            while (_pos < _text.Length && IsIdentifierChar(_text[_pos]))
+                _pos++;
+
+            identifier = _text.Slice(start, _pos - start).ToString();
+            return true;
+        }
+
+        private bool TryReadMultipartIdentifier(out string identifier)
+        {
+            if (!TryReadIdentifier(out identifier))
+                return false;
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (_pos >= _text.Length || _text[_pos] != '.')
+                    break;
+
+                _pos++;
                 if (!TryReadIdentifier(out string part))
                     return false;
 

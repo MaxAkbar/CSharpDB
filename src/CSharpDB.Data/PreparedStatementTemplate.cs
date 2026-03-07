@@ -1,4 +1,5 @@
 using System.Globalization;
+using CSharpDB.Core;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Data;
@@ -9,14 +10,19 @@ internal sealed class PreparedStatementTemplate
     private readonly Statement _template;
     private readonly string[] _parameterNames;
     private readonly bool _containsParameters;
+    private readonly PreparedSimpleInsertTemplate? _simpleInsertTemplate;
     private readonly BoundStatementCache? _boundStatementCache;
 
-    private PreparedStatementTemplate(Statement template, string[] parameterNames)
+    private PreparedStatementTemplate(
+        Statement template,
+        string[] parameterNames,
+        PreparedSimpleInsertTemplate? simpleInsertTemplate)
     {
         _template = template;
         _parameterNames = parameterNames;
         _containsParameters = parameterNames.Length > 0;
-        _boundStatementCache = _containsParameters
+        _simpleInsertTemplate = simpleInsertTemplate;
+        _boundStatementCache = _containsParameters && simpleInsertTemplate == null
             ? new BoundStatementCache(DefaultBoundStatementCacheCapacity)
             : null;
     }
@@ -25,7 +31,21 @@ internal sealed class PreparedStatementTemplate
     {
         var template = Parser.Parse(sql);
         var parameterNames = CollectParameterNames(template);
-        return new PreparedStatementTemplate(template, parameterNames.ToArray());
+        TryCreateSimpleInsertTemplate(template, out var simpleInsertTemplate);
+        return new PreparedStatementTemplate(template, parameterNames.ToArray(), simpleInsertTemplate);
+    }
+
+    internal bool TryBindSimpleInsert(CSharpDbParameterCollection parameters, out SimpleInsertSql insert)
+    {
+        var simpleInsertTemplate = _simpleInsertTemplate;
+        if (simpleInsertTemplate == null)
+        {
+            insert = default;
+            return false;
+        }
+
+        insert = simpleInsertTemplate.Bind(parameters);
+        return true;
     }
 
     internal Statement Bind(CSharpDbParameterCollection parameters)
@@ -38,6 +58,52 @@ internal sealed class PreparedStatementTemplate
             return cache.GetOrAdd(_parameterNames, parameters, () => BindStatement(_template, parameters));
 
         return BindStatement(_template, parameters);
+    }
+
+    private static bool TryCreateSimpleInsertTemplate(
+        Statement statement,
+        out PreparedSimpleInsertTemplate? simpleInsertTemplate)
+    {
+        simpleInsertTemplate = null;
+
+        if (statement is not InsertStatement insert || insert.ColumnNames != null)
+            return false;
+
+        var valueRows = insert.ValueRows;
+        var compiledRows = new PreparedInsertCell[valueRows.Count][];
+        for (int rowIndex = 0; rowIndex < valueRows.Count; rowIndex++)
+        {
+            var valueRow = valueRows[rowIndex];
+            var compiledRow = new PreparedInsertCell[valueRow.Count];
+            for (int columnIndex = 0; columnIndex < valueRow.Count; columnIndex++)
+            {
+                if (!TryCreatePreparedInsertCell(valueRow[columnIndex], out var cell))
+                    return false;
+
+                compiledRow[columnIndex] = cell;
+            }
+
+            compiledRows[rowIndex] = compiledRow;
+        }
+
+        simpleInsertTemplate = new PreparedSimpleInsertTemplate(insert.TableName, compiledRows);
+        return true;
+    }
+
+    private static bool TryCreatePreparedInsertCell(Expression expression, out PreparedInsertCell cell)
+    {
+        switch (expression)
+        {
+            case ParameterExpression parameter:
+                cell = PreparedInsertCell.ForParameter(parameter.Name);
+                return true;
+            case LiteralExpression literal when TryGetLiteralDbValue(literal, out var dbValue):
+                cell = PreparedInsertCell.ForConstant(dbValue);
+                return true;
+            default:
+                cell = default;
+                return false;
+        }
     }
 
     private static Statement BindStatement(Statement statement, CSharpDbParameterCollection parameters)
@@ -586,30 +652,66 @@ internal sealed class PreparedStatementTemplate
         return ToLiteral(value);
     }
 
+    private static bool TryGetLiteralDbValue(LiteralExpression literal, out DbValue value)
+    {
+        switch (literal.LiteralType)
+        {
+            case TokenType.Null:
+                value = DbValue.Null;
+                return true;
+            case TokenType.IntegerLiteral when literal.Value is long integerValue:
+                value = DbValue.FromInteger(integerValue);
+                return true;
+            case TokenType.RealLiteral when literal.Value is double realValue:
+                value = DbValue.FromReal(realValue);
+                return true;
+            case TokenType.StringLiteral when literal.Value is string textValue:
+                value = DbValue.FromText(textValue);
+                return true;
+            default:
+                value = default;
+                return false;
+        }
+    }
+
     private static LiteralExpression ToLiteral(object? value)
     {
+        var dbValue = ToDbValue(value);
+        return dbValue.Type switch
+        {
+            DbType.Null => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
+            DbType.Integer => new LiteralExpression { Value = dbValue.AsInteger, LiteralType = TokenType.IntegerLiteral },
+            DbType.Real => new LiteralExpression { Value = dbValue.AsReal, LiteralType = TokenType.RealLiteral },
+            DbType.Text => new LiteralExpression { Value = dbValue.AsText, LiteralType = TokenType.StringLiteral },
+            DbType.Blob => throw new NotSupportedException("Blob parameters are not supported."),
+            _ => throw new NotSupportedException($"Unsupported parameter type '{dbValue.Type}'."),
+        };
+    }
+
+    private static DbValue ToDbValue(object? value)
+    {
         if (value is null or DBNull)
-            return new LiteralExpression { Value = null, LiteralType = TokenType.Null };
+            return DbValue.Null;
 
         return value switch
         {
-            long l => new LiteralExpression { Value = l, LiteralType = TokenType.IntegerLiteral },
-            int iv => new LiteralExpression { Value = (long)iv, LiteralType = TokenType.IntegerLiteral },
-            short s => new LiteralExpression { Value = (long)s, LiteralType = TokenType.IntegerLiteral },
-            byte b => new LiteralExpression { Value = (long)b, LiteralType = TokenType.IntegerLiteral },
-            sbyte sb => new LiteralExpression { Value = (long)sb, LiteralType = TokenType.IntegerLiteral },
-            uint ui => new LiteralExpression { Value = (long)ui, LiteralType = TokenType.IntegerLiteral },
-            ushort us => new LiteralExpression { Value = (long)us, LiteralType = TokenType.IntegerLiteral },
-            ulong ul => new LiteralExpression { Value = checked((long)ul), LiteralType = TokenType.IntegerLiteral },
-            bool bv => new LiteralExpression { Value = bv ? 1L : 0L, LiteralType = TokenType.IntegerLiteral },
-            double d => new LiteralExpression { Value = d, LiteralType = TokenType.RealLiteral },
-            float f => new LiteralExpression { Value = (double)f, LiteralType = TokenType.RealLiteral },
-            decimal m => new LiteralExpression { Value = (double)m, LiteralType = TokenType.RealLiteral },
-            string sv => new LiteralExpression { Value = sv, LiteralType = TokenType.StringLiteral },
-            DateTime dt => new LiteralExpression { Value = dt.ToString("O", CultureInfo.InvariantCulture), LiteralType = TokenType.StringLiteral },
-            Guid g => new LiteralExpression { Value = g.ToString(), LiteralType = TokenType.StringLiteral },
+            long l => DbValue.FromInteger(l),
+            int iv => DbValue.FromInteger(iv),
+            short s => DbValue.FromInteger(s),
+            byte b => DbValue.FromInteger(b),
+            sbyte sb => DbValue.FromInteger(sb),
+            uint ui => DbValue.FromInteger(ui),
+            ushort us => DbValue.FromInteger(us),
+            ulong ul => DbValue.FromInteger(checked((long)ul)),
+            bool bv => DbValue.FromInteger(bv ? 1 : 0),
+            double d => DbValue.FromReal(d),
+            float f => DbValue.FromReal(f),
+            decimal m => DbValue.FromReal((double)m),
+            string sv => DbValue.FromText(sv),
+            DateTime dt => DbValue.FromText(dt.ToString("O", CultureInfo.InvariantCulture)),
+            Guid g => DbValue.FromText(g.ToString()),
             byte[] => throw new NotSupportedException("Blob parameters are not supported."),
-            _ => new LiteralExpression { Value = value.ToString()!, LiteralType = TokenType.StringLiteral },
+            _ => DbValue.FromText(value.ToString()!),
         };
     }
 
@@ -726,6 +828,117 @@ internal sealed class PreparedStatementTemplate
                 for (int i = 0; i < functionCall.Arguments.Count; i++)
                     CollectParameterNames(functionCall.Arguments[i], names, seen);
                 return;
+        }
+    }
+
+    private sealed class PreparedSimpleInsertTemplate
+    {
+        private readonly string _tableName;
+        private readonly PreparedInsertCell[][] _valueRows;
+        private readonly SimpleInsertSql? _constantInsert;
+
+        internal PreparedSimpleInsertTemplate(string tableName, PreparedInsertCell[][] valueRows)
+        {
+            _tableName = tableName;
+            _valueRows = valueRows;
+            if (IsConstant(valueRows))
+                _constantInsert = new SimpleInsertSql(tableName, BindConstants(valueRows));
+        }
+
+        internal SimpleInsertSql Bind(CSharpDbParameterCollection parameters)
+        {
+            if (_constantInsert is { } constantInsert)
+                return CloneInsert(constantInsert);
+
+            var boundRows = new DbValue[_valueRows.Length][];
+            for (int rowIndex = 0; rowIndex < _valueRows.Length; rowIndex++)
+            {
+                var templateRow = _valueRows[rowIndex];
+                var boundRow = new DbValue[templateRow.Length];
+                for (int columnIndex = 0; columnIndex < templateRow.Length; columnIndex++)
+                    boundRow[columnIndex] = templateRow[columnIndex].Bind(parameters);
+
+                boundRows[rowIndex] = boundRow;
+            }
+
+            return new SimpleInsertSql(_tableName, boundRows);
+        }
+
+        private static SimpleInsertSql CloneInsert(SimpleInsertSql insert)
+        {
+            var clonedRows = new DbValue[insert.RowCount][];
+            for (int rowIndex = 0; rowIndex < insert.RowCount; rowIndex++)
+            {
+                var sourceRow = insert.ValueRows[rowIndex];
+                var clonedRow = new DbValue[sourceRow.Length];
+                Array.Copy(sourceRow, clonedRow, sourceRow.Length);
+                clonedRows[rowIndex] = clonedRow;
+            }
+
+            return new SimpleInsertSql(insert.TableName, clonedRows, insert.RowCount);
+        }
+
+        private static bool IsConstant(PreparedInsertCell[][] valueRows)
+        {
+            for (int rowIndex = 0; rowIndex < valueRows.Length; rowIndex++)
+            {
+                var valueRow = valueRows[rowIndex];
+                for (int columnIndex = 0; columnIndex < valueRow.Length; columnIndex++)
+                {
+                    if (valueRow[columnIndex].IsParameter)
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static DbValue[][] BindConstants(PreparedInsertCell[][] valueRows)
+        {
+            var boundRows = new DbValue[valueRows.Length][];
+            for (int rowIndex = 0; rowIndex < valueRows.Length; rowIndex++)
+            {
+                var valueRow = valueRows[rowIndex];
+                var boundRow = new DbValue[valueRow.Length];
+                for (int columnIndex = 0; columnIndex < valueRow.Length; columnIndex++)
+                    boundRow[columnIndex] = valueRow[columnIndex].ConstantValue;
+
+                boundRows[rowIndex] = boundRow;
+            }
+
+            return boundRows;
+        }
+    }
+
+    private readonly struct PreparedInsertCell
+    {
+        private readonly DbValue _constantValue;
+        private readonly string? _parameterName;
+
+        private PreparedInsertCell(DbValue constantValue, string? parameterName)
+        {
+            _constantValue = constantValue;
+            _parameterName = parameterName;
+        }
+
+        internal static PreparedInsertCell ForConstant(DbValue value) => new(value, null);
+
+        internal static PreparedInsertCell ForParameter(string parameterName) => new(default, parameterName);
+
+        internal bool IsParameter => _parameterName != null;
+
+        internal DbValue ConstantValue => _constantValue;
+
+        internal DbValue Bind(CSharpDbParameterCollection parameters)
+        {
+            var parameterName = _parameterName;
+            if (parameterName == null)
+                return _constantValue;
+
+            if (!parameters.TryGetValue(parameterName.AsSpan(), out object? value))
+                throw new InvalidOperationException($"Parameter '@{parameterName}' was not supplied.");
+
+            return ToDbValue(value);
         }
     }
 
