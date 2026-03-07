@@ -16,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Execution\CSharpDB.Execution.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
   </ItemGroup>
