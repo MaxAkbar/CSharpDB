@@ -281,7 +281,7 @@ internal sealed class CatalogService
 
         await EnsureCatalogTreeAsync(ct);
 
-        var storedSchema = NormalizeStoredTableSchema(schema, fallbackNextRowId: 1);
+        var storedSchema = NormalizeNewTableSchema(schema);
 
         // Create a new B+tree for the table's data
         uint tableRootPage = await BTree.CreateNewAsync(_pager, ct);
@@ -334,8 +334,7 @@ internal sealed class CatalogService
         if (!_cache.TryGetValue(oldTableName, out var oldSchema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
 
-        long fallbackNextRowId = oldSchema.NextRowId > 0 ? oldSchema.NextRowId : 1;
-        var storedSchema = NormalizeStoredTableSchema(newSchema, fallbackNextRowId);
+        var storedSchema = NormalizeUpdatedTableSchema(newSchema, oldSchema.NextRowId);
 
         // Delete old catalog entry
         long oldKey = _schemaSerializer.TableNameToKey(oldTableName);
@@ -623,15 +622,32 @@ internal sealed class CatalogService
         _cacheState.RemoveTriggerFromTable(schema);
     }
 
-    private static TableSchema NormalizeStoredTableSchema(TableSchema schema, long fallbackNextRowId)
+    private static TableSchema NormalizeNewTableSchema(TableSchema schema)
     {
-        long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : fallbackNextRowId;
-        if (normalizedNextRowId <= 0)
-            normalizedNextRowId = 1;
+        long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : 1;
 
         if (schema.NextRowId == normalizedNextRowId)
             return schema;
 
+        return CloneWithNextRowId(schema, normalizedNextRowId);
+    }
+
+    private static TableSchema NormalizeUpdatedTableSchema(TableSchema schema, long persistedNextRowId)
+    {
+        // Legacy catalog entries use 0 to mean "unknown"; preserve that sentinel on ALTER/RENAME
+        // so the allocator recomputes max(rowid)+1 instead of resetting to 1 after a schema rewrite.
+        long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : persistedNextRowId;
+        if (normalizedNextRowId < 0)
+            normalizedNextRowId = 0;
+
+        if (schema.NextRowId == normalizedNextRowId)
+            return schema;
+
+        return CloneWithNextRowId(schema, normalizedNextRowId);
+    }
+
+    private static TableSchema CloneWithNextRowId(TableSchema schema, long normalizedNextRowId)
+    {
         return new TableSchema
         {
             TableName = schema.TableName,
