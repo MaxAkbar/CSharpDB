@@ -29,6 +29,7 @@ dotnet run -c Release -- --micro
 
 # Filter to a specific micro suite
 dotnet run -c Release -- --micro --filter *InsertBenchmarks*
+dotnet run -c Release -- --micro --filter *InMemory*
 
 # Stable macro snapshot (median-of-3)
 dotnet run -c Release -- --macro --repeat 3
@@ -39,6 +40,16 @@ dotnet run -c Release -- --scaling
 ```
 
 Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/results/`.
+
+### New In-Memory Suites
+
+- `InMemorySqlBenchmarks`: file-backed vs in-memory SQL point lookups and inserts
+- `InMemoryCollectionBenchmarks`: file-backed vs in-memory collection `GetAsync` and `PutAsync`
+- `InMemoryAdoNetBenchmarks`: ADO.NET private `:memory:` vs named shared `:memory:name`
+- `InMemoryPersistenceBenchmarks`: `LoadIntoMemoryAsync` and `SaveToFileAsync`
+- `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
+- `SharedMemoryAdoNetBenchmark`: named shared-memory reader/writer contention through the provider host layer
+- `InMemoryPersistenceBenchmark`: macro load/save latency and output-size reporting
 
 ### Baselines and Guardrails
 
@@ -94,14 +105,21 @@ Defaults:
 
 ## Competitor Comparison
 
-All CSharpDB numbers below are from the current benchmark snapshot above with WAL durability enabled. Competitor figures are approximate ranges from published third-party sources on comparable hardware.
+The master table below now separates CSharpDB file-backed runs from in-memory runs.
+
+- File-backed single-write, batched-write, and concurrent-reader numbers come from the March 7, 2026 macro snapshot.
+- In-memory single-write and point-lookup numbers come from the new `InMemory*Benchmarks` micro suites run on March 7, 2026.
+- In-memory batched-write and concurrent-reader cells are left as `N/A` where an apples-to-apples dedicated benchmark has not been added yet.
+- Competitor figures are still approximate ranges from published third-party sources on comparable hardware.
 
 ### Master Comparison Table
 
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|----------|------|---------------|----------------|--------------|------------------|
-| **CSharpDB (SQL)** | **C#** | **Relational SQL** | **22.2K ops/sec** | **~605K rows/sec** | **~1.15M ops/sec** | **250K ops/sec (8r)** |
-| **CSharpDB (Collection)** | **C#** | **Document (NoSQL)** | **25.3K ops/sec** | **~348K docs/sec** | **~1.35M ops/sec** | **-** |
+| **CSharpDB SQL (file-backed)** | **C#** | **Relational SQL** | **21.3K ops/sec** | **~607K rows/sec** | **~3.62M ops/sec** | **221K ops/sec (8r)** |
+| **CSharpDB SQL (in-memory)** | **C#** | **Relational SQL** | **~307K ops/sec** | **N/A** | **~3.19M ops/sec** | **N/A** |
+| **CSharpDB Collection (file-backed)** | **C#** | **Document (NoSQL)** | **25.2K ops/sec** | **~370K docs/sec** | **~2.39M ops/sec** | **-** |
+| **CSharpDB Collection (in-memory)** | **C#** | **Document (NoSQL)** | **~433K ops/sec** | **N/A** | **~2.23M ops/sec** | **-** |
 | SQLite | C | Relational SQL | ~1-4K ops/sec | ~80-114K rows/sec | ~275-484K ops/sec | WAL lock limited |
 | LiteDB | C# | Document (NoSQL) | ~1K ops/sec | ~16-21K rows/sec | ~24K ops/sec | N/A |
 | Realm | C++ | Object DB | ~9-76K obj/sec | N/A | Near-instant (zero-copy) | Multi-reader |

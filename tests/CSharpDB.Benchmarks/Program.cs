@@ -119,6 +119,15 @@ public static class Program
         Console.WriteLine("--- Collection (NoSQL) Benchmark ---");
         results.AddRange(await CollectionBenchmark.RunAsync());
 
+        Console.WriteLine("--- In-Memory Workload Benchmark ---");
+        results.AddRange(await InMemoryWorkloadBenchmark.RunAsync());
+
+        Console.WriteLine("--- Shared Memory ADO.NET Benchmark ---");
+        results.AddRange(await SharedMemoryAdoNetBenchmark.RunAsync());
+
+        Console.WriteLine("--- In-Memory Persistence Benchmark ---");
+        results.AddRange(await InMemoryPersistenceBenchmark.RunAsync());
+
         return results;
     }
 

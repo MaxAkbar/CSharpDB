@@ -52,6 +52,73 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
+    /// Open a new in-memory database using default composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenInMemoryAsync(CancellationToken ct = default)
+    {
+        return await OpenInMemoryAsync(new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Open a new in-memory database using explicit composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenInMemoryAsync(
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        var context = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
+    }
+
+    /// <summary>
+    /// Load an on-disk database into memory using default composition options.
+    /// If a companion WAL file exists, committed WAL frames are recovered into the in-memory copy.
+    /// </summary>
+    public static async ValueTask<Database> LoadIntoMemoryAsync(string filePath, CancellationToken ct = default)
+    {
+        return await LoadIntoMemoryAsync(filePath, new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Load an on-disk database into memory using explicit composition options.
+    /// If a companion WAL file exists, committed WAL frames are recovered into the in-memory copy.
+    /// </summary>
+    public static async ValueTask<Database> LoadIntoMemoryAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        if (!File.Exists(fullPath))
+            throw new FileNotFoundException("Database file not found.", fullPath);
+
+        byte[] databaseBytes = await File.ReadAllBytesAsync(fullPath, ct);
+        string walPath = fullPath + ".wal";
+        byte[] walBytes = File.Exists(walPath)
+            ? await File.ReadAllBytesAsync(walPath, ct)
+            : Array.Empty<byte>();
+
+        var context = await InMemoryStorageEngineFactory.OpenAsync(
+            options.StorageEngineOptions,
+            databaseBytes,
+            walBytes,
+            ct);
+
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
+    }
+
+    /// <summary>
     /// Open an existing database file, or create a new one if it doesn't exist, using explicit composition options.
     /// </summary>
     public static async ValueTask<Database> OpenAsync(
@@ -226,6 +293,17 @@ public sealed class Database : IAsyncDisposable
     public async ValueTask CheckpointAsync(CancellationToken ct = default)
     {
         await _pager.CheckpointAsync(ct);
+    }
+
+    /// <summary>
+    /// Save the current committed database state to an on-disk database file.
+    /// </summary>
+    public async ValueTask SaveToFileAsync(string filePath, CancellationToken ct = default)
+    {
+        if (_inTransaction)
+            throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
+
+        await _pager.SaveToFileAsync(filePath, ct);
     }
 
     /// <summary>
@@ -465,7 +543,16 @@ public sealed class Database : IAsyncDisposable
             CancellationToken ct = default)
         {
             var stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
-            if (stmt is not SelectStatement)
+            return await ExecuteReadAsync(stmt, ct);
+        }
+
+        /// <summary>
+        /// Execute a read-only prepared statement against the snapshot.
+        /// Only SELECT statements are allowed.
+        /// </summary>
+        public async ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
+        {
+            if (stmt is not SelectStatement && stmt is not WithStatement)
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support SELECT statements.");
 

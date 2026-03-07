@@ -4,6 +4,10 @@
     <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Engine" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

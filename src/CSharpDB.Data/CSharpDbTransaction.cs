@@ -23,7 +23,15 @@ public sealed class CSharpDbTransaction : DbTransaction
     public override async Task CommitAsync(CancellationToken cancellationToken)
     {
         if (_completed) throw new InvalidOperationException("Transaction already completed.");
-        await _connection.GetDatabase().CommitAsync(cancellationToken);
+        try
+        {
+            await _connection.GetSession().CommitAsync(cancellationToken);
+        }
+        catch (CSharpDB.Core.CSharpDbException ex)
+        {
+            throw new CSharpDbDataException(ex);
+        }
+
         _completed = true;
         _connection.ClearTransaction();
     }
@@ -34,7 +42,15 @@ public sealed class CSharpDbTransaction : DbTransaction
     public override async Task RollbackAsync(CancellationToken cancellationToken)
     {
         if (_completed) throw new InvalidOperationException("Transaction already completed.");
-        await _connection.GetDatabase().RollbackAsync(cancellationToken);
+        try
+        {
+            await _connection.GetSession().RollbackAsync(cancellationToken);
+        }
+        catch (CSharpDB.Core.CSharpDbException ex)
+        {
+            throw new CSharpDbDataException(ex);
+        }
+
         _completed = true;
         _connection.ClearTransaction();
     }

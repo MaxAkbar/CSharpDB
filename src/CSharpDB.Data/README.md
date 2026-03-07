@@ -9,13 +9,13 @@ ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedd
 
 ## Overview
 
-`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your embedded database. Supports parameterized queries, transactions, prepared statements, prepared-template caching, and schema introspection.
+`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your embedded database. Supports parameterized queries, transactions, prepared statements, prepared-template caching, schema introspection, and both file-backed and in-memory connection modes.
 
 ## Key Types
 
 | Type | Description |
 |------|-------------|
-| `CSharpDbConnection` | `DbConnection` that opens a `Database` instance from a file path |
+| `CSharpDbConnection` | `DbConnection` for file-backed databases, private `:memory:` databases, and named shared `:memory:name` databases |
 | `CSharpDbCommand` | `DbCommand` with prepared statement support, template caching, and parameter binding |
 | `CSharpDbDataReader` | `DbDataReader` with async iteration, typed getters, and `HasRows` |
 | `CSharpDbTransaction` | `DbTransaction` with auto-rollback on dispose |
@@ -67,10 +67,13 @@ cmd.CommandText = "INSERT INTO products VALUES (2, 'Gadget', 19.99)";
 await cmd.ExecuteNonQueryAsync();
 await tx.CommitAsync();
 
+// Save an in-memory connection back to disk
+await connection.SaveToFileAsync("products.db");
+
 // Schema introspection
 var csConn = (CSharpDbConnection)connection;
-var tables = await csConn.GetTableNames();
-var schema = await csConn.GetTableSchema("products");
+var tables = csConn.GetTableNames();
+var schema = csConn.GetTableSchema("products");
 ```
 
 ### Using DbProviderFactory
@@ -81,6 +84,28 @@ await using var conn = factory.CreateConnection();
 conn.ConnectionString = "Data Source=myapp.db";
 await conn.OpenAsync();
 ```
+
+## In-Memory Connection Strings
+
+```text
+Data Source=:memory:
+```
+
+Creates a private in-memory database scoped to a single connection.
+
+```text
+Data Source=:memory:shared-cache
+```
+
+Creates or attaches to a named shared in-memory database within the current process.
+
+```text
+Data Source=:memory:shared-cache;Load From=seed.db
+```
+
+Seeds an in-memory database from `seed.db` on first open. For named shared memory, later opens must either omit `Load From` or use the same source path.
+
+Named shared in-memory connections allow multiple live connections at once. One connection may own an explicit transaction at a time; other connections can still run reads against the last committed snapshot while that transaction is active.
 
 ## Connection Pooling (Opt-In)
 
@@ -96,6 +121,8 @@ To force-release pooled physical connections (for example before deleting databa
 CSharpDbConnection.ClearPool("Data Source=myapp.db;Pooling=true;Max Pool Size=16");
 CSharpDbConnection.ClearAllPools();
 ```
+
+`ClearPool` and `ClearAllPools` also clear named shared in-memory hosts.
 
 ## Installation
 
