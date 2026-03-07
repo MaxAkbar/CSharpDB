@@ -178,6 +178,32 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_ConstantIdentityInsert_ReusesTemplateWithoutReusingGeneratedIds()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY IDENTITY, name TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t VALUES (NULL, 'fixed');";
+        cmd.Prepare();
+
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.CommandText = "SELECT id, name FROM t ORDER BY id;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(1L, reader.GetInt64(0));
+        Assert.Equal("fixed", reader.GetString(1));
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(2L, reader.GetInt64(0));
+        Assert.Equal("fixed", reader.GetString(1));
+        Assert.False(await reader.ReadAsync(Ct));
+    }
+
+    [Fact]
     public async Task Prepare_InvalidatedWhenCommandTextChanges()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

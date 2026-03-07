@@ -848,7 +848,7 @@ internal sealed class PreparedStatementTemplate
         internal SimpleInsertSql Bind(CSharpDbParameterCollection parameters)
         {
             if (_constantInsert is { } constantInsert)
-                return constantInsert;
+                return CloneInsert(constantInsert);
 
             var boundRows = new DbValue[_valueRows.Length][];
             for (int rowIndex = 0; rowIndex < _valueRows.Length; rowIndex++)
@@ -862,6 +862,20 @@ internal sealed class PreparedStatementTemplate
             }
 
             return new SimpleInsertSql(_tableName, boundRows);
+        }
+
+        private static SimpleInsertSql CloneInsert(SimpleInsertSql insert)
+        {
+            var clonedRows = new DbValue[insert.RowCount][];
+            for (int rowIndex = 0; rowIndex < insert.RowCount; rowIndex++)
+            {
+                var sourceRow = insert.ValueRows[rowIndex];
+                var clonedRow = new DbValue[sourceRow.Length];
+                Array.Copy(sourceRow, clonedRow, sourceRow.Length);
+                clonedRows[rowIndex] = clonedRow;
+            }
+
+            return new SimpleInsertSql(insert.TableName, clonedRows, insert.RowCount);
         }
 
         private static bool IsConstant(PreparedInsertCell[][] valueRows)
