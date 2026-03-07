@@ -38,7 +38,7 @@ public sealed class Database : IAsyncDisposable
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
-        _planner = new QueryPlanner(pager, catalog, recordSerializer);
+        _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
     }
@@ -444,9 +444,9 @@ public sealed class Database : IAsyncDisposable
         var collection = new Collection<T>(
             _pager,
             _catalog,
-            _recordSerializer,
             catalogName,
             tree,
+            _recordSerializer,
             () => _inTransaction);
         _collectionCache[catalogName] = collection;
         return collection;

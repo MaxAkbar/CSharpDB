@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using CSharpDB.Core;
 
@@ -15,10 +16,11 @@ public sealed class Collection<T>
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
-    private readonly IRecordSerializer _recordSerializer;
     private readonly string _catalogTableName;
     private readonly BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly bool _useDirectPayloadFormat;
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
@@ -29,16 +31,17 @@ public sealed class Collection<T>
     internal Collection(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer recordSerializer,
         string catalogTableName,
         BTree tree,
+        IRecordSerializer recordSerializer,
         Func<bool> isInTransaction)
     {
         _pager = pager;
         _catalog = catalog;
-        _recordSerializer = recordSerializer;
         _catalogTableName = catalogTableName;
         _tree = tree;
+        _recordSerializer = recordSerializer ?? throw new ArgumentNullException(nameof(recordSerializer));
+        _useDirectPayloadFormat = recordSerializer is DefaultRecordSerializer;
         _isInTransaction = isInTransaction;
     }
 
@@ -55,7 +58,8 @@ public sealed class Collection<T>
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
-            byte[] newPayload = EncodeDocument(key, document);
+            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
+            byte[] newPayload = EncodeDocument(keyUtf8, document);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
@@ -69,8 +73,7 @@ public sealed class Collection<T>
                     return;
                 }
 
-                string storedKey = DecodeKey(existingPayload.Span);
-                if (storedKey == key)
+                if (PayloadMatchesKey(existingPayload.Span, keyUtf8, key))
                 {
                     // Upsert: delete old entry and insert new
                     await _tree.DeleteAsync(probeHash, ct);
@@ -93,6 +96,7 @@ public sealed class Collection<T>
         ArgumentNullException.ThrowIfNull(key);
 
         long startHash = HashDocumentKey(key);
+        byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
         for (int probe = 0; probe < MaxProbeDistance; probe++)
         {
@@ -102,8 +106,7 @@ public sealed class Collection<T>
             if (payload is not { } payloadMemory)
                 return default; // Empty slot means key doesn't exist
 
-            var (storedKey, doc) = DecodeDocument(payloadMemory.Span);
-            if (storedKey == key)
+            if (TryDecodeDocumentForKey(payloadMemory.Span, keyUtf8, key, out var doc))
                 return doc;
             // Collision: continue probing
         }
@@ -122,6 +125,7 @@ public sealed class Collection<T>
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
+            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
@@ -131,8 +135,7 @@ public sealed class Collection<T>
                 if (payload is not { } payloadMemory)
                     return; // Not found
 
-                string storedKey = DecodeKey(payloadMemory.Span);
-                if (storedKey == key)
+                if (PayloadMatchesKey(payloadMemory.Span, keyUtf8, key))
                 {
                     await _tree.DeleteAsync(probeHash, ct);
                     deleted = true;
@@ -199,14 +202,70 @@ public sealed class Collection<T>
         return hash & 0x7FFFFFFFFFFFFFFF; // ensure positive
     }
 
-    private byte[] EncodeDocument(string key, T document)
+    private byte[] EncodeDocument(ReadOnlySpan<byte> keyUtf8, T document)
     {
-        string json = JsonSerializer.Serialize(document, s_jsonOptions);
-        var values = new DbValue[] { DbValue.FromText(key), DbValue.FromText(json) };
-        return _recordSerializer.Encode(values);
+        if (!_useDirectPayloadFormat)
+        {
+            string key = Encoding.UTF8.GetString(keyUtf8);
+            string json = JsonSerializer.Serialize(document, s_jsonOptions);
+            return _recordSerializer.Encode(
+                [
+                    DbValue.FromText(key),
+                    DbValue.FromText(json),
+                ]);
+        }
+
+        byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes(document, s_jsonOptions);
+        return CollectionPayloadCodec.Encode(keyUtf8, jsonUtf8);
     }
 
     private (string key, T document) DecodeDocument(ReadOnlySpan<byte> payload)
+    {
+        if (!_useDirectPayloadFormat || !CollectionPayloadCodec.IsDirectPayload(payload))
+            return DecodeLegacyDocument(payload);
+
+        string storedKey = CollectionPayloadCodec.DecodeKey(payload);
+        T doc = JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions)!;
+        return (storedKey, doc);
+    }
+
+    private bool TryDecodeDocumentForKey(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> expectedKeyUtf8,
+        string expectedKey,
+        out T? document)
+    {
+        if (!PayloadMatchesKey(payload, expectedKeyUtf8, expectedKey))
+        {
+            document = default;
+            return false;
+        }
+
+        if (_useDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
+        {
+            document = JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions);
+            return true;
+        }
+
+        document = DecodeLegacyDocument(payload).document;
+        return true;
+    }
+
+    private bool PayloadMatchesKey(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> expectedKeyUtf8,
+        string expectedKey)
+    {
+        if (_useDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
+            return CollectionPayloadCodec.KeyEquals(payload, expectedKeyUtf8);
+
+        if (_recordSerializer.TryColumnTextEquals(payload, 0, expectedKeyUtf8, out bool equals))
+            return equals;
+
+        return DecodeLegacyKey(payload) == expectedKey;
+    }
+
+    private (string key, T document) DecodeLegacyDocument(ReadOnlySpan<byte> payload)
     {
         var values = _recordSerializer.Decode(payload);
         string storedKey = values[0].AsText;
@@ -215,10 +274,7 @@ public sealed class Collection<T>
         return (storedKey, doc);
     }
 
-    /// <summary>
-    /// Decode only the key from a payload (avoids deserializing the full document).
-    /// </summary>
-    private string DecodeKey(ReadOnlySpan<byte> payload)
+    private string DecodeLegacyKey(ReadOnlySpan<byte> payload)
     {
         var values = _recordSerializer.DecodeUpTo(payload, 0);
         return values[0].AsText;
@@ -240,7 +296,7 @@ public sealed class Collection<T>
         try
         {
             await action();
-            await _catalog.PersistAllRootPageChangesAsync(ct);
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
         }
         catch
@@ -249,4 +305,5 @@ public sealed class Collection<T>
             throw;
         }
     }
+
 }

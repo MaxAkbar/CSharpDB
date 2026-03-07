@@ -1,9 +1,21 @@
+using System.Reflection;
+using System.Text.Json;
+using CSharpDB.Core;
 using CSharpDB.Engine;
+using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Serialization;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
 
 public class CollectionTests : IAsyncLifetime
 {
+    private static readonly JsonSerializerOptions s_collectionJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+    };
+
     private readonly string _dbPath;
     private Database _db = null!;
 
@@ -320,6 +332,172 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LegacyBackingRows_AreReadableThroughCollection()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        await InsertLegacyBackingRowAsync(users, "u:legacy", new User("Legacy Alice", 41, "legacy@example.com"), ct);
+        var legacy = await users.GetAsync("u:legacy", ct);
+
+        Assert.NotNull(legacy);
+        Assert.Equal("Legacy Alice", legacy!.Name);
+        Assert.Equal(41, legacy.Age);
+        Assert.Equal("legacy@example.com", legacy.Email);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        var reopenedLegacy = await reopened.GetAsync("u:legacy", ct);
+
+        Assert.NotNull(reopenedLegacy);
+        Assert.Equal("Legacy Alice", reopenedLegacy!.Name);
+    }
+
+    [Fact]
+    public async Task PutAndDelete_CanOperateOnLegacyBackingRows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        await InsertLegacyBackingRowAsync(users, "u:update", new User("Old Alice", 40, "old@example.com"), ct);
+        await InsertLegacyBackingRowAsync(users, "u:delete", new User("Delete Me", 22, "delete@example.com"), ct);
+
+        await users.PutAsync("u:update", new User("Updated Alice", 42, "updated@example.com"), ct);
+        bool deleted = await users.DeleteAsync("u:delete", ct);
+
+        Assert.True(deleted);
+        Assert.Equal(1, await users.CountAsync(ct));
+
+        var updated = await users.GetAsync("u:update", ct);
+        Assert.NotNull(updated);
+        Assert.Equal("Updated Alice", updated!.Name);
+        Assert.Equal(42, updated.Age);
+        Assert.Equal("updated@example.com", updated.Email);
+        Assert.Null(await users.GetAsync("u:delete", ct));
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(1, await reopened.CountAsync(ct));
+        Assert.Equal("Updated Alice", (await reopened.GetAsync("u:update", ct))!.Name);
+        Assert.Null(await reopened.GetAsync("u:delete", ct));
+    }
+
+    [Fact]
+    public async Task InternalBackingTableRows_WrittenByCollection_AreQueryableViaSql()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Sql Visible Alice", 30, "sqlalice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Sql Visible Bob", 31, "sqlbob@example.com"), ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT _key, _doc FROM _col_users WHERE _key = 'u:1'",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Single(rows);
+        Assert.Equal("u:1", rows[0][0].AsText);
+        Assert.Equal(
+            "{\"name\":\"Sql Visible Alice\",\"age\":30,\"email\":\"sqlalice@example.com\"}",
+            rows[0][1].AsText);
+    }
+
+    [Fact]
+    public async Task InternalBackingTableRows_WrittenByCollection_RemainQueryableViaSqlAfterReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Sql Reopen Alice", 35, "reopen@example.com"), ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT _doc FROM _col_users WHERE _key = 'u:1'",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Single(rows);
+        Assert.Equal(
+            "{\"name\":\"Sql Reopen Alice\",\"age\":35,\"email\":\"reopen@example.com\"}",
+            rows[0][0].AsText);
+    }
+
+    [Fact]
+    public async Task CustomRecordSerializer_WithCollectionMarkerPrefix_RemainsCompatible()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                SerializerProvider = new PrefixCollisionSerializerProvider(),
+            },
+        };
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+
+        await _db.ExecuteAsync("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO people VALUES (1, 'Serializer Alice')", ct);
+
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        var expected = new User("Custom Serializer Alice", 33, "custom@example.com");
+        await users.PutAsync("u:1", expected, ct);
+
+        byte[] rawPayload = await GetBackingPayloadAsync(users, "u:1", ct);
+        Assert.Equal((byte)0xC1, rawPayload[0]);
+
+        await using (var sqlTableResult = await _db.ExecuteAsync("SELECT name FROM people WHERE id = 1", ct))
+        {
+            var sqlTableRows = await sqlTableResult.ToListAsync(ct);
+            Assert.Single(sqlTableRows);
+            Assert.Equal("Serializer Alice", sqlTableRows[0][0].AsText);
+        }
+
+        var stored = await users.GetAsync("u:1", ct);
+        Assert.NotNull(stored);
+        Assert.Equal(expected, stored);
+
+        string expectedJson = JsonSerializer.Serialize(expected, s_collectionJsonOptions);
+        await using (var collectionSqlResult = await _db.ExecuteAsync(
+            "SELECT _key, _doc FROM _col_users WHERE _key = 'u:1'",
+            ct))
+        {
+            var collectionSqlRows = await collectionSqlResult.ToListAsync(ct);
+            Assert.Single(collectionSqlRows);
+            Assert.Equal("u:1", collectionSqlRows[0][0].AsText);
+            Assert.Equal(expectedJson, collectionSqlRows[0][1].AsText);
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+
+        await using (var reopenedSqlTableResult = await _db.ExecuteAsync("SELECT name FROM people WHERE id = 1", ct))
+        {
+            var reopenedSqlTableRows = await reopenedSqlTableResult.ToListAsync(ct);
+            Assert.Single(reopenedSqlTableRows);
+            Assert.Equal("Serializer Alice", reopenedSqlTableRows[0][0].AsText);
+        }
+
+        var reopenedUsers = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(expected, await reopenedUsers.GetAsync("u:1", ct));
+
+        await using var reopenedCollectionSqlResult = await _db.ExecuteAsync(
+            "SELECT _doc FROM _col_users WHERE _key = 'u:1'",
+            ct);
+        var reopenedCollectionSqlRows = await reopenedCollectionSqlResult.ToListAsync(ct);
+        Assert.Single(reopenedCollectionSqlRows);
+        Assert.Equal(expectedJson, reopenedCollectionSqlRows[0][0].AsText);
+    }
+
+    [Fact]
     public async Task ExplicitTransaction_PersistsCollectionRootsOnCommit()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -342,5 +520,107 @@ public class CollectionTests : IAsyncLifetime
         Assert.Equal(400, await reopened.CountAsync(ct));
         Assert.Equal("User0", (await reopened.GetAsync("u:0", ct))!.Name);
         Assert.Equal("User399", (await reopened.GetAsync("u:399", ct))!.Name);
+    }
+
+    private async Task InsertLegacyBackingRowAsync<TDocument>(
+        Collection<TDocument> collection,
+        string key,
+        TDocument document,
+        CancellationToken ct)
+    {
+        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection tree field not found.");
+        var tree = (BTree?)treeField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection tree was not initialized.");
+
+        string json = JsonSerializer.Serialize(document, s_collectionJsonOptions);
+        byte[] payload = new DefaultRecordSerializer().Encode(
+            new[] { DbValue.FromText(key), DbValue.FromText(json) });
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await tree.InsertAsync(Collection<TDocument>.HashDocumentKey(key), payload, ct);
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private static async Task<byte[]> GetBackingPayloadAsync<TDocument>(
+        Collection<TDocument> collection,
+        string key,
+        CancellationToken ct)
+    {
+        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection tree field not found.");
+        var tree = (BTree?)treeField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection tree was not initialized.");
+
+        var payload = await tree.FindMemoryAsync(Collection<TDocument>.HashDocumentKey(key), ct)
+            ?? throw new InvalidOperationException("Collection payload not found.");
+
+        return payload.ToArray();
+    }
+
+    private sealed class PrefixCollisionSerializerProvider : ISerializerProvider
+    {
+        public IRecordSerializer RecordSerializer { get; } = new PrefixCollisionRecordSerializer();
+
+        public ISchemaSerializer SchemaSerializer { get; } = new DefaultSchemaSerializer();
+    }
+
+    private sealed class PrefixCollisionRecordSerializer : IRecordSerializer
+    {
+        private const byte Prefix = 0xC1;
+        private readonly IRecordSerializer _inner = new DefaultRecordSerializer();
+
+        public byte[] Encode(ReadOnlySpan<DbValue> values)
+        {
+            byte[] encoded = _inner.Encode(values);
+            byte[] prefixed = new byte[encoded.Length + 1];
+            prefixed[0] = Prefix;
+            encoded.CopyTo(prefixed.AsSpan(1));
+            return prefixed;
+        }
+
+        public DbValue[] Decode(ReadOnlySpan<byte> buffer) => _inner.Decode(StripPrefix(buffer));
+
+        public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination)
+            => _inner.DecodeInto(StripPrefix(buffer), destination);
+
+        public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
+            => _inner.DecodeSelectedInto(StripPrefix(buffer), destination, selectedColumnIndices);
+
+        public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
+            => _inner.DecodeUpTo(StripPrefix(buffer), maxColumnIndexInclusive);
+
+        public DbValue DecodeColumn(ReadOnlySpan<byte> buffer, int columnIndex)
+            => _inner.DecodeColumn(StripPrefix(buffer), columnIndex);
+
+        public bool TryColumnTextEquals(ReadOnlySpan<byte> buffer, int columnIndex, ReadOnlySpan<byte> expectedUtf8, out bool equals)
+            => _inner.TryColumnTextEquals(StripPrefix(buffer), columnIndex, expectedUtf8, out equals);
+
+        public bool IsColumnNull(ReadOnlySpan<byte> buffer, int columnIndex)
+            => _inner.IsColumnNull(StripPrefix(buffer), columnIndex);
+
+        public bool TryDecodeNumericColumn(
+            ReadOnlySpan<byte> buffer,
+            int columnIndex,
+            out long intValue,
+            out double realValue,
+            out bool isReal)
+            => _inner.TryDecodeNumericColumn(StripPrefix(buffer), columnIndex, out intValue, out realValue, out isReal);
+
+        private static ReadOnlySpan<byte> StripPrefix(ReadOnlySpan<byte> buffer)
+        {
+            if (buffer.IsEmpty || buffer[0] != Prefix)
+                throw new InvalidOperationException("Expected prefixed row payload.");
+
+            return buffer[1..];
+        }
     }
 }

@@ -84,6 +84,7 @@ public sealed class QueryPlanner
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly IRecordSerializer? _collectionReadSerializer;
 
     /// <summary>
     /// CTE materialized results, scoped to the current WITH query execution.
@@ -157,6 +158,9 @@ public sealed class QueryPlanner
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _collectionReadSerializer = _recordSerializer is DefaultRecordSerializer
+            ? new CollectionAwareRecordSerializer(_recordSerializer)
+            : null;
         _observedSchemaVersion = catalog.SchemaVersion;
     }
 
@@ -302,7 +306,7 @@ public sealed class QueryPlanner
                 // Rewrite all rows without the dropped column
                 var tree = _catalog.GetTableTree(stmt.TableName);
                 int? rewriteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
-                var scan = new TableScanOperator(tree, schema, _recordSerializer, rewriteCapacityHint);
+                var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), rewriteCapacityHint);
                 await scan.OpenAsync(ct);
                 var rowsToRewrite = rewriteCapacityHint.HasValue
                     ? new List<(long rowId, DbValue[] newRow)>(rewriteCapacityHint.Value)
@@ -436,7 +440,7 @@ public sealed class QueryPlanner
         var scan = new TableScanOperator(
             tableTree,
             tableSchema,
-            _recordSerializer,
+            GetReadSerializer(tableSchema),
             TryGetCachedTreeRowCountCapacityHint(tableTree));
         await scan.OpenAsync(ct);
         bool usesDirectIntegerKey =
@@ -1397,7 +1401,7 @@ public sealed class QueryPlanner
 
         if (isPrimaryKeyLookup)
         {
-            lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+            lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
         }
         else
         {
@@ -1408,8 +1412,8 @@ public sealed class QueryPlanner
 
             var indexStore = _catalog.GetIndexStore(matchedIndex.IndexName, _pager);
             lookupOp = matchedIndex.IsUnique
-                ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
-                : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
+                ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
+                : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema));
         }
 
         bool hasResidual = lookup.HasResidualPredicate;
@@ -1436,7 +1440,7 @@ public sealed class QueryPlanner
                 PreferSyncPointLookups &&
                 tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
-                var row = payload is { } payloadMemory ? _recordSerializer.Decode(payloadMemory.Span) : null;
+                var row = payload is { } payloadMemory ? GetReadSerializer(schema).Decode(payloadMemory.Span) : null;
                 result = QueryResult.FromSyncLookup(row, GetSchemaColumnsArray(schema));
                 return true;
             }
@@ -1557,7 +1561,7 @@ public sealed class QueryPlanner
         {
             if (tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
-                var row = payload is { } payloadMemory ? _recordSerializer.Decode(payloadMemory.Span) : null;
+                var row = payload is { } payloadMemory ? GetReadSerializer(schema).Decode(payloadMemory.Span) : null;
                 var schemaArray = GetSchemaColumnsArray(schema);
                 result = QueryResult.FromSyncLookup(row, schemaArray);
                 return true;
@@ -1568,7 +1572,7 @@ public sealed class QueryPlanner
         // SELECT * — just PrimaryKeyLookupOperator
         if (selectStar)
         {
-            IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+            IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
             if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
                 residualWhere = pushedWhere;
             if (residualWhere != null)
@@ -1637,7 +1641,7 @@ public sealed class QueryPlanner
             }
 
             // Column projection with row decode (and optional residual filter).
-            var pkOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+            var pkOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
             var remainingResidual = residualWhere;
             if (remainingResidual != null &&
                 TryPushDownSimplePreDecodeFilter(pkOp, remainingResidual, schema, out var pushedWhere))
@@ -1934,7 +1938,7 @@ public sealed class QueryPlanner
             func.FunctionName,
             outputSchema,
             isDistinct: func.IsDistinct,
-            recordSerializer: _recordSerializer));
+            recordSerializer: GetReadSerializer(schema)));
         return true;
     }
 
@@ -2003,7 +2007,7 @@ public sealed class QueryPlanner
                 func.FunctionName,
                 outputSchema,
                 isDistinct: func.IsDistinct,
-                recordSerializer: _recordSerializer)),
+                recordSerializer: GetReadSerializer(schema))),
             IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
                 idx.IndexStore,
                 idx.TableTree,
@@ -2012,7 +2016,7 @@ public sealed class QueryPlanner
                 func.FunctionName,
                 outputSchema,
                 isDistinct: func.IsDistinct,
-                recordSerializer: _recordSerializer)),
+                recordSerializer: GetReadSerializer(schema))),
             UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
                 uniq.IndexStore,
                 uniq.TableTree,
@@ -2021,7 +2025,7 @@ public sealed class QueryPlanner
                 func.FunctionName,
                 outputSchema,
                 isDistinct: func.IsDistinct,
-                recordSerializer: _recordSerializer)),
+                recordSerializer: GetReadSerializer(schema))),
             _ => null!,
         };
 
@@ -2091,7 +2095,7 @@ public sealed class QueryPlanner
             outputSchema,
             isDistinct: func.IsDistinct,
             emitOnEmptyInput: false,
-            recordSerializer: _recordSerializer));
+            recordSerializer: GetReadSerializer(schema)));
         return true;
     }
 
@@ -2106,7 +2110,7 @@ public sealed class QueryPlanner
         var rowsToDelete = deleteCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, _recordSerializer, deleteCapacityHint);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -2150,7 +2154,7 @@ public sealed class QueryPlanner
         var updates = updateCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
             : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
-        var scan = new TableScanOperator(tree, schema, _recordSerializer, updateCapacityHint);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -2340,7 +2344,7 @@ public sealed class QueryPlanner
             IOperator op = new TableScanOperator(
                 tree,
                 schema,
-                _recordSerializer,
+                GetReadSerializer(schema),
                 TryGetCachedTreeRowCountCapacityHint(tree));
 
             // Create schema with qualified mappings for this table
@@ -2611,7 +2615,7 @@ public sealed class QueryPlanner
             rightSchema.Columns.Count,
             residualCondition,
             compositeSchema,
-            _recordSerializer,
+            GetReadSerializer(rightSchema),
             estimatedOutputRowCount);
 
         return true;
@@ -3264,12 +3268,12 @@ public sealed class QueryPlanner
     {
         var tableTree = _catalog.GetTableTree(tableName, _pager);
         if (isPrimaryKey)
-            return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, _recordSerializer);
+            return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
 
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
         return index.IsUnique && UsesDirectIntegerIndexKey(index, schema)
-            ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer)
-            : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, _recordSerializer);
+            ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
+            : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema));
     }
 
     private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)
@@ -3528,7 +3532,7 @@ public sealed class QueryPlanner
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName, _pager);
             var tableTree = _catalog.GetTableTree(tableRef.TableName, _pager);
-            replacementSource = new IndexOrderedScanOperator(indexStore, tableTree, schema, scanRange, _recordSerializer);
+            replacementSource = new IndexOrderedScanOperator(indexStore, tableTree, schema, scanRange, GetReadSerializer(schema));
             return true;
         }
 
@@ -3643,7 +3647,7 @@ public sealed class QueryPlanner
         var scanOp = new TableScanOperator(
             tableTree,
             schema,
-            _recordSerializer,
+            GetReadSerializer(schema),
             TryGetCachedTreeRowCountCapacityHint(tableTree));
         IOperator op = scanOp;
         var remainingWhere = stmt.Where;
@@ -3746,7 +3750,7 @@ public sealed class QueryPlanner
         remaining = selectedRemaining;
         var indexStore = _catalog.GetIndexStore(selectedIndex.IndexName, _pager);
         var tableTree = _catalog.GetTableTree(tableName, _pager);
-        return new IndexOrderedScanOperator(indexStore, tableTree, schema, selectedRange, _recordSerializer);
+        return new IndexOrderedScanOperator(indexStore, tableTree, schema, selectedRange, GetReadSerializer(schema));
     }
 
     private static void ExtractOrderedIndexRange(
@@ -4331,7 +4335,7 @@ public sealed class QueryPlanner
             if (existingRowPayload is not { } existingRowPayloadMemory)
                 continue;
 
-            var existingRow = _recordSerializer.DecodeUpTo(existingRowPayloadMemory.Span, maxIndexedColumn);
+            var existingRow = GetReadSerializer(schema).DecodeUpTo(existingRowPayloadMemory.Span, maxIndexedColumn);
             if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
             {
                 throw new CSharpDbException(
@@ -5470,6 +5474,23 @@ public sealed class QueryPlanner
     private TableSchema GetSchema(string tableName) =>
         _catalog.GetTable(tableName)
         ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+
+    private IRecordSerializer GetReadSerializer(TableSchema schema)
+        => _collectionReadSerializer != null && IsCollectionBackingSchema(schema)
+            ? _collectionReadSerializer
+            : _recordSerializer;
+
+    private static bool IsCollectionBackingSchema(TableSchema schema)
+    {
+        if (!schema.TableName.StartsWith("_col_", StringComparison.Ordinal))
+            return false;
+
+        return schema.Columns.Count == 2
+            && string.Equals(schema.Columns[0].Name, "_key", StringComparison.Ordinal)
+            && schema.Columns[0].Type == DbType.Text
+            && string.Equals(schema.Columns[1].Name, "_doc", StringComparison.Ordinal)
+            && schema.Columns[1].Type == DbType.Text;
+    }
 
     private static DbType MapType(TokenType token) => token switch
     {

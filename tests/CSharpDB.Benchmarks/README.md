@@ -4,8 +4,12 @@ Performance benchmarks for the CSharpDB embedded database engine.
 
 The current snapshot in this README is based on:
 
-- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260307-171340-median-of-3.csv`
-- `tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260307-230022.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryCollectionBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryAdoNetBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryPersistenceBenchmarks-report.csv`
 
 ## Test Environment
 
@@ -19,7 +23,7 @@ The current snapshot in this README is based on:
 | WAL Mode | Enabled (redo-log with auto-checkpoint at 1,000 frames) |
 | Page Cache | LRU page cache (in-memory) |
 | WAL Index | Hash map (O(1) page lookup) |
-| Benchmark Mode | `--repro --cpu-threads 8 --repeat 3` |
+| Benchmark Mode | Latest README snapshot mixes a single macro capture with BenchmarkDotNet micro suites |
 
 ## Running Benchmarks
 
@@ -39,7 +43,7 @@ dotnet run -c Release -- --stress
 dotnet run -c Release -- --scaling
 ```
 
-Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `tests/CSharpDB.Benchmarks/BenchmarkDotNet.Artifacts/results/`.
+Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `BenchmarkDotNet.Artifacts/results/`.
 
 ### New In-Memory Suites
 
@@ -69,45 +73,61 @@ Defaults:
 
 ## Current Performance Snapshot
 
-### SQL API (macro median-of-3)
+### SQL API (latest macro snapshot)
 
 | Metric | Current Result | Notes |
 |--------|----------------|-------|
-| Single INSERT | 22.17K ops/sec | Auto-commit durable write |
-| Batch 100 rows/tx | ~605K rows/sec | 6,049.8 tx/sec x 100 rows |
-| Point lookup (10K rows) | 1.15M ops/sec | `Comparison_SQL_PointLookup_10k` |
-| Mixed workload reads | 48.3K ops/sec | 80/20 read/write mix |
-| Mixed workload writes | 12.1K ops/sec | 80/20 read/write mix |
+| Single INSERT | 22.96K ops/sec | Auto-commit durable write |
+| Batch 100 rows/tx | ~636K rows/sec | 6,362.9 tx/sec x 100 rows |
+| Point lookup (10K rows) | 1.41M ops/sec | `Comparison_SQL_PointLookup_10k` |
+| Mixed workload reads | 52.6K ops/sec | 80/20 read/write mix |
+| Mixed workload writes | 13.1K ops/sec | 80/20 read/write mix |
 | Reader throughput (8 readers) | 250K ops/sec | Concurrent with writer |
-| Writer throughput under 8 readers | 7.7K ops/sec | Same run as above |
-| Checkpoint time (1,000 WAL frames) | 3.69 ms | Manual checkpoint |
+| Writer throughput under 8 readers | 8.8K ops/sec | Same run as above |
+| Checkpoint time (1,000 WAL frames) | 3.67 ms | Manual checkpoint |
 
-### Collection API (macro median-of-3)
+### Collection API (latest macro snapshot)
 
 | Metric | Current Result | Notes |
 |--------|----------------|-------|
-| Single Put | 25.29K ops/sec | Auto-commit durable document write |
-| Batch 100 docs/tx | ~348K docs/sec | 3,482.8 tx/sec x 100 docs |
-| Point Get (10K docs) | 1.35M ops/sec | Direct collection lookup |
-| Mixed workload reads | 65.9K ops/sec | 80/20 read/write mix |
-| Mixed workload writes | 16.5K ops/sec | 80/20 read/write mix |
-| Full Scan (1K docs) | 2,358 scans/sec | Full collection scan |
-| Filtered Find (1K docs, 20% match) | 2,302 scans/sec | Predicate evaluation path |
+| Single Put | 27.49K ops/sec | Auto-commit durable document write |
+| Batch 100 docs/tx | ~414K docs/sec | 4,138.1 tx/sec x 100 docs |
+| Point Get (10K docs) | 1.50M ops/sec | Direct collection lookup |
+| Mixed workload reads | 74.0K ops/sec | 80/20 read/write mix |
+| Mixed workload writes | 18.5K ops/sec | 80/20 read/write mix |
+| Full Scan (1K docs) | 2,952 scans/sec | Full collection scan |
+| Filtered Find (1K docs, 20% match) | 2,912 scans/sec | Predicate evaluation path |
 
 ### Query Micro Spot Checks
 
 | Metric | Mean | Allocated |
 |--------|------|-----------|
-| SQL PK lookup (10K rows) | 658 ns | 697 B |
-| SQL PK lookup (100K rows) | 750 ns | 696 B |
-| SQL indexed lookup (100K rows) | 772 ns | 458 B |
-| SQL point miss (100K rows) | 244 ns | 184 B |
+| SQL PK lookup (10K rows) | 771 ns | 697 B |
+| SQL PK lookup (100K rows) | 1.03 us | 696 B |
+| SQL indexed lookup (100K rows) | 871 ns | 458 B |
+| SQL point miss (100K rows) | 217 ns | 184 B |
+
+### In-Memory Spot Checks
+
+| Metric | Current Result | Notes |
+|--------|----------------|-------|
+| SQL insert (private engine in-memory) | 3.25 us | `Database.OpenInMemoryAsync` micro |
+| Collection put (private engine in-memory) | 2.02 us | Direct payload collection write |
+| ADO.NET ExecuteScalar (`:memory:`) | 138 ns | Private connection-local in-memory DB |
+| ADO.NET ExecuteScalar (`:memory:name`) | 226 ns | Named shared in-memory DB |
+| ADO.NET insert (`:memory:`) | 2.16 us | Private connection-local in-memory DB |
+| ADO.NET insert (`:memory:name`) | 2.18 us | Named shared in-memory DB |
+| Load SQL DB + WAL into memory | 0.834 ms | `Database.LoadIntoMemoryAsync` |
+| Load collection DB + WAL into memory | 1.28 ms | `Database.LoadIntoMemoryAsync` |
+| Save in-memory SQL snapshot to disk | 2.84 ms | `Database.SaveToFileAsync` |
+| Save in-memory collection snapshot to disk | 2.89 ms | `Database.SaveToFileAsync` |
 
 ## Competitor Comparison
 
 The master table below now separates CSharpDB file-backed runs from in-memory runs.
 
-- File-backed single-write, batched-write, and concurrent-reader numbers come from the March 7, 2026 macro snapshot.
+- File-backed single-write, batched-write, and concurrent-reader numbers come from `macro-20260307-230022.csv`.
+- Point-lookup numbers come from the dedicated micro suites and represent hot-cache lookups.
 - In-memory single-write and point-lookup numbers come from the new `InMemory*Benchmarks` micro suites run on March 7, 2026.
 - In-memory batched-write and concurrent-reader cells are left as `N/A` where an apples-to-apples dedicated benchmark has not been added yet.
 - Competitor figures are still approximate ranges from published third-party sources on comparable hardware.
@@ -116,10 +136,10 @@ The master table below now separates CSharpDB file-backed runs from in-memory ru
 
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|----------|------|---------------|----------------|--------------|------------------|
-| **CSharpDB SQL (file-backed)** | **C#** | **Relational SQL** | **21.3K ops/sec** | **~607K rows/sec** | **~3.62M ops/sec** | **221K ops/sec (8r)** |
+| **CSharpDB SQL (file-backed)** | **C#** | **Relational SQL** | **23.0K ops/sec** | **~636K rows/sec** | **~3.62M ops/sec** | **250K ops/sec (8r)** |
 | **CSharpDB SQL (in-memory)** | **C#** | **Relational SQL** | **~307K ops/sec** | **N/A** | **~3.19M ops/sec** | **N/A** |
-| **CSharpDB Collection (file-backed)** | **C#** | **Document (NoSQL)** | **25.2K ops/sec** | **~370K docs/sec** | **~2.39M ops/sec** | **-** |
-| **CSharpDB Collection (in-memory)** | **C#** | **Document (NoSQL)** | **~433K ops/sec** | **N/A** | **~2.23M ops/sec** | **-** |
+| **CSharpDB Collection (file-backed)** | **C#** | **Document (NoSQL)** | **27.5K ops/sec** | **~414K docs/sec** | **~2.73M ops/sec** | **-** |
+| **CSharpDB Collection (in-memory)** | **C#** | **Document (NoSQL)** | **~494K ops/sec** | **N/A** | **~2.55M ops/sec** | **-** |
 | SQLite | C | Relational SQL | ~1-4K ops/sec | ~80-114K rows/sec | ~275-484K ops/sec | WAL lock limited |
 | LiteDB | C# | Document (NoSQL) | ~1K ops/sec | ~16-21K rows/sec | ~24K ops/sec | N/A |
 | Realm | C++ | Object DB | ~9-76K obj/sec | N/A | Near-instant (zero-copy) | Multi-reader |
