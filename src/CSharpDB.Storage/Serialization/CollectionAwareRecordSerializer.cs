@@ -59,16 +59,20 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         int decodeCount = Math.Min(destination.Length, selectedColumnIndices.Length);
         for (int i = 0; i < decodeCount; i++)
         {
-            switch (selectedColumnIndices[i])
+            int columnIndex = selectedColumnIndices[i];
+            if ((uint)columnIndex >= (uint)destination.Length)
+                continue;
+
+            switch (columnIndex)
             {
                 case 0:
-                    destination[i] = DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer));
+                    destination[columnIndex] = DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer));
                     break;
                 case 1:
-                    destination[i] = DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer));
+                    destination[columnIndex] = DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer));
                     break;
                 default:
-                    destination[i] = DbValue.Null;
+                    destination[columnIndex] = DbValue.Null;
                     break;
             }
         }

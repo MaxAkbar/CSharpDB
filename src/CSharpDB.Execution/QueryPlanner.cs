@@ -473,6 +473,7 @@ public sealed class QueryPlanner
                     await EnsureHashedUniqueConstraintAsync(
                         indexStore,
                         tableTree,
+                        tableSchema,
                         indexColumnIndices,
                         keyComponents!,
                         indexKey,
@@ -4210,13 +4211,14 @@ public sealed class QueryPlanner
                 }
                 else
                 {
-                    await EnsureHashedUniqueConstraintAsync(
-                        indexStore,
-                        tableTree,
-                        columnIndices,
-                        keyComponents!,
-                        indexKey,
-                        idx.IndexName,
+                        await EnsureHashedUniqueConstraintAsync(
+                            indexStore,
+                            tableTree,
+                            schema,
+                            columnIndices,
+                            keyComponents!,
+                            indexKey,
+                            idx.IndexName,
                         ct);
 
                     await InsertIntoIndexAsync(indexStore, indexKey, rowId, ct);
@@ -4295,6 +4297,7 @@ public sealed class QueryPlanner
                         await EnsureHashedUniqueConstraintAsync(
                             indexStore,
                             tableTree,
+                            schema,
                             columnIndices,
                             newComponents!,
                             newKey,
@@ -4315,6 +4318,7 @@ public sealed class QueryPlanner
     private async ValueTask EnsureHashedUniqueConstraintAsync(
         IIndexStore indexStore,
         BTree tableTree,
+        TableSchema schema,
         int[] indexColumnIndices,
         DbValue[] keyComponents,
         long indexKey,
