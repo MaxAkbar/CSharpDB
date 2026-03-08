@@ -1,0 +1,14 @@
+{
+  "name": "csharpdb-tutorial",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CSharpDB JavaScript/Node.js FFI tutorial examples",
+  "scripts": {
+    "crud": "node example_crud.mjs",
+    "transactions": "node example_transactions.mjs"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  }
+}

@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CSharpDB.Service\CSharpDB.Service.csproj" />
+    <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,10 @@
+using CSharpDB.Client.Models;
 using CSharpDB.Core;
+using CSharpDB.Sql;
+using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
+using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
+using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
+using ClientTriggerSchema = CSharpDB.Client.Models.TriggerSchema;
 
 namespace CSharpDB.Cli;
 
@@ -40,24 +46,25 @@ internal sealed class InfoCommand : IMetaCommand
     public string Name => ".info";
     public string Description => "Show database and runtime status";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        var userTables = MetaCommandHelpers.GetUserTableNames(context.Database).ToArray();
-        var indexes = context.Database.GetIndexes();
-        var views = context.Database.GetViewNames();
-        var triggers = context.Database.GetTriggers();
-        var collections = context.Database.GetCollectionNames();
+        var info = await context.Client.GetInfoAsync(ct);
+        string snapshotStatus = context.SupportsLocalDirectFeatures
+            ? (context.SnapshotEnabled ? "on" : "off")
+            : "unavailable";
+        string syncPointStatus = context.SupportsLocalDirectFeatures
+            ? (context.PreferSyncPointLookups ? "on" : "off")
+            : "unavailable";
 
         output.WriteLine($"{Ansi.Bold}Database:{Ansi.Reset} {Ansi.Cyan}{context.DatabasePath}{Ansi.Reset}");
         output.WriteLine($"{Ansi.Bold}Objects:{Ansi.Reset} " +
-                         $"tables={userTables.Length}, indexes={indexes.Count}, views={views.Count}, " +
-                         $"triggers={triggers.Count}, collections={collections.Count}");
+                         $"tables={info.TableCount}, indexes={info.IndexCount}, views={info.ViewCount}, " +
+                         $"triggers={info.TriggerCount}, collections={info.CollectionCount}");
         output.WriteLine($"{Ansi.Bold}Modes:{Ansi.Reset} " +
                          $"timing={(context.ShowTiming ? "on" : "off")}, " +
-                         $"snapshot={(context.SnapshotEnabled ? "on" : "off")}, " +
-                         $"syncpoint={(context.PreferSyncPointLookups ? "on" : "off")}, " +
+                         $"snapshot={snapshotStatus}, " +
+                         $"syncpoint={syncPointStatus}, " +
                          $"tx={(context.InExplicitTransaction ? "active" : "none")}");
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -67,71 +74,17 @@ internal sealed class TablesCommand : IMetaCommand
     public string Name => ".tables [PATTERN|--all]";
     public string Description => "List tables (collection backing tables hidden by default)";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
         bool includeInternal = argument.Equals("--all", StringComparison.OrdinalIgnoreCase);
         string? pattern = includeInternal || string.IsNullOrWhiteSpace(argument) ? null : argument.Trim();
 
         IEnumerable<string> names = includeInternal
-            ? context.Database.GetTableNames()
-            : MetaCommandHelpers.GetUserTableNames(context.Database);
+            ? await MetaCommandHelpers.GetTableNamesAsync(context, includeInternal, ct)
+            : await MetaCommandHelpers.GetUserTableNamesAsync(context, ct);
 
         if (!string.IsNullOrWhiteSpace(pattern))
             names = names.Where(n => n.Contains(pattern, StringComparison.OrdinalIgnoreCase));
-
-        var ordered = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (ordered.Length == 0)
-        {
-            output.WriteLine(Ansi.Colorize("No tables.", Ansi.Dim));
-            return ValueTask.CompletedTask;
-        }
-
-        foreach (var name in ordered)
-            output.WriteLine($"  {Ansi.Cyan}{name}{Ansi.Reset}");
-
-        return ValueTask.CompletedTask;
-    }
-}
-
-internal sealed class SchemaCommand : IMetaCommand
-{
-    public IReadOnlyList<string> Aliases => [".schema"];
-    public string Name => ".schema [TABLE|--all]";
-    public string Description => "Show CREATE TABLE schema";
-
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(argument))
-        {
-            PrintAllSchemas(context.Database, output, includeInternal: false);
-            return ValueTask.CompletedTask;
-        }
-
-        if (argument.Equals("--all", StringComparison.OrdinalIgnoreCase))
-        {
-            PrintAllSchemas(context.Database, output, includeInternal: true);
-            return ValueTask.CompletedTask;
-        }
-
-        var schema = context.Database.GetTableSchema(argument);
-        if (schema is null && !argument.StartsWith(MetaCommandHelpers.CollectionPrefix, StringComparison.Ordinal))
-            schema = context.Database.GetTableSchema(MetaCommandHelpers.CollectionPrefix + argument);
-
-        if (schema is null)
-        {
-            output.WriteLine(Ansi.Colorize($"Table '{argument}' not found.", Ansi.Red));
-            return ValueTask.CompletedTask;
-        }
-
-        PrintSingleTableSchema(schema, output);
-        return ValueTask.CompletedTask;
-    }
-
-    private static void PrintAllSchemas(Engine.Database db, TextWriter output, bool includeInternal)
-    {
-        IEnumerable<string> names = includeInternal
-            ? db.GetTableNames()
-            : MetaCommandHelpers.GetUserTableNames(db);
 
         var ordered = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
         if (ordered.Length == 0)
@@ -141,15 +94,69 @@ internal sealed class SchemaCommand : IMetaCommand
         }
 
         foreach (var name in ordered)
+            output.WriteLine($"  {Ansi.Cyan}{name}{Ansi.Reset}");
+    }
+}
+
+internal sealed class SchemaCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".schema"];
+    public string Name => ".schema [TABLE|--all]";
+    public string Description => "Show CREATE TABLE schema";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(argument))
         {
-            var schema = db.GetTableSchema(name);
-            if (schema is null) continue;
+            await PrintAllSchemasAsync(context, output, includeInternal: false, ct);
+            return;
+        }
+
+        if (argument.Equals("--all", StringComparison.OrdinalIgnoreCase))
+        {
+            await PrintAllSchemasAsync(context, output, includeInternal: true, ct);
+            return;
+        }
+
+        var schema = await MetaCommandHelpers.GetTableSchemaAsync(context, argument, ct);
+        if (schema is null && !argument.StartsWith(MetaCommandHelpers.CollectionPrefix, StringComparison.Ordinal))
+            schema = await MetaCommandHelpers.GetTableSchemaAsync(context, MetaCommandHelpers.CollectionPrefix + argument, ct);
+
+        if (schema is null)
+        {
+            output.WriteLine(Ansi.Colorize($"Table '{argument}' not found.", Ansi.Red));
+            return;
+        }
+
+        PrintSingleTableSchema(schema, output);
+    }
+
+    private static async ValueTask PrintAllSchemasAsync(
+        MetaCommandContext context,
+        TextWriter output,
+        bool includeInternal,
+        CancellationToken ct)
+    {
+        var names = await MetaCommandHelpers.GetTableNamesAsync(context, includeInternal, ct);
+        var ordered = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (ordered.Length == 0)
+        {
+            output.WriteLine(Ansi.Colorize("No tables.", Ansi.Dim));
+            return;
+        }
+
+        foreach (var name in ordered)
+        {
+            var schema = await MetaCommandHelpers.GetTableSchemaAsync(context, name, ct);
+            if (schema is null)
+                continue;
+
             PrintSingleTableSchema(schema, output);
             output.WriteLine();
         }
     }
 
-    private static void PrintSingleTableSchema(TableSchema schema, TextWriter output)
+    private static void PrintSingleTableSchema(ClientTableSchema schema, TextWriter output)
     {
         output.WriteLine($"{Ansi.Bold}CREATE TABLE{Ansi.Reset} {Ansi.Cyan}{schema.TableName}{Ansi.Reset} (");
 
@@ -176,9 +183,9 @@ internal sealed class IndexesCommand : IMetaCommand
     public string Name => ".indexes [TABLE]";
     public string Description => "List indexes";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        var indexes = context.Database.GetIndexes().AsEnumerable();
+        IEnumerable<ClientIndexSchema> indexes = await context.Client.GetIndexesAsync(ct);
         if (!string.IsNullOrWhiteSpace(argument))
             indexes = indexes.Where(i => i.TableName.Equals(argument.Trim(), StringComparison.OrdinalIgnoreCase));
 
@@ -186,7 +193,7 @@ internal sealed class IndexesCommand : IMetaCommand
         if (ordered.Length == 0)
         {
             output.WriteLine(Ansi.Colorize("No indexes.", Ansi.Dim));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         foreach (var idx in ordered)
@@ -195,8 +202,6 @@ internal sealed class IndexesCommand : IMetaCommand
             string cols = string.Join(", ", idx.Columns);
             output.WriteLine($"  {Ansi.Cyan}{idx.IndexName}{Ansi.Reset} ON {idx.TableName} ({cols}){unique}");
         }
-
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -206,22 +211,20 @@ internal sealed class ViewsCommand : IMetaCommand
     public string Name => ".views";
     public string Description => "List views";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        var views = context.Database.GetViewNames()
+        var views = (await context.Client.GetViewNamesAsync(ct))
             .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         if (views.Length == 0)
         {
             output.WriteLine(Ansi.Colorize("No views.", Ansi.Dim));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         foreach (var view in views)
             output.WriteLine($"  {Ansi.Cyan}{view}{Ansi.Reset}");
-
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -231,25 +234,24 @@ internal sealed class ViewCommand : IMetaCommand
     public string Name => ".view <NAME>";
     public string Description => "Show CREATE VIEW SQL";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(argument))
         {
             output.WriteLine(Ansi.Colorize("Usage: .view <NAME>", Ansi.Yellow));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         string name = argument.Trim();
-        string? sql = context.Database.GetViewSql(name);
+        string? sql = await context.Client.GetViewSqlAsync(name, ct);
         if (sql is null)
         {
             output.WriteLine(Ansi.Colorize($"View '{name}' not found.", Ansi.Red));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         output.WriteLine($"{Ansi.Bold}CREATE VIEW{Ansi.Reset} {Ansi.Cyan}{name}{Ansi.Reset} AS");
         output.WriteLine(sql.Trim().TrimEnd(';') + ";");
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -259,9 +261,9 @@ internal sealed class TriggersCommand : IMetaCommand
     public string Name => ".triggers [TABLE]";
     public string Description => "List triggers";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        var triggers = context.Database.GetTriggers().AsEnumerable();
+        IEnumerable<ClientTriggerSchema> triggers = await context.Client.GetTriggersAsync(ct);
         if (!string.IsNullOrWhiteSpace(argument))
             triggers = triggers.Where(t => t.TableName.Equals(argument.Trim(), StringComparison.OrdinalIgnoreCase));
 
@@ -269,7 +271,7 @@ internal sealed class TriggersCommand : IMetaCommand
         if (ordered.Length == 0)
         {
             output.WriteLine(Ansi.Colorize("No triggers.", Ansi.Dim));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         foreach (var trig in ordered)
@@ -278,8 +280,6 @@ internal sealed class TriggersCommand : IMetaCommand
                 $"  {Ansi.Cyan}{trig.TriggerName}{Ansi.Reset} " +
                 $"{trig.Timing.ToString().ToUpperInvariant()} {trig.Event.ToString().ToUpperInvariant()} ON {trig.TableName}");
         }
-
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -289,22 +289,22 @@ internal sealed class TriggerCommand : IMetaCommand
     public string Name => ".trigger <NAME>";
     public string Description => "Show CREATE TRIGGER SQL";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(argument))
         {
             output.WriteLine(Ansi.Colorize("Usage: .trigger <NAME>", Ansi.Yellow));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         string name = argument.Trim();
-        var trigger = context.Database.GetTriggers()
+        var trigger = (await context.Client.GetTriggersAsync(ct))
             .FirstOrDefault(t => t.TriggerName.Equals(name, StringComparison.OrdinalIgnoreCase));
 
         if (trigger is null)
         {
             output.WriteLine(Ansi.Colorize($"Trigger '{name}' not found.", Ansi.Red));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         output.WriteLine(
@@ -313,7 +313,6 @@ internal sealed class TriggerCommand : IMetaCommand
         output.WriteLine("BEGIN");
         output.WriteLine($"  {trigger.BodySql.Trim().TrimEnd(';')};");
         output.WriteLine("END;");
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -323,22 +322,20 @@ internal sealed class CollectionsCommand : IMetaCommand
     public string Name => ".collections";
     public string Description => "List document collections";
 
-    public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        var names = context.Database.GetCollectionNames()
+        var names = (await context.Client.GetCollectionNamesAsync(ct))
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         if (names.Length == 0)
         {
             output.WriteLine(Ansi.Colorize("No collections.", Ansi.Dim));
-            return ValueTask.CompletedTask;
+            return;
         }
 
         foreach (var name in names)
             output.WriteLine($"  {Ansi.Cyan}{name}{Ansi.Reset}");
-
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -402,6 +399,12 @@ internal sealed class SnapshotCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        if (!context.SupportsLocalDirectFeatures)
+        {
+            output.WriteLine(Ansi.Colorize("Snapshot mode requires direct local access.", Ansi.Yellow));
+            return ValueTask.CompletedTask;
+        }
+
         string arg = argument.Trim().ToLowerInvariant();
         if (arg.Length == 0 || arg == "status")
         {
@@ -449,6 +452,12 @@ internal sealed class SyncPointCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        if (!context.SupportsLocalDirectFeatures)
+        {
+            output.WriteLine(Ansi.Colorize("Sync point mode requires direct local access.", Ansi.Yellow));
+            return ValueTask.CompletedTask;
+        }
+
         string arg = argument.Trim().ToLowerInvariant();
         if (arg.Length == 0 || arg == "status")
         {
@@ -537,7 +546,12 @@ internal sealed class ReadCommand : IMetaCommand
 
         try
         {
-            statements = SqlScriptParser.SplitAllStatements(sqlText);
+            if (sqlText.AsSpan().TrimEnd().Length > 0 && sqlText.AsSpan().TrimEnd()[^1] != ';')
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "SQL script ended with an incomplete statement (missing semicolon).");
+
+            statements = SqlScriptSplitter.SplitExecutableStatements(sqlText);
         }
         catch (CSharpDbException ex)
         {
@@ -583,9 +597,68 @@ internal static class MetaCommandHelpers
 {
     internal const string CollectionPrefix = "_col_";
 
-    internal static IEnumerable<string> GetUserTableNames(Engine.Database db)
+    internal static async Task<IReadOnlyList<string>> GetTableNamesAsync(
+        MetaCommandContext context,
+        bool includeInternal,
+        CancellationToken ct)
     {
-        return db.GetTableNames()
-            .Where(n => !n.StartsWith(CollectionPrefix, StringComparison.Ordinal));
+        if (includeInternal && context.LocalDatabase is not null)
+        {
+            return context.LocalDatabase.GetTableNames()
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        return await context.Client.GetTableNamesAsync(ct);
     }
+
+    internal static async Task<IReadOnlyList<string>> GetUserTableNamesAsync(
+        MetaCommandContext context,
+        CancellationToken ct)
+    {
+        return await context.Client.GetTableNamesAsync(ct);
+    }
+
+    internal static async Task<ClientTableSchema?> GetTableSchemaAsync(
+        MetaCommandContext context,
+        string tableName,
+        CancellationToken ct)
+    {
+        var schema = await context.Client.GetTableSchemaAsync(tableName, ct);
+        if (schema is not null)
+            return schema;
+
+        if (context.LocalDatabase is null)
+            return null;
+
+        var localSchema = context.LocalDatabase.GetTableSchema(tableName);
+        return localSchema is null ? null : MapTableSchema(localSchema);
+    }
+
+    private static ClientTableSchema MapTableSchema(CSharpDB.Core.TableSchema schema)
+    {
+        return new ClientTableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns
+                .Select(column => new ClientColumnDefinition
+                {
+                    Name = column.Name,
+                    Type = MapDbType(column.Type),
+                    Nullable = column.Nullable,
+                    IsPrimaryKey = column.IsPrimaryKey,
+                    IsIdentity = column.IsIdentity,
+                })
+                .ToArray(),
+        };
+    }
+
+    private static CSharpDB.Client.Models.DbType MapDbType(CSharpDB.Core.DbType type) => type switch
+    {
+        CSharpDB.Core.DbType.Integer => CSharpDB.Client.Models.DbType.Integer,
+        CSharpDB.Core.DbType.Real => CSharpDB.Client.Models.DbType.Real,
+        CSharpDB.Core.DbType.Text => CSharpDB.Client.Models.DbType.Text,
+        CSharpDB.Core.DbType.Blob => CSharpDB.Client.Models.DbType.Blob,
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),
+    };
 }

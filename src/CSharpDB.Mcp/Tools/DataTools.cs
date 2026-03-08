@@ -1,6 +1,6 @@
 using System.ComponentModel;
+using CSharpDB.Client;
 using CSharpDB.Mcp.Helpers;
-using CSharpDB.Service;
 using ModelContextProtocol.Server;
 
 namespace CSharpDB.Mcp.Tools;
@@ -11,7 +11,7 @@ public static class DataTools
     [McpServerTool, Description(
         "Browse rows in a table with pagination. Returns rows, schema, and total count.")]
     public static async Task<string> BrowseTable(
-        CSharpDbService db,
+        ICSharpDbClient db,
         [Description("Name of the table to browse.")] string tableName,
         [Description("Page number (1-based). Defaults to 1.")] int page = 1,
         [Description("Rows per page. Defaults to 50.")] int pageSize = 50)
@@ -42,7 +42,7 @@ public static class DataTools
     [McpServerTool, Description(
         "Browse rows in a view with pagination. Returns rows and total count.")]
     public static async Task<string> BrowseView(
-        CSharpDbService db,
+        ICSharpDbClient db,
         [Description("Name of the view to browse.")] string viewName,
         [Description("Page number (1-based). Defaults to 1.")] int page = 1,
         [Description("Rows per page. Defaults to 50.")] int pageSize = 50)
@@ -63,7 +63,7 @@ public static class DataTools
 
     [McpServerTool, Description("Get a single row by primary key value.")]
     public static async Task<string> GetRowByPk(
-        CSharpDbService db,
+        ICSharpDbClient db,
         [Description("Name of the table.")] string tableName,
         [Description("Name of the primary key column.")] string pkColumn,
         [Description("Primary key value to look up.")] string pkValue)
@@ -80,7 +80,7 @@ public static class DataTools
 
     [McpServerTool, Description("Get the total number of rows in a table.")]
     public static async Task<string> GetRowCount(
-        CSharpDbService db,
+        ICSharpDbClient db,
         [Description("Name of the table.")] string tableName)
     {
         int count = await db.GetRowCountAsync(tableName);

@@ -9,23 +9,29 @@ The server exposes 14 tools for schema inspection, data browsing, row mutations,
 ## Running the Server
 
 ```bash
-# Default database (csharpdb.db in the current directory)
+# Default direct client target (ConnectionStrings:CSharpDB or csharpdb.db)
 dotnet run --project src/CSharpDB.Mcp
 
-# Specific database file
+# Direct client target via database path
 dotnet run --project src/CSharpDB.Mcp -- --database mydata.db
+
+# Explicit endpoint selection
+dotnet run --project src/CSharpDB.Mcp -- --endpoint http://localhost:61818 --transport http
 ```
 
-### Database Path Configuration
+### Client Target Configuration
 
-The database file is resolved in this order:
+The MCP server resolves `CSharpDbClientOptions` in this order:
 
-| Priority | Source | Example |
-|----------|--------|---------|
-| 1 | CLI argument | `--database mydata.db` or `-d mydata.db` |
-| 2 | Environment variable | `CSHARPDB_DATABASE=mydata.db` |
-| 3 | `appsettings.json` | `ConnectionStrings:CSharpDB` |
-| 4 | Default | `csharpdb.db` |
+| Setting | Priority | Example |
+|---------|----------|---------|
+| `Endpoint` | `--endpoint` / `-e`, then `CSHARPDB_ENDPOINT` | `--endpoint http://localhost:61818` |
+| `Transport` | `--transport` / `-t`, then `CSHARPDB_TRANSPORT` | `--transport http` |
+| Direct database path | `--database` / `-d`, then `CSHARPDB_DATABASE` | `--database mydata.db` |
+| Connection string | `ConnectionStrings:CSharpDB` from `appsettings.json` | `Data Source=csharpdb.db` |
+| Default | `csharpdb.db` when no other target is supplied | `Data Source=csharpdb.db` |
+
+`Direct` remains the default transport. If you pass an HTTP endpoint without `--transport`, the client infers `Http`. `Grpc`, `Tcp`, and named pipes can be selected in options but are not implemented yet.
 
 ---
 
@@ -209,16 +215,16 @@ AI Client (Claude, Cursor, etc.)
     │
 CSharpDB.Mcp (Generic Host)
     │
-CSharpDbService (thread-safe singleton)
+ICSharpDbClient
     │
-CSharpDbConnection (ADO.NET)
+CSharpDB.Client (transport-selecting SDK)
     │
 CSharpDB Engine (B+tree, WAL, Pager)
     │
 mydata.db
 ```
 
-All 14 tools are thin wrappers around `CSharpDbService`, which handles connection management, locking, and SQL execution. The MCP SDK (`ModelContextProtocol` NuGet package) handles protocol framing, tool discovery, and transport.
+All 14 tools are thin wrappers around `ICSharpDbClient`. In the current repo, MCP uses the direct engine-backed client by default, but the host can also be pointed at an HTTP endpoint through the same client options. The MCP SDK (`ModelContextProtocol` NuGet package) handles protocol framing, tool discovery, and stdio transport.
 
 ---
 

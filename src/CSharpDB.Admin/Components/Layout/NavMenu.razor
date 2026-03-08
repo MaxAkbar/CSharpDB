@@ -1,4 +1,5 @@
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @inject IJSRuntime JS
 @implements IDisposable
@@ -190,22 +191,20 @@
 
     private IReadOnlyCollection<string>? _tableNames;
     private IReadOnlyCollection<string>? _viewNames;
-    private IReadOnlyList<CSharpDB.Core.IndexSchema>? _indexes;
-    private IReadOnlyList<CSharpDB.Core.TriggerSchema>? _triggers;
-    private IReadOnlyList<CSharpDB.Service.Models.ProcedureDefinition>? _procedures;
+    private IReadOnlyList<IndexSchema>? _indexes;
+    private IReadOnlyList<TriggerSchema>? _triggers;
+    private IReadOnlyList<ProcedureDefinition>? _procedures;
     private string _searchQuery = string.Empty;
     private readonly HashSet<string> _expandedGroups = new() { "tables", "system", "views", "procedures" };
 
     protected override async Task OnInitializedAsync()
     {
-        DbService.TablesChanged += OnSchemaChanged;
-        DbService.SchemaChanged += OnSchemaChanged;
-        DbService.ProceduresChanged += OnSchemaChanged;
+        Changes.Changed += OnChanged;
         TabManager.StateChanged += OnTabChanged;
         await LoadObjects();
     }
 
-    private async void OnSchemaChanged()
+    private async void OnChanged()
     {
         await LoadObjects();
         await InvokeAsync(StateHasChanged);
@@ -217,11 +216,11 @@
     {
         try
         {
-            _tableNames = (await DbService.GetTableNamesAsync()).OrderBy(n => n).ToList();
-            _viewNames = (await DbService.GetViewNamesAsync()).OrderBy(n => n).ToList();
-            _indexes = (await DbService.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
-            _triggers = (await DbService.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
-            _procedures = (await DbService.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
+            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
+            _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
+            _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
+            _procedures = (await DbClient.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
         }
         catch
         {
@@ -248,25 +247,25 @@
         return items.Where(n => n.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
-    private IEnumerable<CSharpDB.Core.IndexSchema> FilterIndexes()
+    private IEnumerable<IndexSchema> FilterIndexes()
     {
-        if (_indexes is null) return Enumerable.Empty<CSharpDB.Core.IndexSchema>();
+        if (_indexes is null) return Enumerable.Empty<IndexSchema>();
         if (string.IsNullOrWhiteSpace(_searchQuery)) return _indexes;
         return _indexes.Where(i => i.IndexName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                  || i.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
-    private IEnumerable<CSharpDB.Core.TriggerSchema> FilterTriggers()
+    private IEnumerable<TriggerSchema> FilterTriggers()
     {
-        if (_triggers is null) return Enumerable.Empty<CSharpDB.Core.TriggerSchema>();
+        if (_triggers is null) return Enumerable.Empty<TriggerSchema>();
         if (string.IsNullOrWhiteSpace(_searchQuery)) return _triggers;
         return _triggers.Where(t => t.TriggerName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                   || t.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
-    private IEnumerable<CSharpDB.Service.Models.ProcedureDefinition> FilterProcedures()
+    private IEnumerable<ProcedureDefinition> FilterProcedures()
     {
-        if (_procedures is null) return Enumerable.Empty<CSharpDB.Service.Models.ProcedureDefinition>();
+        if (_procedures is null) return Enumerable.Empty<ProcedureDefinition>();
         if (string.IsNullOrWhiteSpace(_searchQuery)) return _procedures;
         return _procedures.Where(p => p.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                    || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
@@ -311,9 +310,7 @@
 
     public void Dispose()
     {
-        DbService.TablesChanged -= OnSchemaChanged;
-        DbService.SchemaChanged -= OnSchemaChanged;
-        DbService.ProceduresChanged -= OnSchemaChanged;
+        Changes.Changed -= OnChanged;
         TabManager.StateChanged -= OnTabChanged;
     }
 }

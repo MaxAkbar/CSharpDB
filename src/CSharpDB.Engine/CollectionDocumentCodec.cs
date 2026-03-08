@@ -22,6 +22,8 @@ internal sealed class CollectionDocumentCodec<T>
 
     internal bool UsesDirectPayloadFormat { get; }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal byte[] Encode(string key, T document)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -42,6 +44,8 @@ internal sealed class CollectionDocumentCodec<T>
         return CollectionPayloadCodec.Encode(keyUtf8, jsonUtf8);
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal (string Key, T Document) Decode(ReadOnlySpan<byte> payload)
     {
         if (!UsesDirectPayloadFormat || !CollectionPayloadCodec.IsDirectPayload(payload))
@@ -52,6 +56,8 @@ internal sealed class CollectionDocumentCodec<T>
         return (storedKey, document);
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal bool TryDecodeDocumentForKey(
         ReadOnlySpan<byte> payload,
         ReadOnlySpan<byte> expectedKeyUtf8,

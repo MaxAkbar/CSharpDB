@@ -1,4 +1,5 @@
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
@@ -119,11 +120,11 @@
                                         </div>
                                         <div class="schema-field">
                                             <label>Type</label>
-                                            <select class="schema-input" value="@_addColType" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.DbType>(e.Value?.ToString(), out var t)) _addColType = t; }">
-                                                <option value="@CSharpDB.Core.DbType.Integer">INTEGER</option>
-                                                <option value="@CSharpDB.Core.DbType.Real">REAL</option>
-                                                <option value="@CSharpDB.Core.DbType.Text">TEXT</option>
-                                                <option value="@CSharpDB.Core.DbType.Blob">BLOB</option>
+                                            <select class="schema-input" value="@_addColType" @onchange="e => { if (Enum.TryParse<DbType>(e.Value?.ToString(), out var t)) _addColType = t; }">
+                                                <option value="@DbType.Integer">INTEGER</option>
+                                                <option value="@DbType.Real">REAL</option>
+                                                <option value="@DbType.Text">TEXT</option>
+                                                <option value="@DbType.Blob">BLOB</option>
                                             </select>
                                         </div>
                                         <div class="schema-field">
@@ -303,17 +304,17 @@
                             </div>
                             <div class="schema-field">
                                 <label>Timing</label>
-                                <select class="schema-input" value="@_trigTiming" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.TriggerTiming>(e.Value?.ToString(), out var t)) _trigTiming = t; }">
-                                    <option value="@CSharpDB.Core.TriggerTiming.Before">BEFORE</option>
-                                    <option value="@CSharpDB.Core.TriggerTiming.After">AFTER</option>
+                                <select class="schema-input" value="@_trigTiming" @onchange="e => { if (Enum.TryParse<TriggerTiming>(e.Value?.ToString(), out var t)) _trigTiming = t; }">
+                                    <option value="@TriggerTiming.Before">BEFORE</option>
+                                    <option value="@TriggerTiming.After">AFTER</option>
                                 </select>
                             </div>
                             <div class="schema-field">
                                 <label>Event</label>
-                                <select class="schema-input" value="@_trigEvent" @onchange="e => { if (Enum.TryParse<CSharpDB.Core.TriggerEvent>(e.Value?.ToString(), out var t)) _trigEvent = t; }">
-                                    <option value="@CSharpDB.Core.TriggerEvent.Insert">INSERT</option>
-                                    <option value="@CSharpDB.Core.TriggerEvent.Update">UPDATE</option>
-                                    <option value="@CSharpDB.Core.TriggerEvent.Delete">DELETE</option>
+                                <select class="schema-input" value="@_trigEvent" @onchange="e => { if (Enum.TryParse<TriggerEvent>(e.Value?.ToString(), out var t)) _trigEvent = t; }">
+                                    <option value="@TriggerEvent.Insert">INSERT</option>
+                                    <option value="@TriggerEvent.Update">UPDATE</option>
+                                    <option value="@TriggerEvent.Delete">DELETE</option>
                                 </select>
                             </div>
                         </div>
@@ -377,17 +378,17 @@
     private bool HasSelection => _selectedRowCount > 0;
 
     // ─── Schema data ────────────────────
-    private CSharpDB.Core.TableSchema? _schema;
+    private TableSchema? _schema;
     private string? _viewSql;
-    private IReadOnlyCollection<CSharpDB.Core.IndexSchema>? _indexes;
-    private IReadOnlyCollection<CSharpDB.Core.TriggerSchema>? _triggers;
+    private IReadOnlyCollection<IndexSchema>? _indexes;
+    private IReadOnlyCollection<TriggerSchema>? _triggers;
 
     // ─── Alter table state ──────────────
     private bool _showAlterTable;
     private bool _submitting;
     private TableOp _tableOperation = TableOp.AddColumn;
     private string _addColName = string.Empty;
-    private CSharpDB.Core.DbType _addColType = CSharpDB.Core.DbType.Text;
+    private DbType _addColType = DbType.Text;
     private bool _addColNotNull;
     private string _dropColName = string.Empty;
     private string _renameOldCol = string.Empty;
@@ -403,8 +404,8 @@
     // ─── Trigger editing state ──────────
     private string? _editingTrigName;
     private string _trigName = string.Empty;
-    private CSharpDB.Core.TriggerTiming _trigTiming = CSharpDB.Core.TriggerTiming.After;
-    private CSharpDB.Core.TriggerEvent _trigEvent = CSharpDB.Core.TriggerEvent.Insert;
+    private TriggerTiming _trigTiming = TriggerTiming.After;
+    private TriggerEvent _trigEvent = TriggerEvent.Insert;
     private string _trigBody = string.Empty;
 
     // ─── View editing state ─────────────
@@ -435,10 +436,10 @@
         {
             if (!IsView)
             {
-                _schema = await DbService.GetTableSchemaAsync(ObjectName);
-                var allIndexes = await DbService.GetIndexesAsync();
+                _schema = await DbClient.GetTableSchemaAsync(ObjectName);
+                var allIndexes = await DbClient.GetIndexesAsync();
                 _indexes = allIndexes.Where(i => i.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
-                var allTriggers = await DbService.GetTriggersAsync();
+                var allTriggers = await DbClient.GetTriggersAsync();
                 _triggers = allTriggers.Where(t => t.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
 
                 // Sync dropdown defaults
@@ -454,7 +455,7 @@
             }
             else
             {
-                _viewSql = await DbService.GetViewSqlAsync(ObjectName);
+                _viewSql = await DbClient.GetViewSqlAsync(ObjectName);
             }
         }
         catch (Exception ex)
@@ -527,25 +528,26 @@
             switch (_tableOperation)
             {
                 case TableOp.AddColumn:
-                    await DbService.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull);
+                    await DbClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull);
                     Toast.Success($"Added column '{_addColName}'.");
                     _addColName = string.Empty;
                     break;
                 case TableOp.DropColumn:
-                    await DbService.DropColumnAsync(ObjectName, _dropColName);
+                    await DbClient.DropColumnAsync(ObjectName, _dropColName);
                     Toast.Success($"Dropped column '{_dropColName}'.");
                     break;
                 case TableOp.RenameColumn:
-                    await DbService.RenameColumnAsync(ObjectName, _renameOldCol, _renameNewCol);
+                    await DbClient.RenameColumnAsync(ObjectName, _renameOldCol, _renameNewCol);
                     Toast.Success($"Renamed '{_renameOldCol}' → '{_renameNewCol}'.");
                     _renameNewCol = string.Empty;
                     break;
                 case TableOp.RenameTable:
-                    await DbService.RenameTableAsync(ObjectName, _newTableName);
+                    await DbClient.RenameTableAsync(ObjectName, _newTableName);
                     Toast.Success($"Renamed table → '{_newTableName}'.");
                     _newTableName = string.Empty;
                     break;
             }
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -556,7 +558,7 @@
     // INDEXES
     // ═══════════════════════════════════════
 
-    private void StartIndexEdit(CSharpDB.Core.IndexSchema idx)
+    private void StartIndexEdit(IndexSchema idx)
     {
         _editingIdxName = idx.IndexName;
         _idxName = idx.IndexName;
@@ -578,15 +580,16 @@
         {
             if (_editingIdxName is null)
             {
-                await DbService.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique);
+                await DbClient.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique);
                 Toast.Success($"Created index '{_idxName}'.");
             }
             else
             {
-                await DbService.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique);
+                await DbClient.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique);
                 Toast.Success($"Updated index '{_editingIdxName}'.");
             }
             CancelIndexEdit();
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -598,8 +601,9 @@
         _confirmDrop = null;
         try
         {
-            await DbService.DropIndexAsync(indexName);
+            await DbClient.DropIndexAsync(indexName);
             Toast.Success($"Dropped index '{indexName}'.");
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -609,7 +613,7 @@
     // TRIGGERS
     // ═══════════════════════════════════════
 
-    private void StartTriggerEdit(CSharpDB.Core.TriggerSchema trig)
+    private void StartTriggerEdit(TriggerSchema trig)
     {
         _editingTrigName = trig.TriggerName;
         _trigName = trig.TriggerName;
@@ -622,8 +626,8 @@
     {
         _editingTrigName = null;
         _trigName = string.Empty;
-        _trigTiming = CSharpDB.Core.TriggerTiming.After;
-        _trigEvent = CSharpDB.Core.TriggerEvent.Insert;
+        _trigTiming = TriggerTiming.After;
+        _trigEvent = TriggerEvent.Insert;
         _trigBody = string.Empty;
     }
 
@@ -634,15 +638,16 @@
         {
             if (_editingTrigName is null)
             {
-                await DbService.CreateTriggerAsync(_trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                await DbClient.CreateTriggerAsync(_trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
                 Toast.Success($"Created trigger '{_trigName}'.");
             }
             else
             {
-                await DbService.UpdateTriggerAsync(_editingTrigName, _trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                await DbClient.UpdateTriggerAsync(_editingTrigName, _trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
                 Toast.Success($"Updated trigger '{_editingTrigName}'.");
             }
             CancelTriggerEdit();
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -654,8 +659,9 @@
         _confirmDrop = null;
         try
         {
-            await DbService.DropTriggerAsync(triggerName);
+            await DbClient.DropTriggerAsync(triggerName);
             Toast.Success($"Dropped trigger '{triggerName}'.");
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -679,9 +685,10 @@
         _submitting = true;
         try
         {
-            await DbService.UpdateViewAsync(ObjectName, _editViewName, _editViewSql);
+            await DbClient.UpdateViewAsync(ObjectName, _editViewName, _editViewSql);
             Toast.Success($"Updated view '{ObjectName}'.");
             _editingView = false;
+            Changes.NotifyChanged();
             await LoadSchemaAsync();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
@@ -695,8 +702,9 @@
         {
             try
             {
-                await DbService.DropViewAsync(ObjectName);
+                await DbClient.DropViewAsync(ObjectName);
                 Toast.Success($"Dropped view '{ObjectName}'.");
+                Changes.NotifyChanged();
             }
             catch (Exception ex) { Toast.Error(ex.Message); }
         }
@@ -714,8 +722,9 @@
 
         try
         {
-            await DbService.DropTableAsync(ObjectName);
+            await DbClient.DropTableAsync(ObjectName);
             Toast.Success($"Dropped table '{ObjectName}'.");
+            Changes.NotifyChanged();
             TabManager.CloseTabsForObject(ObjectName);
         }
         catch (Exception ex)

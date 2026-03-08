@@ -18,6 +18,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Description>Lightweight embedded SQL database engine for .NET. Single-file storage, WAL durability, concurrent readers, and a typed Collection&lt;T&gt; NoSQL API.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
 </Project>

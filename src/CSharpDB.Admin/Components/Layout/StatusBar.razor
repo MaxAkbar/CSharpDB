@@ -1,4 +1,5 @@
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @implements IDisposable
 
@@ -8,7 +9,7 @@
         Connected
     </div>
     <div class="status-item">
-        <i class="bi bi-database"></i> @DbService.DataSource
+        <i class="bi bi-database"></i> @DbClient.DataSource
     </div>
     <div class="status-item">
         @_tableCount tables, @_viewCount views, @_procedureCount procedures
@@ -29,13 +30,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        DbService.SchemaChanged += OnSchemaChanged;
-        DbService.TablesChanged += OnSchemaChanged;
-        DbService.ProceduresChanged += OnSchemaChanged;
+        Changes.Changed += OnChanged;
         await LoadCounts();
     }
 
-    private async void OnSchemaChanged()
+    private async void OnChanged()
     {
         await LoadCounts();
         await InvokeAsync(StateHasChanged);
@@ -45,20 +44,16 @@
     {
         try
         {
-            var tables = await DbService.GetTableNamesAsync();
-            var views = await DbService.GetViewNamesAsync();
-            var procedures = await DbService.GetProceduresAsync();
-            _tableCount = tables.Count;
-            _viewCount = views.Count;
-            _procedureCount = procedures.Count;
+            var info = await DbClient.GetInfoAsync();
+            _tableCount = info.TableCount;
+            _viewCount = info.ViewCount;
+            _procedureCount = info.ProcedureCount;
         }
         catch { /* ignore */ }
     }
 
     public void Dispose()
     {
-        DbService.SchemaChanged -= OnSchemaChanged;
-        DbService.TablesChanged -= OnSchemaChanged;
-        DbService.ProceduresChanged -= OnSchemaChanged;
+        Changes.Changed -= OnChanged;
     }
 }

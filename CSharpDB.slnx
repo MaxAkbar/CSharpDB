@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/CSharpDB/CSharpDB.csproj" />
     <Project Path="src/CSharpDB.Core/CSharpDB.Core.csproj" />
+    <Project Path="src/CSharpDB.Client/CSharpDB.Client.csproj" />
     <Project Path="src/CSharpDB.Core.Compatibility/CSharpDB.Core.Compatibility.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />

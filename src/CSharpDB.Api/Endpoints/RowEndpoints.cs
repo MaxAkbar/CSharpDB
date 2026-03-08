@@ -1,6 +1,6 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
-using CSharpDB.Service;
+using CSharpDB.Client;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -18,7 +18,7 @@ public static class RowEndpoints
     }
 
     private static async Task<IResult> BrowseRows(
-        string name, CSharpDbService db, int page = 1, int pageSize = 50)
+        string name, ICSharpDbClient db, int page = 1, int pageSize = 50)
     {
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 50;
@@ -34,7 +34,7 @@ public static class RowEndpoints
     }
 
     private static async Task<IResult> GetRowByPk(
-        string name, string pkValue, CSharpDbService db, string pkColumn = "id")
+        string name, string pkValue, ICSharpDbClient db, string pkColumn = "id")
     {
         object coerced = CoercePkValue(pkValue);
         var row = await db.GetRowByPkAsync(name, pkColumn, coerced);
@@ -43,7 +43,7 @@ public static class RowEndpoints
             : Results.Ok(row);
     }
 
-    private static async Task<IResult> InsertRow(string name, InsertRowRequest req, CSharpDbService db)
+    private static async Task<IResult> InsertRow(string name, InsertRowRequest req, ICSharpDbClient db)
     {
         var values = JsonHelper.CoerceDictionary(req.Values);
         var affected = await db.InsertRowAsync(name, values);
@@ -51,7 +51,7 @@ public static class RowEndpoints
     }
 
     private static async Task<IResult> UpdateRow(
-        string name, string pkValue, UpdateRowRequest req, CSharpDbService db, string pkColumn = "id")
+        string name, string pkValue, UpdateRowRequest req, ICSharpDbClient db, string pkColumn = "id")
     {
         object coerced = CoercePkValue(pkValue);
         var values = JsonHelper.CoerceDictionary(req.Values);
@@ -60,7 +60,7 @@ public static class RowEndpoints
     }
 
     private static async Task<IResult> DeleteRow(
-        string name, string pkValue, CSharpDbService db, string pkColumn = "id")
+        string name, string pkValue, ICSharpDbClient db, string pkColumn = "id")
     {
         object coerced = CoercePkValue(pkValue);
         var affected = await db.DeleteRowAsync(name, pkColumn, coerced);

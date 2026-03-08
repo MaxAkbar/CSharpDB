@@ -1,6 +1,6 @@
 using System.ComponentModel;
+using CSharpDB.Client;
 using CSharpDB.Mcp.Helpers;
-using CSharpDB.Service;
 using ModelContextProtocol.Server;
 
 namespace CSharpDB.Mcp.Tools;
@@ -14,7 +14,7 @@ public static class SqlTools
         "ALTER TABLE, DROP, INSERT, UPDATE, DELETE, and any other SQL statement. " +
         "Returns query results for SELECT or rows-affected count for DML/DDL.")]
     public static async Task<string> ExecuteSql(
-        CSharpDbService db,
+        ICSharpDbClient db,
         [Description("The SQL statement to execute.")] string sql)
     {
         var result = await db.ExecuteSqlAsync(sql);

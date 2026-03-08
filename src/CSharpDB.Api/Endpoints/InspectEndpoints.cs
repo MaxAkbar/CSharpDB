@@ -1,4 +1,4 @@
-using CSharpDB.Service;
+using CSharpDB.Client;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -14,7 +14,7 @@ public static class InspectEndpoints
     }
 
     private static async Task<IResult> InspectStorage(
-        CSharpDbService db,
+        ICSharpDbClient db,
         bool includePages = false,
         string? path = null)
     {
@@ -23,7 +23,7 @@ public static class InspectEndpoints
     }
 
     private static async Task<IResult> InspectWal(
-        CSharpDbService db,
+        ICSharpDbClient db,
         string? path = null)
     {
         var report = await db.CheckWalAsync(path);
@@ -32,7 +32,7 @@ public static class InspectEndpoints
 
     private static async Task<IResult> InspectPage(
         uint id,
-        CSharpDbService db,
+        ICSharpDbClient db,
         bool hex = false,
         string? path = null)
     {
@@ -41,7 +41,7 @@ public static class InspectEndpoints
     }
 
     private static async Task<IResult> CheckIndexes(
-        CSharpDbService db,
+        ICSharpDbClient db,
         string? index = null,
         int? sample = null,
         string? path = null)

@@ -1,6 +1,6 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
-using CSharpDB.Service;
+using CSharpDB.Client;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -12,7 +12,7 @@ public static class SqlEndpoints
         return group;
     }
 
-    private static async Task<IResult> ExecuteSql(ExecuteSqlRequest req, CSharpDbService db)
+    private static async Task<IResult> ExecuteSql(ExecuteSqlRequest req, ICSharpDbClient db)
     {
         var result = await db.ExecuteSqlAsync(req.Sql);
 

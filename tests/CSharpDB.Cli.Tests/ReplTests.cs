@@ -1,3 +1,5 @@
+using CSharpDB.Client;
+using CSharpDB.Client.Internal;
 using CSharpDB.Engine;
 
 namespace CSharpDB.Cli.Tests;
@@ -5,24 +7,6 @@ namespace CSharpDB.Cli.Tests;
 [Collection("CliConsole")]
 public sealed class ReplTests
 {
-    [Fact]
-    public void SqlScriptParser_SplitAllStatements_KeepsTriggerBodyAsSingleStatement()
-    {
-        string sql = """
-            CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER);
-            CREATE TRIGGER tr AFTER INSERT ON t BEGIN
-                INSERT INTO t VALUES (NEW.id + 100, NEW.n);
-            END;
-            INSERT INTO t VALUES (1, 10);
-            """;
-
-        var statements = SqlScriptParser.SplitAllStatements(sql);
-
-        Assert.Equal(3, statements.Count);
-        Assert.Contains("CREATE TRIGGER tr AFTER INSERT ON t BEGIN", statements[1], StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("END;", statements[1], StringComparison.OrdinalIgnoreCase);
-    }
-
     [Fact]
     public async Task Repl_ReadCommand_ExecutesScriptIncludingTrigger()
     {
@@ -55,6 +39,39 @@ public sealed class ReplTests
         finally
         {
             DeleteIfExists(scriptPath);
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task Repl_MultiLineTriggerDefinition_ExecutesWhenStatementCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER);",
+                "CREATE TABLE t_audit (n INTEGER);",
+                "CREATE TRIGGER t_tr AFTER INSERT ON t BEGIN",
+                "    INSERT INTO t_audit VALUES (42);",
+                "END;",
+                "INSERT INTO t VALUES (1, 10);",
+                ".quit",
+                "",
+            });
+
+            await RunReplAsync(dbPath, input, ct);
+
+            await using var db = await Database.OpenAsync(dbPath, ct);
+            long auditCount = await QueryCountAsync(db, "SELECT COUNT(*) FROM t_audit;", ct);
+            Assert.Equal(1, auditCount);
+        }
+        finally
+        {
             DeleteIfExists(dbPath);
             DeleteIfExists(dbPath + ".wal");
         }
@@ -180,6 +197,34 @@ public sealed class ReplTests
         }
     }
 
+    [Fact]
+    public async Task Repl_InfoCommand_DoesNotFailWhenLocalDirectFeaturesAreEnabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                ".info",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
+
+            Assert.Contains("Objects:", plainOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Error:", plainOutput, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static async Task<long> QueryCountAsync(Database db, string sql, CancellationToken ct)
     {
         await using var result = await db.ExecuteAsync(sql, ct);
@@ -190,11 +235,17 @@ public sealed class ReplTests
 
     private static async Task<string> RunReplAsync(string dbPath, string input, CancellationToken ct)
     {
-        await using var db = await Database.OpenAsync(dbPath, ct);
+        await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+        {
+            DataSource = dbPath,
+        });
+        Database? db = client is IEngineBackedClient engineBacked
+            ? await engineBacked.TryGetDatabaseAsync(ct)
+            : null;
 
         var commands = BuildCommands();
         var output = new StringWriter();
-        using var repl = new Repl(db, dbPath, output, commands);
+        using var repl = new Repl(client, db, dbPath, output, commands);
 
         var originalIn = Console.In;
         try

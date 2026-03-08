@@ -1,5 +1,5 @@
 @using CSharpDB.Storage.Diagnostics
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
 @inject ToastService Toast
 
 <div class="storage-tab">
@@ -17,7 +17,7 @@
             <i class="bi bi-search"></i> Inspect Page
         </button>
         <div class="toolbar-spacer"></div>
-        <div class="toolbar-info">@(_dbReport?.DatabasePath ?? DbService.DataSource)</div>
+        <div class="toolbar-info">@(_dbReport?.DatabasePath ?? DbClient.DataSource)</div>
     </div>
 
     @if (_loading)
@@ -248,9 +248,9 @@
         _loading = true;
         try
         {
-            _dbReport = await DbService.InspectStorageAsync(includePages: false);
-            _walReport = await DbService.CheckWalAsync();
-            _indexReport = await DbService.CheckIndexesAsync();
+            _dbReport = await DbClient.InspectStorageAsync(includePages: false);
+            _walReport = await DbClient.CheckWalAsync();
+            _indexReport = await DbClient.CheckIndexesAsync();
             RebuildIssueList();
         }
         catch (Exception ex)
@@ -274,7 +274,7 @@
         _loadingPage = true;
         try
         {
-            _pageReport = await DbService.InspectPageAsync(pageId, _includeHex);
+            _pageReport = await DbClient.InspectPageAsync(pageId, _includeHex);
         }
         catch (Exception ex)
         {

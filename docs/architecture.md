@@ -1,37 +1,50 @@
 # CSharpDB Architecture
 
-CSharpDB is a layered embedded database engine inspired by SQLite's architecture. Each layer has a clear responsibility and communicates only with adjacent layers.
+CSharpDB is a layered embedded database engine inspired by SQLite's architecture.
+The core engine layers have clear responsibilities and mostly communicate with
+adjacent layers. Above the engine, CSharpDB now exposes multiple consumer-facing
+entry points, with `CSharpDB.Client` as the authoritative database API.
 
 ## Layer Overview
 
 ```
-┌──────────────────────────────────────────────────┐
-│              CSharpDB.Data                       │   ADO.NET Provider
-│  DbConnection, DbCommand, DbDataReader           │
-├──────────────────────────────────────────────────┤
-│                CSharpDB.Engine                   │   Database API
-│  Database.OpenAsync / ExecuteAsync / Transactions│
-│  ReaderSession (concurrent snapshot reads)       │
-├──────────────────────────────────────────────────┤
-│              CSharpDB.Execution                  │   Query Execution
-│  QueryPlanner, Operators, ExpressionEvaluator    │
-├──────────────────────┬───────────────────────────┤
-│    CSharpDB.Sql      │    CSharpDB.Storage       │   SQL Frontend + Storage
-│  Tokenizer, Parser   │  Pager, B+Tree, WAL       │
-│  AST                 │  SlottedPage, RecordCodec │
-├──────────────────────┴───────────────────────────┤
-│                CSharpDB.Core                     │   Shared Types
-│  DbValue, DbType, Schema, ErrorCodes             │
-└──────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│ Hosts / Applications                                               │
+│ CSharpDB.Api   CSharpDB.Admin   CSharpDB.Cli   CSharpDB.Mcp        │
+├────────────────────────────────────────────────────────────────────┤
+│ Consumer Access Layer                                              │
+│ CSharpDB.Client        CSharpDB.Data        CSharpDB.Service       │
+│ ICSharpDbClient        ADO.NET Provider     Compatibility Facade   │
+├────────────────────────────────────────────────────────────────────┤
+│ CSharpDB.Engine                                                    │
+│ Database.OpenAsync / ExecuteAsync / Transactions / ReaderSession   │
+├────────────────────────────────────────────────────────────────────┤
+│ CSharpDB.Execution                                                 │
+│ QueryPlanner, Operators, ExpressionEvaluator                       │
+├───────────────────────────────┬────────────────────────────────────┤
+│ CSharpDB.Sql                  │ CSharpDB.Storage                   │
+│ Tokenizer, Parser, AST        │ Pager, B+Tree, WAL, RecordCodec    │
+├───────────────────────────────┴────────────────────────────────────┤
+│ CSharpDB.Core                                                      │
+│ DbValue, DbType, Schema, ErrorCodes                                │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 **Dependency graph:**
 
 ```
-Api     → Service
-Admin   → Service
-Service → Data     → Engine
-Cli     → Engine
+Api     → Client
+Admin   → Client
+Cli     → Client
+Cli     → Engine              (local-only helpers)
+Cli     → Sql
+Cli     → Storage.Diagnostics
+Mcp     → Service → Client
+Service → Sql                 (compatibility change notifications)
+Data    → Engine
+Client  → Engine
+Client  → Sql
+Client  → Storage.Diagnostics
 Engine  → Execution → Sql
                     → Storage → Core
           Execution → Core
@@ -153,7 +166,7 @@ CSharpDB uses a Write-Ahead Log for crash recovery and concurrent reader support
 │  [checksumSeed:4] [reserved:4]                       │
 ├──────────────────────────────────────────────────────┤
 │ Frame 0 (4120 bytes)                                 │
-│  [pageId:4] [dbPageCount:4] [salt1:4] [salt2:4]     │
+│  [pageId:4] [dbPageCount:4] [salt1:4] [salt2:4]      │
 │  [headerChecksum:4] [dataChecksum:4]                 │
 │  [page data: 4096 bytes]                             │
 ├──────────────────────────────────────────────────────┤
@@ -397,7 +410,53 @@ The `Database` class ties all layers together:
 
 ---
 
-## Layer 6: ADO.NET Provider (`CSharpDB.Data`)
+## Layer 6: Unified Client (`CSharpDB.Client`)
+
+`CSharpDB.Client` is the authoritative database API for CSharpDB consumers.
+
+It owns the public client contract and transport selection boundary used by the
+CLI, Web API, Admin dashboard, and future external consumers. Transport details
+stay behind this layer.
+
+Key pieces:
+
+- `ICSharpDbClient` — transport-agnostic database contract
+- `CSharpDbClientOptions` — endpoint / data source / connection string options
+- `CSharpDbTransport` — public transport selector
+- `AddCSharpDbClient(...)` — DI registration helper
+
+Current direction:
+
+- **Direct transport is implemented today** and is backed by `CSharpDB.Engine`
+- **HTTP, gRPC, TCP, and Named Pipes are part of the public transport model**
+  but are not implemented yet
+- **The client does not depend on `CSharpDB.Data`**
+- **New database-facing functionality should be added here first**
+
+Current surface includes:
+
+- database info and metadata
+- table schemas, browse, CRUD, and table/column DDL
+- indexes, views, and triggers
+- saved queries
+- procedures and procedure execution
+- SQL execution
+- client-managed transactions
+- document collections
+- checkpoint and storage diagnostics
+
+Implementation dependencies:
+
+- `CSharpDB.Engine`
+- `CSharpDB.Sql`
+- `CSharpDB.Storage.Diagnostics`
+
+This means the current direct client is a high-level engine-backed API, not an
+ADO.NET wrapper.
+
+---
+
+## Layer 7: ADO.NET Provider (`CSharpDB.Data`)
 
 | File | Purpose |
 |------|---------|
@@ -429,44 +488,75 @@ while (await reader.ReadAsync())
 
 ---
 
-## Layer 7: Shared Service (`CSharpDB.Service`)
+## Layer 8: Compatibility Service (`CSharpDB.Service`)
 
-The service layer provides a thread-safe singleton wrapper around `CSharpDbConnection`, shared by both the Admin dashboard and the REST API. It centralizes database lifecycle management and exposes high-level methods for tables, rows, indexes, views, triggers, and SQL execution.
+`CSharpDB.Service` is no longer the authoritative database API.
+
+It now acts as a compatibility facade over `CSharpDB.Client` for hosts that
+still inject `CSharpDbService`.
 
 Key design:
-- **Singleton** — one instance per application, manages a single database connection
-- **`SemaphoreSlim` locking** — ensures safe concurrent access from multiple HTTP requests or UI events
-- **Configuration-driven** — reads `ConnectionStrings:CSharpDB` from `IConfiguration`
-- **48 public methods** covering all database operations (CRUD on tables/rows, schema introspection, index/view/trigger management, SQL execution)
 
-Both `CSharpDB.Admin` and `CSharpDB.Api` reference this project to avoid duplicating data access logic.
+- **Compatibility layer** — preserves the old `CSharpDbService` DI shape
+- **`SemaphoreSlim` locking** — serializes calls for existing in-process hosts
+- **Configuration-driven** — reads `ConnectionStrings:CSharpDB` from `IConfiguration`
+- **Event bridge** — preserves `TablesChanged`, `SchemaChanged`, and `ProceduresChanged`
+- **Delegates to client** — schema, CRUD, SQL, procedures, saved queries, and
+  diagnostics flow through `CSharpDB.Client`
+
+Current primary consumer:
+
+- `CSharpDB.Mcp`
+
+This layer remains useful during migration, but it is not the long-term center
+of the architecture anymore.
 
 ---
 
-## Layer 8: REST API (`CSharpDB.Api`)
+## Layer 9: REST API (`CSharpDB.Api`)
 
 The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.
 
 Components:
-- **Endpoints** — 30 endpoints organized by resource (tables, rows, indexes, views, triggers, SQL, info)
+- **Endpoints** — organized by resource (tables, rows, indexes, views, triggers, procedures, SQL, info, inspection)
 - **DTOs** — Request/response records for type-safe serialization
-- **JSON helpers** — Coerce `System.Text.Json` `JsonElement` values to CLR primitives for the engine
+- **JSON helpers** — Coerce `System.Text.Json` `JsonElement` values to CLR primitives for the client
 - **Exception middleware** — Maps `CSharpDbException` error codes to HTTP status codes (404, 409, 422, etc.)
-- **OpenAPI + Scalar** — Auto-generated API spec with interactive documentation at `/scalar/v1`
+- **OpenAPI + Scalar** — Auto-generated API spec with interactive documentation at `/scalar`
+
+The API now injects `ICSharpDbClient` directly. It no longer depends on
+`CSharpDB.Service` or `CSharpDB.Data`.
 
 See the [REST API Reference](../docs/rest-api.md) for the complete endpoint documentation.
 
 ---
 
-## Layer 9: Admin Dashboard (`CSharpDB.Admin`)
+## Layer 10: Admin Dashboard (`CSharpDB.Admin`)
 
 A Blazor Server application that provides a web-based UI for database administration. Features:
 - Tab-based interface for browsing tables, views, indexes, and triggers
 - Paginated data grid with column headers
 - SQL execution panel
+- Procedure editing and execution
+- Storage inspection
 - Schema introspection (columns, types, constraints)
 
-The Admin dashboard uses the same `CSharpDB.Service` layer as the REST API.
+The Admin dashboard now injects `ICSharpDbClient` directly. It uses an
+admin-local change notification service to refresh UI state after mutations
+without depending on `CSharpDB.Service`.
+
+---
+
+## Layer 11: CLI And MCP Hosts
+
+Two additional host applications sit above the consumer access layer:
+
+- **`CSharpDB.Cli`** — the interactive shell and local tooling entrypoint. It
+  now routes normal database access through `CSharpDB.Client`, while still
+  keeping a few local-only direct helpers for engine- and diagnostics-specific
+  features.
+- **`CSharpDB.Mcp`** — the MCP server host. It currently still uses
+  `CSharpDB.Service`, which in turn delegates to `CSharpDB.Client`.
 
 ---
 
