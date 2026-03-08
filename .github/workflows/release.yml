@@ -158,7 +158,20 @@ jobs:
       - name: Verify exported symbols (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\${{ matrix.rid }}\publish\${{ matrix.lib }} | Select-String "csharpdb_"
+        run: |
+          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' |
+            Select-Object -First 1
+
+          if (-not $dumpbin) {
+            throw "Could not locate dumpbin.exe from the installed Visual Studio toolchain."
+          }
+
+          & $dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\${{ matrix.rid }}\publish\${{ matrix.lib }} |
+            Select-String "csharpdb_"
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
