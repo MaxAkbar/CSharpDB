@@ -177,9 +177,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.rid }}
-          path: |
-            src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
-            src/CSharpDB.Native/csharpdb.h
+          path: src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
+          if-no-files-found: error
+
+      - name: Upload C header (once)
+        if: matrix.rid == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-header
+          path: src/CSharpDB.Native/csharpdb.h
           if-no-files-found: error
 
   create-release:
@@ -204,7 +210,7 @@ jobs:
         with:
           pattern: native-*
           path: artifacts/native
-          merge-multiple: false
+          merge-multiple: true
 
       - name: Resolve release notes
         id: notes
@@ -239,7 +245,7 @@ jobs:
           body_path: ${{ steps.notes.outputs.path }}
           files: |
             artifacts/nuget/*.nupkg
-            artifacts/native/**/*
+            artifacts/native/*
 
       - name: Create release (auto-generated notes)
         if: steps.notes.outputs.has_notes == 'false'
@@ -249,4 +255,4 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/nuget/*.nupkg
-            artifacts/native/**/*
+            artifacts/native/*
