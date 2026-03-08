@@ -554,8 +554,11 @@ public sealed class Collection<T>
         await _pager.BeginTransactionAsync(ct);
         try
         {
+            uint rootBefore = _tree.RootPageId;
             await action();
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            uint rootAfter = _tree.RootPageId;
+            if (rootBefore != rootAfter || _indexes.Count > 0)
+                await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
         }
         catch

@@ -332,6 +332,109 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Put_UpdateExistingDocument_PersistsAcrossReopen_WhenRootDoesNotChange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "old@example.com"), ct);
+        uint rootBefore = GetCollectionRootPageId(users);
+
+        await users.PutAsync("u:1", new User("Alice", 31, "new@example.com"), ct);
+
+        Assert.Equal(rootBefore, GetCollectionRootPageId(users));
+
+        await ReopenDatabaseAsync(ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        var result = await reopened.GetAsync("u:1", ct);
+        Assert.NotNull(result);
+        Assert.Equal(31, result!.Age);
+        Assert.Equal("new@example.com", result.Email);
+    }
+
+    [Fact]
+    public async Task Delete_ExistingDocument_PersistsAcrossReopen_WhenRootDoesNotChange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        uint rootBefore = GetCollectionRootPageId(users);
+
+        Assert.True(await users.DeleteAsync("u:1", ct));
+        Assert.Equal(rootBefore, GetCollectionRootPageId(users));
+
+        await ReopenDatabaseAsync(ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(0, await reopened.CountAsync(ct));
+        Assert.Null(await reopened.GetAsync("u:1", ct));
+    }
+
+    [Fact]
+    public async Task AutoCommitInsert_PersistsAcrossReopen_AfterRootSplit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        uint initialRoot = GetCollectionRootPageId(users);
+
+        int inserted = 0;
+        while (GetCollectionRootPageId(users) == initialRoot && inserted < 2048)
+        {
+            await users.PutAsync(
+                $"u:{inserted}",
+                new User($"User{inserted}", 20 + (inserted % 40), $"u{inserted}@example.com"),
+                ct);
+            inserted++;
+        }
+
+        Assert.NotEqual(initialRoot, GetCollectionRootPageId(users));
+
+        await ReopenDatabaseAsync(ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(inserted, await reopened.CountAsync(ct));
+        Assert.Equal("User0", (await reopened.GetAsync("u:0", ct))!.Name);
+        Assert.Equal($"User{inserted - 1}", (await reopened.GetAsync($"u:{inserted - 1}", ct))!.Name);
+    }
+
+    [Fact]
+    public async Task AutoCommitDelete_PersistsAcrossReopen_AfterRootCollapse()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        uint initialRoot = GetCollectionRootPageId(users);
+        var keys = new List<string>();
+
+        while (GetCollectionRootPageId(users) == initialRoot && keys.Count < 2048)
+        {
+            string key = $"u:{keys.Count}";
+            keys.Add(key);
+            await users.PutAsync(
+                key,
+                new User($"User{keys.Count - 1}", 20 + (keys.Count % 40), $"{key}@example.com"),
+                ct);
+        }
+
+        uint expandedRoot = GetCollectionRootPageId(users);
+        Assert.NotEqual(initialRoot, expandedRoot);
+
+        for (int i = 0; i < keys.Count - 1; i++)
+            Assert.True(await users.DeleteAsync(keys[i], ct));
+
+        Assert.NotEqual(expandedRoot, GetCollectionRootPageId(users));
+
+        await ReopenDatabaseAsync(ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(1, await reopened.CountAsync(ct));
+        var remaining = await reopened.GetAsync(keys[^1], ct);
+        Assert.NotNull(remaining);
+        Assert.Equal($"User{keys.Count - 1}", remaining!.Name);
+    }
+
+    [Fact]
     public async Task LegacyBackingRows_AreReadableThroughCollection()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -528,10 +631,7 @@ public class CollectionTests : IAsyncLifetime
         TDocument document,
         CancellationToken ct)
     {
-        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("Collection tree field not found.");
-        var tree = (BTree?)treeField.GetValue(collection)
-            ?? throw new InvalidOperationException("Collection tree was not initialized.");
+        var tree = GetCollectionTree(collection);
 
         string json = JsonSerializer.Serialize(document, s_collectionJsonOptions);
         byte[] payload = new DefaultRecordSerializer().Encode(
@@ -555,15 +655,29 @@ public class CollectionTests : IAsyncLifetime
         string key,
         CancellationToken ct)
     {
-        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("Collection tree field not found.");
-        var tree = (BTree?)treeField.GetValue(collection)
-            ?? throw new InvalidOperationException("Collection tree was not initialized.");
+        var tree = GetCollectionTree(collection);
 
         var payload = await tree.FindMemoryAsync(Collection<TDocument>.HashDocumentKey(key), ct)
             ?? throw new InvalidOperationException("Collection payload not found.");
 
         return payload.ToArray();
+    }
+
+    private async Task ReopenDatabaseAsync(CancellationToken ct)
+    {
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+    }
+
+    private static uint GetCollectionRootPageId<TDocument>(Collection<TDocument> collection)
+        => GetCollectionTree(collection).RootPageId;
+
+    private static BTree GetCollectionTree<TDocument>(Collection<TDocument> collection)
+    {
+        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection tree field not found.");
+        return (BTree?)treeField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection tree was not initialized.");
     }
 
     private sealed class PrefixCollisionSerializerProvider : ISerializerProvider

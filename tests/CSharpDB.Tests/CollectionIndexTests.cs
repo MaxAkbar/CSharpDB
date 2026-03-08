@@ -135,6 +135,47 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Put_UpdateExistingDocument_PersistsIndexedWritesAcrossReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+        await users.PutAsync("u:1", new User("Alice", 31, "alice@example.com"), ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Empty(await CollectAsync(reopened.FindByIndexAsync(x => x.Age, 30, ct), ct));
+
+        var updated = await CollectAsync(reopened.FindByIndexAsync(x => x.Age, 31, ct), ct);
+        Assert.Single(updated);
+        Assert.Equal("u:1", updated[0].Key);
+    }
+
+    [Fact]
+    public async Task Delete_PersistsIndexedWritesAcrossReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+        Assert.True(await users.DeleteAsync("u:1", ct));
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        var matches = await CollectAsync(reopened.FindByIndexAsync(x => x.Age, 30, ct), ct);
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
     public async Task ExplicitTransaction_Rollback_RevertsCollectionIndexWrites()
     {
         var ct = TestContext.Current.CancellationToken;
