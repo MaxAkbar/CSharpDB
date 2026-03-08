@@ -515,11 +515,11 @@ public sealed class Database : IAsyncDisposable
     public sealed class ReaderSession : IDisposable
     {
         private readonly Pager _pager;
-        private readonly SchemaCatalog _catalog;
-        private readonly IRecordSerializer _recordSerializer;
-        private readonly WalSnapshot _snapshot;
         private readonly StatementCache _statementCache;
+        private readonly Pager _snapshotPager;
+        private readonly QueryPlanner _planner;
         private bool _disposed;
+        private int _activeQuery;
 
         internal ReaderSession(
             Pager pager,
@@ -529,10 +529,9 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache)
         {
             _pager = pager;
-            _catalog = catalog;
-            _recordSerializer = recordSerializer;
-            _snapshot = snapshot;
             _statementCache = statementCache;
+            _snapshotPager = pager.CreateSnapshotReader(snapshot);
+            _planner = new QueryPlanner(_snapshotPager, catalog, recordSerializer);
         }
 
         /// <summary>
@@ -552,23 +551,45 @@ public sealed class Database : IAsyncDisposable
         /// </summary>
         public async ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
             if (stmt is not SelectStatement && stmt is not WithStatement)
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support SELECT statements.");
 
-            // Create a snapshot-aware pager for reading
-            var snapshotPager = _pager.CreateSnapshotReader(_snapshot);
-            var planner = new QueryPlanner(snapshotPager, _catalog, _recordSerializer);
-            return await planner.ExecuteAsync(stmt, ct);
+            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    "ReaderSession supports only one active query at a time. Dispose the previous QueryResult before executing another query.");
+            }
+
+            try
+            {
+                QueryResult result = await _planner.ExecuteAsync(stmt, ct);
+                result.SetDisposeCallback(ReleaseActiveQueryAsync);
+                return result;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
         }
 
         public void Dispose()
         {
             if (!_disposed)
             {
+                _snapshotPager.Dispose();
                 _pager.ReleaseReaderSnapshot();
                 _disposed = true;
             }
+        }
+
+        private ValueTask ReleaseActiveQueryAsync()
+        {
+            Volatile.Write(ref _activeQuery, 0);
+            return ValueTask.CompletedTask;
         }
     }
 

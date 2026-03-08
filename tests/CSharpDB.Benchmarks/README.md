@@ -5,6 +5,7 @@ Performance benchmarks for the CSharpDB embedded database engine.
 The current snapshot in this README is based on:
 
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260308-012442.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260308-015601.csv`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260308-005708.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
@@ -161,7 +162,9 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 
 The master table below now separates CSharpDB file-backed runs from in-memory runs.
 
-- File-backed single-write, batched-write, and concurrent-reader numbers come from `macro-20260308-012442.csv`.
+- File-backed single-write and batched-write numbers come from `macro-20260308-012442.csv`.
+- File-backed concurrent-reader numbers come from `macro-20260308-015601.csv`.
+- CSharpDB SQL concurrent reads are shown as `per-query sessions / reused reader sessions (x32 reads per snapshot)` because those patterns measure materially different setup costs.
 - In-memory batched-write numbers come from `macro-batch-memory-20260308-005708.csv` and use a rotating reset-after-100K-rows harness to keep the working set bounded.
 - Point-lookup numbers in the master table are cold/cache-pressured lookups from `ColdLookupBenchmarks-report.csv`.
 - Hot-cache lookup numbers are still useful, but they are reported in the micro sections above instead of the master table because they collapse the storage difference once pages are warmed.
@@ -173,7 +176,7 @@ The master table below now separates CSharpDB file-backed runs from in-memory ru
 
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|----------|------|---------------|----------------|--------------|------------------|
-| **CSharpDB SQL (file-backed)** | **C#** | **Relational SQL** | **24.0K ops/sec** | **~648K rows/sec** | **~31.0K ops/sec** | **289K ops/sec (8r)** |
+| **CSharpDB SQL (file-backed)** | **C#** | **Relational SQL** | **24.0K ops/sec** | **~648K rows/sec** | **~31.0K ops/sec** | **~236K / ~3.69M ops/sec (8r, per-query / reused x32)** |
 | **CSharpDB SQL (in-memory)** | **C#** | **Relational SQL** | **~307K ops/sec** | **~1.65M rows/sec** | **~400K ops/sec** | **N/A** |
 | **CSharpDB Collection (file-backed)** | **C#** | **Document (NoSQL)** | **29.7K ops/sec** | **~433K docs/sec** | **~29.4K ops/sec** | **-** |
 | **CSharpDB Collection (in-memory)** | **C#** | **Document (NoSQL)** | **~494K ops/sec** | **~1.01M docs/sec** | **~375K ops/sec** | **-** |

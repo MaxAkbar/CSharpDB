@@ -8,7 +8,9 @@ public sealed class QueryResult : IAsyncDisposable
     private static readonly QueryResult OneRowAffectedResult = new(1);
 
     private readonly IOperator? _operator;
+    private Func<ValueTask>? _disposeCallback;
     private bool _opened;
+    private bool _disposed;
 
     // Sync fast path: pre-materialized single-row result (bypasses operator pipeline)
     private readonly bool _hasSyncLookupResult;
@@ -25,6 +27,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(IOperator op)
     {
         _operator = op;
+        _disposeCallback = null;
         _hasSyncLookupResult = false;
         Schema = op.OutputSchema;
         RowsAffected = 0;
@@ -36,6 +39,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(int rowsAffected)
     {
         _operator = null;
+        _disposeCallback = null;
         _hasSyncLookupResult = false;
         Schema = Array.Empty<ColumnDefinition>();
         RowsAffected = rowsAffected;
@@ -47,6 +51,7 @@ public sealed class QueryResult : IAsyncDisposable
     private QueryResult(DbValue[]? syncRow, ColumnDefinition[] schema)
     {
         _operator = null;
+        _disposeCallback = null;
         _hasSyncLookupResult = true;
         _syncRow = syncRow;
         _syncRowConsumed = syncRow == null; // if no row, already consumed
@@ -71,6 +76,16 @@ public sealed class QueryResult : IAsyncDisposable
 
     public static QueryResult FromMaterializedRows(ColumnDefinition[] schema, List<DbValue[]> rows)
         => new QueryResult(new MaterializedRowsOperator(schema, rows));
+
+    internal void SetDisposeCallback(Func<ValueTask> disposeCallback)
+    {
+        ArgumentNullException.ThrowIfNull(disposeCallback);
+
+        if (_disposeCallback != null)
+            throw new InvalidOperationException("A dispose callback is already registered for this QueryResult.");
+
+        _disposeCallback = disposeCallback;
+    }
 
     public async IAsyncEnumerable<DbValue[]> GetRowsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -198,7 +213,19 @@ public sealed class QueryResult : IAsyncDisposable
         return list;
     }
 
-    public ValueTask DisposeAsync() => _operator?.DisposeAsync() ?? ValueTask.CompletedTask;
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        if (_operator != null)
+            await _operator.DisposeAsync();
+
+        if (_disposeCallback != null)
+            await _disposeCallback();
+    }
 
     private sealed class MaterializedRowsOperator : IOperator, IMaterializedRowsProvider, IEstimatedRowCountProvider
     {
