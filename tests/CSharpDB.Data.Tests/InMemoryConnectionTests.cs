@@ -207,6 +207,48 @@ public sealed class InMemoryConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ClearPoolAsync_PreservesCommittedSnapshotForActiveReadersDuringTransaction()
+    {
+        string connectionString = $"Data Source=:memory:{Guid.NewGuid():N}";
+
+        await using var writer = new CSharpDbConnection(connectionString);
+        await using var reader = new CSharpDbConnection(connectionString);
+        await writer.OpenAsync(Ct);
+        await reader.OpenAsync(Ct);
+
+        using (var setup = writer.CreateCommand())
+        {
+            setup.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);";
+            await setup.ExecuteNonQueryAsync(Ct);
+            setup.CommandText = "INSERT INTO t VALUES (1, 'baseline');";
+            await setup.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using var tx = await writer.BeginTransactionAsync(Ct);
+
+        using (var pending = writer.CreateCommand())
+        {
+            pending.CommandText = "INSERT INTO t VALUES (2, 'pending');";
+            await pending.ExecuteNonQueryAsync(Ct);
+        }
+
+        await CSharpDbConnection.ClearPoolAsync(connectionString);
+        Assert.Equal(0, CSharpDbConnection.GetSharedMemoryHostCountForTest());
+
+        using (var readCommitted = reader.CreateCommand())
+        {
+            readCommitted.CommandText = "SELECT COUNT(*) FROM t;";
+            Assert.Equal(1L, await readCommitted.ExecuteScalarAsync(Ct));
+        }
+
+        await tx.CommitAsync(Ct);
+
+        using var verify = reader.CreateCommand();
+        verify.CommandText = "SELECT COUNT(*) FROM t;";
+        Assert.Equal(2L, await verify.ExecuteScalarAsync(Ct));
+    }
+
+    [Fact]
     public async Task ClearAllPoolsAsync_ClearsAllNamedSharedMemoryHosts()
     {
         string firstCs = $"Data Source=:memory:{Guid.NewGuid():N}";

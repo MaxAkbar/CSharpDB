@@ -431,14 +431,14 @@ internal sealed class SharedMemoryDatabaseHost
         try
         {
             _disabled = true;
-            snapshotDatabase = _transactionSnapshotDatabase;
-            snapshotPath = _transactionSnapshotPath;
-            _transactionSnapshotDatabase = null;
-            _transactionSnapshotPath = null;
             if (_activeSessionCount == 0)
             {
                 databaseToDispose = _database;
                 _database = null;
+                snapshotDatabase = _transactionSnapshotDatabase;
+                snapshotPath = _transactionSnapshotPath;
+                _transactionSnapshotDatabase = null;
+                _transactionSnapshotPath = null;
                 _transactionOwnerSessionId = null;
             }
         }
