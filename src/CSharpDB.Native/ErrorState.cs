@@ -39,7 +39,7 @@ internal static class ErrorState
 
         // Lazily allocate the unmanaged string
         if (t_messagePtr == IntPtr.Zero)
-            t_messagePtr = Marshal.StringToHGlobalAnsi(t_message);
+            t_messagePtr = Utf8StringMemory.Allocate(t_message);
 
         return t_messagePtr;
     }

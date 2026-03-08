@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Execution\CSharpDB.Execution.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Native\CSharpDB.Native.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Service\CSharpDB.Service.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
   </ItemGroup>

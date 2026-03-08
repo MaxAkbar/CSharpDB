@@ -398,11 +398,38 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     private Task<Database> GetDatabaseAsync(CancellationToken ct)
     {
+        Task<Database> openTask;
         lock (_databaseGate)
         {
-            _databaseTask ??= Database.OpenAsync(_databasePath, ct).AsTask();
-            return _databaseTask;
+            if (_databaseTask is null)
+            {
+                Task<Database>? createdTask = null;
+                createdTask = OpenDatabaseCoreAsync();
+                _databaseTask = createdTask;
+
+                async Task<Database> OpenDatabaseCoreAsync()
+                {
+                    try
+                    {
+                        return await Database.OpenAsync(_databasePath, CancellationToken.None);
+                    }
+                    catch
+                    {
+                        lock (_databaseGate)
+                        {
+                            if (ReferenceEquals(_databaseTask, createdTask))
+                                _databaseTask = null;
+                        }
+
+                        throw;
+                    }
+                }
+            }
+
+            openTask = _databaseTask;
         }
+
+        return openTask.WaitAsync(ct);
     }
 
     public async ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)

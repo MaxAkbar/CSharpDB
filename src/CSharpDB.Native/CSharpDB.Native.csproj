@@ -28,6 +28,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
     <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />

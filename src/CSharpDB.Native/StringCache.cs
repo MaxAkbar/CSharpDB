@@ -22,7 +22,7 @@ internal static class StringCache
     public static IntPtr GetOrAdd(IntPtr resultHandle, int columnIndex, string value)
     {
         var key = (resultHandle, columnIndex);
-        return s_columnNames.GetOrAdd(key, _ => Marshal.StringToHGlobalAnsi(value));
+        return s_columnNames.GetOrAdd(key, _ => Utf8StringMemory.Allocate(value));
     }
 
     /// <summary>
@@ -31,7 +31,7 @@ internal static class StringCache
     public static IntPtr SetCurrentRowText(IntPtr resultHandle, int columnIndex, string value)
     {
         var key = (resultHandle, columnIndex);
-        var newPtr = Marshal.StringToHGlobalAnsi(value);
+        var newPtr = Utf8StringMemory.Allocate(value);
 
         if (s_rowTexts.TryGetValue(key, out var oldPtr))
         {
