@@ -6,7 +6,7 @@ This document outlines the planned direction for CSharpDB, organized by timefram
 
 ## Near-Term
 
-Focused improvements to SQL completeness and query performance.
+Recently completed improvements to query performance, storage/runtime behavior, and developer ergonomics.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
@@ -16,6 +16,10 @@ Focused improvements to SQL completeness and query performance.
 | **Prepared statement cache** | Cache parsed ASTs and query plans to avoid re-parsing identical SQL | Done |
 | **Cached max rowid** | Avoid repeated O(n) scans when generating row IDs on insert (in-memory + persisted high-water mark) | Done |
 | **B+tree delete rebalancing** | Merge underflowed pages on delete to reclaim space | Done |
+| **In-memory database mode** | Open a database fully in memory, load a disk database into memory, and save a committed snapshot back to disk | Done |
+| **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
+| **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
+| **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
 | **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Planned |
 
 ---
@@ -34,7 +38,7 @@ SQL feature parity and ecosystem expansion.
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish `CSharpDB.Engine`, `CSharpDB.Data`, and `CSharpDB.Service` as NuGet packages | Planned |
-| **Connection pooling** | Pool `CSharpDbConnection` instances to amortize open/close cost | Planned |
+| **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Schema editing, SQL editor with syntax highlighting, query history | In progress |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Planned |
 
@@ -46,14 +50,14 @@ Advanced features and fundamental architecture enhancements.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **Memory-mapped I/O (mmap)** | Zero-copy read path to eliminate per-page `byte[]` allocation and GC pressure | Planned |
+| **Memory-mapped I/O (mmap)** | Replace `byte[]` page materialization on cache misses with mapped read views where safe to reduce copy and GC pressure | Planned |
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Planned |
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
-| **Collection optimization & indexing** | Separate storage path, direct binary hydration, expression-based field indexes | Planned |
+| **Advanced collection storage path** | Extend document storage beyond UTF-8 JSON payloads with direct binary hydration and richer expression/path indexes | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **Cost-based query optimizer** | Statistics-driven join ordering and index selection | Planned |
 | **Async I/O batching** | Group multiple page writes into fewer system calls during batch operations | Planned |
-| **Write-ahead buffering** | Buffer WAL writes before flushing to improve auto-commit throughput | Planned |
+| **Group commit / deferred WAL flush** | Buffer committed WAL writes across transactions before flushing to improve auto-commit throughput | Planned |
 | **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |
 | **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
 
@@ -65,11 +69,13 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **Query** | No subqueries, no UNION/INTERSECT/EXCEPT |
+| **Query** | No scalar/`IN`/`EXISTS` subqueries, and no `UNION`/`INTERSECT`/`EXCEPT` |
 | **Query** | No window functions |
-| **Schema** | No DEFAULT values, CHECK constraints, or foreign keys |
-| **Indexes** | Range-scan pushdown is still limited outside ordered single-column INTEGER index paths |
-| **RowId** | Legacy schemas without persisted high-water metadata may pay a one-time key scan on first insert |
+| **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
+| **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
+| **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
+| **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
+| **Collections** | No JSON-path querying or expression/path-based document indexes yet |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No mmap read path |
@@ -94,12 +100,18 @@ Major features already implemented:
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
 - Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
+- ADO.NET connection pooling with `ClearPool` / `ClearAllPools`
+- In-memory database mode with explicit load-from-disk and save-to-disk APIs
+- Shared/private in-memory ADO.NET connections with named shared-memory hosts
 - Document Collection API (NoSQL) with typed Put/Get/Delete/Scan/Find
+- Collection UTF-8 payload fast path with compatibility for legacy backing rows
+- Collection secondary field indexes via `EnsureIndexAsync` / `FindByIndexAsync`
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
 - B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)
-- Comprehensive benchmark suite (micro, macro, stress, scaling)
+- Reusable snapshot reader sessions for higher concurrent-read throughput
+- Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)
 
 ---
 

@@ -9,13 +9,14 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 
 ## Overview
 
-`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: a full SQL engine and a zero-SQL `Collection<T>` document API. No external dependencies, no server process, just a single `.db` file on disk.
+`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: a full SQL engine and a zero-SQL `Collection<T>` document API. You can run against a normal on-disk database file or open the engine fully in memory and explicitly save/load snapshots when needed.
 
 ## Features
 
 - **SQL engine**: DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes
 - **NoSQL Collection API**: Typed `Collection<T>` with `Put`/`Get`/`Delete`/`Scan`/`Find`
 - **Single-file storage**: All data in one `.db` file with 4 KB B+tree pages
+- **In-memory mode**: Open empty in memory, load an existing `.db` + `.wal` into memory, then save back to disk
 - **WAL durability**: Write-ahead log with crash recovery
 - **Concurrent readers**: Snapshot-isolated readers alongside a single writer
 - **Statement + plan caching**: bounded caches for parsed SQL statements and SELECT plan reuse
@@ -57,6 +58,23 @@ await db.ExecuteAsync("INSERT INTO users VALUES (2, 'Bob', 'bob@example.com')");
 await db.CommitAsync();
 ```
 
+### In-Memory Open, Load, and Save
+
+```csharp
+using CSharpDB.Engine;
+
+// Start with an empty in-memory database
+await using var db = await Database.OpenInMemoryAsync();
+await db.ExecuteAsync("CREATE TABLE cache (id INTEGER PRIMARY KEY, value TEXT)");
+await db.ExecuteAsync("INSERT INTO cache VALUES (1, 'hot data')");
+
+// Persist the current committed state to disk
+await db.SaveToFileAsync("cache.db");
+
+// Load an existing on-disk database into memory, including committed WAL state
+await using var imported = await Database.LoadIntoMemoryAsync("cache.db");
+```
+
 ### NoSQL Collection API
 
 ```csharp
@@ -84,7 +102,7 @@ var adults = await users.FindAsync(u => u.Age >= 18);
 ```csharp
 // Create a snapshot-isolated reader session
 using var reader = db.CreateReaderSession();
-var result = await reader.ExecuteAsync("SELECT * FROM users");
+var result = await reader.ExecuteReadAsync("SELECT * FROM users");
 // Reads from a consistent snapshot while the writer continues
 ```
 

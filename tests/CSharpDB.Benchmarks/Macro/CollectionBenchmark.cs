@@ -186,7 +186,48 @@ public static class CollectionBenchmark
             results.Add(result);
         }
 
-        // ── 7. SQL vs Collection comparison: point read on same data size ──
+        // ── 7. Indexed equality lookup on pre-seeded collection (10,000 docs, 15s) ──
+        await using (var bench = await BenchmarkDatabase.CreateAsync())
+        {
+            var col = await bench.Db.GetCollectionAsync<BenchDoc>("bench_docs");
+            const int seedCount = 10_000;
+            await SeedCollectionAsync(bench.Db, col, seedCount);
+            await col.EnsureIndexAsync(d => d.Value);
+
+            var rng = new Random(42);
+            var result = await MacroBenchmarkRunner.RunForDurationAsync(
+                "Collection_FindByIndex_Value_10k_15s",
+                warmupDuration: TimeSpan.FromSeconds(2),
+                measuredDuration: TimeSpan.FromSeconds(15),
+                async () =>
+                {
+                    int id = rng.Next(0, seedCount);
+                    int count = 0;
+                    await foreach (var _ in col.FindByIndexAsync(d => d.Value, id))
+                        count++;
+                });
+            results.Add(result);
+        }
+
+        // ── 8. Sustained single-document Put with secondary index (15s) ──
+        await using (var bench = await BenchmarkDatabase.CreateAsync())
+        {
+            var col = await bench.Db.GetCollectionAsync<BenchDoc>("bench_docs");
+            await col.EnsureIndexAsync(d => d.Value);
+
+            var result = await MacroBenchmarkRunner.RunForDurationAsync(
+                "Collection_Put_Single_WithIndex_15s",
+                warmupDuration: TimeSpan.FromSeconds(2),
+                measuredDuration: TimeSpan.FromSeconds(15),
+                async () =>
+                {
+                    int id = Interlocked.Increment(ref _idCounter);
+                    await col.PutAsync($"doc:indexed:{id}", new BenchDoc($"User_{id}", id, Categories[id % 5]));
+                });
+            results.Add(result);
+        }
+
+        // ── 9. SQL vs Collection comparison: point read on same data size ──
         await using (var bench = await BenchmarkDatabase.CreateAsync(10_000))
         {
             var col = await bench.Db.GetCollectionAsync<BenchDoc>("bench_docs");

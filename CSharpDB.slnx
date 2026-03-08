@@ -22,4 +22,15 @@
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj" />
   </Folder>
+  <Folder Name="/tutorials/" />
+  <Folder Name="/tutorials/storage/">
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.ConfigStore/StorageStudyExamples.ConfigStore.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.Core/StorageStudyExamples.Core.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.EventLog/StorageStudyExamples.EventLog.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.GraphStore/StorageStudyExamples.GraphStore.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.StorageInternals/StorageStudyExamples.StorageInternals.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.TaskQueue/StorageStudyExamples.TaskQueue.csproj" />
+    <Project Path="docs/tutorials/storage/examples/StorageStudyExamples.VirtualDrive/StorageStudyExamples.VirtualDrive.csproj" />
+  </Folder>
 </Solution>

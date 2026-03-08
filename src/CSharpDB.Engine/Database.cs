@@ -38,7 +38,7 @@ public sealed class Database : IAsyncDisposable
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
-        _planner = new QueryPlanner(pager, catalog, recordSerializer);
+        _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
     }
@@ -49,6 +49,73 @@ public sealed class Database : IAsyncDisposable
     public static async ValueTask<Database> OpenAsync(string filePath, CancellationToken ct = default)
     {
         return await OpenAsync(filePath, new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Open a new in-memory database using default composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenInMemoryAsync(CancellationToken ct = default)
+    {
+        return await OpenInMemoryAsync(new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Open a new in-memory database using explicit composition options.
+    /// </summary>
+    public static async ValueTask<Database> OpenInMemoryAsync(
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        var context = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
+    }
+
+    /// <summary>
+    /// Load an on-disk database into memory using default composition options.
+    /// If a companion WAL file exists, committed WAL frames are recovered into the in-memory copy.
+    /// </summary>
+    public static async ValueTask<Database> LoadIntoMemoryAsync(string filePath, CancellationToken ct = default)
+    {
+        return await LoadIntoMemoryAsync(filePath, new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Load an on-disk database into memory using explicit composition options.
+    /// If a companion WAL file exists, committed WAL frames are recovered into the in-memory copy.
+    /// </summary>
+    public static async ValueTask<Database> LoadIntoMemoryAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        if (!File.Exists(fullPath))
+            throw new FileNotFoundException("Database file not found.", fullPath);
+
+        byte[] databaseBytes = await File.ReadAllBytesAsync(fullPath, ct);
+        string walPath = fullPath + ".wal";
+        byte[] walBytes = File.Exists(walPath)
+            ? await File.ReadAllBytesAsync(walPath, ct)
+            : Array.Empty<byte>();
+
+        var context = await InMemoryStorageEngineFactory.OpenAsync(
+            options.StorageEngineOptions,
+            databaseBytes,
+            walBytes,
+            ct);
+
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
     }
 
     /// <summary>
@@ -229,6 +296,17 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
+    /// Save the current committed database state to an on-disk database file.
+    /// </summary>
+    public async ValueTask SaveToFileAsync(string filePath, CancellationToken ct = default)
+    {
+        if (_inTransaction)
+            throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
+
+        await _pager.SaveToFileAsync(filePath, ct);
+    }
+
+    /// <summary>
     /// Create an independent reader that sees a snapshot of the database
     /// at the current point in time. The reader does not block writers.
     /// Caller must dispose the returned ReaderSession when done.
@@ -366,9 +444,9 @@ public sealed class Database : IAsyncDisposable
         var collection = new Collection<T>(
             _pager,
             _catalog,
-            _recordSerializer,
             catalogName,
             tree,
+            _recordSerializer,
             () => _inTransaction);
         _collectionCache[catalogName] = collection;
         return collection;
@@ -437,11 +515,11 @@ public sealed class Database : IAsyncDisposable
     public sealed class ReaderSession : IDisposable
     {
         private readonly Pager _pager;
-        private readonly SchemaCatalog _catalog;
-        private readonly IRecordSerializer _recordSerializer;
-        private readonly WalSnapshot _snapshot;
         private readonly StatementCache _statementCache;
+        private readonly Pager _snapshotPager;
+        private readonly QueryPlanner _planner;
         private bool _disposed;
+        private int _activeQuery;
 
         internal ReaderSession(
             Pager pager,
@@ -451,10 +529,9 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache)
         {
             _pager = pager;
-            _catalog = catalog;
-            _recordSerializer = recordSerializer;
-            _snapshot = snapshot;
             _statementCache = statementCache;
+            _snapshotPager = pager.CreateSnapshotReader(snapshot);
+            _planner = new QueryPlanner(_snapshotPager, catalog, recordSerializer);
         }
 
         /// <summary>
@@ -465,23 +542,54 @@ public sealed class Database : IAsyncDisposable
             CancellationToken ct = default)
         {
             var stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
-            if (stmt is not SelectStatement)
+            return await ExecuteReadAsync(stmt, ct);
+        }
+
+        /// <summary>
+        /// Execute a read-only prepared statement against the snapshot.
+        /// Only SELECT statements are allowed.
+        /// </summary>
+        public async ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (stmt is not SelectStatement && stmt is not WithStatement)
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support SELECT statements.");
 
-            // Create a snapshot-aware pager for reading
-            var snapshotPager = _pager.CreateSnapshotReader(_snapshot);
-            var planner = new QueryPlanner(snapshotPager, _catalog, _recordSerializer);
-            return await planner.ExecuteAsync(stmt, ct);
+            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    "ReaderSession supports only one active query at a time. Dispose the previous QueryResult before executing another query.");
+            }
+
+            try
+            {
+                QueryResult result = await _planner.ExecuteAsync(stmt, ct);
+                result.SetDisposeCallback(ReleaseActiveQueryAsync);
+                return result;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
         }
 
         public void Dispose()
         {
             if (!_disposed)
             {
+                _snapshotPager.Dispose();
                 _pager.ReleaseReaderSnapshot();
                 _disposed = true;
             }
+        }
+
+        private ValueTask ReleaseActiveQueryAsync()
+        {
+            Volatile.Write(ref _activeQuery, 0);
+            return ValueTask.CompletedTask;
         }
     }
 

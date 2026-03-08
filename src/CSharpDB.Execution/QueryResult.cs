@@ -8,7 +8,9 @@ public sealed class QueryResult : IAsyncDisposable
     private static readonly QueryResult OneRowAffectedResult = new(1);
 
     private readonly IOperator? _operator;
+    private Func<ValueTask>? _disposeCallback;
     private bool _opened;
+    private bool _disposed;
 
     // Sync fast path: pre-materialized single-row result (bypasses operator pipeline)
     private readonly bool _hasSyncLookupResult;
@@ -25,6 +27,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(IOperator op)
     {
         _operator = op;
+        _disposeCallback = null;
         _hasSyncLookupResult = false;
         Schema = op.OutputSchema;
         RowsAffected = 0;
@@ -36,6 +39,7 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(int rowsAffected)
     {
         _operator = null;
+        _disposeCallback = null;
         _hasSyncLookupResult = false;
         Schema = Array.Empty<ColumnDefinition>();
         RowsAffected = rowsAffected;
@@ -47,6 +51,7 @@ public sealed class QueryResult : IAsyncDisposable
     private QueryResult(DbValue[]? syncRow, ColumnDefinition[] schema)
     {
         _operator = null;
+        _disposeCallback = null;
         _hasSyncLookupResult = true;
         _syncRow = syncRow;
         _syncRowConsumed = syncRow == null; // if no row, already consumed
@@ -68,6 +73,19 @@ public sealed class QueryResult : IAsyncDisposable
             1 => OneRowAffectedResult,
             _ => new QueryResult(rowsAffected),
         };
+
+    public static QueryResult FromMaterializedRows(ColumnDefinition[] schema, List<DbValue[]> rows)
+        => new QueryResult(new MaterializedRowsOperator(schema, rows));
+
+    internal void SetDisposeCallback(Func<ValueTask> disposeCallback)
+    {
+        ArgumentNullException.ThrowIfNull(disposeCallback);
+
+        if (_disposeCallback != null)
+            throw new InvalidOperationException("A dispose callback is already registered for this QueryResult.");
+
+        _disposeCallback = disposeCallback;
+    }
 
     public async IAsyncEnumerable<DbValue[]> GetRowsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -195,5 +213,67 @@ public sealed class QueryResult : IAsyncDisposable
         return list;
     }
 
-    public ValueTask DisposeAsync() => _operator?.DisposeAsync() ?? ValueTask.CompletedTask;
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        if (_operator != null)
+            await _operator.DisposeAsync();
+
+        if (_disposeCallback != null)
+            await _disposeCallback();
+    }
+
+    private sealed class MaterializedRowsOperator : IOperator, IMaterializedRowsProvider, IEstimatedRowCountProvider
+    {
+        private List<DbValue[]>? _rows;
+        private int _index = -1;
+
+        internal MaterializedRowsOperator(ColumnDefinition[] outputSchema, List<DbValue[]> rows)
+        {
+            OutputSchema = outputSchema;
+            _rows = rows;
+        }
+
+        public ColumnDefinition[] OutputSchema { get; }
+        public bool ReusesCurrentRowBuffer => false;
+        public int? EstimatedRowCount => _rows?.Count ?? 0;
+
+        public DbValue[] Current => _rows is not null && _index >= 0 && _index < _rows.Count
+            ? _rows[_index]
+            : throw new InvalidOperationException("No active query row.");
+
+        public ValueTask OpenAsync(CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (_rows is null)
+                return ValueTask.FromResult(false);
+
+            int nextIndex = _index + 1;
+            if (nextIndex >= _rows.Count)
+                return ValueTask.FromResult(false);
+
+            _index = nextIndex;
+            return ValueTask.FromResult(true);
+        }
+
+        public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+        {
+            rows = _rows ?? new List<DbValue[]>();
+            _rows = null;
+            return true;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }
