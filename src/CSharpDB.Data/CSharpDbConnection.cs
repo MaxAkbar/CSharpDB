@@ -8,10 +8,12 @@ namespace CSharpDB.Data;
 
 public sealed class CSharpDbConnection : DbConnection
 {
+    private const string PrivateMemoryDataSource = ":memory:";
+    private const string MemoryDataSourcePrefix = ":memory:";
+
     private string _connectionString = "";
     private ConnectionState _state = ConnectionState.Closed;
-    private Database? _database;
-    private CSharpDbConnectionPool? _pool;
+    private ICSharpDbSession? _session;
     private CSharpDbTransaction? _currentTransaction;
 
     public CSharpDbConnection() { }
@@ -44,43 +46,24 @@ public sealed class CSharpDbConnection : DbConnection
             throw new InvalidOperationException("Connection is already open.");
 
         var builder = new CSharpDbConnectionStringBuilder(_connectionString);
-        string path = builder.DataSource;
-        if (string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(builder.DataSource))
             throw new InvalidOperationException("Data Source is required in the connection string.");
-
-        string normalizedPath = NormalizeDataSourcePath(path);
 
         try
         {
-            CSharpDbConnectionPool? openedPool = null;
-            Database openedDatabase;
-
-            if (builder.Pooling)
-            {
-                var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
-                openedPool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
-                openedDatabase = await openedPool.RentAsync(cancellationToken);
-            }
-            else
-            {
-                openedDatabase = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
-            }
-
-            _pool = openedPool;
-            _database = openedDatabase;
+            var target = ParseTarget(builder.DataSource);
+            _session = await OpenSessionAsync(target, builder, cancellationToken);
             _state = ConnectionState.Open;
         }
         catch (Core.CSharpDbException ex)
         {
-            _database = null;
-            _pool = null;
+            _session = null;
             _state = ConnectionState.Closed;
             throw new CSharpDbDataException(ex);
         }
         catch
         {
-            _database = null;
-            _pool = null;
+            _session = null;
             _state = ConnectionState.Closed;
             throw;
         }
@@ -101,18 +84,13 @@ public sealed class CSharpDbConnection : DbConnection
                 _currentTransaction = null;
             }
 
-            var database = _database;
-            var pool = _pool;
-            _database = null;
-            _pool = null;
+            var session = _session;
+            _session = null;
 
-            if (database is null)
+            if (session is null)
                 return;
 
-            if (pool is null)
-                await database.DisposeAsync();
-            else
-                await pool.ReturnAsync(database);
+            await session.DisposeAsync();
         }
         finally
         {
@@ -140,7 +118,7 @@ public sealed class CSharpDbConnection : DbConnection
 
         try
         {
-            await _database!.BeginTransactionAsync(cancellationToken);
+            await GetSession().BeginTransactionAsync(cancellationToken);
         }
         catch (Core.CSharpDbException ex)
         {
@@ -164,64 +142,88 @@ public sealed class CSharpDbConnection : DbConnection
     public static async ValueTask ClearPoolAsync(string connectionString)
     {
         var builder = new CSharpDbConnectionStringBuilder(connectionString);
-        string path = builder.DataSource;
-        if (!builder.Pooling || string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(builder.DataSource))
             return;
 
-        string normalizedPath = NormalizeDataSourcePath(path);
-        var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
-        await CSharpDbConnectionPoolRegistry.ClearPoolAsync(key);
+        var target = ParseTarget(builder.DataSource);
+        switch (target.Kind)
+        {
+            case ConnectionTargetKind.File when builder.Pooling:
+                await CSharpDbConnectionPoolRegistry.ClearPoolAsync(new PoolKey(target.Key, builder.MaxPoolSize));
+                break;
+            case ConnectionTargetKind.NamedSharedMemory:
+                await SharedMemoryDatabaseRegistry.ClearAsync(target.Key);
+                break;
+        }
     }
 
     public static void ClearAllPools()
         => ClearAllPoolsAsync().GetAwaiter().GetResult();
 
-    public static ValueTask ClearAllPoolsAsync()
-        => CSharpDbConnectionPoolRegistry.ClearAllAsync();
+    public static async ValueTask ClearAllPoolsAsync()
+    {
+        await CSharpDbConnectionPoolRegistry.ClearAllAsync();
+        await SharedMemoryDatabaseRegistry.ClearAllAsync();
+    }
+
+    public async ValueTask SaveToFileAsync(string filePath, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await GetSession().SaveToFileAsync(filePath, cancellationToken);
+        }
+        catch (Core.CSharpDbException ex)
+        {
+            throw new CSharpDbDataException(ex);
+        }
+    }
 
     // ─── Internal access ─────────────────────────────────────────────
 
-    internal Database GetDatabase()
+    internal ICSharpDbSession GetSession()
     {
-        if (_database is null || _state != ConnectionState.Open)
+        if (_session is null || _state != ConnectionState.Open)
             throw new InvalidOperationException("Connection is not open.");
-        return _database;
+        return _session;
     }
 
     internal void ClearTransaction() => _currentTransaction = null;
 
     internal static int GetPoolCountForTest() => CSharpDbConnectionPoolRegistry.GetPoolCountForTest();
+    internal static int GetSharedMemoryHostCountForTest() => SharedMemoryDatabaseRegistry.GetHostCountForTest();
 
     internal static int GetIdlePoolSizeForTest(string connectionString)
     {
         var builder = new CSharpDbConnectionStringBuilder(connectionString);
-        string path = builder.DataSource;
-        if (!builder.Pooling || string.IsNullOrWhiteSpace(path))
+        if (!builder.Pooling || string.IsNullOrWhiteSpace(builder.DataSource))
             return 0;
 
-        string normalizedPath = NormalizeDataSourcePath(path);
-        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(new PoolKey(normalizedPath, builder.MaxPoolSize));
+        var target = ParseTarget(builder.DataSource);
+        if (target.Kind != ConnectionTargetKind.File)
+            return 0;
+
+        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(new PoolKey(target.Key, builder.MaxPoolSize));
     }
 
     // ─── Schema introspection ─────────────────────────────────────
 
     public IReadOnlyCollection<string> GetTableNames()
-        => GetDatabase().GetTableNames();
+        => GetSession().GetTableNames();
 
     public TableSchema? GetTableSchema(string tableName)
-        => GetDatabase().GetTableSchema(tableName);
+        => GetSession().GetTableSchema(tableName);
 
     public IReadOnlyCollection<IndexSchema> GetIndexes()
-        => GetDatabase().GetIndexes();
+        => GetSession().GetIndexes();
 
     public IReadOnlyCollection<string> GetViewNames()
-        => GetDatabase().GetViewNames();
+        => GetSession().GetViewNames();
 
     public string? GetViewSql(string viewName)
-        => GetDatabase().GetViewSql(viewName);
+        => GetSession().GetViewSql(viewName);
 
     public IReadOnlyCollection<TriggerSchema> GetTriggers()
-        => GetDatabase().GetTriggers();
+        => GetSession().GetTriggers();
 
     // ─── Dispose ─────────────────────────────────────────────────────
 
@@ -238,9 +240,89 @@ public sealed class CSharpDbConnection : DbConnection
             await CloseAsync();
     }
 
+    private static async ValueTask<ICSharpDbSession> OpenSessionAsync(
+        ConnectionTarget target,
+        CSharpDbConnectionStringBuilder builder,
+        CancellationToken cancellationToken)
+    {
+        return target.Kind switch
+        {
+            ConnectionTargetKind.File => await OpenFileSessionAsync(target.Key, builder, cancellationToken),
+            ConnectionTargetKind.PrivateMemory => await OpenPrivateMemorySessionAsync(builder.LoadFrom, cancellationToken),
+            ConnectionTargetKind.NamedSharedMemory => await SharedMemoryDatabaseRegistry.OpenSessionAsync(
+                target.Key,
+                NormalizeOptionalFilePath(builder.LoadFrom),
+                cancellationToken),
+            _ => throw new InvalidOperationException("Unsupported connection target."),
+        };
+    }
+
+    private static async ValueTask<ICSharpDbSession> OpenFileSessionAsync(
+        string normalizedPath,
+        CSharpDbConnectionStringBuilder builder,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(builder.LoadFrom))
+            throw new InvalidOperationException("Load From is only supported for in-memory data sources.");
+
+        if (builder.Pooling)
+        {
+            var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
+            var pool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
+            var database = await pool.RentAsync(cancellationToken);
+            return new DirectDatabaseSession(database, pool.ReturnAsync);
+        }
+
+        return new DirectDatabaseSession(await Engine.Database.OpenAsync(normalizedPath, cancellationToken));
+    }
+
+    private static async ValueTask<ICSharpDbSession> OpenPrivateMemorySessionAsync(
+        string? loadFromPath,
+        CancellationToken cancellationToken)
+    {
+        Database database = string.IsNullOrWhiteSpace(loadFromPath)
+            ? await Engine.Database.OpenInMemoryAsync(cancellationToken)
+            : await Engine.Database.LoadIntoMemoryAsync(NormalizeDataSourcePath(loadFromPath), cancellationToken);
+
+        return new DirectDatabaseSession(database);
+    }
+
+    private static ConnectionTarget ParseTarget(string dataSource)
+    {
+        if (string.Equals(dataSource, PrivateMemoryDataSource, StringComparison.OrdinalIgnoreCase))
+            return new ConnectionTarget(ConnectionTargetKind.PrivateMemory, PrivateMemoryDataSource);
+
+        if (dataSource.StartsWith(MemoryDataSourcePrefix, StringComparison.OrdinalIgnoreCase) &&
+            dataSource.Length > MemoryDataSourcePrefix.Length)
+        {
+            string name = dataSource[MemoryDataSourcePrefix.Length..];
+            if (string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException("Named in-memory databases require a non-empty name.");
+
+            return new ConnectionTarget(ConnectionTargetKind.NamedSharedMemory, NormalizeMemoryName(name));
+        }
+
+        return new ConnectionTarget(ConnectionTargetKind.File, NormalizeDataSourcePath(dataSource));
+    }
+
+    private static string? NormalizeOptionalFilePath(string? path)
+        => string.IsNullOrWhiteSpace(path) ? null : NormalizeDataSourcePath(path);
+
     private static string NormalizeDataSourcePath(string path)
     {
         string fullPath = Path.GetFullPath(path);
         return OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
     }
+
+    private static string NormalizeMemoryName(string name)
+        => OperatingSystem.IsWindows() ? name.ToUpperInvariant() : name;
+
+    private enum ConnectionTargetKind
+    {
+        File,
+        PrivateMemory,
+        NamedSharedMemory,
+    }
+
+    private readonly record struct ConnectionTarget(ConnectionTargetKind Kind, string Key);
 }

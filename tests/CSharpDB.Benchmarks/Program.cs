@@ -41,6 +41,11 @@ public static class Program
                 RunMicroBenchmarks(StripCustomArgs(args));
                 return;
 
+            case "--macro-batch-memory":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount);
+                return;
+
             case "--all":
                 Console.WriteLine("=== Micro-Benchmarks (BenchmarkDotNet) ===");
                 RunMicroBenchmarks(StripCustomArgs(RemoveFirstToken(args, "--all")));
@@ -65,6 +70,14 @@ public static class Program
         {
             EnsureReproConfigured();
             await RunSuiteWithRepeatsAsync("macro", RunMacroBenchmarksOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--macro-batch-memory"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -119,7 +132,22 @@ public static class Program
         Console.WriteLine("--- Collection (NoSQL) Benchmark ---");
         results.AddRange(await CollectionBenchmark.RunAsync());
 
+        Console.WriteLine("--- In-Memory Workload Benchmark ---");
+        results.AddRange(await InMemoryWorkloadBenchmark.RunAsync());
+
+        Console.WriteLine("--- Shared Memory ADO.NET Benchmark ---");
+        results.AddRange(await SharedMemoryAdoNetBenchmark.RunAsync());
+
+        Console.WriteLine("--- In-Memory Persistence Benchmark ---");
+        results.AddRange(await InMemoryPersistenceBenchmark.RunAsync());
+
         return results;
+    }
+
+    private static async Task<List<BenchmarkResult>> RunInMemoryBatchBenchmarksOnceAsync()
+    {
+        Console.WriteLine("--- In-Memory Batch Benchmark ---");
+        return await InMemoryBatchBenchmark.RunAsync();
     }
 
     private static async Task<List<BenchmarkResult>> RunStressTestsOnceAsync()
@@ -306,6 +334,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --micro              Run BenchmarkDotNet micro-benchmarks");
         Console.WriteLine("  dotnet run -- --micro --filter *Insert*   Filter micro-benchmarks");
         Console.WriteLine("  dotnet run -- --macro              Run macro-benchmarks (sustained workloads)");
+        Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
         Console.WriteLine("  dotnet run -- --macro --stress --scaling   Run non-micro suites in one invocation");

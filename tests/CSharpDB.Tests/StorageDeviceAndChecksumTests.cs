@@ -7,6 +7,67 @@ namespace CSharpDB.Tests;
 public sealed class StorageDeviceAndChecksumTests
 {
     [Fact]
+    public async Task MemoryStorageDevice_WriteReadAndLength_AreConsistent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var device = new MemoryStorageDevice();
+
+        Assert.Equal(0, device.Length);
+
+        var payload = new byte[] { 1, 2, 3, 4, 5 };
+        await device.WriteAsync(0, payload, ct);
+        await device.FlushAsync(ct);
+
+        Assert.Equal(payload.Length, device.Length);
+
+        var readBuffer = new byte[payload.Length];
+        int bytesRead = await device.ReadAsync(0, readBuffer, ct);
+
+        Assert.Equal(payload.Length, bytesRead);
+        Assert.Equal(payload, readBuffer);
+    }
+
+    [Fact]
+    public async Task MemoryStorageDevice_ReadAsync_PastEnd_ZeroFillsUnreadBytes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var device = new MemoryStorageDevice();
+
+        await device.WriteAsync(0, new byte[] { 7, 8, 9 }, ct);
+
+        var readBuffer = new byte[6];
+        int bytesRead = await device.ReadAsync(0, readBuffer, ct);
+
+        Assert.Equal(3, bytesRead);
+        Assert.Equal(new byte[] { 7, 8, 9, 0, 0, 0 }, readBuffer);
+    }
+
+    [Fact]
+    public async Task MemoryStorageDevice_SetLengthAsync_TruncatesAndExtendsBuffer()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var device = new MemoryStorageDevice();
+
+        await device.WriteAsync(0, new byte[] { 10, 11, 12, 13, 14 }, ct);
+
+        await device.SetLengthAsync(3, ct);
+        Assert.Equal(3, device.Length);
+
+        var truncatedRead = new byte[5];
+        int truncatedBytesRead = await device.ReadAsync(0, truncatedRead, ct);
+        Assert.Equal(3, truncatedBytesRead);
+        Assert.Equal(new byte[] { 10, 11, 12, 0, 0 }, truncatedRead);
+
+        await device.SetLengthAsync(8, ct);
+        Assert.Equal(8, device.Length);
+
+        var extendedRead = new byte[5];
+        int extendedBytesRead = await device.ReadAsync(3, extendedRead, ct);
+        Assert.Equal(5, extendedBytesRead);
+        Assert.Equal(new byte[] { 0, 0, 0, 0, 0 }, extendedRead);
+    }
+
+    [Fact]
     public async Task FileStorageDevice_WriteReadAndLength_AreConsistent()
     {
         var ct = TestContext.Current.CancellationToken;

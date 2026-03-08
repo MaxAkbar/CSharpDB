@@ -1,0 +1,15 @@
+<Solution>
+  <Project Path="../../../../src/CSharpDB.Core/CSharpDB.Core.csproj" />
+  <Project Path="../../../../src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
+  <Project Path="../../../../src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
+  <Project Path="../../../../src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
+  <Project Path="../../../../src/CSharpDB.Storage/CSharpDB.Storage.csproj" />
+  <Project Path="StorageStudyExamples.ConfigStore/StorageStudyExamples.ConfigStore.csproj" />
+  <Project Path="StorageStudyExamples.Core/StorageStudyExamples.Core.csproj" />
+  <Project Path="StorageStudyExamples.EventLog/StorageStudyExamples.EventLog.csproj" />
+  <Project Path="StorageStudyExamples.GraphStore/StorageStudyExamples.GraphStore.csproj" />
+  <Project Path="StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj" />
+  <Project Path="StorageStudyExamples.StorageInternals/StorageStudyExamples.StorageInternals.csproj" />
+  <Project Path="StorageStudyExamples.TaskQueue/StorageStudyExamples.TaskQueue.csproj" />
+  <Project Path="StorageStudyExamples.VirtualDrive/StorageStudyExamples.VirtualDrive.csproj" />
+</Solution>

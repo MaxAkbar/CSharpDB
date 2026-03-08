@@ -1269,7 +1269,7 @@ If your Android app uses .NET MAUI, reference the CSharpDB NuGet package directl
 
 ```xml
 <!-- In your MAUI .csproj -->
-<PackageReference Include="CSharpDB" Version="1.6.0" />
+<PackageReference Include="CSharpDB" Version="1.7.0" />
 ```
 
 ```csharp

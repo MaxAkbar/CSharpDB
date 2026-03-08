@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\StorageStudyExamples.Core\StorageStudyExamples.Core.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.VirtualDrive\StorageStudyExamples.VirtualDrive.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.ConfigStore\StorageStudyExamples.ConfigStore.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.EventLog\StorageStudyExamples.EventLog.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.TaskQueue\StorageStudyExamples.TaskQueue.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.GraphStore\StorageStudyExamples.GraphStore.csproj" />
+    <ProjectReference Include="..\StorageStudyExamples.StorageInternals\StorageStudyExamples.StorageInternals.csproj" />
+  </ItemGroup>
+
+</Project>

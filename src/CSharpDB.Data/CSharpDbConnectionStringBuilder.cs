@@ -6,6 +6,7 @@ namespace CSharpDB.Data;
 public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
 {
     private const string DataSourceKey = "Data Source";
+    private const string LoadFromKey = "Load From";
     private const string PoolingKey = "Pooling";
     private const string MaxPoolSizeKey = "Max Pool Size";
 
@@ -22,6 +23,12 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => GetBoolean(PoolingKey, DefaultPooling);
         set => this[PoolingKey] = value;
+    }
+
+    public string LoadFrom
+    {
+        get => TryGetValue(LoadFromKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
+        set => this[LoadFromKey] = value;
     }
 
     public int MaxPoolSize

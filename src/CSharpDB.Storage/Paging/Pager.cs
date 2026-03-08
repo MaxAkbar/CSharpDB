@@ -30,6 +30,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public uint SchemaRootPage { get; set; }
     public uint FreelistHead { get; set; }
     public uint ChangeCounter { get; private set; }
+    public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
 
     // Configurable behavior
     private readonly PagerOptions _options;
@@ -551,6 +552,75 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         _checkpoints?.Dispose();
         _transactions?.Dispose();
+    }
+
+    public async ValueTask SaveToFileAsync(string filePath, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        if (_isSnapshotReader)
+            throw new InvalidOperationException("Cannot save from a read-only snapshot pager.");
+        if (_transactions?.InTransaction == true)
+            throw new InvalidOperationException("Cannot save while a transaction is active.");
+        if (ActiveReaderCount > 0)
+            throw new InvalidOperationException("Cannot save while reader snapshots are active.");
+
+        if (_walIndex.FrameCount > 0)
+            await CheckpointAsync(ct);
+
+        long logicalLength = Math.Max((long)PageCount * PageConstants.PageSize, PageConstants.PageSize);
+        string destinationPath = Path.GetFullPath(filePath);
+        string? directory = Path.GetDirectoryName(destinationPath);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+
+        string tempPath = destinationPath + $".tmp.{Guid.NewGuid():N}";
+        var buffer = new byte[64 * 1024];
+
+        try
+        {
+            await using (var stream = new FileStream(
+                             tempPath,
+                             FileMode.Create,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: buffer.Length,
+                             useAsync: true))
+            {
+                long offset = 0;
+                while (offset < logicalLength)
+                {
+                    int chunkLength = (int)Math.Min(buffer.Length, logicalLength - offset);
+                    int bytesRead = await _device.ReadAsync(offset, buffer.AsMemory(0, chunkLength), ct);
+                    if (bytesRead != chunkLength)
+                    {
+                        throw new InvalidOperationException(
+                            $"Short database read while saving snapshot (expected {chunkLength} bytes, read {bytesRead}).");
+                    }
+
+                    await stream.WriteAsync(buffer.AsMemory(0, chunkLength), ct);
+                    offset += chunkLength;
+                }
+
+                await stream.FlushAsync(ct);
+            }
+
+            File.Move(tempPath, destinationPath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch
+            {
+                // Best-effort cleanup for temporary snapshot files.
+            }
+
+            throw;
+        }
     }
 
     public void Dispose()

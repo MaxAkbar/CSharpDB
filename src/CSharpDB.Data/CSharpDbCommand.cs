@@ -93,7 +93,7 @@ public sealed class CSharpDbCommand : DbCommand
     {
         var connection = (CSharpDbConnection)(DbConnection
             ?? throw new InvalidOperationException("Connection is not set."));
-        var db = connection.GetDatabase();
+        var session = connection.GetSession();
 
         try
         {
@@ -103,15 +103,15 @@ public sealed class CSharpDbCommand : DbCommand
                 if (!TryGetAutoPreparedTemplate(out preparedTemplate) || preparedTemplate == null)
                 {
                     string sql = SqlParameterBinder.Bind(CommandText, _parameters);
-                    return await db.ExecuteAsync(sql, cancellationToken);
+                    return await session.ExecuteAsync(sql, cancellationToken);
                 }
             }
 
             if (preparedTemplate.TryBindSimpleInsert(_parameters, out var simpleInsert))
-                return await db.ExecuteAsync(simpleInsert, cancellationToken);
+                return await session.ExecuteAsync(simpleInsert, cancellationToken);
 
             var preparedStatement = preparedTemplate.Bind(_parameters);
-            return await db.ExecuteAsync(preparedStatement, cancellationToken);
+            return await session.ExecuteAsync(preparedStatement, cancellationToken);
         }
         catch (Core.CSharpDbException ex)
         {

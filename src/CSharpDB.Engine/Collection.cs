@@ -1,6 +1,8 @@
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
+using System.Text;
 using CSharpDB.Core;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Engine;
 
@@ -12,34 +14,33 @@ namespace CSharpDB.Engine;
 public sealed class Collection<T>
 {
     private const int MaxProbeDistance = 128;
+    private const string CollectionIndexPrefix = "_cidx_";
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
-    private readonly IRecordSerializer _recordSerializer;
     private readonly string _catalogTableName;
     private readonly BTree _tree;
     private readonly Func<bool> _isInTransaction;
-
-    private static readonly JsonSerializerOptions s_jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-    };
+    private readonly CollectionDocumentCodec<T> _codec;
+    private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
+    private long _observedSchemaVersion;
 
     internal Collection(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer recordSerializer,
         string catalogTableName,
         BTree tree,
+        IRecordSerializer recordSerializer,
         Func<bool> isInTransaction)
     {
         _pager = pager;
         _catalog = catalog;
-        _recordSerializer = recordSerializer;
         _catalogTableName = catalogTableName;
         _tree = tree;
+        _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _observedSchemaVersion = catalog.SchemaVersion;
+        ReloadCollectionIndexes();
     }
 
     // ===== Tier 1 API =====
@@ -52,10 +53,13 @@ public sealed class Collection<T>
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(document);
 
+        RefreshIndexesIfSchemaChanged();
+
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
-            byte[] newPayload = EncodeDocument(key, document);
+            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
+            byte[] newPayload = _codec.Encode(key, document);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
@@ -64,23 +68,28 @@ public sealed class Collection<T>
 
                 if (existing is not { } existingPayload)
                 {
-                    // Empty slot: insert here
                     await _tree.InsertAsync(probeHash, newPayload, ct);
+                    await InsertIntoIndexesAsync(probeHash, document, ct);
                     return;
                 }
 
-                string storedKey = DecodeKey(existingPayload.Span);
-                if (storedKey == key)
+                if (_codec.PayloadMatchesKey(existingPayload.Span, keyUtf8, key))
                 {
-                    // Upsert: delete old entry and insert new
+                    if (_indexes.Count > 0)
+                    {
+                        var existingDocument = _codec.Decode(existingPayload.Span).Document;
+                        await DeleteFromIndexesAsync(probeHash, existingDocument, ct);
+                    }
+
                     await _tree.DeleteAsync(probeHash, ct);
                     await _tree.InsertAsync(probeHash, newPayload, ct);
+                    await InsertIntoIndexesAsync(probeHash, document, ct);
                     return;
                 }
-                // Collision with different key: continue probing
             }
 
-            throw new CSharpDbException(ErrorCode.Unknown,
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
                 $"Hash collision probe limit exceeded for key '{key}'.");
         }, ct);
     }
@@ -93,6 +102,7 @@ public sealed class Collection<T>
         ArgumentNullException.ThrowIfNull(key);
 
         long startHash = HashDocumentKey(key);
+        byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
         for (int probe = 0; probe < MaxProbeDistance; probe++)
         {
@@ -100,12 +110,10 @@ public sealed class Collection<T>
             var payload = await _tree.FindMemoryAsync(probeHash, ct);
 
             if (payload is not { } payloadMemory)
-                return default; // Empty slot means key doesn't exist
+                return default;
 
-            var (storedKey, doc) = DecodeDocument(payloadMemory.Span);
-            if (storedKey == key)
+            if (_codec.TryDecodeDocumentForKey(payloadMemory.Span, keyUtf8, key, out var doc))
                 return doc;
-            // Collision: continue probing
         }
 
         return default;
@@ -117,11 +125,14 @@ public sealed class Collection<T>
     public async ValueTask<bool> DeleteAsync(string key, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(key);
+        RefreshIndexesIfSchemaChanged();
+
         bool deleted = false;
 
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
+            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
@@ -129,16 +140,20 @@ public sealed class Collection<T>
                 var payload = await _tree.FindMemoryAsync(probeHash, ct);
 
                 if (payload is not { } payloadMemory)
-                    return; // Not found
+                    return;
 
-                string storedKey = DecodeKey(payloadMemory.Span);
-                if (storedKey == key)
+                if (_codec.PayloadMatchesKey(payloadMemory.Span, keyUtf8, key))
                 {
+                    if (_indexes.Count > 0)
+                    {
+                        var existingDocument = _codec.Decode(payloadMemory.Span).Document;
+                        await DeleteFromIndexesAsync(probeHash, existingDocument, ct);
+                    }
+
                     await _tree.DeleteAsync(probeHash, ct);
                     deleted = true;
                     return;
                 }
-                // Collision: continue probing
             }
         }, ct);
 
@@ -149,9 +164,7 @@ public sealed class Collection<T>
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-    {
-        return await _tree.CountEntriesAsync(ct);
-    }
+        => await _tree.CountEntriesAsync(ct);
 
     /// <summary>
     /// Iterate all documents in the collection.
@@ -162,7 +175,7 @@ public sealed class Collection<T>
         var cursor = _tree.CreateCursor();
         while (await cursor.MoveNextAsync(ct))
         {
-            var (key, doc) = DecodeDocument(cursor.CurrentValue.Span);
+            var (key, doc) = _codec.Decode(cursor.CurrentValue.Span);
             yield return new KeyValuePair<string, T>(key, doc);
         }
     }
@@ -185,6 +198,135 @@ public sealed class Collection<T>
         }
     }
 
+    /// <summary>
+    /// Ensure a secondary index exists for a direct field/property selector such as x => x.Age.
+    /// </summary>
+    public async ValueTask EnsureIndexAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        RefreshIndexesIfSchemaChanged();
+
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        if (_indexes.ContainsKey(fieldPath))
+            return;
+
+        string indexName = BuildCollectionIndexName(fieldPath);
+        var existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            AttachIndexBinding(existing);
+            return;
+        }
+
+        if (_isInTransaction())
+        {
+            throw new InvalidOperationException(
+                "Collection indexes cannot be created while an explicit transaction is active.");
+        }
+
+        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
+
+        bool createdIndex = false;
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+
+            var indexSchema = new IndexSchema
+            {
+                IndexName = indexName,
+                TableName = _catalogTableName,
+                Columns = [fieldPath],
+                IsUnique = false,
+            };
+
+            await _catalog.CreateIndexAsync(indexSchema, ct);
+            createdIndex = true;
+
+            var binding = AttachIndexBinding(indexSchema);
+            await BackfillIndexAsync(binding, ct);
+
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            await _pager.CommitAsync(ct);
+            _observedSchemaVersion = _catalog.SchemaVersion;
+        }
+        catch
+        {
+            if (createdIndex)
+            {
+                try
+                {
+                    await _catalog.DropIndexAsync(indexName, ct);
+                }
+                catch
+                {
+                    // Best-effort cache cleanup before rollback.
+                }
+            }
+
+            _indexes.Remove(fieldPath);
+
+            try
+            {
+                await _pager.RollbackAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            RefreshIndexesIfSchemaChanged(force: true);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Find all documents matching a field equality predicate, using a collection index when present.
+    /// Falls back to a full scan when the index does not exist.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        RefreshIndexesIfSchemaChanged();
+
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        Func<T, TField> fieldAccessor = fieldSelector.Compile();
+        var comparer = EqualityComparer<TField>.Default;
+
+        if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
+            !binding.TryBuildKeyFromValue(value, out long indexKey))
+        {
+            await foreach (var kvp in ScanAsync(ct))
+            {
+                if (comparer.Equals(fieldAccessor(kvp.Value), value))
+                    yield return kvp;
+            }
+
+            yield break;
+        }
+
+        byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
+        if (payload == null || payload.Length < sizeof(long))
+            yield break;
+
+        int rowIdCount = payload.Length / sizeof(long);
+        for (int i = 0; i < rowIdCount; i++)
+        {
+            long rowId = BitConverter.ToInt64(payload, i * sizeof(long));
+            var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+            if (documentPayload is not { } documentMemory)
+                continue;
+
+            var (key, document) = _codec.Decode(documentMemory.Span);
+            if (comparer.Equals(fieldAccessor(document), value))
+                yield return new KeyValuePair<string, T>(key, document);
+        }
+    }
+
     // ===== Internal helpers =====
 
     /// <summary>
@@ -195,37 +337,206 @@ public sealed class Collection<T>
     {
         long hash = 0;
         foreach (char c in key)
-            hash = hash * 53 + c;
-        return hash & 0x7FFFFFFFFFFFFFFF; // ensure positive
+            hash = (hash * 53) + c;
+        return hash & 0x7FFFFFFFFFFFFFFF;
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    private byte[] EncodeDocument(string key, T document)
+    private void RefreshIndexesIfSchemaChanged(bool force = false)
     {
-        string json = JsonSerializer.Serialize(document, s_jsonOptions);
-        var values = new DbValue[] { DbValue.FromText(key), DbValue.FromText(json) };
-        return _recordSerializer.Encode(values);
+        long currentVersion = _catalog.SchemaVersion;
+        if (!force && currentVersion == _observedSchemaVersion)
+            return;
+
+        ReloadCollectionIndexes();
+        _observedSchemaVersion = currentVersion;
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    private (string key, T document) DecodeDocument(ReadOnlySpan<byte> payload)
+    private void ReloadCollectionIndexes()
     {
-        var values = _recordSerializer.Decode(payload);
-        string storedKey = values[0].AsText;
-        string json = values[1].AsText;
-        T doc = JsonSerializer.Deserialize<T>(json, s_jsonOptions)!;
-        return (storedKey, doc);
+        _indexes.Clear();
+
+        foreach (var schema in _catalog.GetIndexesForTable(_catalogTableName))
+        {
+            if (!IsCollectionIndexSchema(schema, out string? fieldPath))
+                continue;
+
+            _indexes[fieldPath] = CollectionIndexBinding<T>.Create(
+                fieldPath,
+                schema.IndexName,
+                _catalog.GetIndexStore(schema.IndexName));
+        }
     }
 
-    /// <summary>
-    /// Decode only the key from a payload (avoids deserializing the full document).
-    /// </summary>
-    private string DecodeKey(ReadOnlySpan<byte> payload)
+    private bool TryGetOrAttachIndexBinding(string fieldPath, out CollectionIndexBinding<T> binding)
     {
-        var values = _recordSerializer.DecodeUpTo(payload, 0);
-        return values[0].AsText;
+        if (_indexes.TryGetValue(fieldPath, out binding!))
+            return true;
+
+        string indexName = BuildCollectionIndexName(fieldPath);
+        var schema = _catalog.GetIndex(indexName);
+        if (schema == null || !IsCollectionIndexSchema(schema, out _))
+        {
+            binding = null!;
+            return false;
+        }
+
+        binding = AttachIndexBinding(schema);
+        return true;
+    }
+
+    private CollectionIndexBinding<T> AttachIndexBinding(IndexSchema schema)
+    {
+        if (!IsCollectionIndexSchema(schema, out string? fieldPath))
+        {
+            throw new InvalidOperationException(
+                $"Index '{schema.IndexName}' is not a collection index for '{_catalogTableName}'.");
+        }
+
+        var binding = CollectionIndexBinding<T>.Create(
+            fieldPath,
+            schema.IndexName,
+            _catalog.GetIndexStore(schema.IndexName));
+        _indexes[fieldPath] = binding;
+        _observedSchemaVersion = _catalog.SchemaVersion;
+        return binding;
+    }
+
+    private string BuildCollectionIndexName(string fieldPath)
+    {
+        byte[] tableNameBytes = Encoding.UTF8.GetBytes(_catalogTableName);
+        byte[] fieldPathBytes = Encoding.UTF8.GetBytes(fieldPath);
+        return $"{CollectionIndexPrefix}{Convert.ToHexString(tableNameBytes)}_{Convert.ToHexString(fieldPathBytes)}";
+    }
+
+    private bool IsCollectionIndexSchema(IndexSchema schema, out string fieldPath)
+    {
+        fieldPath = string.Empty;
+        if (!string.Equals(schema.TableName, _catalogTableName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!schema.IndexName.StartsWith(CollectionIndexPrefix, StringComparison.Ordinal))
+            return false;
+        if (schema.Columns.Count != 1)
+            return false;
+
+        fieldPath = schema.Columns[0];
+        return !string.IsNullOrWhiteSpace(fieldPath);
+    }
+
+    private async ValueTask BackfillIndexAsync(CollectionIndexBinding<T> binding, CancellationToken ct)
+    {
+        var cursor = _tree.CreateCursor();
+        while (await cursor.MoveNextAsync(ct))
+        {
+            var (_, document) = _codec.Decode(cursor.CurrentValue.Span);
+            await InsertIntoIndexAsync(binding, cursor.CurrentKey, document, ct);
+        }
+    }
+
+    private async ValueTask InsertIntoIndexesAsync(long rowId, T document, CancellationToken ct)
+    {
+        if (_indexes.Count == 0)
+            return;
+
+        foreach (var binding in _indexes.Values)
+            await InsertIntoIndexAsync(binding, rowId, document, ct);
+    }
+
+    private async ValueTask DeleteFromIndexesAsync(long rowId, T document, CancellationToken ct)
+    {
+        if (_indexes.Count == 0)
+            return;
+
+        foreach (var binding in _indexes.Values)
+            await DeleteFromIndexAsync(binding, rowId, document, ct);
+    }
+
+    private static async ValueTask InsertIntoIndexAsync(
+        CollectionIndexBinding<T> binding,
+        long rowId,
+        T document,
+        CancellationToken ct)
+    {
+        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+            return;
+
+        await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+    }
+
+    private static async ValueTask DeleteFromIndexAsync(
+        CollectionIndexBinding<T> binding,
+        long rowId,
+        T document,
+        CancellationToken ct)
+    {
+        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+            return;
+
+        await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+    }
+
+    private static async ValueTask InsertRowIdAsync(
+        IIndexStore indexStore,
+        long indexKey,
+        long rowId,
+        CancellationToken ct)
+    {
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+        {
+            byte[] payload = new byte[sizeof(long)];
+            BitConverter.TryWriteBytes(payload, rowId);
+            await indexStore.InsertAsync(indexKey, payload, ct);
+            return;
+        }
+
+        int count = existing.Length / sizeof(long);
+        for (int i = 0; i < count; i++)
+        {
+            if (BitConverter.ToInt64(existing, i * sizeof(long)) == rowId)
+                return;
+        }
+
+        byte[] newPayload = new byte[existing.Length + sizeof(long)];
+        existing.CopyTo(newPayload, 0);
+        BitConverter.TryWriteBytes(newPayload.AsSpan(existing.Length), rowId);
+        await indexStore.DeleteAsync(indexKey, ct);
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private static async ValueTask DeleteRowIdAsync(
+        IIndexStore indexStore,
+        long indexKey,
+        long rowId,
+        CancellationToken ct)
+    {
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+            return;
+
+        int count = existing.Length / sizeof(long);
+        if (count == 0)
+        {
+            await indexStore.DeleteAsync(indexKey, ct);
+            return;
+        }
+
+        var remaining = new List<long>(count);
+        for (int i = 0; i < count; i++)
+        {
+            long existingRowId = BitConverter.ToInt64(existing, i * sizeof(long));
+            if (existingRowId != rowId)
+                remaining.Add(existingRowId);
+        }
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        if (remaining.Count == 0)
+            return;
+
+        byte[] newPayload = new byte[remaining.Count * sizeof(long)];
+        for (int i = 0; i < remaining.Count; i++)
+            BitConverter.TryWriteBytes(newPayload.AsSpan(i * sizeof(long)), remaining[i]);
+
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
     /// <summary>
@@ -243,8 +554,11 @@ public sealed class Collection<T>
         await _pager.BeginTransactionAsync(ct);
         try
         {
+            uint rootBefore = _tree.RootPageId;
             await action();
-            await _catalog.PersistAllRootPageChangesAsync(ct);
+            uint rootAfter = _tree.RootPageId;
+            if (rootBefore != rootAfter || _indexes.Count > 0)
+                await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
         }
         catch

@@ -219,4 +219,4 @@ These existing files inform the extension's design and should be referenced duri
 
 - [Roadmap](../roadmap.md) — Project-wide feature roadmap
 - [Architecture Guide](../architecture.md) — How the engine is structured
-- [Storage Extensibility Guide](../storage-extensibility-guide.md) — Interface catalog and extension points
+- [Storage Extensibility Guide](../tutorials/storage/extensibility.md) — Interface catalog and extension points

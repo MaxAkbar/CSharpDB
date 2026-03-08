@@ -6,6 +6,8 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class WalIndex
 {
+    private readonly object _gate = new();
+
     // Maps pageId → WAL file offset of the latest committed frame for that page.
     private readonly Dictionary<uint, long> _pageMap = new();
 
@@ -26,7 +28,10 @@ public sealed class WalIndex
         if (additionalEntries <= 0)
             return;
 
-        _pageMap.EnsureCapacity(_pageMap.Count + additionalEntries);
+        lock (_gate)
+        {
+            _pageMap.EnsureCapacity(_pageMap.Count + additionalEntries);
+        }
     }
 
     /// <summary>
@@ -35,8 +40,11 @@ public sealed class WalIndex
     /// </summary>
     public void AddCommittedFrame(uint pageId, long walFileOffset)
     {
-        _pageMap[pageId] = walFileOffset;
-        _frameCount++;
+        lock (_gate)
+        {
+            _pageMap[pageId] = walFileOffset;
+            _frameCount++;
+        }
     }
 
     /// <summary>
@@ -45,7 +53,10 @@ public sealed class WalIndex
     /// </summary>
     public void AdvanceCommit()
     {
-        _commitCounter++;
+        lock (_gate)
+        {
+            _commitCounter++;
+        }
     }
 
     /// <summary>
@@ -54,7 +65,10 @@ public sealed class WalIndex
     /// </summary>
     public bool TryGetLatest(uint pageId, out long walOffset)
     {
-        return _pageMap.TryGetValue(pageId, out walOffset);
+        lock (_gate)
+        {
+            return _pageMap.TryGetValue(pageId, out walOffset);
+        }
     }
 
     /// <summary>
@@ -64,8 +78,11 @@ public sealed class WalIndex
     /// </summary>
     public WalSnapshot TakeSnapshot()
     {
-        var snapshot = new Dictionary<uint, long>(_pageMap);
-        return new WalSnapshot(snapshot, _commitCounter);
+        lock (_gate)
+        {
+            var snapshot = new Dictionary<uint, long>(_pageMap);
+            return new WalSnapshot(snapshot, _commitCounter);
+        }
     }
 
     /// <summary>
@@ -73,7 +90,10 @@ public sealed class WalIndex
     /// </summary>
     public IReadOnlyDictionary<uint, long> GetAllCommittedPages()
     {
-        return _pageMap;
+        lock (_gate)
+        {
+            return new Dictionary<uint, long>(_pageMap);
+        }
     }
 
     /// <summary>
@@ -81,7 +101,10 @@ public sealed class WalIndex
     /// </summary>
     internal Dictionary<uint, long> GetCommittedPages()
     {
-        return _pageMap;
+        lock (_gate)
+        {
+            return new Dictionary<uint, long>(_pageMap);
+        }
     }
 
     /// <summary>
@@ -90,8 +113,11 @@ public sealed class WalIndex
     /// </summary>
     public void Reset()
     {
-        _pageMap.Clear();
-        _frameCount = 0;
+        lock (_gate)
+        {
+            _pageMap.Clear();
+            _frameCount = 0;
+        }
     }
 }
 

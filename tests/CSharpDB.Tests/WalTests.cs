@@ -145,6 +145,50 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReaderSession_CanBeReusedForMultipleSequentialReads()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+
+        await using (var first = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM t", ct))
+        {
+            var firstRows = await first.ToListAsync(ct);
+            Assert.Equal(1L, firstRows[0][0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'new')", ct);
+
+        await using (var second = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM t", ct))
+        {
+            var secondRows = await second.ToListAsync(ct);
+            Assert.Equal(1L, secondRows[0][0].AsInteger);
+        }
+
+        await using var main = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
+        var mainRows = await main.ToListAsync(ct);
+        Assert.Equal(2L, mainRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task ReaderSession_RejectsConcurrentQueriesUntilPreviousResultIsDisposed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'data')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        await using var first = await reader.ExecuteReadAsync("SELECT * FROM t", ct);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await reader.ExecuteReadAsync("SELECT COUNT(*) FROM t", ct));
+
+        Assert.Contains("one active query", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Checkpoint_CopiesDataToDbFile()
     {
         var ct = TestContext.Current.CancellationToken;
