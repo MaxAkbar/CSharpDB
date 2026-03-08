@@ -105,7 +105,15 @@ public sealed class CSharpDbService : IAsyncDisposable
     }
 
     public async Task<ProcedureExecutionResult> ExecuteProcedureAsync(string name, IReadOnlyDictionary<string, object?> args)
-        => MapProcedureExecutionResult(await WithLockAsync(() => _client.ExecuteProcedureAsync(name, args)));
+    {
+        var result = MapProcedureExecutionResult(await WithLockAsync(() => _client.ExecuteProcedureAsync(name, args)));
+        AnalyzeProcedureEffects(result, out bool schemaMutated, out bool tableMutated, out bool proceduresMutated);
+        if (schemaMutated)
+            NotifySchemaChanged(tableMutated);
+        if (proceduresMutated)
+            ProceduresChanged?.Invoke();
+        return result;
+    }
 
     public async Task<TableBrowseResult> BrowseTableAsync(string tableName, int page, int pageSize)
         => MapTableBrowseResult(await WithLockAsync(() => _client.BrowseTableAsync(tableName, page, pageSize)));
@@ -450,6 +458,25 @@ public sealed class CSharpDbService : IAsyncDisposable
             }
 
             proceduresMutated |= LooksLikeProcedureMutation(statement);
+        }
+    }
+
+    private static void AnalyzeProcedureEffects(
+        ProcedureExecutionResult result,
+        out bool schemaMutated,
+        out bool tableMutated,
+        out bool proceduresMutated)
+    {
+        schemaMutated = false;
+        tableMutated = false;
+        proceduresMutated = false;
+
+        foreach (var statement in result.Statements)
+        {
+            AnalyzeSqlEffects(statement.StatementText, out bool statementSchemaMutated, out bool statementTableMutated, out bool statementProceduresMutated);
+            schemaMutated |= statementSchemaMutated;
+            tableMutated |= statementTableMutated;
+            proceduresMutated |= statementProceduresMutated;
         }
     }
 

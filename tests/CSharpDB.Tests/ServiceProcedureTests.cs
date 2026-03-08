@@ -361,6 +361,72 @@ public sealed class ServiceProcedureTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteProcedure_SchemaMutation_RaisesSchemaAndTableEvents()
+    {
+        await _service.CreateProcedureAsync(new ProcedureDefinition
+        {
+            Name = "CreateProcTable",
+            BodySql = "CREATE TABLE proc_created (id INTEGER PRIMARY KEY);",
+            Parameters = [],
+            IsEnabled = true,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+
+        int schemaChanged = 0;
+        int tablesChanged = 0;
+        int proceduresChanged = 0;
+        _service.SchemaChanged += () => schemaChanged++;
+        _service.TablesChanged += () => tablesChanged++;
+        _service.ProceduresChanged += () => proceduresChanged++;
+
+        var result = await _service.ExecuteProcedureAsync("CreateProcTable", new Dictionary<string, object?>());
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.Equal(1, schemaChanged);
+        Assert.Equal(1, tablesChanged);
+        Assert.Equal(0, proceduresChanged);
+        Assert.Contains("proc_created", await _service.GetTableNamesAsync(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExecuteProcedure_ProcedureCatalogMutation_RaisesProceduresChanged()
+    {
+        await _service.CreateProcedureAsync(new ProcedureDefinition
+        {
+            Name = "ManagedProc",
+            BodySql = "SELECT 1;",
+            Parameters = [],
+            Description = "before",
+            IsEnabled = true,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+
+        await _service.CreateProcedureAsync(new ProcedureDefinition
+        {
+            Name = "MutateProcedures",
+            BodySql = "UPDATE __procedures SET description = 'after' WHERE name = 'ManagedProc';",
+            Parameters = [],
+            IsEnabled = true,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+
+        int proceduresChanged = 0;
+        int schemaChanged = 0;
+        _service.ProceduresChanged += () => proceduresChanged++;
+        _service.SchemaChanged += () => schemaChanged++;
+
+        var result = await _service.ExecuteProcedureAsync("MutateProcedures", new Dictionary<string, object?>());
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.Equal(1, proceduresChanged);
+        Assert.Equal(0, schemaChanged);
+        Assert.Equal("after", (await _service.GetProcedureAsync("ManagedProc"))?.Description);
+    }
+
+    [Fact]
     public async Task ExecuteProcedure_Disabled_RejectsExecution()
     {
         await _service.CreateProcedureAsync(new ProcedureDefinition
