@@ -15,6 +15,7 @@ Use this track if you want to understand:
 - how `Pager`, WAL, B+tree, and `SchemaCatalog` fit together
 - which parts of the storage stack are configurable today
 - how to experiment with those extension points in executable code
+- how to use the storage engine for non-traditional workloads (file systems, config stores, event logs, job queues, graph databases)
 
 ## Related material
 

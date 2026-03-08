@@ -36,7 +36,7 @@ using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Time;
 
-namespace StorageStudyExamples;
+namespace StorageStudyExamples.StorageInternals;
 
 // ============================================================================
 // 1. CUSTOM PAGE CACHE (IPageCache)
@@ -83,7 +83,7 @@ public sealed class MetricsPageCache : IPageCache
 
     public bool TryGet(uint pageId, out byte[] page)
     {
-        bool found = _inner.TryGet(pageId, out page);
+        var found = _inner.TryGet(pageId, out page);
         if (found)
             Interlocked.Increment(ref _hits);
         else
@@ -96,7 +96,7 @@ public sealed class MetricsPageCache : IPageCache
 
     public bool Remove(uint pageId)
     {
-        bool removed = _inner.Remove(pageId);
+        var removed = _inner.Remove(pageId);
         if (removed) Interlocked.Increment(ref _evictions);
         return removed;
     }
@@ -283,9 +283,9 @@ public sealed class LatencyTrackingInterceptor : IPageOperationInterceptor
     {
         Interlocked.Increment(ref _totalReads);
 
-        if (_readStartTicks.TryRemove(pageId, out long startTicks))
+        if (_readStartTicks.TryRemove(pageId, out var startTicks))
         {
-            double elapsedMs = Stopwatch.GetElapsedTime(startTicks).TotalMilliseconds;
+            var elapsedMs = Stopwatch.GetElapsedTime(startTicks).TotalMilliseconds;
             _latencies.GetOrAdd(source, _ => new ConcurrentQueue<double>()).Enqueue(elapsedMs);
         }
         return ValueTask.CompletedTask;
@@ -335,11 +335,11 @@ public sealed class LatencyTrackingInterceptor : IPageOperationInterceptor
 
         foreach (var (source, latencies) in _latencies)
         {
-            double[] ordered = latencies.OrderBy(x => x).ToArray();
+            var ordered = latencies.OrderBy(x => x).ToArray();
             if (ordered.Length == 0) continue;
 
-            int p50Index = ordered.Length / 2;
-            int p99Index = Math.Min(ordered.Length - 1, (int)(ordered.Length * 0.99));
+            var p50Index = ordered.Length / 2;
+            var p99Index = Math.Min(ordered.Length - 1, (int)(ordered.Length * 0.99));
 
             Console.WriteLine($"  {source}:");
             Console.WriteLine($"    Count:  {ordered.Length:N0}");
@@ -408,7 +408,7 @@ public sealed class FaultInjectionInterceptor : IPageOperationInterceptor
     {
         if (FailWritesAfter.HasValue)
         {
-            int count = Interlocked.Increment(ref _writeCount);
+            var count = Interlocked.Increment(ref _writeCount);
             if (count > FailWritesAfter.Value)
                 throw new IOException($"Simulated write failure on page {pageId} (write #{count})");
         }
@@ -551,10 +551,10 @@ public sealed class Crc32ChecksumProvider : IPageChecksumProvider
 
     public uint Compute(ReadOnlySpan<byte> data)
     {
-        uint crc = 0xFFFF_FFFFu;
-        foreach (byte value in data)
+        var crc = 0xFFFF_FFFFu;
+        foreach (var value in data)
         {
-            uint tableIndex = (crc ^ value) & 0xFFu;
+            var tableIndex = (crc ^ value) & 0xFFu;
             crc = (crc >> 8) ^ Table[tableIndex];
         }
 
@@ -566,8 +566,8 @@ public sealed class Crc32ChecksumProvider : IPageChecksumProvider
         var table = new uint[256];
         for (uint i = 0; i < table.Length; i++)
         {
-            uint value = i;
-            for (int bit = 0; bit < 8; bit++)
+            var value = i;
+            for (var bit = 0; bit < 8; bit++)
             {
                 value = (value & 1u) != 0
                     ? 0xEDB8_8320u ^ (value >> 1)
@@ -668,7 +668,7 @@ public sealed class InMemoryIndexStore : IIndexStore
             {
                 if (range.LowerBound.HasValue)
                 {
-                    bool belowLower = range.LowerInclusive
+                    var belowLower = range.LowerInclusive
                         ? kv.Key < range.LowerBound.Value
                         : kv.Key <= range.LowerBound.Value;
                     if (belowLower) return false;
@@ -676,7 +676,7 @@ public sealed class InMemoryIndexStore : IIndexStore
 
                 if (range.UpperBound.HasValue)
                 {
-                    bool aboveUpper = range.UpperInclusive
+                    var aboveUpper = range.UpperInclusive
                         ? kv.Key > range.UpperBound.Value
                         : kv.Key >= range.UpperBound.Value;
                     if (aboveUpper) return false;
@@ -750,7 +750,7 @@ public sealed class InMemoryStorageDevice : IStorageDevice, IAsyncDisposable, ID
         }
 
         _stream.Position = offset;
-        int bytesToRead = (int)Math.Min(buffer.Length, _stream.Length - offset);
+        var bytesToRead = (int)Math.Min(buffer.Length, _stream.Length - offset);
         _stream.Read(buffer.Span[..bytesToRead]);
 
         // Zero-fill remainder if we read less than requested
@@ -824,9 +824,9 @@ public sealed class LatencyTrackingDevice : IStorageDevice
 
     public async ValueTask<int> ReadAsync(long offset, Memory<byte> buffer, CancellationToken ct = default)
     {
-        long start = Stopwatch.GetTimestamp();
-        int result = await _inner.ReadAsync(offset, buffer, ct);
-        long elapsed = Stopwatch.GetTimestamp() - start;
+        var start = Stopwatch.GetTimestamp();
+        var result = await _inner.ReadAsync(offset, buffer, ct);
+        var elapsed = Stopwatch.GetTimestamp() - start;
         Interlocked.Add(ref _readTotalTicks, elapsed);
         Interlocked.Increment(ref _readCount);
         return result;
@@ -834,9 +834,9 @@ public sealed class LatencyTrackingDevice : IStorageDevice
 
     public async ValueTask WriteAsync(long offset, ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
     {
-        long start = Stopwatch.GetTimestamp();
+        var start = Stopwatch.GetTimestamp();
         await _inner.WriteAsync(offset, buffer, ct);
-        long elapsed = Stopwatch.GetTimestamp() - start;
+        var elapsed = Stopwatch.GetTimestamp() - start;
         Interlocked.Add(ref _writeTotalTicks, elapsed);
         Interlocked.Increment(ref _writeCount);
     }
@@ -900,7 +900,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task DefaultConfigurationAsync()
     {
-        string dbPath = "mydb.cdb";
+        var dbPath = "mydb.cdb";
 
         // The simplest way — all defaults
         await using var db = await Database.OpenAsync(dbPath);
@@ -915,7 +915,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task ProductionConfigurationAsync()
     {
-        string dbPath = "production.cdb";
+        var dbPath = "production.cdb";
 
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder =>
@@ -950,7 +950,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task DebugConfigurationAsync()
     {
-        string dbPath = "debug.cdb";
+        var dbPath = "debug.cdb";
 
         var logger = new ConsoleLoggingInterceptor();
 
@@ -984,7 +984,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task BatchImportConfigurationAsync()
     {
-        string dbPath = "import.cdb";
+        var dbPath = "import.cdb";
 
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder =>
@@ -1004,7 +1004,7 @@ public static class ConfigurationExamples
         await db.ExecuteAsync("CREATE TABLE data (id INTEGER PRIMARY KEY, value TEXT)");
 
         // Bulk insert without checkpoint overhead
-        for (int i = 0; i < 100_000; i++)
+        for (var i = 0; i < 100_000; i++)
         {
             await db.ExecuteAsync($"INSERT INTO data VALUES ({i}, 'value_{i}')");
         }
@@ -1020,7 +1020,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task MetricsCacheConfigurationAsync()
     {
-        string dbPath = "metrics.cdb";
+        var dbPath = "metrics.cdb";
         var metricsCache = new MetricsPageCache(maxPages: 1000);
 
         var options = new DatabaseOptions()
@@ -1036,11 +1036,11 @@ public static class ConfigurationExamples
 
         await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)");
 
-        for (int i = 0; i < 1000; i++)
+        for (var i = 0; i < 1000; i++)
             await db.ExecuteAsync($"INSERT INTO t VALUES ({i}, {i * 10})");
 
         // Point lookups to exercise cache
-        for (int i = 0; i < 1000; i++)
+        for (var i = 0; i < 1000; i++)
         {
             await using var r = await db.ExecuteAsync($"SELECT * FROM t WHERE id = {i}");
             await r.ToListAsync();
@@ -1054,7 +1054,7 @@ public static class ConfigurationExamples
     /// </summary>
     public static async Task MultipleInterceptorsAsync()
     {
-        string dbPath = "multi.cdb";
+        var dbPath = "multi.cdb";
 
         var logger = new ConsoleLoggingInterceptor();
         var latency = new LatencyTrackingInterceptor();
@@ -1150,7 +1150,7 @@ public static class TestingExamples
     /// </summary>
     public static async Task CrashRecoveryTestAsync()
     {
-        string dbPath = Path.Combine(Path.GetTempPath(), $"crash_test_{Guid.NewGuid():N}.cdb");
+        var dbPath = Path.Combine(Path.GetTempPath(), $"crash_test_{Guid.NewGuid():N}.cdb");
 
         try
         {
@@ -1227,13 +1227,13 @@ public static class TestingExamples
             EstimatedWalBytes: 1024);
 
         // Should NOT checkpoint yet (just started)
-        bool should1 = policy.ShouldCheckpoint(context);
+        var should1 = policy.ShouldCheckpoint(context);
         Console.WriteLine($"After 0 min: ShouldCheckpoint = {should1}"); // false
 
         // Advance clock by 6 minutes
         clock.Advance(TimeSpan.FromMinutes(6));
 
-        bool should2 = policy.ShouldCheckpoint(context);
+        var should2 = policy.ShouldCheckpoint(context);
         Console.WriteLine($"After 6 min: ShouldCheckpoint = {should2}"); // true
 
         // Should NOT checkpoint if readers are active
@@ -1243,7 +1243,7 @@ public static class TestingExamples
             EstimatedWalBytes: 1024);
 
         clock.Advance(TimeSpan.FromMinutes(6));
-        bool should3 = policy.ShouldCheckpoint(contextWithReaders);
+        var should3 = policy.ShouldCheckpoint(contextWithReaders);
         Console.WriteLine($"With readers: ShouldCheckpoint = {should3}"); // false
     }
 
