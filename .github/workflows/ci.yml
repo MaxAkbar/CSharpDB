@@ -41,6 +41,61 @@ jobs:
       - name: Test
         run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
 
+  native-aot:
+    name: NativeAOT (${{ matrix.os }} ${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib: CSharpDB.Native.so
+          - os: windows-latest
+            rid: win-x64
+            lib: CSharpDB.Native.dll
+          - os: macos-latest
+            rid: osx-arm64
+            lib: CSharpDB.Native.dylib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install native toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish NativeAOT library
+        run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
+
+      - name: Verify exported symbols (Linux)
+        if: runner.os == 'Linux'
+        run: nm -D src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+
+      - name: Verify exported symbols (macOS)
+        if: runner.os == 'macOS'
+        run: nm -gU src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+
+      - name: Verify exported symbols (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\${{ matrix.rid }}\publish\${{ matrix.lib }} | Select-String "csharpdb_"
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: |
+            src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
+            src/CSharpDB.Native/csharpdb.h
+          if-no-files-found: error
+
   pack:
     name: Pack NuGet Artifacts
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -68,6 +123,7 @@ jobs:
           dotnet pack src/CSharpDB.Engine/CSharpDB.Engine.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Service/CSharpDB.Service.csproj -c Release -o artifacts/nuget
 
       - name: Upload NuGet artifacts

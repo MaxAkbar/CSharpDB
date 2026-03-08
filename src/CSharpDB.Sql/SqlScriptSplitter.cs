@@ -1,9 +1,8 @@
 using CSharpDB.Core;
-using CSharpDB.Sql;
 
-namespace CSharpDB.Cli;
+namespace CSharpDB.Sql;
 
-internal static class SqlScriptParser
+public static class SqlScriptSplitter
 {
     public static bool TrySplitCompleteStatements(
         string sql,
@@ -11,41 +10,48 @@ internal static class SqlScriptParser
         out string remainder,
         out string? error)
     {
+        ArgumentNullException.ThrowIfNull(sql);
+
         statements = new List<string>();
         remainder = sql;
         error = null;
 
         try
         {
-            SplitCore(sql, statements, out remainder);
+            SplitCore(sql, statements, out remainder, includeTrailingStatement: false);
+            ValidateStatements(statements);
             return true;
         }
         catch (CSharpDbException ex)
         {
+            statements = new List<string>();
+            remainder = sql;
             error = ex.Message;
             return false;
         }
     }
 
-    public static IReadOnlyList<string> SplitAllStatements(string sql)
+    public static IReadOnlyList<string> SplitExecutableStatements(string sql)
     {
+        ArgumentNullException.ThrowIfNull(sql);
+
+        if (string.IsNullOrWhiteSpace(sql))
+            return Array.Empty<string>();
+
         var statements = new List<string>();
-        SplitCore(sql, statements, out string remainder);
-
-        if (!string.IsNullOrWhiteSpace(remainder))
-        {
-            throw new CSharpDbException(
-                ErrorCode.SyntaxError,
-                "SQL script ended with an incomplete statement (missing semicolon).");
-        }
-
+        SplitCore(sql, statements, out _, includeTrailingStatement: true);
         return statements;
     }
 
-    private static void SplitCore(string sql, List<string> statements, out string remainder)
+    private static void ValidateStatements(IEnumerable<string> statements)
+    {
+        foreach (var statement in statements)
+            _ = Parser.Parse(statement);
+    }
+
+    private static void SplitCore(string sql, List<string> statements, out string remainder, bool includeTrailingStatement)
     {
         var tokens = new Tokenizer(sql).Tokenize();
-
         int statementStart = 0;
         bool atStatementStart = true;
         bool createSeen = false;
@@ -106,5 +112,14 @@ internal static class SqlScriptParser
         }
 
         remainder = statementStart < sql.Length ? sql[statementStart..] : string.Empty;
+
+        if (!includeTrailingStatement)
+            return;
+
+        string trailingStatement = remainder.Trim();
+        if (trailingStatement.Length > 0)
+            statements.Add(trailingStatement);
+
+        remainder = string.Empty;
     }
 }

@@ -16,7 +16,9 @@ Focused improvements to SQL completeness and query performance.
 | **Prepared statement cache** | Cache parsed ASTs and query plans to avoid re-parsing identical SQL | Done |
 | **Cached max rowid** | Avoid repeated O(n) scans when generating row IDs on insert (in-memory + persisted high-water mark) | Done |
 | **B+tree delete rebalancing** | Merge underflowed pages on delete to reclaim space | Done |
-| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Planned |
+| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Done |
+| **Database administration** | Reindex (full + incremental), VACUUM/compact, fragmentation analysis, database size report | Planned |
+| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV, min/max; cost-based index selection in query planner | Planned |
 
 ---
 
@@ -32,6 +34,7 @@ SQL feature parity and ecosystem expansion.
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
+| **Service daemon** | Persistent background service keeping the database loaded with concurrent readers, cross-platform (systemd, Windows Service, launchd) | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish `CSharpDB.Engine`, `CSharpDB.Data`, and `CSharpDB.Service` as NuGet packages | Planned |
 | **Connection pooling** | Pool `CSharpDbConnection` instances to amortize open/close cost | Planned |
@@ -51,7 +54,7 @@ Advanced features and fundamental architecture enhancements.
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
 | **Collection optimization & indexing** | Separate storage path, direct binary hydration, expression-based field indexes | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
-| **Cost-based query optimizer** | Statistics-driven join ordering and index selection | Planned |
+| **Cost-based query optimizer** | Statistics-driven join ordering and index selection (initial support via ANALYZE in Near-Term; advanced histograms and adaptive re-optimization here) | Planned |
 | **Async I/O batching** | Group multiple page writes into fewer system calls during batch operations | Planned |
 | **Write-ahead buffering** | Buffer WAL writes before flushing to improve auto-commit throughput | Planned |
 | **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |
@@ -73,6 +76,9 @@ These are known simplifications in the current implementation:
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No mmap read path |
+| **Storage** | No VACUUM/compaction — database file grows monotonically, freed pages go to freelist but file never shrinks |
+| **Storage** | No REINDEX — indexes cannot be rebuilt without DROP + CREATE |
+| **Query** | No ANALYZE — query planner uses rule-based heuristics instead of statistics-driven cost estimation |
 
 ---
 
@@ -114,4 +120,6 @@ Major features already implemented:
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
 - [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
+- [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
+- [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities

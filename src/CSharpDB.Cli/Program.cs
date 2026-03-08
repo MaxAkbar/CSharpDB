@@ -1,4 +1,6 @@
 using CSharpDB.Cli;
+using CSharpDB.Client;
+using CSharpDB.Client.Internal;
 using CSharpDB.Engine;
 
 Ansi.EnableVirtualTerminal();
@@ -6,17 +8,28 @@ Ansi.EnableVirtualTerminal();
 if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
     return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);
 
-string dbPath = args.Length > 0 ? args[0] : "csharpdb.db";
+if (!CliShellOptions.TryParse(args, out var shellOptions, out var parseError))
+{
+    Console.Error.WriteLine(Ansi.Colorize($"Error: {parseError}", Ansi.Red));
+    Console.Error.WriteLine(Ansi.Colorize(CliShellOptions.Usage, Ansi.Yellow));
+    return 1;
+}
+
+string displayTarget = shellOptions!.DisplayTarget;
 
 Console.WriteLine($"{Ansi.Bold}{Ansi.Cyan}CSharpDB{Ansi.Reset} - Interactive SQL Shell");
-Console.WriteLine($"{Ansi.Dim}Database: {dbPath}{Ansi.Reset}");
+Console.WriteLine($"{Ansi.Dim}Database: {displayTarget}{Ansi.Reset}");
 Console.WriteLine($"{Ansi.Dim}Type .help for commands, .quit to exit.{Ansi.Reset}");
 Console.WriteLine();
 
-Database db;
+ICSharpDbClient client;
+Database? localDatabase = null;
 try
 {
-    db = await Database.OpenAsync(dbPath);
+    client = CSharpDbClient.Create(shellOptions.ClientOptions);
+
+    if (shellOptions.EnableLocalDirectFeatures && client is IEngineBackedClient engineBacked)
+        localDatabase = await engineBacked.TryGetDatabaseAsync();
 }
 catch (Exception ex)
 {
@@ -24,7 +37,7 @@ catch (Exception ex)
     return 1;
 }
 
-await using (db)
+await using (client)
 {
     // Build the command registry.
     var commands = new List<IMetaCommand>();
@@ -48,7 +61,7 @@ await using (db)
     commands.Add(new TimingCommand());
     commands.Add(new ReadCommand());
 
-    using var repl = new Repl(db, dbPath, Console.Out, commands);
+    using var repl = new Repl(client, localDatabase, displayTarget, Console.Out, commands);
     await repl.RunAsync();
 }
 

@@ -199,6 +199,8 @@ public sealed class Collection<T>
         return hash & 0x7FFFFFFFFFFFFFFF; // ensure positive
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     private byte[] EncodeDocument(string key, T document)
     {
         string json = JsonSerializer.Serialize(document, s_jsonOptions);
@@ -206,6 +208,8 @@ public sealed class Collection<T>
         return _recordSerializer.Encode(values);
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     private (string key, T document) DecodeDocument(ReadOnlySpan<byte> payload)
     {
         var values = _recordSerializer.Decode(payload);

@@ -1,13 +1,13 @@
 @inject ThemeService Theme
 @inject TabManagerService TabManager
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
 @implements IDisposable
 
 <div class="titlebar">
     <div class="titlebar-logo">
         <i class="bi bi-database-fill"></i>
         <span class="titlebar-brand">CSharpDB Studio</span>
-        <span class="titlebar-dbname">@("\u2014") @DbService.DataSource</span>
+        <span class="titlebar-dbname">@("\u2014") @DbClient.DataSource</span>
     </div>
     <div class="titlebar-center">
         <span class="status-dot connected"></span>

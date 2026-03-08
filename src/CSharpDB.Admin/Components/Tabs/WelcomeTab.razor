@@ -1,5 +1,7 @@
-@inject CSharpDbService DbService
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
+@implements IDisposable
 
 <div class="welcome-tab">
     <div class="empty-state">
@@ -50,18 +52,33 @@
 
     protected override async Task OnInitializedAsync()
     {
+        Changes.Changed += OnChanged;
+        await LoadTablesAsync();
+    }
+
+    private async void OnChanged()
+    {
+        await LoadTablesAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadTablesAsync()
+    {
         try
         {
-            _tableNames = (await DbService.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _rowCounts.Clear();
             foreach (var name in _tableNames)
             {
                 try
                 {
-                    _rowCounts[name] = await DbService.GetRowCountAsync(name);
+                    _rowCounts[name] = await DbClient.GetRowCountAsync(name);
                 }
                 catch { /* ignore */ }
             }
         }
         catch { /* ignore */ }
     }
+
+    public void Dispose() => Changes.Changed -= OnChanged;
 }

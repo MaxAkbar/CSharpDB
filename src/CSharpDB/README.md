@@ -11,6 +11,7 @@ All-in-one package for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embe
 
 `CSharpDB` is the recommended entry package for application developers. It pulls in the full CSharpDB library set:
 
+- Unified client (`CSharpDB.Client`)
 - Engine API (`CSharpDB.Engine`)
 - ADO.NET provider (`CSharpDB.Data`)
 - Service layer (`CSharpDB.Service`)

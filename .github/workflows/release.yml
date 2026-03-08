@@ -92,6 +92,7 @@ jobs:
           dotnet pack src/CSharpDB.Engine/CSharpDB.Engine.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget -p:Version="$version"
+          dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Service/CSharpDB.Service.csproj -c Release -o artifacts/nuget -p:Version="$version"
 
       - name: Push packages to NuGet.org
@@ -112,9 +113,65 @@ jobs:
           path: artifacts/nuget/*.nupkg
           if-no-files-found: error
 
+  native-aot:
+    name: NativeAOT (${{ matrix.os }} ${{ matrix.rid }})
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib: CSharpDB.Native.so
+          - os: windows-latest
+            rid: win-x64
+            lib: CSharpDB.Native.dll
+          - os: macos-latest
+            rid: osx-arm64
+            lib: CSharpDB.Native.dylib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install native toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish NativeAOT library
+        run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
+
+      - name: Verify exported symbols (Linux)
+        if: runner.os == 'Linux'
+        run: nm -D src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+
+      - name: Verify exported symbols (macOS)
+        if: runner.os == 'macOS'
+        run: nm -gU src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
+
+      - name: Verify exported symbols (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dumpbin /exports src\CSharpDB.Native\bin\Release\net10.0\${{ matrix.rid }}\publish\${{ matrix.lib }} | Select-String "csharpdb_"
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: |
+            src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }}
+            src/CSharpDB.Native/csharpdb.h
+          if-no-files-found: error
+
   create-release:
     name: Create GitHub Release
-    needs: publish-nuget
+    needs: [publish-nuget, native-aot]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,6 +185,13 @@ jobs:
         with:
           name: nuget-packages
           path: artifacts/nuget
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: artifacts/native
+          merge-multiple: false
 
       - name: Resolve release notes
         id: notes
@@ -160,7 +224,9 @@ jobs:
         with:
           name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
           body_path: ${{ steps.notes.outputs.path }}
-          files: artifacts/nuget/*.nupkg
+          files: |
+            artifacts/nuget/*.nupkg
+            artifacts/native/**/*
 
       - name: Create release (auto-generated notes)
         if: steps.notes.outputs.has_notes == 'false'
@@ -168,4 +234,6 @@ jobs:
         with:
           name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
           generate_release_notes: true
-          files: artifacts/nuget/*.nupkg
+          files: |
+            artifacts/nuget/*.nupkg
+            artifacts/native/**/*

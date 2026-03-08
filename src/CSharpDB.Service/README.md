@@ -1,6 +1,6 @@
 # CSharpDB.Service
 
-Thread-safe service layer for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB) in ASP.NET Core, Blazor, or MCP server applications.
+Compatibility facade for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB) in ASP.NET Core, Blazor, or MCP server applications.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -9,18 +9,17 @@ Thread-safe service layer for hosting [CSharpDB](https://github.com/MaxAkbar/CSh
 
 ## Overview
 
-`CSharpDB.Service` wraps the CSharpDB ADO.NET provider in a thread-safe service class designed for dependency injection in web applications. It provides a complete API surface for schema operations, CRUD, DDL, SQL console execution, and storage diagnostics. Reads the `CSharpDB` connection string from `IConfiguration`.
+`CSharpDB.Service` now delegates to `CSharpDB.Client`.
+
+Its purpose is transition compatibility for existing in-process hosts that still inject `CSharpDbService`. The authoritative database API lives in `CSharpDB.Client`; this package preserves the old DI shape, events, and model surface while the repo retires direct service usage.
 
 ## Features
 
-- **Thread-safe**: All operations are serialized via `SemaphoreSlim`
-- **DI-ready**: Constructor takes `IConfiguration`, reads the `"CSharpDB"` connection string
-- **Full schema operations**: Tables, indexes, views, triggers (create, update, drop)
-- **CRUD**: Browse (paginated), get by PK, insert, update, delete
-- **Procedure catalog**: Table-backed procedure definitions with strict typed parameter validation and transactional execution
-- **SQL console**: `ExecuteSqlAsync` with multi-statement splitting and timing
-- **Storage diagnostics**: Database inspection, WAL checking, page inspection, index verification
-- **Events**: `TablesChanged`, `SchemaChanged`, and `ProceduresChanged` for UI refresh
+- **Compatibility layer**: Existing hosts can keep injecting `CSharpDbService`
+- **Thread-safe wrapper**: Calls are serialized via `SemaphoreSlim`
+- **DI-ready**: Constructor still reads the `"CSharpDB"` connection string from `IConfiguration`
+- **Event bridge**: Preserves `TablesChanged`, `SchemaChanged`, and `ProceduresChanged`
+- **Delegates to client**: Schema, CRUD, SQL, procedures, saved queries, and diagnostics now flow through `CSharpDB.Client`
 
 ## Usage
 
@@ -153,8 +152,8 @@ dotnet add package CSharpDB
 
 ## Dependencies
 
-- `CSharpDB.Data` - ADO.NET provider
-- `CSharpDB.Storage.Diagnostics` - storage inspection toolkit
+- `CSharpDB.Client` - authoritative database API
+- `CSharpDB.Sql` - SQL splitting for compatibility event notifications
 - `Microsoft.Extensions.Configuration.Abstractions` - configuration binding
 
 ## Related Packages

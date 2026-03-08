@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    This project requires NativeAOT tooling (C++ linker / clang) to publish.
+    It is excluded from the default solution build so that cloning and building
+    the repo works without extra prerequisites.
+
+    Build this project explicitly:
+      dotnet build  src/CSharpDB.Native/CSharpDB.Native.csproj
+      dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r win-x64
+
+    Or include it in a solution build by passing -p:BuildNative=true:
+      dotnet build CSharpDB.slnx -p:BuildNative=true
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <OutputType>Library</OutputType>
+    <Description>NativeAOT shared library exposing CSharpDB as a C-compatible API for cross-language consumption via FFI.</Description>
+    <!-- Produce a shared library (.dll/.so/.dylib) instead of an executable -->
+    <NativeLib>Shared</NativeLib>
+    <!-- Strip symbols for smaller binary in release -->
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
+    <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
+  </ItemGroup>
+
+</Project>

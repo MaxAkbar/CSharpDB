@@ -5,6 +5,7 @@ A lightweight, embedded SQL database engine written from scratch in C#. Single-f
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
+[![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
 
 ---
 
@@ -17,7 +18,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 - Embedded databases for desktop, CLI, or IoT applications
 - Prototyping and local development without setting up a database server
 - Educational reference for understanding database internals (storage engines, B+trees, WAL, query planning)
-- Cross-language interoperability via the built-in REST API
+- Cross-language interoperability via the native C library, REST API, or Node.js package
 
 ## Features
 
@@ -29,11 +30,14 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
+| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes) |
+| **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, and more |
+| **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
 | **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
 | **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
-| **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode |
+| **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode, remote connectivity |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
 
 ## Admin UI Preview
@@ -125,7 +129,11 @@ curl http://localhost:61818/api/tables/users/rows
 ### CLI
 
 ```bash
+# Local database
 dotnet run --project src/CSharpDB.Cli -- mydata.db
+
+# Connect to a remote CSharpDB server
+dotnet run --project src/CSharpDB.Cli -- --endpoint http://localhost:61818
 
 csdb> CREATE TABLE demo (id INTEGER PRIMARY KEY, name TEXT);
 csdb> INSERT INTO demo VALUES (1, 'Hello');
@@ -165,6 +173,66 @@ args = ["run", "--project", "path/to/src/CSharpDB.Mcp", "--", "--database", "myd
 
 The MCP server exposes 15 tools for schema inspection, data browsing, row mutations, and SQL execution. See the [MCP Server Reference](docs/mcp-server.md) for the full tool list and configuration options for all supported clients.
 
+### Client SDK
+
+The unified `CSharpDB.Client` SDK provides a single `ICSharpDbClient` interface with pluggable transports:
+
+```csharp
+using CSharpDB.Client;
+
+// Direct (in-process) — default
+var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "mydata.db"
+});
+
+// All database operations go through the client
+var tables = await client.GetTableNamesAsync();
+var result = await client.ExecuteSqlAsync("SELECT * FROM users WHERE age > 25");
+await client.InsertRowAsync("users", new Dictionary<string, object?>
+{
+    ["id"] = 3, ["name"] = "Charlie", ["age"] = 28
+});
+
+// DI registration
+services.AddCSharpDbClient(new CSharpDbClientOptions { DataSource = "mydata.db" });
+```
+
+The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes. Direct is fully implemented; network transports are part of the public API contract and planned for the service daemon milestone.
+
+### Cross-Language Interop (Native FFI)
+
+CSharpDB compiles to a standalone native library via NativeAOT — no .NET runtime required at the call site. Any language with C FFI support can use it.
+
+**Node.js (via `csharpdb` package):**
+
+```javascript
+import { Database } from 'csharpdb';
+
+const db = new Database('mydata.db');
+db.execute('CREATE TABLE demo (id INTEGER PRIMARY KEY, name TEXT)');
+db.execute("INSERT INTO demo VALUES (1, 'Alice')");
+
+for (const row of db.query('SELECT * FROM demo'))
+  console.log(row);
+
+db.close();
+```
+
+**Python (via ctypes — zero dependencies):**
+
+```python
+from csharpdb import Database
+
+with Database("mydata.db") as db:
+    db.execute("CREATE TABLE demo (id INTEGER PRIMARY KEY, name TEXT)")
+    db.execute("INSERT INTO demo VALUES (1, 'Alice')")
+    for row in db.query("SELECT * FROM demo"):
+        print(row)
+```
+
+The native library exports 20 C functions covering database lifecycle, SQL execution, result iteration, transactions, and error handling. See the [Native Library Reference](src/CSharpDB.Native/README.md) for the full API, build instructions, and examples for C, Go, Rust, Swift, Kotlin, and Dart.
+
 ## Architecture
 
 ```
@@ -194,26 +262,30 @@ The SQL path goes through tokenizer → parser → planner → operators → B+t
 ```
 CSharpDB.slnx
 ├── src/
-│   ├── CSharpDB.Core/        Primitives package source (DbValue, Schema, ErrorCodes)
+│   ├── CSharpDB.Core/        Primitives (DbValue, Schema, ErrorCodes)
 │   ├── CSharpDB/             All-in-one NuGet package metadata
 │   ├── CSharpDB.Storage/     Pager, B+tree, WAL, file I/O
-│   ├── CSharpDB.Sql/         Tokenizer, parser, AST
+│   ├── CSharpDB.Sql/         Tokenizer, parser, AST, script splitter
 │   ├── CSharpDB.Execution/   Query planner, operators, expression evaluator
 │   ├── CSharpDB.Engine/      Top-level Database API + Collection<T> (NoSQL)
+│   ├── CSharpDB.Client/      Unified client SDK with transport abstraction
 │   ├── CSharpDB.Data/        ADO.NET provider (DbConnection, DbCommand, DbDataReader)
+│   ├── CSharpDB.Native/      NativeAOT C FFI library for cross-language interop
 │   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
-│   ├── CSharpDB.Cli/         Interactive REPL
-│   ├── CSharpDB.Service/     Shared service layer for Admin and API
+│   ├── CSharpDB.Cli/         Interactive REPL with remote connectivity
+│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration
+├── clients/
+│   └── node/                  Node.js/TypeScript client package (csharpdb)
 ├── tests/
 │   ├── CSharpDB.Tests/       Engine unit + integration tests
 │   ├── CSharpDB.Data.Tests/  ADO.NET provider tests
-│   ├── CSharpDB.Cli.Tests/   CLI smoke tests
+│   ├── CSharpDB.Cli.Tests/   CLI smoke + integration tests
 │   └── CSharpDB.Benchmarks/  Performance benchmarks (BenchmarkDotNet + custom)
 ├── samples/                   Sample SQL datasets
-└── docs/                      Documentation
+└── docs/                      Documentation + FFI tutorials
 ```
 
 ## Supported SQL
@@ -286,18 +358,24 @@ Each script creates 7 tables with sample data, indexes, views, and triggers. See
 
 See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 
-**Recently completed (Near-term)**
-- `SELECT DISTINCT` support
-- Composite (multi-column) indexes
-- Prepared statement and SELECT plan caching
-- In-memory next-rowid caching for inserts
+**Recently completed**
+- Unified Client SDK (`CSharpDB.Client`) with transport abstraction
+- NativeAOT C FFI library (`CSharpDB.Native`) for cross-language interop
+- Node.js/TypeScript client package (`csharpdb`)
+- CLI remote connectivity (`--endpoint`, `--transport`)
+- SQL script splitter and statement classifier (`CSharpDB.Sql`)
+- Service layer refactor to facade over `CSharpDB.Client`
+- CI pipeline for cross-platform native library builds
+- `SELECT DISTINCT`, composite indexes, prepared statement caching
 
 **In progress**
-- Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`) beyond current ordered index path optimizations
+- Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
+- Service daemon for persistent background hosting (HTTP/gRPC/TCP/Named Pipes)
+- Network transport implementations for `CSharpDB.Client`
 
 **Still planned**
 - B+tree delete rebalancing
-- Architecture enforcement (single API gateway + HTTP client SDK)
+- Python and Go client packages
 
 **Mid-term**
 - Subqueries and `EXISTS`
@@ -317,10 +395,15 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
+| [Client SDK](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
+| [Native Library Reference](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
+| [Node.js Client](clients/node/README.md) | TypeScript/JavaScript package documentation |
 | [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
 | [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
+| [Service Daemon Design](docs/service-daemon/README.md) | Background service architecture and roadmap |
+| [FFI Tutorials](docs/tutorials/native-ffi/) | Step-by-step JavaScript and Python interop guides |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full benchmark results and comparison with 11 other databases |

@@ -9,6 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Description>B+tree storage engine with page cache, write-ahead log (WAL), crash recovery, and concurrent snapshot-isolated readers.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
 </Project>

@@ -2,8 +2,9 @@
 @using System.Globalization
 @using System.Text
 @using System.Text.RegularExpressions
-@using CSharpDB.Service.Models
-@inject CSharpDbService DbService
+@using CSharpDB.Client.Models
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject ToastService Toast
 
 <div class="query-tab">
@@ -197,7 +198,7 @@
             }
             else
             {
-                var result = await DbService.ExecuteSqlAsync(trimmedSql);
+                var result = await DbClient.ExecuteSqlAsync(trimmedSql);
                 _elapsed = result.Elapsed;
 
                 if (result.Error is not null)
@@ -214,6 +215,8 @@
                     _nonQueryMessage = $"{result.RowsAffected} row(s) affected";
                     Toast.Success(_nonQueryMessage);
                 }
+
+                Changes.NotifyFromSql(trimmedSql);
             }
         }
         catch (Exception ex)
@@ -261,7 +264,7 @@
 
         try
         {
-            var saved = await DbService.UpsertSavedQueryAsync(name, _sqlText);
+            var saved = await DbClient.UpsertSavedQueryAsync(name, _sqlText);
             _savedQueryName = saved.Name;
             _selectedSavedQueryName = saved.Name;
             if (Tab is not null)
@@ -286,7 +289,7 @@
 
         try
         {
-            var saved = await DbService.GetSavedQueryAsync(_selectedSavedQueryName);
+            var saved = await DbClient.GetSavedQueryAsync(_selectedSavedQueryName);
             if (saved is null)
             {
                 Toast.Warning($"Saved query '{_selectedSavedQueryName}' was not found.");
@@ -320,7 +323,7 @@
 
         try
         {
-            _savedQueries = await DbService.GetSavedQueriesAsync();
+            _savedQueries = await DbClient.GetSavedQueriesAsync();
             if (!string.IsNullOrWhiteSpace(keepSelection)
                 && _savedQueries.Any(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase)))
             {
@@ -348,7 +351,7 @@
 
     private async Task RunExecuteCommandAsync(string procedureName, IReadOnlyDictionary<string, object?> args)
     {
-        var result = await DbService.ExecuteProcedureAsync(procedureName, args);
+        var result = await DbClient.ExecuteProcedureAsync(procedureName, args);
         _elapsed = result.Elapsed;
 
         if (!result.Succeeded)
@@ -377,6 +380,7 @@
         int affected = result.Statements.Where(s => !s.IsQuery).Sum(s => s.RowsAffected);
         _nonQueryMessage = $"Procedure '{procedureName}' executed. {affected} row(s) affected.";
         Toast.Success(_nonQueryMessage);
+        Changes.NotifyChanged();
     }
 
     private static bool TryParseExecuteCommand(

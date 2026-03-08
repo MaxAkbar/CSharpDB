@@ -1,6 +1,6 @@
 using CSharpDB.Api.Dtos;
-using CSharpDB.Core;
-using CSharpDB.Service;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -16,7 +16,7 @@ public static class TriggerEndpoints
         return group;
     }
 
-    private static async Task<IResult> GetAllTriggers(CSharpDbService db)
+    private static async Task<IResult> GetAllTriggers(ICSharpDbClient db)
     {
         var triggers = await db.GetTriggersAsync();
         var response = triggers.Select(t => new TriggerResponse(
@@ -26,7 +26,7 @@ public static class TriggerEndpoints
         return Results.Ok(response);
     }
 
-    private static async Task<IResult> CreateTrigger(CreateTriggerRequest req, CSharpDbService db)
+    private static async Task<IResult> CreateTrigger(CreateTriggerRequest req, ICSharpDbClient db)
     {
         if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing))
             return Results.BadRequest(new { error = $"Invalid timing '{req.Timing}'. Valid values: Before, After." });
@@ -38,7 +38,7 @@ public static class TriggerEndpoints
             req.TriggerName, req.TableName, timing.ToString(), triggerEvent.ToString(), req.BodySql));
     }
 
-    private static async Task<IResult> UpdateTrigger(string name, UpdateTriggerRequest req, CSharpDbService db)
+    private static async Task<IResult> UpdateTrigger(string name, UpdateTriggerRequest req, ICSharpDbClient db)
     {
         if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing))
             return Results.BadRequest(new { error = $"Invalid timing '{req.Timing}'. Valid values: Before, After." });
@@ -50,7 +50,7 @@ public static class TriggerEndpoints
             req.NewTriggerName, req.TableName, timing.ToString(), triggerEvent.ToString(), req.BodySql));
     }
 
-    private static async Task<IResult> DropTrigger(string name, CSharpDbService db)
+    private static async Task<IResult> DropTrigger(string name, ICSharpDbClient db)
     {
         await db.DropTriggerAsync(name);
         return Results.NoContent();

@@ -1,6 +1,6 @@
 using System.Net;
+using CSharpDB.Client;
 using CSharpDB.Core;
-using CSharpDB.Data;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CSharpDB.Api.Middleware;
@@ -22,15 +22,25 @@ public sealed class ExceptionHandlingMiddleware
         {
             await _next(context);
         }
-        catch (CSharpDbDataException ex)
-        {
-            _logger.LogWarning(ex, "Database error: {ErrorCode}", ex.ErrorCode);
-            await WriteErrorResponse(context, MapErrorCode(ex.ErrorCode), ex.Message);
-        }
         catch (ArgumentException ex)
         {
             _logger.LogWarning(ex, "Validation error");
             await WriteErrorResponse(context, HttpStatusCode.BadRequest, ex.Message);
+        }
+        catch (CSharpDbClientConfigurationException ex)
+        {
+            _logger.LogWarning(ex, "Client configuration error");
+            await WriteErrorResponse(context, HttpStatusCode.BadRequest, ex.Message);
+        }
+        catch (CSharpDbException ex)
+        {
+            _logger.LogWarning(ex, "Database error: {ErrorCode}", ex.Code);
+            await WriteErrorResponse(context, MapErrorCode(ex.Code), ex.Message);
+        }
+        catch (CSharpDbClientException ex)
+        {
+            _logger.LogError(ex, "Client error");
+            await WriteErrorResponse(context, HttpStatusCode.InternalServerError, ex.Message);
         }
         catch (Exception ex)
         {

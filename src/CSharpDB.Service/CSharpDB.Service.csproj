@@ -9,8 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CSharpDB.Data\CSharpDB.Data.csproj" />
-    <ProjectReference Include="..\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
+    <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
   </ItemGroup>
 
   <ItemGroup>

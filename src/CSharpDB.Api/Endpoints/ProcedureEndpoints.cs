@@ -1,8 +1,7 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
-using CSharpDB.Core;
-using CSharpDB.Service;
-using CSharpDB.Service.Models;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -20,14 +19,14 @@ public static class ProcedureEndpoints
         return group;
     }
 
-    private static async Task<IResult> GetProcedures(CSharpDbService db, bool includeDisabled = true)
+    private static async Task<IResult> GetProcedures(ICSharpDbClient db, bool includeDisabled = true)
     {
         var procedures = await db.GetProceduresAsync(includeDisabled);
         var response = procedures.Select(MapSummary).ToList();
         return Results.Ok(response);
     }
 
-    private static async Task<IResult> GetProcedure(string name, CSharpDbService db)
+    private static async Task<IResult> GetProcedure(string name, ICSharpDbClient db)
     {
         var procedure = await db.GetProcedureAsync(name);
         if (procedure is null)
@@ -36,7 +35,7 @@ public static class ProcedureEndpoints
         return Results.Ok(MapDetail(procedure));
     }
 
-    private static async Task<IResult> CreateProcedure(CreateProcedureRequest req, CSharpDbService db)
+    private static async Task<IResult> CreateProcedure(CreateProcedureRequest req, ICSharpDbClient db)
     {
         var definition = MapDefinition(req.Name, req.BodySql, req.Parameters, req.Description, req.IsEnabled);
         await db.CreateProcedureAsync(definition);
@@ -45,7 +44,7 @@ public static class ProcedureEndpoints
         return Results.Created($"/api/procedures/{req.Name}", created is null ? MapDetail(definition) : MapDetail(created));
     }
 
-    private static async Task<IResult> UpdateProcedure(string name, UpdateProcedureRequest req, CSharpDbService db)
+    private static async Task<IResult> UpdateProcedure(string name, UpdateProcedureRequest req, ICSharpDbClient db)
     {
         var definition = MapDefinition(req.NewName, req.BodySql, req.Parameters, req.Description, req.IsEnabled);
         await db.UpdateProcedureAsync(name, definition);
@@ -54,13 +53,13 @@ public static class ProcedureEndpoints
         return Results.Ok(updated is null ? MapDetail(definition) : MapDetail(updated));
     }
 
-    private static async Task<IResult> DeleteProcedure(string name, CSharpDbService db)
+    private static async Task<IResult> DeleteProcedure(string name, ICSharpDbClient db)
     {
         await db.DeleteProcedureAsync(name);
         return Results.NoContent();
     }
 
-    private static async Task<IResult> ExecuteProcedure(string name, ExecuteProcedureRequest req, CSharpDbService db)
+    private static async Task<IResult> ExecuteProcedure(string name, ExecuteProcedureRequest req, ICSharpDbClient db)
     {
         var procedure = await db.GetProcedureAsync(name);
         if (procedure is null)

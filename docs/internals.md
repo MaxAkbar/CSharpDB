@@ -5,7 +5,7 @@ This guide is for developers who want to understand, extend, or contribute to CS
 ## Project Structure
 
 ```
-CSharpDB.sln
+CSharpDB.slnx
 ├── src/
 │   ├── CSharpDB.Core/               Shared types (no dependencies)
 │   │   ├── DbType.cs                  Data type enum
@@ -33,7 +33,9 @@ CSharpDB.sln
 │   │   ├── Token.cs                    Token struct
 │   │   ├── Tokenizer.cs               Hand-rolled lexical scanner
 │   │   ├── Ast.cs                      Statement and Expression AST nodes
-│   │   └── Parser.cs                   Recursive descent parser
+│   │   ├── Parser.cs                   Recursive descent parser
+│   │   ├── SqlScriptSplitter.cs        Multi-statement script splitting (tracks BEGIN/END depth for triggers)
+│   │   └── SqlStatementClassifier.cs   Classifies statements as read-only or mutating
 │   │
 │   ├── CSharpDB.Execution/          Query execution (depends on Core, Sql, Storage)
 │   │   ├── IOperator.cs                Iterator interface
@@ -43,6 +45,15 @@ CSharpDB.sln
 │   │
 │   ├── CSharpDB.Engine/             Public API (depends on all above)
 │   │   └── Database.cs                 Open, Execute, Transactions, Checkpoint, ReaderSession
+│   │
+│   ├── CSharpDB.Client/             Unified client SDK (depends on Engine, Sql, Storage.Diagnostics)
+│   │   ├── ICSharpDbClient.cs          Public client contract (all database operations)
+│   │   ├── CSharpDbClient.cs           Factory: Create() → transport-specific implementation
+│   │   ├── CSharpDbClientOptions.cs    Configuration (DataSource, Endpoint, Transport, ConnectionString)
+│   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, Tcp, NamedPipes)
+│   │   ├── ServiceCollectionExtensions.cs  DI registration (AddCSharpDbClient)
+│   │   ├── Internal/                   Direct-transport implementation (engine-backed client)
+│   │   └── Models/                     Schema, data, procedure, transaction, and collection models
 │   │
 │   ├── CSharpDB.Data/               ADO.NET provider (depends on Engine)
 │   │   ├── CSharpDbConnection.cs       DbConnection implementation
@@ -54,19 +65,29 @@ CSharpDB.sln
 │   │   ├── SqlParameterBinder.cs       @param placeholder binding
 │   │   └── TypeMapper.cs               CSharpDB ↔ CLR type mapping
 │   │
-│   ├── CSharpDB.Cli/                Interactive REPL (depends on Engine)
-│   │   ├── Program.cs                  Entry point
-│   │   ├── Repl.cs                     Read-eval-print loop
-│   │   ├── TableFormatter.cs           ASCII table output
-│   │   └── MetaCommands.cs             .tables, .schema, .quit, etc.
+│   ├── CSharpDB.Native/             NativeAOT C FFI library (depends on Engine, Execution, Core)
+│   │   ├── NativeExports.cs            20 exported C functions (open, close, execute, result iteration, transactions, errors)
+│   │   ├── HandleTable.cs              GCHandle-based opaque pointer management
+│   │   ├── StringCache.cs              Unmanaged UTF-8 string lifetime management
+│   │   ├── BlobCache.cs                Pinned byte[] lifetime management
+│   │   ├── ErrorState.cs               Thread-local errno-style error reporting
+│   │   └── csharpdb.h                  C header file for consumers
 │   │
-│   ├── CSharpDB.Service/            Shared service layer (depends on Data)
-│   │   ├── CSharpDbService.cs          Thread-safe singleton wrapping CSharpDbConnection
+│   ├── CSharpDB.Cli/                Interactive REPL (depends on Client)
+│   │   ├── Program.cs                  Entry point with CLI argument parsing
+│   │   ├── CliShellOptions.cs          Parses --endpoint, --server, --transport flags
+│   │   ├── Repl.cs                     Read-eval-print loop
+│   │   ├── TableFormatter.cs           ASCII table output with alignment
+│   │   ├── MetaCommands.cs             .tables, .schema, .quit, etc.
+│   │   └── MetaCommandContext.cs       Session state (client, transactions, snapshots)
+│   │
+│   ├── CSharpDB.Service/            Compatibility facade over CSharpDB.Client (depends on Client)
+│   │   ├── CSharpDbService.cs          Delegates to ICSharpDbClient
 │   │   └── Models/                     TableBrowseResult, ViewBrowseResult, SqlExecutionResult, ViewDefinition
 │   │
 │   ├── CSharpDB.Admin/              Blazor Server admin dashboard (depends on Service)
 │   │   ├── Program.cs                  Blazor Server entry point
-│   │   ├── Services/                   Theme, toast, modal, tab manager services
+│   │   ├── Services/                   Theme, toast, modal, tab manager, DatabaseChangeService
 │   │   └── Components/                 Razor components for UI
 │   │
 │   ├── CSharpDB.Api/                REST API (depends on Service)
@@ -78,8 +99,15 @@ CSharpDB.sln
 │   │
 │   └── CSharpDB.Mcp/                MCP server for AI assistants (depends on Service)
 │       ├── Program.cs                  Generic Host with stdio transport
-│       ├── Tools/                      SchemaTools, DataTools, MutationTools, SqlTools (14 tools)
+│       ├── Tools/                      SchemaTools, DataTools, MutationTools, SqlTools (15 tools)
 │       └── Helpers/                    JSON serialization and value coercion
+│
+├── clients/
+│   └── node/                         Node.js/TypeScript client (wraps CSharpDB.Native via koffi)
+│       ├── src/index.ts                Database class, query/execute/transaction API
+│       ├── src/native.ts               koffi FFI bindings to CSharpDB.Native
+│       ├── examples/                   Basic usage example
+│       └── tests/                      Integration tests
 │
 ├── tests/
 │   ├── CSharpDB.Tests/              Engine unit + integration tests
@@ -88,7 +116,9 @@ CSharpDB.sln
 │   │   ├── TokenizerTests.cs           SQL tokenization
 │   │   ├── ParserTests.cs              SQL parsing to AST
 │   │   ├── IntegrationTests.cs         Full SQL round-trips (end-to-end)
-│   │   └── WalTests.cs                 WAL mode: commit, rollback, crash recovery, snapshots
+│   │   ├── WalTests.cs                 WAL mode: commit, rollback, crash recovery, snapshots
+│   │   ├── ClientSqlExecutionTests.cs  Client SDK SQL execution tests
+│   │   └── SqlScriptSplitterTests.cs   Script splitting edge cases
 │   │
 │   ├── CSharpDB.Data.Tests/         ADO.NET provider tests
 │   │   ├── ConnectionTests.cs          Connection open/close/state
@@ -96,9 +126,13 @@ CSharpDB.sln
 │   │   ├── DataReaderTests.cs          Typed getters, schema table, null handling
 │   │   └── TransactionTests.cs         ADO.NET transaction commit/rollback
 │   │
-│   ├── CSharpDB.Cli.Tests/          CLI smoke tests
+│   ├── CSharpDB.Cli.Tests/          CLI smoke + integration tests
 │   │
 │   └── CSharpDB.Benchmarks/         Performance benchmarks
+│
+├── docs/
+│   ├── tutorials/native-ffi/         FFI tutorials (JavaScript via koffi, Python via ctypes)
+│   └── service-daemon/               Service daemon design document
 │
 └── samples/                          Sample SQL datasets
     ├── ecommerce-store.sql             Northwind Electronics
@@ -311,8 +345,13 @@ See [docs/roadmap.md](roadmap.md) for the full roadmap with near-term, mid-term,
 
 - [Architecture Guide](architecture.md) — Layer-by-layer design deep dive
 - [Getting Started Tutorial](getting-started.md) — Step-by-step walkthrough with code examples
-- [REST API Reference](rest-api.md) — All 30 API endpoints with examples
+- [Client SDK](../src/CSharpDB.Client/README.md) — Unified client API and transport model
+- [Native Library Reference](../src/CSharpDB.Native/README.md) — C FFI API, build instructions, cross-language examples
+- [Node.js Client](../clients/node/README.md) — TypeScript/JavaScript package
+- [REST API Reference](rest-api.md) — All 33 API endpoints with examples
 - [MCP Server Reference](mcp-server.md) — AI assistant integration via Model Context Protocol
 - [CLI Reference](cli.md) — Interactive REPL commands and meta-commands
+- [Service Daemon Design](service-daemon/README.md) — Background service architecture and roadmap
+- [FFI Tutorials](tutorials/native-ffi/) — JavaScript and Python interop guides
 - [Roadmap](roadmap.md) — Planned features and project direction
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data and comparison

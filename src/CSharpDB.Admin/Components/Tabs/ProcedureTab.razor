@@ -1,7 +1,7 @@
 @using System.Text.Json
-@using CSharpDB.Core
-@using CSharpDB.Service.Models
-@inject CSharpDbService DbService
+@using CSharpDB.Client.Models
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject ModalService Modal
 @inject TabManagerService TabManager
@@ -223,7 +223,7 @@
     {
         try
         {
-            var procedure = await DbService.GetProcedureAsync(name);
+            var procedure = await DbClient.GetProcedureAsync(name);
             if (procedure is null)
             {
                 _error = $"Procedure '{name}' not found.";
@@ -270,15 +270,17 @@
 
             if (_isNew)
             {
-                await DbService.CreateProcedureAsync(definition);
+                await DbClient.CreateProcedureAsync(definition);
                 Toast.Success($"Procedure '{definition.Name}' created.");
+                Changes.NotifyChanged();
                 OpenNamedTab(definition.Name);
             }
             else
             {
                 string existingName = Tab?.ObjectName ?? _name;
-                await DbService.UpdateProcedureAsync(existingName, definition);
+                await DbClient.UpdateProcedureAsync(existingName, definition);
                 Toast.Success($"Procedure '{existingName}' updated.");
+                Changes.NotifyChanged();
                 OpenNamedTab(definition.Name);
             }
         }
@@ -309,8 +311,9 @@
         _error = null;
         try
         {
-            await DbService.DeleteProcedureAsync(_name);
+            await DbClient.DeleteProcedureAsync(_name);
             Toast.Success($"Procedure '{_name}' deleted.");
+            Changes.NotifyChanged();
             if (Tab is not null)
                 TabManager.CloseTab(Tab.Id);
         }
@@ -339,10 +342,13 @@
             }
 
             var args = ParseArgsJson(_argsJson);
-            _executionResult = await DbService.ExecuteProcedureAsync(_name, args);
+            _executionResult = await DbClient.ExecuteProcedureAsync(_name, args);
 
             if (_executionResult.Succeeded)
+            {
                 Toast.Success($"Procedure '{_name}' executed.");
+                Changes.NotifyChanged();
+            }
             else
                 _error = _executionResult.Error ?? "Execution failed.";
         }

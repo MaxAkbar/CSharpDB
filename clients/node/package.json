@@ -1,0 +1,42 @@
+{
+  "name": "csharpdb",
+  "version": "1.0.0",
+  "description": "Node.js client for CSharpDB embedded database via NativeAOT FFI",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test tests/csharpdb.test.mjs",
+    "example": "node examples/basic.mjs"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "keywords": [
+    "database",
+    "embedded",
+    "sql",
+    "csharpdb",
+    "native",
+    "ffi"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

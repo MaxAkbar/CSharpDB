@@ -1,3 +1,4 @@
+using CSharpDB.Client;
 using System.Diagnostics;
 using System.Text;
 using CSharpDB.Core;
@@ -12,18 +13,16 @@ namespace CSharpDB.Cli;
 /// </summary>
 internal sealed class Repl : IDisposable
 {
-    private readonly Database _db;
     private readonly TextWriter _out;
     private readonly TableFormatter _tableFormatter;
     private readonly Dictionary<string, IMetaCommand> _commands;
     private readonly MetaCommandContext _context;
 
-    public Repl(Database db, string databasePath, TextWriter output, IReadOnlyList<IMetaCommand> commands)
+    public Repl(ICSharpDbClient client, Database? localDatabase, string databasePath, TextWriter output, IReadOnlyList<IMetaCommand> commands)
     {
-        _db = db;
         _out = output;
         _tableFormatter = new TableFormatter(output);
-        _context = new MetaCommandContext(db, databasePath, ExecuteSqlAsync);
+        _context = new MetaCommandContext(client, localDatabase, databasePath, ExecuteSqlAsync);
 
         _commands = new Dictionary<string, IMetaCommand>(StringComparer.OrdinalIgnoreCase);
         foreach (var cmd in commands)
@@ -67,7 +66,7 @@ internal sealed class Repl : IDisposable
             hasPendingSql = true;
 
             string bufferedSql = sqlBuffer.ToString();
-            bool splitOk = SqlScriptParser.TrySplitCompleteStatements(
+            bool splitOk = SqlScriptSplitter.TrySplitCompleteStatements(
                 bufferedSql,
                 out var statements,
                 out var remainder,
@@ -105,12 +104,10 @@ internal sealed class Repl : IDisposable
     {
         Stopwatch? sw = _context.ShowTiming ? Stopwatch.StartNew() : null;
 
-        Statement statement;
+        SqlStatementClassification classification;
         try
         {
-            statement = Parser.TryParseSimpleSelect(sql, out var fastStmt)
-                ? fastStmt
-                : Parser.Parse(sql);
+            classification = SqlStatementClassifier.Classify(sql);
         }
         catch (CSharpDbException ex)
         {
@@ -121,7 +118,7 @@ internal sealed class Repl : IDisposable
 
         try
         {
-            if (_context.SnapshotEnabled && statement is not SelectStatement)
+            if (_context.SnapshotEnabled && !classification.IsReadOnly)
             {
                 _out.WriteLine(Ansi.Colorize(
                     "Snapshot mode is read-only. Run '.snapshot off' to execute writes.",
@@ -130,32 +127,69 @@ internal sealed class Repl : IDisposable
                 return false;
             }
 
-            await using var result = _context.SnapshotEnabled
-                ? await _context.ExecuteReadSnapshotAsync(sql, ct)
-                : await _db.ExecuteAsync(statement, ct);
-
-            sw?.Stop();
-            string timingSuffix = _context.ShowTiming && sw is not null
-                ? $" ({sw.ElapsedMilliseconds}ms)"
-                : string.Empty;
-
-            if (result.IsQuery)
+            if (_context.SnapshotEnabled)
             {
-                var rows = await result.ToListAsync(ct);
-                if (result.Schema.Length > 0)
-                    _tableFormatter.PrintTable(result.Schema, rows);
+                await using var snapshotResult = await _context.ExecuteReadSnapshotAsync(sql, ct);
 
-                int count = rows.Count;
-                _out.WriteLine(Ansi.Colorize(
-                    $"{count} {(count == 1 ? "row" : "rows")}{timingSuffix}",
-                    Ansi.Dim));
+                sw?.Stop();
+                string timingSuffix = _context.ShowTiming && sw is not null
+                    ? $" ({sw.ElapsedMilliseconds}ms)"
+                    : string.Empty;
+
+                if (snapshotResult.IsQuery)
+                {
+                    var rows = await snapshotResult.ToListAsync(ct);
+                    if (snapshotResult.Schema.Length > 0)
+                        _tableFormatter.PrintTable(snapshotResult.Schema, rows);
+
+                    int count = rows.Count;
+                    _out.WriteLine(Ansi.Colorize(
+                        $"{count} {(count == 1 ? "row" : "rows")}{timingSuffix}",
+                        Ansi.Dim));
+                }
+                else
+                {
+                    int n = snapshotResult.RowsAffected;
+                    _out.WriteLine(Ansi.Colorize(
+                        $"{n} {(n == 1 ? "row" : "rows")} affected{timingSuffix}",
+                        Ansi.Dim));
+                }
             }
             else
             {
-                int n = result.RowsAffected;
-                _out.WriteLine(Ansi.Colorize(
-                    $"{n} {(n == 1 ? "row" : "rows")} affected{timingSuffix}",
-                    Ansi.Dim));
+                var result = await _context.ExecuteDbSqlAsync(sql, ct);
+
+                sw?.Stop();
+                string timingSuffix = _context.ShowTiming && sw is not null
+                    ? $" ({sw.ElapsedMilliseconds}ms)"
+                    : string.Empty;
+
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    _out.WriteLine(Ansi.Colorize($"Error: {result.Error}", Ansi.Red));
+                    _out.WriteLine();
+                    return false;
+                }
+
+                if (result.IsQuery)
+                {
+                    var rows = result.Rows ?? [];
+                    var columns = result.ColumnNames ?? [];
+                    if (columns.Length > 0)
+                        _tableFormatter.PrintTable(columns, rows);
+
+                    int count = rows.Count;
+                    _out.WriteLine(Ansi.Colorize(
+                        $"{count} {(count == 1 ? "row" : "rows")}{timingSuffix}",
+                        Ansi.Dim));
+                }
+                else
+                {
+                    int n = result.RowsAffected;
+                    _out.WriteLine(Ansi.Colorize(
+                        $"{n} {(n == 1 ? "row" : "rows")} affected{timingSuffix}",
+                        Ansi.Dim));
+                }
             }
 
             _out.WriteLine();

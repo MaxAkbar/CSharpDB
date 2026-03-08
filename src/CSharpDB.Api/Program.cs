@@ -1,15 +1,19 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CSharpDB.Client;
 using CSharpDB.Api.Endpoints;
 using CSharpDB.Api.Middleware;
-using CSharpDB.Service;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ─── Services ───────────────────────────────────────────────
 
-builder.Services.AddSingleton<CSharpDbService>();
+builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
+{
+    ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
+        ?? "Data Source=csharpdb.db",
+});
 
 builder.Services.AddOpenApi();
 
@@ -34,8 +38,11 @@ var app = builder.Build();
 
 // ─── Initialize database ────────────────────────────────────
 
-var dbService = app.Services.GetRequiredService<CSharpDbService>();
-await dbService.InitializeAsync();
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
+    _ = await dbClient.GetInfoAsync();
+}
 
 // ─── Middleware pipeline ────────────────────────────────────
 
