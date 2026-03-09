@@ -135,6 +135,7 @@ Major features already implemented:
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
+- [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
 - [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
