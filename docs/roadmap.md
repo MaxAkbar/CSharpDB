@@ -20,7 +20,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
-| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Planned |
+| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Done |
 | **Database administration** | Reindex (full + incremental), VACUUM/compact, fragmentation analysis, database size report | Planned |
 | **Table/index statistics** | ANALYZE command with persisted row counts, column NDV, min/max; cost-based index selection in query planner | Planned |
 
