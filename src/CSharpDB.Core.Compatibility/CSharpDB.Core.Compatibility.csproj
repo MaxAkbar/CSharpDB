@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>CSharpDB.Core</PackageId>
-    <Description>Compatibility package for CSharpDB.Core. New development should migrate to CSharpDB.Primitives or CSharpDB.</Description>
+    <Description>Deprecated compatibility package for CSharpDB.Core. New development should migrate to CSharpDB.Primitives or CSharpDB. Planned for removal in v2.0.0.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>

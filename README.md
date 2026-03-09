@@ -5,7 +5,7 @@ A lightweight, embedded SQL database engine written from scratch in C#. Single-f
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
-[![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
+[![NuGet](https://img.shields.io/nuget/v/CSharpDB)](https://www.nuget.org/packages/CSharpDB)
 
 ---
 
@@ -39,6 +39,12 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode, remote connectivity |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
+
+## Compatibility Notice
+
+- New application code should target `CSharpDB.Client`.
+- New low-level/shared-type usage should target `CSharpDB.Primitives`.
+- `CSharpDB.Service` and the `CSharpDB.Core` compatibility package remain available in `v1.x`, but both are planned for removal in `v2.0.0`.
 
 ## Admin UI Preview
 
@@ -273,7 +279,7 @@ CSharpDB.slnx
 │   ├── CSharpDB.Native/      NativeAOT C FFI library for cross-language interop
 │   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
 │   ├── CSharpDB.Cli/         Interactive REPL with remote connectivity
-│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client
+│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client (planned removal in v2.0.0)
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration

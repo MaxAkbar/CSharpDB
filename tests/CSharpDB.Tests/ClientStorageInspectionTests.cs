@@ -1,37 +1,49 @@
-using CSharpDB.Service;
-using Microsoft.Extensions.Configuration;
+using CSharpDB.Client;
 
 namespace CSharpDB.Tests;
 
-public sealed class ServiceSqlExecutionTests : IAsyncLifetime
+public sealed class ClientStorageInspectionTests : IAsyncLifetime
 {
     private readonly string _dbPath;
-    private CSharpDbService _service = null!;
+    private ICSharpDbClient _client = null!;
 
-    public ServiceSqlExecutionTests()
+    public ClientStorageInspectionTests()
     {
         _dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_service_test_{Guid.NewGuid():N}.db");
     }
 
     public async ValueTask InitializeAsync()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:CSharpDB"] = $"Data Source={_dbPath}",
-            })
-            .Build();
-
-        _service = new CSharpDbService(configuration);
-        await _service.InitializeAsync();
+        _client = CSharpDbClient.Create(new CSharpDbClientOptions
+        {
+            DataSource = _dbPath,
+        });
+        _ = await _client.GetInfoAsync();
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _service.DisposeAsync();
+        await _client.DisposeAsync();
         if (File.Exists(_dbPath)) File.Delete(_dbPath);
         if (File.Exists(_dbPath + ".wal")) File.Delete(_dbPath + ".wal");
     }
+
+    private CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private Task<CSharpDB.Client.Models.SqlExecutionResult> ExecuteSqlAsync(string sql)
+        => _client.ExecuteSqlAsync(sql, Ct);
+
+    private Task<IReadOnlyList<string>> GetTableNamesAsync()
+        => _client.GetTableNamesAsync(Ct);
+
+    private Task<IReadOnlyList<CSharpDB.Client.Models.TriggerSchema>> GetTriggersAsync()
+        => _client.GetTriggersAsync(Ct);
+
+    private Task<CSharpDB.Storage.Diagnostics.DatabaseInspectReport> InspectStorageAsync(bool includePages = false)
+        => _client.InspectStorageAsync(includePages: includePages, ct: Ct);
+
+    private Task<CSharpDB.Storage.Diagnostics.PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false)
+        => _client.InspectPageAsync(pageId, includeHex, ct: Ct);
 
     [Fact]
     public async Task ExecuteSqlAsync_ScriptExecutesAllStatementsIncludingTriggerBody()
@@ -46,17 +58,17 @@ public sealed class ServiceSqlExecutionTests : IAsyncLifetime
             INSERT INTO orders VALUES (1, 3);
             """;
 
-        var result = await _service.ExecuteSqlAsync(sql);
+        var result = await ExecuteSqlAsync(sql);
         Assert.Null(result.Error);
 
-        var tables = await _service.GetTableNamesAsync();
+        var tables = await GetTableNamesAsync();
         Assert.Contains("orders", tables);
         Assert.Contains("order_audit", tables);
 
-        var triggers = await _service.GetTriggersAsync();
+        var triggers = await GetTriggersAsync();
         Assert.Contains(triggers, t => t.TriggerName.Equals("trg_order_audit", StringComparison.OrdinalIgnoreCase));
 
-        var auditCount = await _service.ExecuteSqlAsync("SELECT COUNT(*) FROM order_audit;");
+        var auditCount = await ExecuteSqlAsync("SELECT COUNT(*) FROM order_audit;");
         Assert.Null(auditCount.Error);
         Assert.True(auditCount.IsQuery);
         Assert.NotNull(auditCount.Rows);
@@ -67,20 +79,20 @@ public sealed class ServiceSqlExecutionTests : IAsyncLifetime
     [Fact]
     public async Task ExecuteSqlAsync_SingleStatementWithoutSemicolon_Executes()
     {
-        var result = await _service.ExecuteSqlAsync("CREATE TABLE semicolon_optional (id INTEGER PRIMARY KEY)");
+        var result = await ExecuteSqlAsync("CREATE TABLE semicolon_optional (id INTEGER PRIMARY KEY)");
         Assert.Null(result.Error);
 
-        var tables = await _service.GetTableNamesAsync();
+        var tables = await GetTableNamesAsync();
         Assert.Contains("semicolon_optional", tables);
     }
 
     [Fact]
     public async Task InspectStorageAsync_ReturnsHeaderAndHistogram()
     {
-        await _service.ExecuteSqlAsync("CREATE TABLE inspect_service (id INTEGER PRIMARY KEY, n INTEGER);");
-        await _service.ExecuteSqlAsync("INSERT INTO inspect_service VALUES (1, 10);");
+        await ExecuteSqlAsync("CREATE TABLE inspect_service (id INTEGER PRIMARY KEY, n INTEGER);");
+        await ExecuteSqlAsync("INSERT INTO inspect_service VALUES (1, 10);");
 
-        var report = await _service.InspectStorageAsync(includePages: false);
+        var report = await InspectStorageAsync(includePages: false);
 
         Assert.Equal("1.0", report.SchemaVersion);
         Assert.True(report.Header.FileLengthBytes > 0);
@@ -90,9 +102,9 @@ public sealed class ServiceSqlExecutionTests : IAsyncLifetime
     [Fact]
     public async Task InspectPageAsync_ReturnsPageReport()
     {
-        await _service.ExecuteSqlAsync("CREATE TABLE inspect_page_service (id INTEGER PRIMARY KEY, n INTEGER);");
+        await ExecuteSqlAsync("CREATE TABLE inspect_page_service (id INTEGER PRIMARY KEY, n INTEGER);");
 
-        var report = await _service.InspectPageAsync(pageId: 0, includeHex: false);
+        var report = await InspectPageAsync(pageId: 0, includeHex: false);
 
         Assert.Equal("1.0", report.SchemaVersion);
         Assert.True(report.Exists);

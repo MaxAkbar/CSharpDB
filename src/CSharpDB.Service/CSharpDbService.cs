@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace CSharpDB.Service;
 
+[Obsolete("CSharpDB.Service is deprecated and will be removed in v2.0.0. Use CSharpDB.Client instead.")]
 public sealed class CSharpDbService : IAsyncDisposable
 {
     private const string ProcedureTableName = "__procedures";

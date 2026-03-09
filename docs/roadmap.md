@@ -32,6 +32,7 @@ SQL feature parity and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
+| **User-defined functions** | Built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` | Planned |
 | **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results | Planned |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
@@ -40,7 +41,7 @@ SQL feature parity and ecosystem expansion.
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
 | **Service daemon** | Persistent background service keeping the database loaded with concurrent readers, cross-platform (systemd, Windows Service, launchd) | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
-| **NuGet package** | Publish `CSharpDB.Engine`, `CSharpDB.Data`, and `CSharpDB.Service` as NuGet packages | Planned |
+| **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Planned |
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Schema editing, SQL editor with syntax highlighting, query history | In progress |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Planned |
@@ -58,11 +59,13 @@ Advanced features and fundamental architecture enhancements.
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
 | **Advanced collection storage path** | Extend document storage beyond UTF-8 JSON payloads with direct binary hydration and richer expression/path indexes | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
+| **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Cost-based query optimizer** | Statistics-driven join ordering and index selection (initial support via ANALYZE in Near-Term; advanced histograms and adaptive re-optimization here) | Planned |
 | **Async I/O batching** | Group multiple page writes into fewer system calls during batch operations | Planned |
 | **Group commit / deferred WAL flush** | Buffer committed WAL writes across transactions before flushing to improve auto-commit throughput | Planned |
 | **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |
 | **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
+| **WebAssembly sandboxed UDFs** | Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime | Research |
 
 ---
 
@@ -72,6 +75,7 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
+| **Functions** | No scalar functions (UPPER, ABS, etc.) — only aggregate functions (COUNT, SUM, AVG, MIN, MAX) |
 | **Query** | No scalar/`IN`/`EXISTS` subqueries, and no `UNION`/`INTERSECT`/`EXCEPT` |
 | **Query** | No window functions |
 | **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
@@ -81,6 +85,7 @@ These are known simplifications in the current implementation:
 | **Collections** | No JSON-path querying or expression/path-based document indexes yet |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
+| **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | No mmap read path |
 | **Storage** | No VACUUM/compaction — database file grows monotonically, freed pages go to freelist but file never shrinks |
 | **Storage** | No REINDEX — indexes cannot be rebuilt without DROP + CREATE |
@@ -129,9 +134,12 @@ Major features already implemented:
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
+- [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
 - [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
 - [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
+- [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing
+- [Pub/Sub Change Events Plan](pub-sub-events/README.md) — Engine-level change events with channel-based delivery for real-time data subscriptions
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities

@@ -130,7 +130,7 @@ dotnet add package CSharpDB
 | Package | Description |
 |---------|-------------|
 | [CSharpDB.Data](https://www.nuget.org/packages/CSharpDB.Data) | ADO.NET provider built on this engine |
-| [CSharpDB.Service](https://www.nuget.org/packages/CSharpDB.Service) | Thread-safe service layer for web apps |
+| [CSharpDB.Client](https://www.nuget.org/packages/CSharpDB.Client) | Authoritative client SDK over direct and remote transports |
 | [CSharpDB.Storage.Diagnostics](https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics) | Storage inspection and integrity checking |
 
 ## License

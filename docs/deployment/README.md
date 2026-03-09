@@ -164,7 +164,7 @@ Add ASP.NET Core framework reference and Service project reference:
 
 ```xml
 <FrameworkReference Include="Microsoft.AspNetCore.App" />
-<ProjectReference Include="..\CSharpDB.Service\CSharpDB.Service.csproj" />
+<ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
 ```
 
 ### 2C. Extract API endpoint registration

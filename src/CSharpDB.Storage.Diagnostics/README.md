@@ -80,7 +80,7 @@ dotnet add package CSharpDB
 | Package | Description |
 |---------|-------------|
 | [CSharpDB.Storage](https://www.nuget.org/packages/CSharpDB.Storage) | The storage engine this package inspects |
-| [CSharpDB.Service](https://www.nuget.org/packages/CSharpDB.Service) | Service layer that exposes diagnostics via API |
+| [CSharpDB.Client](https://www.nuget.org/packages/CSharpDB.Client) | Client SDK surface that exposes diagnostics for direct and remote consumers |
 
 ## License
 
