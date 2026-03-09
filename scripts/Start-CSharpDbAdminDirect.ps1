@@ -1,3 +1,51 @@
+<#
+.SYNOPSIS
+Configures the admin site for direct mode, then starts only the admin host.
+
+.DESCRIPTION
+This script is intended for local development and manual operator workflows.
+It updates `src/CSharpDB.Admin/appsettings.json` to use
+`CSharpDbTransport.Direct`, removes any daemon endpoint from the admin config,
+ensures a connection string exists, and then starts `CSharpDB.Admin`.
+
+The script does not install a Windows service or a background task. It launches
+one `dotnet run` process. If you close the shell that launched this script, the
+child process continues running until you stop it explicitly.
+
+.PARAMETER NoLaunch
+Only updates the admin configuration. Does not start the admin host.
+
+.PARAMETER OpenAdmin
+Opens the admin URL in the default browser after startup succeeds.
+
+.PARAMETER PassThru
+Returns the resolved URL and process ID so the caller can stop the process
+later with `Stop-Process`.
+
+.PARAMETER ConnectionString
+Overrides the admin database connection string before launch.
+
+.PARAMETER AdminStartupTimeoutSeconds
+How long to wait for the admin endpoint to start accepting TCP connections.
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File .\scripts\Start-CSharpDbAdminDirect.ps1
+
+Starts the admin site in direct mode using the connection string already stored
+in `src/CSharpDB.Admin/appsettings.json`.
+
+.EXAMPLE
+.\scripts\Start-CSharpDbAdminDirect.ps1 -ConnectionString "Data Source=C:\data\demo.db" -OpenAdmin
+
+Updates the admin config to point at a specific database, starts the admin
+site, and opens the browser.
+
+.EXAMPLE
+$session = & .\scripts\Start-CSharpDbAdminDirect.ps1 -PassThru
+Stop-Process -Id $session.AdminPid
+
+Starts the admin site and captures the process ID so it can be stopped later.
+#>
 [CmdletBinding()]
 param(
     [switch]$NoLaunch,

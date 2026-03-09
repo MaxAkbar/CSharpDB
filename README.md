@@ -30,10 +30,11 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes) |
+| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
 | **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, and more |
 | **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
+| **gRPC Daemon** | `CSharpDB.Daemon` - dedicated gRPC host for remote `CSharpDB.Client` access |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
 | **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
 | **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
@@ -204,7 +205,39 @@ await client.InsertRowAsync("users", new Dictionary<string, object?>
 services.AddCSharpDbClient(new CSharpDbClientOptions { DataSource = "mydata.db" });
 ```
 
-The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes. Direct is fully implemented; network transports are part of the public API contract and planned for the service daemon milestone.
+The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes.
+
+Current host mapping:
+
+- `CSharpDB.Api` is the REST/HTTP host
+- `CSharpDB.Daemon` is the gRPC host used by `CSharpDB.Client` when `Transport = Grpc`
+
+Direct is fully implemented. gRPC is available through `CSharpDB.Daemon`. The other network transports remain part of the client contract and broader service-daemon roadmap.
+
+### gRPC Daemon
+
+Start the daemon host:
+
+```bash
+dotnet run --project src/CSharpDB.Daemon
+```
+
+Connect to it from `CSharpDB.Client`:
+
+```csharp
+using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "https://localhost:49995"
+});
+
+var info = await client.GetInfoAsync();
+var tables = await client.GetTableNamesAsync();
+```
+
+For local admin + daemon startup, see [scripts/README.md](scripts/README.md).
 
 ### Cross-Language Interop (Native FFI)
 
@@ -282,6 +315,7 @@ CSharpDB.slnx
 │   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client (planned removal in v2.0.0)
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
+│   ├── CSharpDB.Daemon/      gRPC daemon host for remote `CSharpDB.Client` access
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration
 ├── clients/
 │   └── node/                  Node.js/TypeScript client package (csharpdb)
@@ -401,14 +435,16 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
-| [Client SDK](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
-| [Native Library Reference](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
+| [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
+| [CSharpDB.Daemon](src/CSharpDB.Daemon/README.md) | gRPC daemon host runtime model, configuration, and deployment notes |
+| [CSharpDB.Native](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
 | [Node.js Client](clients/node/README.md) | TypeScript/JavaScript package documentation |
 | [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
 | [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
 | [Service Daemon Design](docs/service-daemon/README.md) | Background service architecture and roadmap |
+| [Admin Startup Scripts](scripts/README.md) | Start, stop, and configure the admin site and daemon for local workflows |
 | [FFI Tutorials](docs/tutorials/native-ffi/) | Step-by-step JavaScript and Python interop guides |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |

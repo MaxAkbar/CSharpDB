@@ -143,6 +143,9 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj
 If startup succeeds, the daemon has already opened the database and validated
 the configuration.
 
+If you want to start the daemon together with the admin UI, use the helper
+scripts documented in [`scripts/README.md`](../../scripts/README.md).
+
 ## Client Connection
 
 The intended consumer is `CSharpDB.Client`.

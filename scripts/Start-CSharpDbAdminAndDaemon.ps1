@@ -1,3 +1,52 @@
+<#
+.SYNOPSIS
+Configures the admin site for gRPC mode, then starts the daemon and admin hosts.
+
+.DESCRIPTION
+This script is intended for local development and manual operator workflows.
+It reads the daemon launch profile and configuration, updates
+`src/CSharpDB.Admin/appsettings.json` to point at the daemon over gRPC, starts
+`CSharpDB.Daemon`, waits for the daemon port to accept TCP connections, and
+then starts `CSharpDB.Admin`.
+
+The script does not install Windows services or background tasks. It launches
+two `dotnet run` processes. If you close the shell that launched this script,
+those child processes continue running until you stop them explicitly.
+
+.PARAMETER NoLaunch
+Only updates the admin configuration. Does not start either host.
+
+.PARAMETER OpenAdmin
+Opens the admin URL in the default browser after startup succeeds.
+
+.PARAMETER PassThru
+Returns the resolved URLs and process IDs so the caller can stop the processes
+later with `Stop-Process`.
+
+.PARAMETER DaemonStartupTimeoutSeconds
+How long to wait for the daemon endpoint to start accepting TCP connections.
+
+.PARAMETER AdminStartupTimeoutSeconds
+How long to wait for the admin endpoint to start accepting TCP connections.
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File .\scripts\Start-CSharpDbAdminAndDaemon.ps1
+
+Starts the daemon and the admin site using the launch profiles in the source
+tree.
+
+.EXAMPLE
+$session = & .\scripts\Start-CSharpDbAdminAndDaemon.ps1 -PassThru
+Stop-Process -Id $session.AdminPid, $session.DaemonPid
+
+Starts both hosts and captures the process IDs so they can be stopped later.
+
+.EXAMPLE
+.\scripts\Start-CSharpDbAdminAndDaemon.ps1 -NoLaunch -PassThru
+
+Updates the admin config for gRPC mode and returns the resolved URLs without
+starting either host.
+#>
 [CmdletBinding()]
 param(
     [switch]$NoLaunch,
