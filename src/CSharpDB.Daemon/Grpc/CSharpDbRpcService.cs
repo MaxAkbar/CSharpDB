@@ -1,6 +1,8 @@
+using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using CoreDbException = CSharpDB.Core.CSharpDbException;
 using CoreErrorCode = CSharpDB.Core.ErrorCode;
@@ -9,72 +11,259 @@ namespace CSharpDB.Daemon.Grpc;
 
 public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSharpDbRpcBase
 {
-    public override async Task<InvokeResponse> Invoke(InvokeRequest request, ServerCallContext context)
+    private static readonly Empty EmptyResponse = new();
+
+    public override Task<DatabaseInfoMessage> GetInfo(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetInfoAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);
+
+    public override Task<OptionalTableSchemaResponse> GetTableSchema(TableNameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetTableSchemaAsync(request.TableName, ct),
+            value => new OptionalTableSchemaResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<Int32Value> GetRowCount(TableNameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetRowCountAsync(request.TableName, ct), value => new Int32Value { Value = value });
+
+    public override Task<TableBrowseResultMessage> BrowseTable(PagedTableRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.BrowseTableAsync(request.TableName, request.Page, request.PageSize, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<OptionalVariantObjectResponse> GetRowByPk(GetRowByPkRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetRowByPkAsync(request.TableName, request.PkColumn, ReadRequiredValue(request.PkValue), ct),
+            value => new OptionalVariantObjectResponse
+            {
+                Value = value is null ? null : GrpcValueMapper.ToObject(value),
+            });
+
+    public override Task<Int32Value> InsertRow(InsertRowRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.InsertRowAsync(request.TableName, ReadRequiredObject(request.Values), ct), value => new Int32Value { Value = value });
+
+    public override Task<Int32Value> UpdateRow(UpdateRowRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.UpdateRowAsync(
+                request.TableName,
+                request.PkColumn,
+                ReadRequiredValue(request.PkValue),
+                ReadRequiredObject(request.Values),
+                ct),
+            value => new Int32Value { Value = value });
+
+    public override Task<Int32Value> DeleteRow(DeleteRowRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.DeleteRowAsync(request.TableName, request.PkColumn, ReadRequiredValue(request.PkValue), ct), value => new Int32Value { Value = value });
+
+    public override Task<Empty> DropTable(TableNameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropTableAsync(request.TableName, ct));
+
+    public override Task<Empty> RenameTable(RenameTableRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.RenameTableAsync(request.TableName, request.NewTableName, ct));
+
+    public override Task<Empty> AddColumn(AddColumnRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.AddColumnAsync(request.TableName, request.ColumnName, GrpcModelMapper.ToModel(request.Type), request.NotNull, ct));
+
+    public override Task<Empty> DropColumn(DropColumnRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropColumnAsync(request.TableName, request.ColumnName, ct));
+
+    public override Task<Empty> RenameColumn(RenameColumnRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.RenameColumnAsync(request.TableName, request.OldColumnName, request.NewColumnName, ct));
+
+    public override Task<IndexSchemaListResponse> GetIndexes(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetIndexesAsync(ct), value =>
+        {
+            var response = new IndexSchemaListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<Empty> CreateIndex(CreateIndexRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CreateIndexAsync(request.IndexName, request.TableName, request.ColumnName, request.IsUnique, ct));
+
+    public override Task<Empty> UpdateIndex(UpdateIndexRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.UpdateIndexAsync(
+            request.ExistingIndexName,
+            request.NewIndexName,
+            request.TableName,
+            request.ColumnName,
+            request.IsUnique,
+            ct));
+
+    public override Task<Empty> DropIndex(NameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropIndexAsync(request.Name, ct));
+
+    public override Task<StringList> GetViewNames(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetViewNamesAsync(ct), GrpcModelMapper.ToStringList);
+
+    public override Task<ViewDefinitionListResponse> GetViews(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetViewsAsync(ct), value =>
+        {
+            var response = new ViewDefinitionListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<OptionalViewDefinitionResponse> GetView(NameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetViewAsync(request.Name, ct),
+            value => new OptionalViewDefinitionResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<OptionalStringResponse> GetViewSql(NameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetViewSqlAsync(request.Name, ct),
+            value => new OptionalStringResponse
+            {
+                Value = value,
+            });
+
+    public override Task<ViewBrowseResultMessage> BrowseView(PagedNameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.BrowseViewAsync(request.Name, request.Page, request.PageSize, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<Empty> CreateView(CreateViewRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CreateViewAsync(request.ViewName, request.SelectSql, ct));
+
+    public override Task<Empty> UpdateView(UpdateViewRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.UpdateViewAsync(request.ExistingViewName, request.NewViewName, request.SelectSql, ct));
+
+    public override Task<Empty> DropView(NameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropViewAsync(request.Name, ct));
+
+    public override Task<TriggerSchemaListResponse> GetTriggers(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetTriggersAsync(ct), value =>
+        {
+            var response = new TriggerSchemaListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<Empty> CreateTrigger(CreateTriggerRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CreateTriggerAsync(
+            request.TriggerName,
+            request.TableName,
+            GrpcModelMapper.ToModel(request.Timing),
+            GrpcModelMapper.ToModel(request.TriggerEvent),
+            request.BodySql,
+            ct));
+
+    public override Task<Empty> UpdateTrigger(UpdateTriggerRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.UpdateTriggerAsync(
+            request.ExistingTriggerName,
+            request.NewTriggerName,
+            request.TableName,
+            GrpcModelMapper.ToModel(request.Timing),
+            GrpcModelMapper.ToModel(request.TriggerEvent),
+            request.BodySql,
+            ct));
+
+    public override Task<Empty> DropTrigger(NameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropTriggerAsync(request.Name, ct));
+
+    public override Task<SavedQueryDefinitionListResponse> GetSavedQueries(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetSavedQueriesAsync(ct), value =>
+        {
+            var response = new SavedQueryDefinitionListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<OptionalSavedQueryDefinitionResponse> GetSavedQuery(NameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetSavedQueryAsync(request.Name, ct),
+            value => new OptionalSavedQueryDefinitionResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<SavedQueryDefinitionMessage> UpsertSavedQuery(UpsertSavedQueryRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.UpsertSavedQueryAsync(request.Name, request.SqlText, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<Empty> DeleteSavedQuery(NameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DeleteSavedQueryAsync(request.Name, ct));
+
+    public override Task<ProcedureDefinitionListResponse> GetProcedures(GetProceduresRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetProceduresAsync(request.IncludeDisabled, ct), value =>
+        {
+            var response = new ProcedureDefinitionListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<OptionalProcedureDefinitionResponse> GetProcedure(NameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetProcedureAsync(request.Name, ct),
+            value => new OptionalProcedureDefinitionResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<Empty> CreateProcedure(CreateProcedureRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CreateProcedureAsync(ReadRequired(request.Definition, GrpcModelMapper.ToModel, nameof(request.Definition)), ct));
+
+    public override Task<Empty> UpdateProcedure(UpdateProcedureRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.UpdateProcedureAsync(request.ExistingName, ReadRequired(request.Definition, GrpcModelMapper.ToModel, nameof(request.Definition)), ct));
+
+    public override Task<Empty> DeleteProcedure(NameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DeleteProcedureAsync(request.Name, ct));
+
+    public override Task<ProcedureExecutionResultMessage> ExecuteProcedure(ExecuteProcedureRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.ExecuteProcedureAsync(request.Name, ReadRequiredObject(request.Args), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<SqlExecutionResultMessage> ExecuteSql(SqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.ExecuteSqlAsync(request.Sql, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<TransactionSessionInfoMessage> BeginTransaction(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.BeginTransactionAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<SqlExecutionResultMessage> ExecuteInTransaction(TransactionSqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.ExecuteInTransactionAsync(request.TransactionId, request.Sql, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<Empty> CommitTransaction(TransactionIdRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CommitTransactionAsync(request.TransactionId, ct));
+
+    public override Task<Empty> RollbackTransaction(TransactionIdRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.RollbackTransactionAsync(request.TransactionId, ct));
+
+    public override Task<StringList> GetCollectionNames(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetCollectionNamesAsync(ct), GrpcModelMapper.ToStringList);
+
+    public override Task<Int32Value> GetCollectionCount(CollectionNameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetCollectionCountAsync(request.CollectionName, ct), value => new Int32Value { Value = value });
+
+    public override Task<CollectionBrowseResultMessage> BrowseCollection(PagedNameRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.BrowseCollectionAsync(request.Name, request.Page, request.PageSize, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<OptionalVariantValueResponse> GetDocument(GetDocumentRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetDocumentAsync(request.CollectionName, request.Key, ct),
+            value => new OptionalVariantValueResponse
+            {
+                Value = value.HasValue ? GrpcValueMapper.ToMessage(value.Value) : null,
+            });
+
+    public override Task<Empty> PutDocument(PutDocumentRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.PutDocumentAsync(request.CollectionName, request.Key, ReadRequired(request.Document, GrpcValueMapper.ToJsonElement, nameof(request.Document)), ct));
+
+    public override Task<BoolValue> DeleteDocument(DeleteDocumentRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.DeleteDocumentAsync(request.CollectionName, request.Key, ct), value => new BoolValue { Value = value });
+
+    public override Task<Empty> Checkpoint(Empty request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.CheckpointAsync(ct));
+
+    public override Task<DatabaseInspectReportMessage> InspectStorage(InspectStorageRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.InspectStorageAsync(NullIfEmpty(request.DatabasePath), request.IncludePages, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<WalInspectReportMessage> CheckWal(CheckWalRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.CheckWalAsync(NullIfEmpty(request.DatabasePath), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<PageInspectReportMessage> InspectPage(InspectPageRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.InspectPageAsync(request.PageId, request.IncludeHex, NullIfEmpty(request.DatabasePath), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<IndexInspectReportMessage> CheckIndexes(CheckIndexesRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.CheckIndexesAsync(NullIfEmpty(request.DatabasePath), NullIfEmpty(request.IndexName), request.SampleSize, ct), GrpcModelMapper.ToMessage);
+
+    private async Task<TResponse> ExecuteAsync<TModel, TResponse>(ServerCallContext context, Func<CancellationToken, Task<TModel>> action, Func<TModel, TResponse> map)
     {
         try
         {
-            CancellationToken ct = context.CancellationToken;
-
-            return request.Operation switch
-            {
-                RpcOperation.GetInfo => Write(await client.GetInfoAsync(ct)),
-                RpcOperation.GetTableNames => Write(await client.GetTableNamesAsync(ct)),
-                RpcOperation.GetTableSchema => Write(await client.GetTableSchemaAsync(Read<TableNameRequest>(request).TableName, ct)),
-                RpcOperation.GetRowCount => Write(await client.GetRowCountAsync(Read<TableNameRequest>(request).TableName, ct)),
-                RpcOperation.BrowseTable => await BrowseTableAsync(request, ct),
-                RpcOperation.GetRowByPk => await GetRowByPkAsync(request, ct),
-                RpcOperation.InsertRow => await InsertRowAsync(request, ct),
-                RpcOperation.UpdateRow => await UpdateRowAsync(request, ct),
-                RpcOperation.DeleteRow => await DeleteRowAsync(request, ct),
-                RpcOperation.DropTable => await DropTableAsync(request, ct),
-                RpcOperation.RenameTable => await RenameTableAsync(request, ct),
-                RpcOperation.AddColumn => await AddColumnAsync(request, ct),
-                RpcOperation.DropColumn => await DropColumnAsync(request, ct),
-                RpcOperation.RenameColumn => await RenameColumnAsync(request, ct),
-                RpcOperation.GetIndexes => Write(await client.GetIndexesAsync(ct)),
-                RpcOperation.CreateIndex => await CreateIndexAsync(request, ct),
-                RpcOperation.UpdateIndex => await UpdateIndexAsync(request, ct),
-                RpcOperation.DropIndex => await DropIndexAsync(request, ct),
-                RpcOperation.GetViewNames => Write(await client.GetViewNamesAsync(ct)),
-                RpcOperation.GetViews => Write(await client.GetViewsAsync(ct)),
-                RpcOperation.GetView => Write(await client.GetViewAsync(Read<NameRequest>(request).Name, ct)),
-                RpcOperation.GetViewSql => Write(await client.GetViewSqlAsync(Read<NameRequest>(request).Name, ct)),
-                RpcOperation.BrowseView => await BrowseViewAsync(request, ct),
-                RpcOperation.CreateView => await CreateViewAsync(request, ct),
-                RpcOperation.UpdateView => await UpdateViewAsync(request, ct),
-                RpcOperation.DropView => await DropViewAsync(request, ct),
-                RpcOperation.GetTriggers => Write(await client.GetTriggersAsync(ct)),
-                RpcOperation.CreateTrigger => await CreateTriggerAsync(request, ct),
-                RpcOperation.UpdateTrigger => await UpdateTriggerAsync(request, ct),
-                RpcOperation.DropTrigger => await DropTriggerAsync(request, ct),
-                RpcOperation.GetSavedQueries => Write(await client.GetSavedQueriesAsync(ct)),
-                RpcOperation.GetSavedQuery => Write(await client.GetSavedQueryAsync(Read<NameRequest>(request).Name, ct)),
-                RpcOperation.UpsertSavedQuery => await UpsertSavedQueryAsync(request, ct),
-                RpcOperation.DeleteSavedQuery => await DeleteSavedQueryAsync(request, ct),
-                RpcOperation.GetProcedures => Write(await GetProceduresAsync(request, ct)),
-                RpcOperation.GetProcedure => Write(await client.GetProcedureAsync(Read<NameRequest>(request).Name, ct)),
-                RpcOperation.CreateProcedure => await CreateProcedureAsync(request, ct),
-                RpcOperation.UpdateProcedure => await UpdateProcedureAsync(request, ct),
-                RpcOperation.DeleteProcedure => await DeleteProcedureAsync(request, ct),
-                RpcOperation.ExecuteProcedure => await ExecuteProcedureAsync(request, ct),
-                RpcOperation.ExecuteSql => Write(await client.ExecuteSqlAsync(Read<SqlRequest>(request).Sql, ct)),
-                RpcOperation.BeginTransaction => Write(await client.BeginTransactionAsync(ct)),
-                RpcOperation.ExecuteInTransaction => await ExecuteInTransactionAsync(request, ct),
-                RpcOperation.CommitTransaction => await CommitTransactionAsync(request, ct),
-                RpcOperation.RollbackTransaction => await RollbackTransactionAsync(request, ct),
-                RpcOperation.GetCollectionNames => Write(await client.GetCollectionNamesAsync(ct)),
-                RpcOperation.GetCollectionCount => Write(await client.GetCollectionCountAsync(Read<CollectionNameRequest>(request).CollectionName, ct)),
-                RpcOperation.BrowseCollection => await BrowseCollectionAsync(request, ct),
-                RpcOperation.GetDocument => await GetDocumentAsync(request, ct),
-                RpcOperation.PutDocument => await PutDocumentAsync(request, ct),
-                RpcOperation.DeleteDocument => await DeleteDocumentAsync(request, ct),
-                RpcOperation.Checkpoint => await CheckpointAsync(ct),
-                RpcOperation.InspectStorage => await InspectStorageAsync(request, ct),
-                RpcOperation.CheckWal => await CheckWalAsync(request, ct),
-                RpcOperation.InspectPage => await InspectPageAsync(request, ct),
-                RpcOperation.CheckIndexes => await CheckIndexesAsync(request, ct),
-                _ => throw new ArgumentException($"Unsupported gRPC operation '{request.Operation}'."),
-            };
+            return map(await action(context.CancellationToken).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -86,266 +275,37 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         }
     }
 
-    private static T Read<T>(InvokeRequest request)
-        => GrpcJson.DeserializeRequired<T>(request.PayloadJson);
-
-    private static InvokeResponse Write<T>(T value)
-        => new()
+    private async Task<Empty> ExecuteEmptyAsync(ServerCallContext context, Func<CancellationToken, Task> action)
+    {
+        try
         {
-            PayloadJson = GrpcJson.Serialize(value),
-        };
-
-    private static InvokeResponse Empty()
-        => new()
+            await action(context.CancellationToken).ConfigureAwait(false);
+            return EmptyResponse;
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
-            PayloadJson = string.Empty,
-        };
-
-    private async Task<InvokeResponse> BrowseTableAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<PagedTableRequest>(request);
-        return Write(await client.BrowseTableAsync(payload.TableName, payload.Page, payload.PageSize, ct));
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw TranslateException(ex);
+        }
     }
 
-    private async Task<InvokeResponse> GetRowByPkAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<GetRowByPkRequest>(request);
-        return Write(await client.GetRowByPkAsync(payload.TableName, payload.PkColumn, payload.PkValue!, ct));
-    }
+    private static object ReadRequiredValue(VariantValue? value)
+        => ReadRequired(value, GrpcValueMapper.FromMessage, nameof(value))!;
 
-    private async Task<InvokeResponse> InsertRowAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<InsertRowRequest>(request);
-        return Write(await client.InsertRowAsync(payload.TableName, payload.Values, ct));
-    }
+    private static Dictionary<string, object?> ReadRequiredObject(VariantObject? value)
+        => ReadRequired(value, GrpcValueMapper.ToDictionary, nameof(value));
 
-    private async Task<InvokeResponse> UpdateRowAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpdateRowRequest>(request);
-        return Write(await client.UpdateRowAsync(payload.TableName, payload.PkColumn, payload.PkValue!, payload.Values, ct));
-    }
+    private static TModel ReadRequired<TMessage, TModel>(TMessage? value, Func<TMessage, TModel> map, string name)
+        where TMessage : class
+        => value is null
+            ? throw new ArgumentException($"The '{name}' payload is required.")
+            : map(value);
 
-    private async Task<InvokeResponse> DeleteRowAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<DeleteRowRequest>(request);
-        return Write(await client.DeleteRowAsync(payload.TableName, payload.PkColumn, payload.PkValue!, ct));
-    }
-
-    private async Task<InvokeResponse> DropTableAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DropTableAsync(Read<TableNameRequest>(request).TableName, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> RenameTableAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<RenameTableRequest>(request);
-        await client.RenameTableAsync(payload.TableName, payload.NewTableName, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> AddColumnAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<AddColumnRequest>(request);
-        await client.AddColumnAsync(payload.TableName, payload.ColumnName, payload.Type, payload.NotNull, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DropColumnAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<DropColumnRequest>(request);
-        await client.DropColumnAsync(payload.TableName, payload.ColumnName, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> RenameColumnAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<RenameColumnRequest>(request);
-        await client.RenameColumnAsync(payload.TableName, payload.OldColumnName, payload.NewColumnName, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> CreateIndexAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<CreateIndexRequest>(request);
-        await client.CreateIndexAsync(payload.IndexName, payload.TableName, payload.ColumnName, payload.IsUnique, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> UpdateIndexAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpdateIndexRequest>(request);
-        await client.UpdateIndexAsync(payload.ExistingIndexName, payload.NewIndexName, payload.TableName, payload.ColumnName, payload.IsUnique, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DropIndexAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DropIndexAsync(Read<NameRequest>(request).Name, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> BrowseViewAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<PagedNameRequest>(request);
-        return Write(await client.BrowseViewAsync(payload.Name, payload.Page, payload.PageSize, ct));
-    }
-
-    private async Task<InvokeResponse> CreateViewAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<CreateViewRequest>(request);
-        await client.CreateViewAsync(payload.ViewName, payload.SelectSql, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> UpdateViewAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpdateViewRequest>(request);
-        await client.UpdateViewAsync(payload.ExistingViewName, payload.NewViewName, payload.SelectSql, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DropViewAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DropViewAsync(Read<NameRequest>(request).Name, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> CreateTriggerAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<CreateTriggerRequest>(request);
-        await client.CreateTriggerAsync(payload.TriggerName, payload.TableName, payload.Timing, payload.TriggerEvent, payload.BodySql, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> UpdateTriggerAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpdateTriggerRequest>(request);
-        await client.UpdateTriggerAsync(payload.ExistingTriggerName, payload.NewTriggerName, payload.TableName, payload.Timing, payload.TriggerEvent, payload.BodySql, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DropTriggerAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DropTriggerAsync(Read<NameRequest>(request).Name, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> UpsertSavedQueryAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpsertSavedQueryRequest>(request);
-        return Write(await client.UpsertSavedQueryAsync(payload.Name, payload.SqlText, ct));
-    }
-
-    private async Task<InvokeResponse> DeleteSavedQueryAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DeleteSavedQueryAsync(Read<NameRequest>(request).Name, ct);
-        return Empty();
-    }
-
-    private async Task<IReadOnlyList<ProcedureDefinition>> GetProceduresAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<GetProceduresRequest>(request);
-        return await client.GetProceduresAsync(payload.IncludeDisabled, ct);
-    }
-
-    private async Task<InvokeResponse> CreateProcedureAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.CreateProcedureAsync(Read<CreateProcedureRequest>(request).Definition, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> UpdateProcedureAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<UpdateProcedureRequest>(request);
-        await client.UpdateProcedureAsync(payload.ExistingName, payload.Definition, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DeleteProcedureAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.DeleteProcedureAsync(Read<NameRequest>(request).Name, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> ExecuteProcedureAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<ExecuteProcedureRequest>(request);
-        return Write(await client.ExecuteProcedureAsync(payload.Name, payload.Args, ct));
-    }
-
-    private async Task<InvokeResponse> ExecuteInTransactionAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<TransactionSqlRequest>(request);
-        return Write(await client.ExecuteInTransactionAsync(payload.TransactionId, payload.Sql, ct));
-    }
-
-    private async Task<InvokeResponse> CommitTransactionAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.CommitTransactionAsync(Read<TransactionIdRequest>(request).TransactionId, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> RollbackTransactionAsync(InvokeRequest request, CancellationToken ct)
-    {
-        await client.RollbackTransactionAsync(Read<TransactionIdRequest>(request).TransactionId, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> BrowseCollectionAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<PagedNameRequest>(request);
-        return Write(await client.BrowseCollectionAsync(payload.Name, payload.Page, payload.PageSize, ct));
-    }
-
-    private async Task<InvokeResponse> GetDocumentAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<GetDocumentRequest>(request);
-        return Write(await client.GetDocumentAsync(payload.CollectionName, payload.Key, ct));
-    }
-
-    private async Task<InvokeResponse> PutDocumentAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<PutDocumentRequest>(request);
-        await client.PutDocumentAsync(payload.CollectionName, payload.Key, payload.Document, ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> DeleteDocumentAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<DeleteDocumentRequest>(request);
-        return Write(await client.DeleteDocumentAsync(payload.CollectionName, payload.Key, ct));
-    }
-
-    private async Task<InvokeResponse> CheckpointAsync(CancellationToken ct)
-    {
-        await client.CheckpointAsync(ct);
-        return Empty();
-    }
-
-    private async Task<InvokeResponse> InspectStorageAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<InspectStorageRequest>(request);
-        return Write(await client.InspectStorageAsync(payload.DatabasePath, payload.IncludePages, ct));
-    }
-
-    private async Task<InvokeResponse> CheckWalAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<CheckWalRequest>(request);
-        return Write(await client.CheckWalAsync(payload.DatabasePath, ct));
-    }
-
-    private async Task<InvokeResponse> InspectPageAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<InspectPageRequest>(request);
-        return Write(await client.InspectPageAsync(payload.PageId, payload.IncludeHex, payload.DatabasePath, ct));
-    }
-
-    private async Task<InvokeResponse> CheckIndexesAsync(InvokeRequest request, CancellationToken ct)
-    {
-        var payload = Read<CheckIndexesRequest>(request);
-        return Write(await client.CheckIndexesAsync(payload.DatabasePath, payload.IndexName, payload.SampleSize, ct));
-    }
+    private static string? NullIfEmpty(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static RpcException TranslateException(Exception ex)
     {

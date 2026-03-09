@@ -4,75 +4,631 @@ option csharp_namespace = "CSharpDB.Client.Grpc";
 
 package csharpdb.rpc;
 
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
 service CSharpDbRpc {
-  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+  rpc GetInfo (google.protobuf.Empty) returns (DatabaseInfoMessage);
+  rpc GetTableNames (google.protobuf.Empty) returns (StringList);
+  rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
+  rpc GetRowCount (TableNameRequest) returns (google.protobuf.Int32Value);
+  rpc BrowseTable (PagedTableRequest) returns (TableBrowseResultMessage);
+  rpc GetRowByPk (GetRowByPkRequest) returns (OptionalVariantObjectResponse);
+  rpc InsertRow (InsertRowRequest) returns (google.protobuf.Int32Value);
+  rpc UpdateRow (UpdateRowRequest) returns (google.protobuf.Int32Value);
+  rpc DeleteRow (DeleteRowRequest) returns (google.protobuf.Int32Value);
+
+  rpc DropTable (TableNameRequest) returns (google.protobuf.Empty);
+  rpc RenameTable (RenameTableRequest) returns (google.protobuf.Empty);
+  rpc AddColumn (AddColumnRequest) returns (google.protobuf.Empty);
+  rpc DropColumn (DropColumnRequest) returns (google.protobuf.Empty);
+  rpc RenameColumn (RenameColumnRequest) returns (google.protobuf.Empty);
+
+  rpc GetIndexes (google.protobuf.Empty) returns (IndexSchemaListResponse);
+  rpc CreateIndex (CreateIndexRequest) returns (google.protobuf.Empty);
+  rpc UpdateIndex (UpdateIndexRequest) returns (google.protobuf.Empty);
+  rpc DropIndex (NameRequest) returns (google.protobuf.Empty);
+
+  rpc GetViewNames (google.protobuf.Empty) returns (StringList);
+  rpc GetViews (google.protobuf.Empty) returns (ViewDefinitionListResponse);
+  rpc GetView (NameRequest) returns (OptionalViewDefinitionResponse);
+  rpc GetViewSql (NameRequest) returns (OptionalStringResponse);
+  rpc BrowseView (PagedNameRequest) returns (ViewBrowseResultMessage);
+  rpc CreateView (CreateViewRequest) returns (google.protobuf.Empty);
+  rpc UpdateView (UpdateViewRequest) returns (google.protobuf.Empty);
+  rpc DropView (NameRequest) returns (google.protobuf.Empty);
+
+  rpc GetTriggers (google.protobuf.Empty) returns (TriggerSchemaListResponse);
+  rpc CreateTrigger (CreateTriggerRequest) returns (google.protobuf.Empty);
+  rpc UpdateTrigger (UpdateTriggerRequest) returns (google.protobuf.Empty);
+  rpc DropTrigger (NameRequest) returns (google.protobuf.Empty);
+
+  rpc GetSavedQueries (google.protobuf.Empty) returns (SavedQueryDefinitionListResponse);
+  rpc GetSavedQuery (NameRequest) returns (OptionalSavedQueryDefinitionResponse);
+  rpc UpsertSavedQuery (UpsertSavedQueryRequest) returns (SavedQueryDefinitionMessage);
+  rpc DeleteSavedQuery (NameRequest) returns (google.protobuf.Empty);
+
+  rpc GetProcedures (GetProceduresRequest) returns (ProcedureDefinitionListResponse);
+  rpc GetProcedure (NameRequest) returns (OptionalProcedureDefinitionResponse);
+  rpc CreateProcedure (CreateProcedureRequest) returns (google.protobuf.Empty);
+  rpc UpdateProcedure (UpdateProcedureRequest) returns (google.protobuf.Empty);
+  rpc DeleteProcedure (NameRequest) returns (google.protobuf.Empty);
+  rpc ExecuteProcedure (ExecuteProcedureRequest) returns (ProcedureExecutionResultMessage);
+
+  rpc ExecuteSql (SqlRequest) returns (SqlExecutionResultMessage);
+
+  rpc BeginTransaction (google.protobuf.Empty) returns (TransactionSessionInfoMessage);
+  rpc ExecuteInTransaction (TransactionSqlRequest) returns (SqlExecutionResultMessage);
+  rpc CommitTransaction (TransactionIdRequest) returns (google.protobuf.Empty);
+  rpc RollbackTransaction (TransactionIdRequest) returns (google.protobuf.Empty);
+
+  rpc GetCollectionNames (google.protobuf.Empty) returns (StringList);
+  rpc GetCollectionCount (CollectionNameRequest) returns (google.protobuf.Int32Value);
+  rpc BrowseCollection (PagedNameRequest) returns (CollectionBrowseResultMessage);
+  rpc GetDocument (GetDocumentRequest) returns (OptionalVariantValueResponse);
+  rpc PutDocument (PutDocumentRequest) returns (google.protobuf.Empty);
+  rpc DeleteDocument (DeleteDocumentRequest) returns (google.protobuf.BoolValue);
+
+  rpc Checkpoint (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc InspectStorage (InspectStorageRequest) returns (DatabaseInspectReportMessage);
+  rpc CheckWal (CheckWalRequest) returns (WalInspectReportMessage);
+  rpc InspectPage (InspectPageRequest) returns (PageInspectReportMessage);
+  rpc CheckIndexes (CheckIndexesRequest) returns (IndexInspectReportMessage);
 }
 
-message InvokeRequest {
-  RpcOperation operation = 1;
-  string payload_json = 2;
+enum DbTypeEnum {
+  DB_TYPE_ENUM_UNSPECIFIED = 0;
+  DB_TYPE_INTEGER = 1;
+  DB_TYPE_REAL = 2;
+  DB_TYPE_TEXT = 3;
+  DB_TYPE_BLOB = 4;
 }
 
-message InvokeResponse {
-  string payload_json = 1;
+enum TriggerTimingEnum {
+  TRIGGER_TIMING_ENUM_UNSPECIFIED = 0;
+  TRIGGER_TIMING_BEFORE = 1;
+  TRIGGER_TIMING_AFTER = 2;
 }
 
-enum RpcOperation {
-  Unspecified = 0;
-  GetInfo = 1;
-  GetTableNames = 2;
-  GetTableSchema = 3;
-  GetRowCount = 4;
-  BrowseTable = 5;
-  GetRowByPk = 6;
-  InsertRow = 7;
-  UpdateRow = 8;
-  DeleteRow = 9;
-  DropTable = 10;
-  RenameTable = 11;
-  AddColumn = 12;
-  DropColumn = 13;
-  RenameColumn = 14;
-  GetIndexes = 15;
-  CreateIndex = 16;
-  UpdateIndex = 17;
-  DropIndex = 18;
-  GetViewNames = 19;
-  GetViews = 20;
-  GetView = 21;
-  GetViewSql = 22;
-  BrowseView = 23;
-  CreateView = 24;
-  UpdateView = 25;
-  DropView = 26;
-  GetTriggers = 27;
-  CreateTrigger = 28;
-  UpdateTrigger = 29;
-  DropTrigger = 30;
-  GetSavedQueries = 31;
-  GetSavedQuery = 32;
-  UpsertSavedQuery = 33;
-  DeleteSavedQuery = 34;
-  GetProcedures = 35;
-  GetProcedure = 36;
-  CreateProcedure = 37;
-  UpdateProcedure = 38;
-  DeleteProcedure = 39;
-  ExecuteProcedure = 40;
-  ExecuteSql = 41;
-  BeginTransaction = 42;
-  ExecuteInTransaction = 43;
-  CommitTransaction = 44;
-  RollbackTransaction = 45;
-  GetCollectionNames = 46;
-  GetCollectionCount = 47;
-  BrowseCollection = 48;
-  GetDocument = 49;
-  PutDocument = 50;
-  DeleteDocument = 51;
-  Checkpoint = 52;
-  InspectStorage = 53;
-  CheckWal = 54;
-  InspectPage = 55;
-  CheckIndexes = 56;
+enum TriggerEventEnum {
+  TRIGGER_EVENT_ENUM_UNSPECIFIED = 0;
+  TRIGGER_EVENT_INSERT = 1;
+  TRIGGER_EVENT_UPDATE = 2;
+  TRIGGER_EVENT_DELETE = 3;
+}
+
+enum InspectSeverityEnum {
+  INSPECT_SEVERITY_ENUM_UNSPECIFIED = 0;
+  INSPECT_SEVERITY_INFO = 1;
+  INSPECT_SEVERITY_WARNING = 2;
+  INSPECT_SEVERITY_ERROR = 3;
+}
+
+message VariantValue {
+  oneof kind {
+    google.protobuf.NullValue null_value = 1;
+    bool bool_value = 2;
+    int64 int64_value = 3;
+    double double_value = 4;
+    string string_value = 5;
+    bytes bytes_value = 6;
+    VariantObject object_value = 7;
+    VariantArray array_value = 8;
+  }
+}
+
+message VariantObject {
+  map<string, VariantValue> fields = 1;
+}
+
+message VariantArray {
+  repeated VariantValue items = 1;
+}
+
+message VariantArrayList {
+  repeated VariantArray items = 1;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message TableNameRequest {
+  string table_name = 1;
+}
+
+message NameRequest {
+  string name = 1;
+}
+
+message PagedTableRequest {
+  string table_name = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message PagedNameRequest {
+  string name = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message GetRowByPkRequest {
+  string table_name = 1;
+  string pk_column = 2;
+  VariantValue pk_value = 3;
+}
+
+message InsertRowRequest {
+  string table_name = 1;
+  VariantObject values = 2;
+}
+
+message UpdateRowRequest {
+  string table_name = 1;
+  string pk_column = 2;
+  VariantValue pk_value = 3;
+  VariantObject values = 4;
+}
+
+message DeleteRowRequest {
+  string table_name = 1;
+  string pk_column = 2;
+  VariantValue pk_value = 3;
+}
+
+message RenameTableRequest {
+  string table_name = 1;
+  string new_table_name = 2;
+}
+
+message AddColumnRequest {
+  string table_name = 1;
+  string column_name = 2;
+  DbTypeEnum type = 3;
+  bool not_null = 4;
+}
+
+message DropColumnRequest {
+  string table_name = 1;
+  string column_name = 2;
+}
+
+message RenameColumnRequest {
+  string table_name = 1;
+  string old_column_name = 2;
+  string new_column_name = 3;
+}
+
+message CreateIndexRequest {
+  string index_name = 1;
+  string table_name = 2;
+  string column_name = 3;
+  bool is_unique = 4;
+}
+
+message UpdateIndexRequest {
+  string existing_index_name = 1;
+  string new_index_name = 2;
+  string table_name = 3;
+  string column_name = 4;
+  bool is_unique = 5;
+}
+
+message CreateViewRequest {
+  string view_name = 1;
+  string select_sql = 2;
+}
+
+message UpdateViewRequest {
+  string existing_view_name = 1;
+  string new_view_name = 2;
+  string select_sql = 3;
+}
+
+message CreateTriggerRequest {
+  string trigger_name = 1;
+  string table_name = 2;
+  TriggerTimingEnum timing = 3;
+  TriggerEventEnum trigger_event = 4;
+  string body_sql = 5;
+}
+
+message UpdateTriggerRequest {
+  string existing_trigger_name = 1;
+  string new_trigger_name = 2;
+  string table_name = 3;
+  TriggerTimingEnum timing = 4;
+  TriggerEventEnum trigger_event = 5;
+  string body_sql = 6;
+}
+
+message UpsertSavedQueryRequest {
+  string name = 1;
+  string sql_text = 2;
+}
+
+message GetProceduresRequest {
+  bool include_disabled = 1;
+}
+
+message CreateProcedureRequest {
+  ProcedureDefinitionMessage definition = 1;
+}
+
+message UpdateProcedureRequest {
+  string existing_name = 1;
+  ProcedureDefinitionMessage definition = 2;
+}
+
+message ExecuteProcedureRequest {
+  string name = 1;
+  VariantObject args = 2;
+}
+
+message SqlRequest {
+  string sql = 1;
+}
+
+message TransactionSqlRequest {
+  string transaction_id = 1;
+  string sql = 2;
+}
+
+message TransactionIdRequest {
+  string transaction_id = 1;
+}
+
+message CollectionNameRequest {
+  string collection_name = 1;
+}
+
+message GetDocumentRequest {
+  string collection_name = 1;
+  string key = 2;
+}
+
+message PutDocumentRequest {
+  string collection_name = 1;
+  string key = 2;
+  VariantValue document = 3;
+}
+
+message DeleteDocumentRequest {
+  string collection_name = 1;
+  string key = 2;
+}
+
+message InspectStorageRequest {
+  string database_path = 1;
+  bool include_pages = 2;
+}
+
+message CheckWalRequest {
+  string database_path = 1;
+}
+
+message InspectPageRequest {
+  uint32 page_id = 1;
+  bool include_hex = 2;
+  string database_path = 3;
+}
+
+message CheckIndexesRequest {
+  string database_path = 1;
+  string index_name = 2;
+  google.protobuf.Int32Value sample_size = 3;
+}
+
+message ColumnDefinitionMessage {
+  string name = 1;
+  DbTypeEnum type = 2;
+  bool nullable = 3;
+  bool is_primary_key = 4;
+  bool is_identity = 5;
+}
+
+message TableSchemaMessage {
+  string table_name = 1;
+  repeated ColumnDefinitionMessage columns = 2;
+}
+
+message OptionalTableSchemaResponse {
+  TableSchemaMessage value = 1;
+}
+
+message IndexSchemaMessage {
+  string index_name = 1;
+  string table_name = 2;
+  repeated string columns = 3;
+  bool is_unique = 4;
+}
+
+message IndexSchemaListResponse {
+  repeated IndexSchemaMessage items = 1;
+}
+
+message ViewDefinitionMessage {
+  string name = 1;
+  string sql = 2;
+}
+
+message ViewDefinitionListResponse {
+  repeated ViewDefinitionMessage items = 1;
+}
+
+message OptionalViewDefinitionResponse {
+  ViewDefinitionMessage value = 1;
+}
+
+message OptionalStringResponse {
+  google.protobuf.StringValue value = 1;
+}
+
+message TriggerSchemaMessage {
+  string trigger_name = 1;
+  string table_name = 2;
+  TriggerTimingEnum timing = 3;
+  TriggerEventEnum trigger_event = 4;
+  string body_sql = 5;
+}
+
+message TriggerSchemaListResponse {
+  repeated TriggerSchemaMessage items = 1;
+}
+
+message TableBrowseResultMessage {
+  string table_name = 1;
+  TableSchemaMessage schema = 2;
+  repeated VariantArray rows = 3;
+  int32 total_rows = 4;
+  int32 page = 5;
+  int32 page_size = 6;
+}
+
+message OptionalVariantObjectResponse {
+  VariantObject value = 1;
+}
+
+message ViewBrowseResultMessage {
+  string view_name = 1;
+  repeated string column_names = 2;
+  repeated VariantArray rows = 3;
+  int32 total_rows = 4;
+  int32 page = 5;
+  int32 page_size = 6;
+}
+
+message SqlExecutionResultMessage {
+  bool is_query = 1;
+  StringList column_names = 2;
+  VariantArrayList rows = 3;
+  int32 rows_affected = 4;
+  google.protobuf.StringValue error = 5;
+  google.protobuf.Duration elapsed = 6;
+}
+
+message DatabaseInfoMessage {
+  string data_source = 1;
+  int32 table_count = 2;
+  int32 index_count = 3;
+  int32 view_count = 4;
+  int32 trigger_count = 5;
+  int32 procedure_count = 6;
+  int32 collection_count = 7;
+  int32 saved_query_count = 8;
+}
+
+message ProcedureParameterDefinitionMessage {
+  string name = 1;
+  DbTypeEnum type = 2;
+  bool required = 3;
+  VariantValue default_value = 4;
+  google.protobuf.StringValue description = 5;
+}
+
+message ProcedureDefinitionMessage {
+  string name = 1;
+  string body_sql = 2;
+  repeated ProcedureParameterDefinitionMessage parameters = 3;
+  google.protobuf.StringValue description = 4;
+  bool is_enabled = 5;
+  google.protobuf.Timestamp created_utc = 6;
+  google.protobuf.Timestamp updated_utc = 7;
+}
+
+message ProcedureDefinitionListResponse {
+  repeated ProcedureDefinitionMessage items = 1;
+}
+
+message OptionalProcedureDefinitionResponse {
+  ProcedureDefinitionMessage value = 1;
+}
+
+message ProcedureStatementExecutionResultMessage {
+  int32 statement_index = 1;
+  string statement_text = 2;
+  bool is_query = 3;
+  StringList column_names = 4;
+  VariantArrayList rows = 5;
+  int32 rows_affected = 6;
+  google.protobuf.Duration elapsed = 7;
+}
+
+message ProcedureExecutionResultMessage {
+  string procedure_name = 1;
+  bool succeeded = 2;
+  repeated ProcedureStatementExecutionResultMessage statements = 3;
+  google.protobuf.StringValue error = 4;
+  google.protobuf.Int32Value failed_statement_index = 5;
+  google.protobuf.Duration elapsed = 6;
+}
+
+message SavedQueryDefinitionMessage {
+  int64 id = 1;
+  string name = 2;
+  string sql_text = 3;
+  google.protobuf.Timestamp created_utc = 4;
+  google.protobuf.Timestamp updated_utc = 5;
+}
+
+message SavedQueryDefinitionListResponse {
+  repeated SavedQueryDefinitionMessage items = 1;
+}
+
+message OptionalSavedQueryDefinitionResponse {
+  SavedQueryDefinitionMessage value = 1;
+}
+
+message TransactionSessionInfoMessage {
+  string transaction_id = 1;
+  google.protobuf.Timestamp expires_at_utc = 2;
+}
+
+message CollectionDocumentMessage {
+  string key = 1;
+  VariantValue document = 2;
+}
+
+message CollectionBrowseResultMessage {
+  string collection_name = 1;
+  repeated CollectionDocumentMessage documents = 2;
+  int32 total_count = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message OptionalVariantValueResponse {
+  VariantValue value = 1;
+}
+
+message FileHeaderReportMessage {
+  int64 file_length_bytes = 1;
+  int32 physical_page_count = 2;
+  string magic = 3;
+  bool magic_valid = 4;
+  int32 version = 5;
+  bool version_valid = 6;
+  int32 page_size = 7;
+  bool page_size_valid = 8;
+  uint32 declared_page_count = 9;
+  bool declared_page_count_matches_physical = 10;
+  uint32 schema_root_page = 11;
+  uint32 freelist_head = 12;
+  uint32 change_counter = 13;
+}
+
+message IntegrityIssueMessage {
+  string code = 1;
+  InspectSeverityEnum severity = 2;
+  string message = 3;
+  google.protobuf.UInt32Value page_id = 4;
+  google.protobuf.Int64Value offset = 5;
+}
+
+message LeafCellReportMessage {
+  int32 cell_index = 1;
+  int32 cell_offset = 2;
+  int32 header_bytes = 3;
+  int32 cell_total_bytes = 4;
+  google.protobuf.Int64Value key = 5;
+  int32 payload_bytes = 6;
+}
+
+message LeafCellReportList {
+  repeated LeafCellReportMessage items = 1;
+}
+
+message InteriorCellReportMessage {
+  int32 cell_index = 1;
+  int32 cell_offset = 2;
+  int32 header_bytes = 3;
+  int32 cell_total_bytes = 4;
+  google.protobuf.UInt32Value left_child_page = 5;
+  google.protobuf.Int64Value key = 6;
+}
+
+message InteriorCellReportList {
+  repeated InteriorCellReportMessage items = 1;
+}
+
+message PageReportMessage {
+  uint32 page_id = 1;
+  int32 page_type_code = 2;
+  string page_type_name = 3;
+  int32 base_offset = 4;
+  int32 cell_count = 5;
+  int32 cell_content_start = 6;
+  uint32 right_child_or_next_leaf = 7;
+  int32 free_space_bytes = 8;
+  repeated int32 cell_offsets = 9;
+  LeafCellReportList leaf_cells = 10;
+  InteriorCellReportList interior_cells = 11;
+}
+
+message PageReportList {
+  repeated PageReportMessage items = 1;
+}
+
+message DatabaseInspectReportMessage {
+  string schema_version = 1;
+  string database_path = 2;
+  FileHeaderReportMessage header = 3;
+  map<string, int32> page_type_histogram = 4;
+  int32 page_count_scanned = 5;
+  PageReportList pages = 6;
+  repeated IntegrityIssueMessage issues = 7;
+}
+
+message PageInspectReportMessage {
+  string schema_version = 1;
+  string database_path = 2;
+  uint32 page_id = 3;
+  bool exists = 4;
+  PageReportMessage page = 5;
+  google.protobuf.StringValue hex_dump = 6;
+  repeated IntegrityIssueMessage issues = 7;
+}
+
+message IndexCheckItemMessage {
+  string index_name = 1;
+  string table_name = 2;
+  repeated string columns = 3;
+  uint32 root_page = 4;
+  bool root_page_valid = 5;
+  bool table_exists = 6;
+  bool columns_exist_in_table = 7;
+  bool root_tree_reachable = 8;
+}
+
+message IndexInspectReportMessage {
+  string schema_version = 1;
+  string database_path = 2;
+  google.protobuf.StringValue requested_index_name = 3;
+  int32 sample_size = 4;
+  repeated IndexCheckItemMessage indexes = 5;
+  repeated IntegrityIssueMessage issues = 6;
+}
+
+message WalInspectReportMessage {
+  string schema_version = 1;
+  string database_path = 2;
+  string wal_path = 3;
+  bool exists = 4;
+  int64 file_length_bytes = 5;
+  int32 full_frame_count = 6;
+  int32 commit_frame_count = 7;
+  int32 trailing_bytes = 8;
+  string magic = 9;
+  bool magic_valid = 10;
+  int32 version = 11;
+  bool version_valid = 12;
+  int32 page_size = 13;
+  bool page_size_valid = 14;
+  uint32 salt1 = 15;
+  uint32 salt2 = 16;
+  repeated IntegrityIssueMessage issues = 17;
 }

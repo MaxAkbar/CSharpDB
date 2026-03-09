@@ -1,6 +1,11 @@
 using System.Net;
+using System.Text.Json;
 using CSharpDB.Client;
+using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
+using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -66,6 +71,36 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_Collections_RoundTripNestedDocuments()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        using JsonDocument document = JsonDocument.Parse("""
+            {
+              "name": "typed",
+              "tags": ["grpc", "proto"],
+              "meta": {
+                "score": 9,
+                "active": true
+              }
+            }
+            """);
+
+        await client.PutDocumentAsync("grpc_docs", "doc-1", document.RootElement, Ct);
+
+        JsonElement? fetched = await client.GetDocumentAsync("grpc_docs", "doc-1", Ct);
+        Assert.True(fetched.HasValue);
+        Assert.Equal("typed", fetched.Value.GetProperty("name").GetString());
+        Assert.Equal(9, fetched.Value.GetProperty("meta").GetProperty("score").GetInt32());
+
+        CollectionBrowseResult browse = await client.BrowseCollectionAsync("grpc_docs", ct: Ct);
+        Assert.Single(browse.Documents);
+        Assert.Equal("doc-1", browse.Documents[0].Key);
+        Assert.Equal("proto", browse.Documents[0].Document.GetProperty("tags")[1].GetString());
+    }
+
+    [Fact]
     public async Task GrpcClient_ProcedureCrudAndValidation_WorkThroughTransport()
     {
         using var transportClient = CreateGrpcHttpClient();
@@ -113,6 +148,88 @@ public sealed class GrpcClientTests : IAsyncLifetime
             Ct));
 
         Assert.Contains("missing from params metadata", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GrpcContract_ExposesExplicitRpcMethods()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions
+        {
+            HttpClient = transportClient,
+            DisposeHttpClient = false,
+        });
+
+        var rpcClient = new CSharpDbRpc.CSharpDbRpcClient(channel);
+
+        SqlExecutionResultMessage createResponse = await rpcClient.ExecuteSqlAsync(
+            new SqlRequest
+            {
+                Sql = "CREATE TABLE grpc_contract (id INTEGER PRIMARY KEY, name TEXT)",
+            },
+            cancellationToken: Ct).ResponseAsync;
+
+        Assert.Null(createResponse.Error);
+
+        await rpcClient.InsertRowAsync(
+            new InsertRowRequest
+            {
+                TableName = "grpc_contract",
+                Values = GrpcValueMapper.ToObject(new Dictionary<string, object?>
+                {
+                    ["id"] = 11L,
+                    ["name"] = "typed",
+                }),
+            },
+            cancellationToken: Ct).ResponseAsync;
+
+        DatabaseInfoMessage infoResponse = await rpcClient.GetInfoAsync(new Empty(), cancellationToken: Ct).ResponseAsync;
+        DatabaseInfo info = GrpcModelMapper.ToModel(infoResponse);
+        Assert.Equal(Path.GetFullPath(_dbPath), info.DataSource);
+
+        StringList namesResponse = await rpcClient.GetTableNamesAsync(new Empty(), cancellationToken: Ct).ResponseAsync;
+        IReadOnlyList<string> tableNames = GrpcModelMapper.ToStringList(namesResponse);
+        Assert.Contains("grpc_contract", tableNames);
+
+        OptionalVariantObjectResponse rowResponse = await rpcClient.GetRowByPkAsync(
+            new GetRowByPkRequest
+            {
+                TableName = "grpc_contract",
+                PkColumn = "id",
+                PkValue = GrpcValueMapper.ToMessage(11),
+            },
+            cancellationToken: Ct).ResponseAsync;
+
+        Assert.NotNull(rowResponse.Value);
+        Assert.Equal("typed", rowResponse.Value.Fields["name"].StringValue);
+
+        await rpcClient.PutDocumentAsync(
+            new PutDocumentRequest
+            {
+                CollectionName = "grpc_contract_docs",
+                Key = "doc-1",
+                Document = GrpcValueMapper.ToMessage(JsonDocument.Parse("""
+                    {
+                      "nested": {
+                        "count": 3
+                      },
+                      "tags": ["typed", "contract"]
+                    }
+                    """).RootElement),
+            },
+            cancellationToken: Ct).ResponseAsync;
+
+        OptionalVariantValueResponse documentResponse = await rpcClient.GetDocumentAsync(
+            new GetDocumentRequest
+            {
+                CollectionName = "grpc_contract_docs",
+                Key = "doc-1",
+            },
+            cancellationToken: Ct).ResponseAsync;
+
+        Assert.NotNull(documentResponse.Value);
+        Assert.Equal(3L, documentResponse.Value.ObjectValue.Fields["nested"].ObjectValue.Fields["count"].Int64Value);
+        Assert.Equal("contract", documentResponse.Value.ObjectValue.Fields["tags"].ArrayValue.Items[1].StringValue);
     }
 
     private ICSharpDbClient CreateGrpcClient(HttpClient transportClient)

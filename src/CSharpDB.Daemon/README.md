@@ -43,14 +43,22 @@ Today the daemon does the following:
 2. registers `ICSharpDbClient` from configuration
 3. opens and validates the configured database during startup by calling
    `GetInfoAsync()`
-4. exposes the generated gRPC service at
-   `/csharpdb.rpc.CSharpDbRpc/Invoke`
+4. exposes explicit generated gRPC methods under
+   `/csharpdb.rpc.CSharpDbRpc/*` such as
+   `/csharpdb.rpc.CSharpDbRpc/GetInfo` and
+   `/csharpdb.rpc.CSharpDbRpc/ExecuteSql`
 
 The transport contract is implemented in:
 
 - [`src/CSharpDB.Client/Protos/csharpdb_rpc.proto`](../CSharpDB.Client/Protos/csharpdb_rpc.proto)
 - [`src/CSharpDB.Client/Internal/GrpcTransportClient.cs`](../CSharpDB.Client/Internal/GrpcTransportClient.cs)
 - [`src/CSharpDB.Daemon/Grpc/CSharpDbRpcService.cs`](./Grpc/CSharpDbRpcService.cs)
+
+The contract is now method-based and strongly typed:
+
+- each `ICSharpDbClient` operation maps to an explicit RPC
+- complex models use protobuf messages
+- dynamic row/document/argument values use a recursive protobuf value shape instead of JSON payload strings
 
 ## Protocol Boundary
 
