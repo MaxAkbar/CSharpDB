@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+option csharp_namespace = "CSharpDB.Client.Grpc";
+
+package csharpdb.rpc;
+
+service CSharpDbRpc {
+  rpc Invoke (InvokeRequest) returns (InvokeResponse);
+}
+
+message InvokeRequest {
+  RpcOperation operation = 1;
+  string payload_json = 2;
+}
+
+message InvokeResponse {
+  string payload_json = 1;
+}
+
+enum RpcOperation {
+  Unspecified = 0;
+  GetInfo = 1;
+  GetTableNames = 2;
+  GetTableSchema = 3;
+  GetRowCount = 4;
+  BrowseTable = 5;
+  GetRowByPk = 6;
+  InsertRow = 7;
+  UpdateRow = 8;
+  DeleteRow = 9;
+  DropTable = 10;
+  RenameTable = 11;
+  AddColumn = 12;
+  DropColumn = 13;
+  RenameColumn = 14;
+  GetIndexes = 15;
+  CreateIndex = 16;
+  UpdateIndex = 17;
+  DropIndex = 18;
+  GetViewNames = 19;
+  GetViews = 20;
+  GetView = 21;
+  GetViewSql = 22;
+  BrowseView = 23;
+  CreateView = 24;
+  UpdateView = 25;
+  DropView = 26;
+  GetTriggers = 27;
+  CreateTrigger = 28;
+  UpdateTrigger = 29;
+  DropTrigger = 30;
+  GetSavedQueries = 31;
+  GetSavedQuery = 32;
+  UpsertSavedQuery = 33;
+  DeleteSavedQuery = 34;
+  GetProcedures = 35;
+  GetProcedure = 36;
+  CreateProcedure = 37;
+  UpdateProcedure = 38;
+  DeleteProcedure = 39;
+  ExecuteProcedure = 40;
+  ExecuteSql = 41;
+  BeginTransaction = 42;
+  ExecuteInTransaction = 43;
+  CommitTransaction = 44;
+  RollbackTransaction = 45;
+  GetCollectionNames = 46;
+  GetCollectionCount = 47;
+  BrowseCollection = 48;
+  GetDocument = 49;
+  PutDocument = 50;
+  DeleteDocument = 51;
+  Checkpoint = 52;
+  InspectStorage = 53;
+  CheckWal = 54;
+  InspectPage = 55;
+  CheckIndexes = 56;
+}

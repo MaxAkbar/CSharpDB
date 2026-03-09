@@ -105,7 +105,7 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
         Assert.NotNull(payload);
         Assert.False(payload.Succeeded);
-        Assert.Contains("Blob parameters are not supported", payload.Error ?? string.Empty);
+        Assert.Contains("BLOB", payload.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -13,7 +13,7 @@ internal static class ClientTransportResolver
         {
             CSharpDbTransport.Direct => new EngineTransportClient(resolution.DatabasePath!),
             CSharpDbTransport.Http => throw CreateNotImplementedTransportException(CSharpDbTransport.Http),
-            CSharpDbTransport.Grpc => throw CreateNotImplementedTransportException(CSharpDbTransport.Grpc),
+            CSharpDbTransport.Grpc => new GrpcTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.Tcp => throw CreateNotImplementedTransportException(CSharpDbTransport.Tcp),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{resolution.Transport}'."),
@@ -88,6 +88,7 @@ internal static class ClientTransportResolver
         return new Resolution
         {
             Transport = CSharpDbTransport.Http,
+            EndpointUri = endpointUri,
         };
     }
 
@@ -99,6 +100,7 @@ internal static class ClientTransportResolver
         return new Resolution
         {
             Transport = CSharpDbTransport.Grpc,
+            EndpointUri = endpointUri,
         };
     }
 
@@ -110,6 +112,7 @@ internal static class ClientTransportResolver
         return new Resolution
         {
             Transport = CSharpDbTransport.Tcp,
+            EndpointUri = endpointUri,
         };
     }
 
@@ -121,6 +124,7 @@ internal static class ClientTransportResolver
         return new Resolution
         {
             Transport = CSharpDbTransport.NamedPipes,
+            EndpointUri = endpointUri,
         };
     }
 
@@ -237,5 +241,6 @@ internal static class ClientTransportResolver
     {
         public required CSharpDbTransport Transport { get; init; }
         public string? DatabasePath { get; init; }
+        public Uri? EndpointUri { get; init; }
     }
 }
