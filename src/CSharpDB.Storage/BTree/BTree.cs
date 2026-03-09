@@ -252,6 +252,22 @@ public sealed class BTree
     }
 
     /// <summary>
+    /// Reclaim all pages owned by this tree back to the pager freelist.
+    /// Callers must not use the tree after reclamation.
+    /// </summary>
+    public async ValueTask ReclaimAsync(CancellationToken ct = default)
+    {
+        if (_rootPageId == PageConstants.NullPageId)
+            return;
+
+        var visited = new HashSet<uint>();
+        await ReclaimPageAsync(_rootPageId, visited, ct);
+        _rootPageId = PageConstants.NullPageId;
+        _cachedEntryCount = 0;
+        _hintValid = false;
+    }
+
+    /// <summary>
     /// Count entries by walking leaf pages and summing cell counts.
     /// </summary>
     public async ValueTask<long> CountEntriesAsync(CancellationToken ct = default)
@@ -1133,6 +1149,34 @@ public sealed class BTree
                 return sp.RightChildOrNextLeaf;
             pageId = ReadInteriorLeftChild(sp, 0);
         }
+    }
+
+    private async ValueTask ReclaimPageAsync(uint pageId, HashSet<uint> visited, CancellationToken ct)
+    {
+        if (pageId == PageConstants.NullPageId || !visited.Add(pageId))
+            return;
+
+        var page = await _pager.GetPageAsync(pageId, ct);
+        var sp = new SlottedPage(page, pageId);
+
+        if (sp.PageType == PageConstants.PageTypeInterior)
+        {
+            var childPageIds = new List<uint>(sp.CellCount + 1);
+            for (int i = 0; i < sp.CellCount; i++)
+                childPageIds.Add(ReadInteriorLeftChild(sp, i));
+
+            childPageIds.Add(sp.RightChildOrNextLeaf);
+            foreach (uint childPageId in childPageIds)
+                await ReclaimPageAsync(childPageId, visited, ct);
+        }
+        else if (sp.PageType != PageConstants.PageTypeLeaf)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Cannot reclaim B+tree page {pageId}: unexpected page type 0x{sp.PageType:X2}.");
+        }
+
+        await _pager.FreePageAsync(pageId, ct);
     }
 
     #endregion

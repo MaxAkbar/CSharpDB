@@ -98,6 +98,24 @@ public static class GrpcModelMapper
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported inspect severity enum."),
         };
 
+    public static ReindexScopeEnum ToMessage(ReindexScope value)
+        => value switch
+        {
+            ReindexScope.All => ReindexScopeEnum.ReindexScopeAll,
+            ReindexScope.Table => ReindexScopeEnum.ReindexScopeTable,
+            ReindexScope.Index => ReindexScopeEnum.ReindexScopeIndex,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported reindex scope."),
+        };
+
+    public static ReindexScope ToModel(ReindexScopeEnum value)
+        => value switch
+        {
+            ReindexScopeEnum.ReindexScopeAll => ReindexScope.All,
+            ReindexScopeEnum.ReindexScopeTable => ReindexScope.Table,
+            ReindexScopeEnum.ReindexScopeIndex => ReindexScope.Index,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported reindex scope enum."),
+        };
+
     public static ColumnDefinitionMessage ToMessage(ColumnDefinition value)
         => new()
         {
@@ -453,6 +471,122 @@ public static class GrpcModelMapper
             TotalCount = value.TotalCount,
             Page = value.Page,
             PageSize = value.PageSize,
+        };
+
+    public static ReindexRequestMessage ToMessage(ReindexRequest value)
+        => new()
+        {
+            Scope = ToMessage(value.Scope),
+            Name = value.Name,
+        };
+
+    public static ReindexRequest ToModel(ReindexRequestMessage value)
+        => new()
+        {
+            Scope = ToModel(value.Scope),
+            Name = value.Name,
+        };
+
+    public static SpaceUsageReportMessage ToMessage(SpaceUsageReport value)
+        => new()
+        {
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            WalFileBytes = value.WalFileBytes,
+            PageSizeBytes = value.PageSizeBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            FreelistPageCount = value.FreelistPageCount,
+            FreelistBytes = value.FreelistBytes,
+        };
+
+    public static SpaceUsageReport ToModel(SpaceUsageReportMessage value)
+        => new()
+        {
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            WalFileBytes = value.WalFileBytes,
+            PageSizeBytes = value.PageSizeBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            FreelistPageCount = value.FreelistPageCount,
+            FreelistBytes = value.FreelistBytes,
+        };
+
+    public static FragmentationReportMessage ToMessage(FragmentationReport value)
+        => new()
+        {
+            BtreeFreeBytes = value.BTreeFreeBytes,
+            PagesWithFreeSpace = value.PagesWithFreeSpace,
+            TailFreelistPageCount = value.TailFreelistPageCount,
+            TailFreelistBytes = value.TailFreelistBytes,
+        };
+
+    public static FragmentationReport ToModel(FragmentationReportMessage value)
+        => new()
+        {
+            BTreeFreeBytes = value.BtreeFreeBytes,
+            PagesWithFreeSpace = value.PagesWithFreeSpace,
+            TailFreelistPageCount = value.TailFreelistPageCount,
+            TailFreelistBytes = value.TailFreelistBytes,
+        };
+
+    public static DatabaseMaintenanceReportMessage ToMessage(DatabaseMaintenanceReport value)
+    {
+        var message = new DatabaseMaintenanceReportMessage
+        {
+            SchemaVersion = value.SchemaVersion,
+            DatabasePath = value.DatabasePath,
+            SpaceUsage = ToMessage(value.SpaceUsage),
+            Fragmentation = ToMessage(value.Fragmentation),
+        };
+
+        foreach (KeyValuePair<string, int> entry in value.PageTypeHistogram)
+            message.PageTypeHistogram[entry.Key] = entry.Value;
+
+        return message;
+    }
+
+    public static DatabaseMaintenanceReport ToModel(DatabaseMaintenanceReportMessage value)
+        => new()
+        {
+            SchemaVersion = value.SchemaVersion,
+            DatabasePath = value.DatabasePath,
+            SpaceUsage = ToModel(value.SpaceUsage),
+            Fragmentation = ToModel(value.Fragmentation),
+            PageTypeHistogram = value.PageTypeHistogram.ToDictionary(entry => entry.Key, entry => entry.Value),
+        };
+
+    public static ReindexResultMessage ToMessage(ReindexResult value)
+        => new()
+        {
+            Scope = ToMessage(value.Scope),
+            Name = value.Name,
+            RebuiltIndexCount = value.RebuiltIndexCount,
+        };
+
+    public static ReindexResult ToModel(ReindexResultMessage value)
+        => new()
+        {
+            Scope = ToModel(value.Scope),
+            Name = value.Name,
+            RebuiltIndexCount = value.RebuiltIndexCount,
+        };
+
+    public static VacuumResultMessage ToMessage(VacuumResult value)
+        => new()
+        {
+            DatabaseFileBytesBefore = value.DatabaseFileBytesBefore,
+            DatabaseFileBytesAfter = value.DatabaseFileBytesAfter,
+            PhysicalPageCountBefore = value.PhysicalPageCountBefore,
+            PhysicalPageCountAfter = value.PhysicalPageCountAfter,
+        };
+
+    public static VacuumResult ToModel(VacuumResultMessage value)
+        => new()
+        {
+            DatabaseFileBytesBefore = value.DatabaseFileBytesBefore,
+            DatabaseFileBytesAfter = value.DatabaseFileBytesAfter,
+            PhysicalPageCountBefore = value.PhysicalPageCountBefore,
+            PhysicalPageCountAfter = value.PhysicalPageCountAfter,
         };
 
     public static FileHeaderReportMessage ToMessage(FileHeaderReport value)

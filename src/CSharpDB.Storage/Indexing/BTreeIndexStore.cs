@@ -3,7 +3,7 @@ namespace CSharpDB.Storage.Indexing;
 /// <summary>
 /// IIndexStore adapter backed by BTree.
 /// </summary>
-public sealed class BTreeIndexStore : IIndexStore
+public sealed class BTreeIndexStore : IIndexStore, IReclaimableIndexStore
 {
     private readonly BTree _tree;
 
@@ -34,6 +34,8 @@ public sealed class BTreeIndexStore : IIndexStore
 
         return cursor;
     }
+
+    public ValueTask ReclaimAsync(CancellationToken ct = default) => _tree.ReclaimAsync(ct);
 
     private static bool TryNormalizeRange(
         IndexScanRange range,

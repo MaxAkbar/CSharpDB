@@ -247,6 +247,15 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<Empty> Checkpoint(Empty request, ServerCallContext context)
         => ExecuteEmptyAsync(context, ct => client.CheckpointAsync(ct));
 
+    public override Task<DatabaseMaintenanceReportMessage> GetMaintenanceReport(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.GetMaintenanceReportAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ReindexResultMessage> Reindex(ReindexRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.ReindexAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<VacuumResultMessage> Vacuum(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.VacuumAsync(ct), GrpcModelMapper.ToMessage);
+
     public override Task<DatabaseInspectReportMessage> InspectStorage(InspectStorageRequest request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.InspectStorageAsync(NullIfEmpty(request.DatabasePath), request.IncludePages, ct), GrpcModelMapper.ToMessage);
 

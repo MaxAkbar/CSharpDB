@@ -59,6 +59,9 @@ public sealed class SchemaCatalog
     public ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default) =>
         _service.CreateTableAsync(schema, ct);
 
+    public ValueTask CreateTableExactAsync(TableSchema schema, CancellationToken ct = default) =>
+        _service.CreateTableExactAsync(schema, ct);
+
     public ValueTask DropTableAsync(string tableName, CancellationToken ct = default) =>
         _service.DropTableAsync(tableName, ct);
 

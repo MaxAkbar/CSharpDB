@@ -484,6 +484,67 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             BodySql = trigger.BodySql,
         };
 
+    private static CSharpDB.Client.Models.DatabaseMaintenanceReport MapMaintenanceReport(CSharpDB.Engine.DatabaseMaintenanceReport report)
+        => new()
+        {
+            SchemaVersion = report.SchemaVersion,
+            DatabasePath = report.DatabasePath,
+            SpaceUsage = new SpaceUsageReport
+            {
+                DatabaseFileBytes = report.SpaceUsage.DatabaseFileBytes,
+                WalFileBytes = report.SpaceUsage.WalFileBytes,
+                PageSizeBytes = report.SpaceUsage.PageSizeBytes,
+                PhysicalPageCount = report.SpaceUsage.PhysicalPageCount,
+                DeclaredPageCount = report.SpaceUsage.DeclaredPageCount,
+                FreelistPageCount = report.SpaceUsage.FreelistPageCount,
+                FreelistBytes = report.SpaceUsage.FreelistBytes,
+            },
+            Fragmentation = new FragmentationReport
+            {
+                BTreeFreeBytes = report.Fragmentation.BTreeFreeBytes,
+                PagesWithFreeSpace = report.Fragmentation.PagesWithFreeSpace,
+                TailFreelistPageCount = report.Fragmentation.TailFreelistPageCount,
+                TailFreelistBytes = report.Fragmentation.TailFreelistBytes,
+            },
+            PageTypeHistogram = new Dictionary<string, int>(report.PageTypeHistogram, StringComparer.OrdinalIgnoreCase),
+        };
+
+    private static DatabaseReindexRequest MapReindexRequest(ReindexRequest request)
+        => new()
+        {
+            Scope = request.Scope switch
+            {
+                ReindexScope.All => DatabaseReindexScope.All,
+                ReindexScope.Table => DatabaseReindexScope.Table,
+                ReindexScope.Index => DatabaseReindexScope.Index,
+                _ => throw new ArgumentOutOfRangeException(nameof(request.Scope), request.Scope, null),
+            },
+            Name = request.Name,
+        };
+
+    private static ReindexResult MapReindexResult(DatabaseReindexResult result)
+        => new()
+        {
+            Scope = result.Scope switch
+            {
+                DatabaseReindexScope.All => ReindexScope.All,
+                DatabaseReindexScope.Table => ReindexScope.Table,
+                DatabaseReindexScope.Index => ReindexScope.Index,
+                _ => throw new ArgumentOutOfRangeException(nameof(result.Scope), result.Scope, null),
+            },
+            Name = result.Name,
+            RebuiltIndexCount = result.RebuiltIndexCount,
+        };
+
+    private static VacuumResult MapVacuumResult(DatabaseVacuumResult result)
+        => new()
+        {
+            DatabaseFileBytesBefore = result.DatabaseFileBytesBefore,
+            DatabaseFileBytesAfter = result.DatabaseFileBytesAfter,
+            PhysicalPageCountBefore = result.PhysicalPageCountBefore,
+            PhysicalPageCountAfter = result.PhysicalPageCountAfter,
+        };
+
     private static async Task<SqlExecutionResult> ExecuteQueryAsync(Database db, string sql, CancellationToken ct)
     {
         await using var result = await db.ExecuteAsync(sql, ct);

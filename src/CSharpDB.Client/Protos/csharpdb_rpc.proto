@@ -73,6 +73,9 @@ service CSharpDbRpc {
   rpc DeleteDocument (DeleteDocumentRequest) returns (google.protobuf.BoolValue);
 
   rpc Checkpoint (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetMaintenanceReport (google.protobuf.Empty) returns (DatabaseMaintenanceReportMessage);
+  rpc Reindex (ReindexRequestMessage) returns (ReindexResultMessage);
+  rpc Vacuum (google.protobuf.Empty) returns (VacuumResultMessage);
   rpc InspectStorage (InspectStorageRequest) returns (DatabaseInspectReportMessage);
   rpc CheckWal (CheckWalRequest) returns (WalInspectReportMessage);
   rpc InspectPage (InspectPageRequest) returns (PageInspectReportMessage);
@@ -105,6 +108,13 @@ enum InspectSeverityEnum {
   INSPECT_SEVERITY_INFO = 1;
   INSPECT_SEVERITY_WARNING = 2;
   INSPECT_SEVERITY_ERROR = 3;
+}
+
+enum ReindexScopeEnum {
+  REINDEX_SCOPE_ENUM_UNSPECIFIED = 0;
+  REINDEX_SCOPE_ALL = 1;
+  REINDEX_SCOPE_TABLE = 2;
+  REINDEX_SCOPE_INDEX = 3;
 }
 
 message VariantValue {
@@ -323,6 +333,11 @@ message CheckIndexesRequest {
   google.protobuf.Int32Value sample_size = 3;
 }
 
+message ReindexRequestMessage {
+  ReindexScopeEnum scope = 1;
+  google.protobuf.StringValue name = 2;
+}
+
 message ColumnDefinitionMessage {
   string name = 1;
   DbTypeEnum type = 2;
@@ -503,6 +518,44 @@ message CollectionBrowseResultMessage {
 
 message OptionalVariantValueResponse {
   VariantValue value = 1;
+}
+
+message SpaceUsageReportMessage {
+  int64 database_file_bytes = 1;
+  int64 wal_file_bytes = 2;
+  int32 page_size_bytes = 3;
+  int32 physical_page_count = 4;
+  uint32 declared_page_count = 5;
+  int32 freelist_page_count = 6;
+  int64 freelist_bytes = 7;
+}
+
+message FragmentationReportMessage {
+  int64 btree_free_bytes = 1;
+  int32 pages_with_free_space = 2;
+  int32 tail_freelist_page_count = 3;
+  int64 tail_freelist_bytes = 4;
+}
+
+message DatabaseMaintenanceReportMessage {
+  string schema_version = 1;
+  string database_path = 2;
+  SpaceUsageReportMessage space_usage = 3;
+  FragmentationReportMessage fragmentation = 4;
+  map<string, int32> page_type_histogram = 5;
+}
+
+message ReindexResultMessage {
+  ReindexScopeEnum scope = 1;
+  google.protobuf.StringValue name = 2;
+  int32 rebuilt_index_count = 3;
+}
+
+message VacuumResultMessage {
+  int64 database_file_bytes_before = 1;
+  int64 database_file_bytes_after = 2;
+  int32 physical_page_count_before = 3;
+  int32 physical_page_count_after = 4;
 }
 
 message FileHeaderReportMessage {

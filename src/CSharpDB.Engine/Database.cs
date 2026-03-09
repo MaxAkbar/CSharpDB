@@ -30,6 +30,8 @@ public sealed class Database : IAsyncDisposable
         set => _planner.PreferSyncPointLookups = value;
     }
 
+    public int ActiveReaderCount => _pager.ActiveReaderCount;
+
     private Database(
         Pager pager,
         SchemaCatalog catalog,

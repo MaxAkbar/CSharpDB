@@ -1,3 +1,4 @@
+@using CSharpDB.Client.Models
 @using CSharpDB.Storage.Diagnostics
 @inject ICSharpDbClient DbClient
 @inject ToastService Toast
@@ -70,6 +71,94 @@
                     }
                 </section>
             </div>
+
+            <div class="storage-grid">
+                <section class="storage-card">
+                    <h3>Space Usage</h3>
+                    @if (_maintenanceReport is not null)
+                    {
+                        <table class="schema-table">
+                            <tbody>
+                                <tr><th>Database File</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.DatabaseFileBytes) (@_maintenanceReport.SpaceUsage.DatabaseFileBytes bytes)</td></tr>
+                                <tr><th>WAL File</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.WalFileBytes) (@_maintenanceReport.SpaceUsage.WalFileBytes bytes)</td></tr>
+                                <tr><th>Page Size</th><td>@_maintenanceReport.SpaceUsage.PageSizeBytes bytes</td></tr>
+                                <tr><th>Physical Pages</th><td>@_maintenanceReport.SpaceUsage.PhysicalPageCount</td></tr>
+                                <tr><th>Declared Pages</th><td>@_maintenanceReport.SpaceUsage.DeclaredPageCount</td></tr>
+                                <tr><th>Freelist Pages</th><td>@_maintenanceReport.SpaceUsage.FreelistPageCount</td></tr>
+                                <tr><th>Freelist Bytes</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.FreelistBytes) (@_maintenanceReport.SpaceUsage.FreelistBytes bytes)</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                </section>
+
+                <section class="storage-card">
+                    <h3>Fragmentation</h3>
+                    @if (_maintenanceReport is not null)
+                    {
+                        <table class="schema-table">
+                            <tbody>
+                                <tr><th>B+tree Free Bytes</th><td>@FormatBytes(_maintenanceReport.Fragmentation.BTreeFreeBytes) (@_maintenanceReport.Fragmentation.BTreeFreeBytes bytes)</td></tr>
+                                <tr><th>Pages With Free Space</th><td>@_maintenanceReport.Fragmentation.PagesWithFreeSpace</td></tr>
+                                <tr><th>Tail Freelist Pages</th><td>@_maintenanceReport.Fragmentation.TailFreelistPageCount</td></tr>
+                                <tr><th>Tail Freelist Bytes</th><td>@FormatBytes(_maintenanceReport.Fragmentation.TailFreelistBytes) (@_maintenanceReport.Fragmentation.TailFreelistBytes bytes)</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                </section>
+            </div>
+
+            <section class="storage-card">
+                <h3>Maintenance</h3>
+                <div class="storage-subsection">
+                    <div class="toolbar">
+                        <label class="storage-check">
+                            Reindex Scope
+                            <select class="storage-input mono" value="@_reindexScope" @onchange="HandleReindexScopeChanged" disabled="@_maintenanceBusy">
+                                <option value="@ReindexScope.All">All</option>
+                                <option value="@ReindexScope.Table">Table</option>
+                                <option value="@ReindexScope.Index">Index</option>
+                            </select>
+                        </label>
+
+                        @if (_reindexScope == ReindexScope.Table)
+                        {
+                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@_maintenanceBusy">
+                                @foreach (var tableName in _availableTables)
+                                {
+                                    <option value="@tableName">@tableName</option>
+                                }
+                            </select>
+                        }
+                        else if (_reindexScope == ReindexScope.Index)
+                        {
+                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@_maintenanceBusy">
+                                @foreach (var indexName in _availableIndexes)
+                                {
+                                    <option value="@indexName">@indexName</option>
+                                }
+                            </select>
+                        }
+
+                        <button class="toolbar-btn" @onclick="RunReindexAsync" disabled="@_maintenanceBusy">
+                            <i class="bi bi-arrow-repeat"></i> Reindex
+                        </button>
+
+                        <label class="storage-check">
+                            <input type="checkbox" @bind="_vacuumConfirmArmed" disabled="@_maintenanceBusy" />
+                            Confirm full vacuum rewrite
+                        </label>
+
+                        <button class="toolbar-btn" @onclick="RunVacuumAsync" disabled="@(_maintenanceBusy || !_vacuumConfirmArmed)">
+                            <i class="bi bi-bounding-box-circles"></i> Vacuum
+                        </button>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_maintenanceStatus))
+                    {
+                        <p class="schema-empty">@_maintenanceStatus</p>
+                    }
+                </div>
+            </section>
 
             <section class="storage-card">
                 <h3>Page Type Histogram</h3>
@@ -227,14 +316,22 @@
 
 @code {
     private DatabaseInspectReport? _dbReport;
+    private DatabaseMaintenanceReport? _maintenanceReport;
     private WalInspectReport? _walReport;
     private IndexInspectReport? _indexReport;
     private PageInspectReport? _pageReport;
 
     private bool _loading;
     private bool _loadingPage;
+    private bool _maintenanceBusy;
     private string _pageIdText = "0";
     private bool _includeHex;
+    private ReindexScope _reindexScope = ReindexScope.All;
+    private string? _reindexName;
+    private bool _vacuumConfirmArmed;
+    private string? _maintenanceStatus;
+    private IReadOnlyList<string> _availableTables = [];
+    private IReadOnlyList<string> _availableIndexes = [];
 
     private readonly List<IntegrityIssue> _combinedIssues = new();
 
@@ -249,8 +346,15 @@
         try
         {
             _dbReport = await DbClient.InspectStorageAsync(includePages: false);
+            _maintenanceReport = await DbClient.GetMaintenanceReportAsync();
             _walReport = await DbClient.CheckWalAsync();
             _indexReport = await DbClient.CheckIndexesAsync();
+            _availableTables = await DbClient.GetTableNamesAsync();
+            _availableIndexes = (await DbClient.GetIndexesAsync())
+                .Select(index => index.IndexName)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            EnsureReindexSelection();
             RebuildIssueList();
         }
         catch (Exception ex)
@@ -260,6 +364,55 @@
         finally
         {
             _loading = false;
+        }
+    }
+
+    private async Task RunReindexAsync()
+    {
+        _maintenanceBusy = true;
+        _maintenanceStatus = null;
+        try
+        {
+            var request = new ReindexRequest
+            {
+                Scope = _reindexScope,
+                Name = _reindexScope == ReindexScope.All ? null : _reindexName,
+            };
+
+            var result = await DbClient.ReindexAsync(request);
+            _maintenanceStatus = $"Reindexed {result.RebuiltIndexCount} index(es).";
+            Toast.Success(_maintenanceStatus);
+            await RefreshAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Reindex failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task RunVacuumAsync()
+    {
+        _maintenanceBusy = true;
+        _maintenanceStatus = null;
+        try
+        {
+            var result = await DbClient.VacuumAsync();
+            _maintenanceStatus = $"Vacuum complete: {result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter} bytes.";
+            _vacuumConfirmArmed = false;
+            Toast.Success(_maintenanceStatus);
+            await RefreshAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Vacuum failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
         }
     }
 
@@ -306,6 +459,45 @@
 
     private static string BoolText(bool value) => value ? "Yes" : "No";
     private static string BoolLabel(bool value) => value ? "ok" : "bad";
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value:0.##} {units[unit]}";
+    }
+
+    private void HandleReindexScopeChanged(ChangeEventArgs args)
+    {
+        if (Enum.TryParse<ReindexScope>(args.Value?.ToString(), ignoreCase: true, out var scope))
+            _reindexScope = scope;
+
+        EnsureReindexSelection();
+    }
+
+    private void HandleReindexNameChanged(ChangeEventArgs args)
+    {
+        _reindexName = args.Value?.ToString();
+    }
+
+    private void EnsureReindexSelection()
+    {
+        _reindexName = _reindexScope switch
+        {
+            ReindexScope.Table when string.IsNullOrWhiteSpace(_reindexName) || !_availableTables.Contains(_reindexName, StringComparer.OrdinalIgnoreCase)
+                => _availableTables.FirstOrDefault(),
+            ReindexScope.Index when string.IsNullOrWhiteSpace(_reindexName) || !_availableIndexes.Contains(_reindexName, StringComparer.OrdinalIgnoreCase)
+                => _availableIndexes.FirstOrDefault(),
+            ReindexScope.All => null,
+            _ => _reindexName,
+        };
+    }
 
     private static string SeverityClass(InspectSeverity severity) => severity switch
     {

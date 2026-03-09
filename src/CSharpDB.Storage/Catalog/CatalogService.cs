@@ -275,13 +275,22 @@ internal sealed class CatalogService
     }
 
     public async ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default)
+        => await CreateTableCoreAsync(schema, normalizeNewSchema: true, ct);
+
+    public async ValueTask CreateTableExactAsync(TableSchema schema, CancellationToken ct = default)
+        => await CreateTableCoreAsync(schema, normalizeNewSchema: false, ct);
+
+    private async ValueTask CreateTableCoreAsync(
+        TableSchema schema,
+        bool normalizeNewSchema,
+        CancellationToken ct)
     {
         if (_cache.ContainsKey(schema.TableName))
             throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{schema.TableName}' already exists.");
 
         await EnsureCatalogTreeAsync(ct);
 
-        var storedSchema = NormalizeNewTableSchema(schema);
+        var storedSchema = normalizeNewSchema ? NormalizeNewTableSchema(schema) : schema;
 
         // Create a new B+tree for the table's data
         uint tableRootPage = await BTree.CreateNewAsync(_pager, ct);
@@ -306,6 +315,10 @@ internal sealed class CatalogService
         if (!_cache.ContainsKey(tableName))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
 
+        uint tableRootPage = _tableTrees.TryGetValue(tableName, out var existingTree)
+            ? existingTree.RootPageId
+            : _tableRootPages[tableName];
+
         // Also drop all indexes on this table
         var indexesToDrop = GetIndexesForTable(tableName);
         foreach (var idx in indexesToDrop)
@@ -313,6 +326,7 @@ internal sealed class CatalogService
 
         long key = _schemaSerializer.TableNameToKey(tableName);
         await _catalogTree!.DeleteAsync(key, ct);
+        await new BTree(_pager, tableRootPage).ReclaimAsync(ct);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
 
         _cache.Remove(tableName);
@@ -476,8 +490,13 @@ internal sealed class CatalogService
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
 
+        if (!_indexStores.TryGetValue(indexName, out var store))
+            store = _indexProvider.CreateIndexStore(_pager, _indexRootPages[indexName]);
+
         long key = _schemaSerializer.IndexNameToKey(indexName);
         await _indexCatalogTree!.DeleteAsync(key, ct);
+        if (store is IReclaimableIndexStore reclaimable)
+            await reclaimable.ReclaimAsync(ct);
 
         _indexCache.Remove(indexName);
         _indexRootPages.Remove(indexName);

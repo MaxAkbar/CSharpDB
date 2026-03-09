@@ -72,6 +72,7 @@ api.MapProcedureEndpoints();
 api.MapSqlEndpoints();
 api.MapSchemaEndpoints();
 api.MapInspectEndpoints();
+api.MapMaintenanceEndpoints();
 
 app.Run();
 

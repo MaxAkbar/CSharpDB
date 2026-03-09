@@ -433,61 +433,12 @@ public sealed class QueryPlanner
         };
 
         await _catalog.CreateIndexAsync(indexSchema, ct);
-
-        // Populate the index from existing rows
-        var tableTree = _catalog.GetTableTree(stmt.TableName);
-        var indexStore = _catalog.GetIndexStore(stmt.IndexName);
-        var scan = new TableScanOperator(
-            tableTree,
+        await IndexMaintenanceHelper.BackfillIndexAsync(
+            _catalog,
             tableSchema,
+            indexSchema,
             GetReadSerializer(tableSchema),
-            TryGetCachedTreeRowCountCapacityHint(tableTree));
-        await scan.OpenAsync(ct);
-        bool usesDirectIntegerKey =
-            indexColumnIndices.Length == 1 &&
-            tableSchema.Columns[indexColumnIndices[0]].Type == DbType.Integer;
-
-        while (await scan.MoveNextAsync(ct))
-        {
-            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
-                continue; // Don't index entries that include NULL.
-
-            if (stmt.IsUnique)
-            {
-                if (usesDirectIntegerKey)
-                {
-                    // Single-column unique index: key is exact integer value.
-                    var existing = await indexStore.FindAsync(indexKey, ct);
-                    if (existing != null)
-                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                            $"Duplicate key value in unique index '{stmt.IndexName}'.");
-
-                    var payload = new byte[8];
-                    BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
-                    await indexStore.InsertAsync(indexKey, payload, ct);
-                }
-                else
-                {
-                    // Hashed index keys are collision-prone; verify uniqueness by comparing
-                    // the actual indexed column values for rows in the hash bucket.
-                    await EnsureHashedUniqueConstraintAsync(
-                        indexStore,
-                        tableTree,
-                        tableSchema,
-                        indexColumnIndices,
-                        keyComponents!,
-                        indexKey,
-                        stmt.IndexName,
-                        ct);
-
-                    await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
-                }
-            }
-            else
-            {
-                await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
-            }
-        }
+            ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
