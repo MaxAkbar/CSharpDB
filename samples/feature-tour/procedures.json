@@ -1,0 +1,89 @@
+[
+  {
+    "name": "GetCustomerOperationsSnapshot",
+    "bodySql": "SELECT id, name, segment, region, account_manager, annual_value\nFROM customers\nWHERE id = @customerId;\nSELECT ticket_id, site_code, priority, ticket_status, work_order_status, technician_name, severity_score\nFROM ticket_command_center\nWHERE customer_id = @customerId\nORDER BY severity_score DESC, ticket_id;\nSELECT invoice_id, contract_code, invoice_status, total, due_date\nFROM billing_snapshot\nWHERE customer_id = @customerId\nORDER BY invoice_date DESC;",
+    "parameters": [
+      {
+        "name": "customerId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Customer identifier."
+      }
+    ],
+    "description": "Returns the customer record, current dispatch board rows, and invoice snapshot for one account.",
+    "isEnabled": true
+  },
+  {
+    "name": "DispatchWorkOrder",
+    "bodySql": "UPDATE work_orders\nSET technician_id = @technicianId,\n    scheduled_date = @scheduledDate,\n    status = @newStatus\nWHERE id = @workOrderId;\nSELECT customer_name, site_code, ticket_id, work_order_id, work_order_status, technician_name, scheduled_date, severity_score\nFROM ticket_command_center\nWHERE work_order_id = @workOrderId;\nSELECT work_order_id, old_status, new_status, changed_date\nFROM work_order_status_history\nWHERE work_order_id = @workOrderId\nORDER BY id DESC\nLIMIT 5;",
+    "parameters": [
+      {
+        "name": "workOrderId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Work order identifier."
+      },
+      {
+        "name": "technicianId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Assigned technician."
+      },
+      {
+        "name": "scheduledDate",
+        "type": "TEXT",
+        "required": true,
+        "description": "Scheduled date (YYYY-MM-DD)."
+      },
+      {
+        "name": "newStatus",
+        "type": "TEXT",
+        "required": false,
+        "default": "scheduled",
+        "description": "Work order lifecycle status."
+      }
+    ],
+    "description": "Assigns or reschedules a work order, then returns the board row plus recent status history.",
+    "isEnabled": true
+  },
+  {
+    "name": "ReceiveInventory",
+    "bodySql": "INSERT INTO inventory_movements (warehouse_id, part_id, movement_type, quantity, moved_date, reference_code)\nVALUES (@warehouseId, @partId, 'receipt', @quantity, @movedDate, @referenceCode);\nSELECT warehouse_code, part_id, sku, part_name, on_hand_qty, reorder_point\nFROM inventory_position\nWHERE warehouse_id = @warehouseId AND part_id = @partId;",
+    "parameters": [
+      {
+        "name": "warehouseId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Warehouse identifier."
+      },
+      {
+        "name": "partId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Part identifier."
+      },
+      {
+        "name": "quantity",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Received quantity."
+      },
+      {
+        "name": "movedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-03-10",
+        "description": "Receipt date (YYYY-MM-DD)."
+      },
+      {
+        "name": "referenceCode",
+        "type": "TEXT",
+        "required": false,
+        "default": "PO-NEW",
+        "description": "Purchase order or receiving reference."
+      }
+    ],
+    "description": "Records an inbound inventory receipt and returns the updated on-hand position.",
+    "isEnabled": true
+  }
+]

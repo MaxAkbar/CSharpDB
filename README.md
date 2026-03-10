@@ -27,7 +27,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
+| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, GROUP BY, HAVING, CTEs, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
@@ -36,7 +36,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
 | **gRPC Daemon** | `CSharpDB.Daemon` - dedicated gRPC host for remote `CSharpDB.Client` access |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
-| **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
+| **Admin UI** | Blazor Server dashboard for table/view browsing, schema editing, procedures, saved queries, and storage inspection |
 | **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode, remote connectivity |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
@@ -340,6 +340,8 @@ CSharpDB.slnx
 | **CTEs** | `WITH name AS (select) SELECT ...` |
 | **JOINs** | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` |
 | **Aggregates** | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX` |
+| **Scalar Functions** | `TEXT(expr)` |
+| **Modifiers** | `SELECT DISTINCT` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
 | **Expressions** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
@@ -386,13 +388,20 @@ Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. Full results in [tests/C
 
 ## Samples
 
-The [`samples/`](samples/) directory contains ready-to-run SQL scripts for three realistic scenarios:
+The [`samples/`](samples/) directory now includes both realistic datasets and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
 
-- **[ecommerce-store.sql](samples/ecommerce-store.sql)** — Northwind Electronics (customers, products, orders, reviews)
-- **[medical-clinic.sql](samples/medical-clinic.sql)** — Riverside Health Center (patients, doctors, appointments, billing)
-- **[school-district.sql](samples/school-district.sql)** — Maplewood School District (students, courses, enrollments, attendance)
+- **[ecommerce-store/schema.sql](samples/ecommerce-store/schema.sql)** — retail schema with procedures, views, and inventory-style triggers
+- **[medical-clinic/schema.sql](samples/medical-clinic/schema.sql)** — appointments, billing, and procedure-driven updates
+- **[school-district/schema.sql](samples/school-district/schema.sql)** — schedules, enrollments, attendance, and defaulted procedure params
+- **[feature-tour/schema.sql](samples/feature-tour/schema.sql)** — Northstar Field Services, a fictitious multi-region field service company with customer sites, contracts, dispatch, inventory, billing workflows, triggers, procedures, and `TEXT(...)` filtering
 
-Each script creates 7 tables with sample data, indexes, views, and triggers. See the [samples README](samples/README.md) for execution instructions.
+Companion assets:
+
+- Per-sample `procedures.json` files for procedure catalog import
+- **[feature-tour/queries.sql](samples/feature-tour/queries.sql)** for ready-to-run workbook queries
+- **[run-sample.csx](samples/run-sample.csx)** for REST API import of SQL + procedures
+
+See the [samples README](samples/README.md) for loading options through the API, CLI, and `CSharpDB.Client`.
 
 ## Roadmap
 

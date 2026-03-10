@@ -1,124 +1,130 @@
-# Sample Datasets
+# Samples
 
-This folder contains SQL scripts that create realistic database schemas with sample data. Each script generates tables, indexes, views, and triggers for a specific business domain.
+This folder contains realistic datasets plus a full-fidelity fictitious company example for the current CSharpDB surface area. Each sample now lives in its own folder with a conventional layout: `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries.
 
-For API workflows, each SQL sample also has a companion `*.procedures.json` file that defines table-backed stored procedures for `/api/procedures`.
+Each sample folder also includes a small `README.md` with domain notes, key features, and suggested starting points.
 
 ## Available Samples
 
-### Northwind Electronics — `ecommerce-store.sql`
+| Sample Folder | Focus | Includes |
+|---------------|-------|----------|
+| `ecommerce-store/` | Online retail | `schema.sql`, `procedures.json` |
+| `medical-clinic/` | Healthcare scheduling + billing | `schema.sql`, `procedures.json` |
+| `school-district/` | Education + attendance | `schema.sql`, `procedures.json` |
+| `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 
-An online electronics retailer with customers, product categories, orders, reviews, and shipping addresses.
+Root-level helpers:
 
-| Tables | Indexes | Views | Triggers | Statements | Procedures |
-|--------|---------|-------|----------|------------|------------|
-| 7 | 4 | 2 | 1 | 84 | 2 |
+- `run-sample.csx`: import helper for SQL + procedures through the REST API
+- `mcp.json`: example MCP configuration for pointing assistants at a sample-backed database
 
-**Tables:** `customers`, `categories`, `products`, `orders`, `order_items`, `reviews`, `shipping_addresses`
-**Views:** `order_summary`, `product_catalog`
-**Trigger:** `trg_update_stock` — automatically decrements product stock on order item insert
-**Procedure file:** `ecommerce-store.procedures.json`
-**Procedures:** `GetCustomerOrderHistory`, `AdjustProductStock`
+## Sample Highlights
 
----
+### Northwind Electronics
 
-### Riverside Health Center — `medical-clinic.sql`
+- SQL: [schema.sql](ecommerce-store/schema.sql)
+- Procedures: [procedures.json](ecommerce-store/procedures.json)
+- Domain: customers, products, orders, reviews, and shipping addresses
+- Good for: joins, inventory-style triggers, order rollups
 
-A medical clinic with departments, doctors, patients, appointments, prescriptions, medical records, and billing.
+### Riverside Health Center
 
-| Tables | Indexes | Views | Triggers | Statements | Procedures |
-|--------|---------|-------|----------|------------|------------|
-| 7 | 4 | 2 | 1 | 75 | 2 |
+- SQL: [schema.sql](medical-clinic/schema.sql)
+- Procedures: [procedures.json](medical-clinic/procedures.json)
+- Domain: departments, doctors, patients, appointments, prescriptions, and billing
+- Good for: views over operational data and procedure-driven updates
 
-**Tables:** `departments`, `doctors`, `patients`, `appointments`, `prescriptions`, `medical_records`, `billing`
-**Views:** `upcoming_appointments`, `outstanding_bills`
-**Trigger:** `trg_record_after_appointment` — automatically creates a medical record when an appointment is completed
-**Procedure file:** `medical-clinic.procedures.json`
-**Procedures:** `GetPatientOutstandingBills`, `MarkBillPaid`
+### Maplewood Unified School District
 
----
+- SQL: [schema.sql](school-district/schema.sql)
+- Procedures: [procedures.json](school-district/procedures.json)
+- Domain: teachers, students, courses, schedules, enrollments, and attendance
+- Good for: joins, defaulted procedure parameters, trigger-generated child rows
 
-### Maplewood Unified School District — `school-district.sql`
+### Northstar Field Services
 
-A school district with teachers, students, courses, enrollments, classrooms, scheduling, and attendance tracking.
-
-| Tables | Indexes | Views | Triggers | Statements | Procedures |
-|--------|---------|-------|----------|------------|------------|
-| 7 | 4 | 2 | 1 | 116 | 2 |
-
-**Tables:** `teachers`, `students`, `courses`, `enrollments`, `classrooms`, `course_schedule`, `attendance`
-**Views:** `class_roster`, `teacher_schedule`
-**Trigger:** `trg_enrollment_attendance` — automatically creates attendance records when a student enrolls
-**Procedure file:** `school-district.procedures.json`
-**Procedures:** `GetStudentCourses`, `RecordAttendance`
-
----
+- SQL: [schema.sql](feature-tour/schema.sql)
+- Procedures: [procedures.json](feature-tour/procedures.json)
+- Queries: [queries.sql](feature-tour/queries.sql)
+- Domain: multi-region field service operations for grocery, logistics, healthcare, and campus customers
+- Good for: customer/site hierarchies, contract coverage, dispatch workflows, inventory positions, billing snapshots, procedure execution, system catalog inspection, and `TEXT(...)` search over numeric IDs
 
 ## Running a Sample
 
-### Option 1: Via the REST API
+### Option 1: Import through the REST API
 
-Start the API server, then use the script runner:
+Start the API, then import the sample SQL and its companion procedures:
 
 ```bash
 # 1. Start the API
 dotnet run --project src/CSharpDB.Api
 
-# 2. Run a sample (requires dotnet-script: dotnet tool install -g dotnet-script)
-dotnet script samples/run-sample.csx -- samples/ecommerce-store.sql
+# 2. Import schema/data + procedures
+# Requires dotnet-script: dotnet tool install -g dotnet-script
+dotnet script samples/run-sample.csx -- samples/ecommerce-store
 ```
 
-The script expects the API at `http://localhost:61818` by default and also imports the companion procedure file (`samples/ecommerce-store.procedures.json`) using create-or-update behavior.
+The runner targets `http://localhost:61818` by default. Point it at either a sample folder or a specific `schema.sql` file, and it will import the matching `procedures.json` file using create-or-update behavior.
 
-Override API URL:
+Override the API URL:
 
 ```bash
-CSHARPDB_API_BASEURL=http://localhost:5000 dotnet script samples/run-sample.csx -- samples/ecommerce-store.sql
+CSHARPDB_API_BASEURL=http://localhost:5000 dotnet script samples/run-sample.csx -- samples/feature-tour
 ```
 
-Override procedure file:
+Override the procedure file explicitly:
 
 ```bash
-dotnet script samples/run-sample.csx -- samples/ecommerce-store.sql samples/ecommerce-store.procedures.json
+dotnet script samples/run-sample.csx -- samples/feature-tour/schema.sql samples/feature-tour/procedures.json
 ```
 
-### Option 2: Via the CLI
+### Option 2: Load through the CLI
 
 ```bash
-dotnet run --project src/CSharpDB.Cli -- mydata.db
+dotnet run --project src/CSharpDB.Cli -- sample.db
 
-csdb> .read samples/ecommerce-store.sql
+csdb> .read samples/feature-tour/schema.sql
+csdb> .read samples/feature-tour/queries.sql
 ```
 
-This loads schema/data only. Procedure catalogs are loaded through the API runner above.
+This path is ideal for browsing the schema, running the workbook queries, and exploring the system catalogs. Procedure catalogs are still imported through the API/admin workflow.
 
-### Option 3: Via C# code
+### Option 3: Load through `CSharpDB.Client`
+
+Use the current recommended client API plus the built-in SQL script splitter:
 
 ```csharp
-using CSharpDB.Engine;
+using CSharpDB.Client;
+using CSharpDB.Sql;
 
-await using var db = await Database.OpenAsync("sample.db");
-var sql = File.ReadAllText("samples/ecommerce-store.sql");
-
-// Split and execute each statement
-foreach (var stmt in sql.Split(';', StringSplitOptions.RemoveEmptyEntries))
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
 {
-    var trimmed = stmt.Trim();
-    if (!string.IsNullOrEmpty(trimmed) && !trimmed.StartsWith("--"))
-        await db.ExecuteAsync(trimmed);
-}
+    DataSource = "sample.db",
+});
+
+var script = File.ReadAllText("samples/feature-tour/schema.sql");
+foreach (var statement in SqlScriptSplitter.SplitExecutableStatements(script))
+    await client.ExecuteSqlAsync(statement);
 ```
 
-> **Note:** For trigger blocks (`CREATE TRIGGER ... BEGIN ... END`), you need a statement splitter that respects `BEGIN...END` boundaries. The `run-sample.csx` script handles this automatically.
+You can then run workbook queries the same way:
+
+```csharp
+var workbook = File.ReadAllText("samples/feature-tour/queries.sql");
+foreach (var statement in SqlScriptSplitter.SplitExecutableStatements(workbook))
+    await client.ExecuteSqlAsync(statement);
+```
 
 ## Notes
 
-- Running the same sample twice against the same database will fail on `CREATE TABLE` statements since the scripts do not include cleanup. Delete the `.db` file or use a fresh database for a clean run.
-- Procedure imports are idempotent in the API runner (`POST` then `PUT` on conflict).
+- The SQL samples are setup scripts, not migrations. Re-running them against the same database will fail on existing objects.
+- The API importer is idempotent for procedures (`POST`, then `PUT` on conflict).
+- `feature-tour/queries.sql` is intentionally read-only. The `EXEC ...` examples in that file are commented so you can copy them into the Admin Query tab as needed.
 - The API uses `Data Source=csharpdb.db` by default (`src/CSharpDB.Api/appsettings.json`).
 
 ## See Also
 
-- [Getting Started Tutorial](../docs/getting-started.md) — Learn the CSharpDB API step by step
-- [REST API Reference](../docs/rest-api.md) — Full endpoint documentation
-- [CLI Reference](../docs/cli.md) — Interactive REPL commands
+- [Getting Started Tutorial](../docs/getting-started.md)
+- [CSharpDB.Client README](../src/CSharpDB.Client/README.md)
+- [REST API Reference](../docs/rest-api.md)
+- [CLI Reference](../docs/cli.md)

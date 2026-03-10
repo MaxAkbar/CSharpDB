@@ -184,7 +184,7 @@ csdb> SELECT * FROM users WHERE id = 10;
 ### File Execution
 
 ```
-csdb> .read samples/ecommerce-store.sql
+csdb> .read samples/ecommerce-store/schema.sql
 Executing 84 statements...
 84 succeeded, 0 failed.
 ```
