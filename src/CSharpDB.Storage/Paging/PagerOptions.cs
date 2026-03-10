@@ -17,6 +17,19 @@ public sealed class PagerOptions
         new FrameCountCheckpointPolicy(PageConstants.DefaultCheckpointThreshold);
 
     /// <summary>
+    /// Controls whether auto-checkpoints run inline with the triggering commit
+    /// or are scheduled to complete in the background.
+    /// </summary>
+    public AutoCheckpointExecutionMode AutoCheckpointExecutionMode { get; init; } =
+        AutoCheckpointExecutionMode.Foreground;
+
+    /// <summary>
+    /// Maximum number of pages copied during a single background auto-checkpoint step.
+    /// Ignored for foreground checkpoints, which always run to completion.
+    /// </summary>
+    public int AutoCheckpointMaxPagesPerStep { get; init; } = 64;
+
+    /// <summary>
     /// Optional maximum number of pages retained in cache.
     /// When null, cache behavior is unbounded.
     /// </summary>

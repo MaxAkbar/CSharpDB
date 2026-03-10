@@ -46,6 +46,9 @@ dotnet run -c Release -- --micro --filter *InMemory*
 # Stable macro snapshot (median-of-3, reproducible mode)
 dotnet run -c Release -- --macro --repeat 3 --repro
 
+# Durable write variance diagnostics
+dotnet run -c Release -- --write-diagnostics --repeat 3 --repro
+
 # In-memory rotating batch throughput
 dotnet run -c Release -- --macro-batch-memory
 
@@ -65,6 +68,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `ColdLookupBenchmarks`: file-backed vs in-memory point lookups under cache pressure
 - `CollectionIndexBenchmarks`: focused collection secondary-index lookup and indexed write-maintenance costs
 - `StorageTuningBenchmarks`: cache-size, index-provider, and reader-session matrix for file-backed indexed lookups
+- `DurableWriteDiagnosticsBenchmark`: file-backed single-row write diagnostics across frame-count and WAL-size checkpoint policies, including background sliced auto-checkpoint scheduling
 - `InMemoryBatchBenchmark`: rotating x100 batch throughput for in-memory SQL and collections
 - `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
 - `SharedMemoryAdoNetBenchmark`: named shared-memory reader/writer contention through the provider host layer
@@ -180,6 +184,15 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - `UseCachingBTreeIndexes` was neutral-to-negative on these lookup workloads. The worst regressions showed up on SQL reader-session paths, so it is not the recommended default tuning knob.
 - Reusing a `ReaderSession` matters more than cache sizing for repeated SQL reads. At `MaxCachedPages = 2048`, per-query reader sessions measured `202.66 us`, while a reused session measured `73.64 us`.
 - Recommended file-backed read-heavy preset: `builder.UseLookupOptimizedPreset()` and reuse a `ReaderSession` for bursts of related SQL reads.
+
+### File-Backed Durable Write Tuning Takeaways
+
+- In the March 10, 2026 `write-diagnostics` median-of-3 run after removing the retained-suffix WAL rescan, `FrameCount(4096)+Background(64 pages/step)` was the best measured write-heavy variant at `33.30K ops/sec`. `Background(256)` followed at `33.24K`, foreground `FrameCount(4096)` measured `33.13K`, and `WalSize(8 MiB)` measured `31.13K`.
+- Background auto-checkpointing still does not make checkpoints cheaper. It moves them off the triggering commit. In the same median run, foreground `FrameCount(4096)` had `246` commits that paid checkpoint cost, while the `64`-page and `256`-page background variants had `0`.
+- Smaller slices still reduce per-checkpoint task time but are no longer the throughput winner. At `16` pages/step, average checkpoint time fell to about `1.49 ms`, but throughput landed slightly lower at `32.99K ops/sec` because more background steps were required.
+- The non-checkpoint commit path is now much cleaner than the earlier checkpoint phase. The two changes that mattered were deferring DB flushes until checkpoint completion and rebuilding retained WAL index state from the copied bytes instead of rescanning the retained suffix after compaction.
+- Higher frame-count thresholds still help by making checkpoints less frequent, and background sliced scheduling helps by keeping almost all of that work off the write call that triggered it.
+- Recommended file-backed write-heavy preset: `builder.UseWriteOptimizedPreset()`. This is opt-in and does not change the engine default checkpoint policy.
 
 ## Competitor Comparison
 

@@ -172,6 +172,19 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesWriteOptimizedPreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+        var policy = Assert.IsType<FrameCountCheckpointPolicy>(options.StorageEngineOptions.PagerOptions.CheckpointPolicy);
+        Assert.Equal(4096, policy.Threshold);
+        Assert.Equal(
+            AutoCheckpointExecutionMode.Background,
+            options.StorageEngineOptions.PagerOptions.AutoCheckpointExecutionMode);
+    }
+
+    [Fact]
     public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndRangeScans()
     {
         var ct = TestContext.Current.CancellationToken;

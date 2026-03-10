@@ -23,10 +23,10 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     /// Create a new temporary database with optional pre-seeded rows in a default table.
     /// Default schema: bench(id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)
     /// </summary>
-    public static async Task<BenchmarkDatabase> CreateAsync(int? seedRowCount = null)
+    public static async Task<BenchmarkDatabase> CreateAsync(int? seedRowCount = null, DatabaseOptions? options = null)
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"csharpdb_bench_{Guid.NewGuid():N}.db");
-        var db = await Database.OpenAsync(filePath);
+        var db = await Database.OpenAsync(filePath, options ?? new DatabaseOptions());
 
         var bench = new BenchmarkDatabase(filePath, db);
 
@@ -44,10 +44,10 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     /// <summary>
     /// Create a new temporary database with a custom schema.
     /// </summary>
-    public static async Task<BenchmarkDatabase> CreateWithSchemaAsync(string createTableSql)
+    public static async Task<BenchmarkDatabase> CreateWithSchemaAsync(string createTableSql, DatabaseOptions? options = null)
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"csharpdb_bench_{Guid.NewGuid():N}.db");
-        var db = await Database.OpenAsync(filePath);
+        var db = await Database.OpenAsync(filePath, options ?? new DatabaseOptions());
         var bench = new BenchmarkDatabase(filePath, db);
         await db.ExecuteAsync(createTableSql);
         return bench;

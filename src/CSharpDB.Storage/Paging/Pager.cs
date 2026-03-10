@@ -246,6 +246,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot begin transactions on a read-only snapshot pager.");
+        await WaitForBackgroundCheckpointAsync(ct);
         await _transactions!.BeginAsync(_wal, _options.WriterLockTimeout, ct);
     }
 
@@ -375,12 +376,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _walIndex.FrameCount,
             CheckpointThreshold,
             EstimateCommittedWalBytes(_walIndex.FrameCount));
-        if (!shouldCheckpoint)
-            shouldCheckpoint = _checkpoints.TryConsumeDeferredCheckpointRequest();
-        else
-            _checkpoints.ClearDeferredCheckpointRequest();
-
         if (shouldCheckpoint)
+            _checkpoints.RequestDeferredCheckpoint();
+
+        if (_options.AutoCheckpointExecutionMode == AutoCheckpointExecutionMode.Background)
+        {
+            ScheduleBackgroundCheckpointIfNeeded();
+            return;
+        }
+
+        if (_checkpoints.HasPendingCheckpointRequest)
         {
             await CheckpointAsync(ct);
         }
@@ -469,6 +474,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot checkpoint on a read-only snapshot pager.");
 
+        await WaitForBackgroundCheckpointAsync(ct);
+
+        await RunCheckpointWithInterceptorsAsync(ct);
+        _checkpoints?.ClearDeferredCheckpointRequest();
+    }
+
+    private async ValueTask RunCheckpointWithInterceptorsAsync(CancellationToken ct)
+    {
+        if (_checkpoints is null || _checkpointAction is null)
+            return;
+
         int frameCount = _walIndex.FrameCount;
 
         if (_hasInterceptor)
@@ -477,7 +493,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             await _interceptor.OnCheckpointStartAsync(frameCount, ct);
             try
             {
-                await _checkpoints!.RunCheckpointAsync(frameCount, _checkpointAction!, ct);
+                await _checkpoints.RunCheckpointAsync(frameCount, _checkpointAction, ct);
                 checkpointSucceeded = true;
             }
             finally
@@ -487,21 +503,68 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         else
         {
-            await _checkpoints!.RunCheckpointAsync(frameCount, _checkpointAction!, ct);
+            await _checkpoints.RunCheckpointAsync(frameCount, _checkpointAction, ct);
         }
+    }
+
+    private async ValueTask RunBackgroundCheckpointStepWithInterceptorsAsync(CancellationToken ct)
+    {
+        if (_checkpoints is null)
+            return;
+
+        bool completed = false;
+        int frameCount = _walIndex.FrameCount;
+
+        if (_hasInterceptor)
+        {
+            bool checkpointSucceeded = false;
+            await _interceptor.OnCheckpointStartAsync(frameCount, ct);
+            try
+            {
+                await _checkpoints.RunCheckpointAsync(frameCount, RunCheckpointStepCoreAsync, ct);
+                checkpointSucceeded = true;
+            }
+            finally
+            {
+                await _interceptor.OnCheckpointEndAsync(frameCount, checkpointSucceeded, ct);
+            }
+        }
+        else
+        {
+            await _checkpoints.RunCheckpointAsync(frameCount, RunCheckpointStepCoreAsync, ct);
+        }
+
+        completed = !_wal.HasPendingCheckpoint;
+        if (completed)
+            _checkpoints.ClearDeferredCheckpointRequest();
     }
 
     private async ValueTask RunCheckpointCoreAsync(CancellationToken ct)
     {
-        if (_walIndex.FrameCount == 0)
+        if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
             return;
 
-        long requiredLength = (long)PageCount * PageConstants.PageSize;
-        if (_device.Length < requiredLength)
-            await _device.SetLengthAsync(requiredLength, ct);
-
         await _wal.CheckpointAsync(_device, PageCount, ct);
+        await RefreshStateAfterCheckpointCompletionAsync(ct);
+    }
 
+    private async ValueTask RunCheckpointStepCoreAsync(CancellationToken ct)
+    {
+        if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
+            return;
+
+        bool completed = await _wal.CheckpointStepAsync(
+            _device,
+            PageCount,
+            _options.AutoCheckpointMaxPagesPerStep,
+            ct);
+
+        if (completed)
+            await RefreshStateAfterCheckpointCompletionAsync(ct);
+    }
+
+    private async ValueTask RefreshStateAfterCheckpointCompletionAsync(CancellationToken ct)
+    {
         _buffers.ClearCache();
         if (_device.Length >= PageConstants.PageSize)
             await ReadFileHeaderAsync(ct);
@@ -525,7 +588,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public void ReleaseReaderSnapshot()
     {
-        _checkpoints?.ReleaseReaderSnapshot();
+        bool drained = _checkpoints?.ReleaseReaderSnapshot() == true;
+        if (drained)
+            ScheduleBackgroundCheckpointIfNeeded();
     }
 
     public async ValueTask DisposeAsync()
@@ -535,6 +600,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_transactions?.InTransaction == true)
             await RollbackAsync();
+
+        await WaitForBackgroundCheckpointAsync();
 
         // Final checkpoint before close
         if (_walIndex.FrameCount > 0)
@@ -564,6 +631,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             throw new InvalidOperationException("Cannot save while a transaction is active.");
         if (ActiveReaderCount > 0)
             throw new InvalidOperationException("Cannot save while reader snapshots are active.");
+
+        await WaitForBackgroundCheckpointAsync(ct);
 
         if (_walIndex.FrameCount > 0)
             await CheckpointAsync(ct);
@@ -630,9 +699,34 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_transactions?.InTransaction == true)
             RollbackAsync().AsTask().GetAwaiter().GetResult();
+        WaitForBackgroundCheckpointAsync().AsTask().GetAwaiter().GetResult();
         _device.Dispose();
         _checkpoints?.Dispose();
         _transactions?.Dispose();
+    }
+
+    private void ScheduleBackgroundCheckpointIfNeeded()
+    {
+        if (_isSnapshotReader ||
+            _checkpoints is null ||
+            _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background)
+        {
+            return;
+        }
+
+        _checkpoints.TryStartBackgroundCheckpoint(RunBackgroundCheckpointStepWithInterceptorsAsync);
+    }
+
+    private ValueTask WaitForBackgroundCheckpointAsync(CancellationToken ct = default)
+    {
+        if (_isSnapshotReader ||
+            _checkpoints is null ||
+            _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return _checkpoints.WaitForBackgroundCheckpointAsync(ct);
     }
 
     private static long EstimateCommittedWalBytes(int frameCount)
@@ -669,6 +763,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 nameof(options.MaxWalBytesWhenReadersActive),
                 options.MaxWalBytesWhenReadersActive,
                 "MaxWalBytesWhenReadersActive must be greater than zero when configured.");
+        }
+
+        if (options.AutoCheckpointMaxPagesPerStep <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.AutoCheckpointMaxPagesPerStep),
+                options.AutoCheckpointMaxPagesPerStep,
+                "AutoCheckpointMaxPagesPerStep must be greater than zero.");
         }
     }
 

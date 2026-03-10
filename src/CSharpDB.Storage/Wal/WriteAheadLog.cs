@@ -52,6 +52,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private byte[]? _checkpointWriteBuffer;
     private long[]? _checkpointBatchWalOffsets;
     private KeyValuePair<uint, long>[] _checkpointCommittedPages = Array.Empty<KeyValuePair<uint, long>>();
+    private IncrementalCheckpointState? _incrementalCheckpoint;
 
     public WriteAheadLog(
         string databasePath,
@@ -66,6 +67,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
     public WalIndex Index => _index;
     public bool IsOpen => _stream != null;
+    public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
 
     // ============ Open / Create ============
 
@@ -89,6 +91,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         try
         {
+            _incrementalCheckpoint = null;
+            _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
+            _recoverUncommittedBatch.Clear();
+            _index.Reset();
+
             _stream = new FileStream(_walPath, FileMode.Create, FileAccess.ReadWrite,
                 FileShare.Read, bufferSize: WalStreamBufferSize, useAsync: true);
 
@@ -304,10 +312,15 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         try
         {
+            _incrementalCheckpoint = null;
+            _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
+            _recoverUncommittedBatch.Clear();
+            _index.Reset();
+
             _stream = new FileStream(_walPath, FileMode.Open, FileAccess.ReadWrite,
                 FileShare.Read, bufferSize: WalStreamBufferSize, useAsync: true);
 
-            // Read and validate header
             var header = _walHeaderBuffer;
             if (await _stream.ReadAsync(header.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken) != PageConstants.WalHeaderSize)
                 throw new CSharpDbException(ErrorCode.WalError, "Invalid WAL file: header too short.");
@@ -318,7 +331,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _salt1 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(16, 4));
             _salt2 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(20, 4));
 
-            // Scan frames
             var uncommittedBatch = _recoverUncommittedBatch;
             uncommittedBatch.Clear();
             var frameHeaderBuffer = _recoveryFrameHeaderBuffer;
@@ -334,12 +346,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 if (headerRead != PageConstants.WalFrameHeaderSize ||
                     dataRead != PageConstants.PageSize)
                 {
-                    // Partial frame — truncate
                     _stream.SetLength(frameOffset);
                     break;
                 }
 
-                // Validate salt
                 uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
                 uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
                 if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
@@ -348,7 +358,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
                     break;
                 }
 
-                // Validate checksums
                 uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
                 uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(20, 4));
                 uint actualHeaderChecksum = ComputeHeaderChecksum(
@@ -362,7 +371,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 if (expectedHeaderChecksum != actualHeaderChecksum ||
                     expectedDataChecksum != actualDataChecksum)
                 {
-                    // Corrupt frame — truncate
                     _stream.SetLength(frameOffset);
                     break;
                 }
@@ -374,7 +382,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
                 if (dbPageCount != 0)
                 {
-                    // Commit frame — all frames in this batch are committed
                     foreach (var (committedPageId, committedOffset) in uncommittedBatch)
                     {
                         _index.AddCommittedFrame(committedPageId, committedOffset);
@@ -384,7 +391,6 @@ public sealed class WriteAheadLog : IWriteAheadLog
                 }
             }
 
-            // Remaining frames are from an incomplete transaction — truncate
             if (uncommittedBatch.Count > 0)
             {
                 long truncateAt = uncommittedBatch[0].WalOffset;
@@ -413,117 +419,51 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// </summary>
     public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default)
     {
-        if (_stream == null) return;
+        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken))
+        {
+        }
+    }
 
-        var committedPages = _index.GetCommittedPages();
-        int committedPageCount = committedPages.Count;
-        if (committedPageCount == 0) return;
+    public async ValueTask<bool> CheckpointStepAsync(
+        IStorageDevice device,
+        uint pageCount,
+        int maxPages,
+        CancellationToken cancellationToken = default)
+    {
+        if (_stream == null)
+            return true;
+
+        if (maxPages <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxPages), "Value must be greater than zero.");
 
         try
         {
-            EnsureCheckpointBuffers();
-            EnsureCheckpointCommittedPageCapacity(committedPageCount);
-            var sortedCommittedPages = _checkpointCommittedPages;
-            var checkpointBatchWalOffsets = _checkpointBatchWalOffsets!;
-            int sortedCount = 0;
-            bool isPageIdSortedAscending = true;
-            uint previousPageId = 0;
-            foreach (var committedPage in committedPages)
-            {
-                if (sortedCount > 0 && committedPage.Key < previousPageId)
-                {
-                    isPageIdSortedAscending = false;
-                }
+            var checkpoint = EnsureIncrementalCheckpointState();
+            if (checkpoint is null)
+                return true;
 
-                sortedCommittedPages[sortedCount++] = committedPage;
-                previousPageId = committedPage.Key;
-            }
-
-            if (!isPageIdSortedAscending && committedPageCount > 1)
-            {
-                Array.Sort(sortedCommittedPages, 0, committedPageCount, PageIdComparer);
-            }
-
-            // Ensure DB file is large enough
             long requiredLength = (long)pageCount * PageConstants.PageSize;
             if (device.Length < requiredLength)
-            {
                 await device.SetLengthAsync(requiredLength, cancellationToken);
-            }
 
-            uint batchStartPageId = 0;
-            int batchPageCount = 0;
-            long batchStartWalOffset = 0;
-            bool batchHasContiguousWalOffsets = true;
-
-            for (int i = 0; i < committedPageCount; i++)
+            int remainingPageCount = checkpoint.CommittedPageCount - checkpoint.NextPageIndex;
+            if (remainingPageCount > 0)
             {
-                var committedPage = sortedCommittedPages[i];
-                uint pageId = committedPage.Key;
-                long walOffset = committedPage.Value;
-                bool startsNewBatch = batchPageCount == 0 ||
-                    (ulong)pageId != (ulong)batchStartPageId + (uint)batchPageCount ||
-                    batchPageCount == CheckpointWriteChunkPages;
+                int pagesToProcess = Math.Min(maxPages, remainingPageCount);
+                await FlushCheckpointSliceAsync(device, checkpoint, pagesToProcess, cancellationToken);
+                checkpoint.NextPageIndex += pagesToProcess;
 
-                if (startsNewBatch && batchPageCount > 0)
-                {
-                    await FlushCheckpointBatchAsync(
-                        device,
-                        batchStartPageId,
-                        batchPageCount,
-                        batchStartWalOffset,
-                        batchHasContiguousWalOffsets,
-                        cancellationToken);
-                    batchPageCount = 0;
-                }
-
-                if (batchPageCount == 0)
-                {
-                    batchStartPageId = pageId;
-                    batchStartWalOffset = walOffset;
-                    batchHasContiguousWalOffsets = true;
-                }
-                else if (batchHasContiguousWalOffsets)
-                {
-                    long expectedWalOffset = batchStartWalOffset + (long)batchPageCount * PageConstants.WalFrameSize;
-                    if (walOffset != expectedWalOffset)
-                        batchHasContiguousWalOffsets = false;
-                }
-
-                checkpointBatchWalOffsets[batchPageCount] = walOffset;
-                batchPageCount++;
-            }
-
-            if (batchPageCount > 0)
-            {
-                await FlushCheckpointBatchAsync(
-                    device,
-                    batchStartPageId,
-                    batchPageCount,
-                    batchStartWalOffset,
-                    batchHasContiguousWalOffsets,
-                    cancellationToken);
+                if (checkpoint.NextPageIndex < checkpoint.CommittedPageCount)
+                    return false;
             }
 
             await device.FlushAsync(cancellationToken);
-
-            // Reset WAL
-            _index.Reset();
-
-            _salt1 = (uint)Random.Shared.Next();
-            _salt2 = (uint)Random.Shared.Next();
-
-            // Rewrite WAL header with new salts
-            _stream.Position = 0;
-            WriteWalHeader(_walHeaderBuffer, pageCount);
-            await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
-
-            _stream.SetLength(PageConstants.WalHeaderSize);
-            await _stream.FlushAsync(cancellationToken);
-            _uncommittedStartOffset = PageConstants.WalHeaderSize;
+            await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
+            return true;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
+            int committedPageCount = _incrementalCheckpoint?.CommittedPageCount ?? _index.FrameCount;
             throw new CSharpDbException(
                 ErrorCode.WalError,
                 $"Failed to checkpoint WAL '{_walPath}' with {committedPageCount} committed page(s).",
@@ -538,6 +478,11 @@ public sealed class WriteAheadLog : IWriteAheadLog
     {
         try
         {
+            _incrementalCheckpoint = null;
+            _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
+            _recoverUncommittedBatch.Clear();
+            _index.Reset();
             CloseReadHandle();
             if (_stream != null)
             {
@@ -560,6 +505,10 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
     public async ValueTask DisposeAsync()
     {
+        _incrementalCheckpoint = null;
+        _uncommittedFrames.Clear();
+        _lastUncommittedDataChecksum = 0;
+        _recoverUncommittedBatch.Clear();
         CloseReadHandle();
         if (_stream != null)
         {
@@ -944,5 +893,251 @@ public sealed class WriteAheadLog : IWriteAheadLog
             newLength *= 2;
 
         _checkpointCommittedPages = new KeyValuePair<uint, long>[newLength];
+    }
+
+    private IncrementalCheckpointState? EnsureIncrementalCheckpointState()
+    {
+        if (_incrementalCheckpoint is not null)
+            return _incrementalCheckpoint;
+
+        if (_stream is null)
+            return null;
+
+        var committedPages = _index.GetCommittedPages();
+        int committedPageCount = committedPages.Count;
+        if (committedPageCount == 0)
+            return null;
+
+        EnsureCheckpointCommittedPageCapacity(committedPageCount);
+        var sortedCommittedPages = _checkpointCommittedPages;
+        int sortedCount = 0;
+        bool isPageIdSortedAscending = true;
+        uint previousPageId = 0;
+        foreach (var committedPage in committedPages)
+        {
+            if (sortedCount > 0 && committedPage.Key < previousPageId)
+                isPageIdSortedAscending = false;
+
+            sortedCommittedPages[sortedCount++] = committedPage;
+            previousPageId = committedPage.Key;
+        }
+
+        if (!isPageIdSortedAscending && committedPageCount > 1)
+            Array.Sort(sortedCommittedPages, 0, committedPageCount, PageIdComparer);
+
+        var snapshot = new KeyValuePair<uint, long>[committedPageCount];
+        Array.Copy(sortedCommittedPages, 0, snapshot, 0, committedPageCount);
+        _incrementalCheckpoint = new IncrementalCheckpointState(snapshot, committedPageCount, _stream.Length);
+        return _incrementalCheckpoint;
+    }
+
+    private async ValueTask FlushCheckpointSliceAsync(
+        IStorageDevice device,
+        IncrementalCheckpointState checkpoint,
+        int pagesToProcess,
+        CancellationToken cancellationToken)
+    {
+        if (pagesToProcess <= 0)
+            return;
+
+        EnsureCheckpointBuffers();
+        var checkpointBatchWalOffsets = _checkpointBatchWalOffsets!;
+
+        int endIndexExclusive = checkpoint.NextPageIndex + pagesToProcess;
+        uint batchStartPageId = 0;
+        int batchPageCount = 0;
+        long batchStartWalOffset = 0;
+        bool batchHasContiguousWalOffsets = true;
+
+        for (int i = checkpoint.NextPageIndex; i < endIndexExclusive; i++)
+        {
+            var committedPage = checkpoint.CommittedPages[i];
+            uint pageId = committedPage.Key;
+            long walOffset = committedPage.Value;
+            bool startsNewBatch = batchPageCount == 0 ||
+                (ulong)pageId != (ulong)batchStartPageId + (uint)batchPageCount ||
+                batchPageCount == CheckpointWriteChunkPages;
+
+            if (startsNewBatch && batchPageCount > 0)
+            {
+                await FlushCheckpointBatchAsync(
+                    device,
+                    batchStartPageId,
+                    batchPageCount,
+                    batchStartWalOffset,
+                    batchHasContiguousWalOffsets,
+                    cancellationToken);
+                batchPageCount = 0;
+            }
+
+            if (batchPageCount == 0)
+            {
+                batchStartPageId = pageId;
+                batchStartWalOffset = walOffset;
+                batchHasContiguousWalOffsets = true;
+            }
+            else if (batchHasContiguousWalOffsets)
+            {
+                long expectedWalOffset = batchStartWalOffset + (long)batchPageCount * PageConstants.WalFrameSize;
+                if (walOffset != expectedWalOffset)
+                    batchHasContiguousWalOffsets = false;
+            }
+
+            checkpointBatchWalOffsets[batchPageCount] = walOffset;
+            batchPageCount++;
+        }
+
+        if (batchPageCount > 0)
+        {
+            await FlushCheckpointBatchAsync(
+                device,
+                batchStartPageId,
+                batchPageCount,
+                batchStartWalOffset,
+                batchHasContiguousWalOffsets,
+                cancellationToken);
+        }
+    }
+
+    private async ValueTask FinalizeIncrementalCheckpointAsync(uint pageCount, CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            return;
+
+        var checkpoint = _incrementalCheckpoint;
+        if (checkpoint is null)
+            return;
+
+        long retainedByteCount = _stream.Length - checkpoint.RetainedWalStartOffset;
+        if (retainedByteCount <= 0)
+        {
+            await ResetWalAsync(pageCount, generateNewSalts: true, cancellationToken);
+            _incrementalCheckpoint = null;
+            return;
+        }
+
+        await CompactRetainedFramesAsync(checkpoint.RetainedWalStartOffset, retainedByteCount, pageCount, cancellationToken);
+        _incrementalCheckpoint = null;
+    }
+
+    private async ValueTask CompactRetainedFramesAsync(
+        long retainedWalStartOffset,
+        long retainedByteCount,
+        uint pageCount,
+        CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            return;
+
+        EnsureCheckpointBuffers();
+        byte[] moveBuffer = _checkpointReadBuffer
+            ?? throw new CSharpDbException(ErrorCode.WalError, "Checkpoint read buffer was not initialized.");
+        var retainedLatestPages = new Dictionary<uint, long>();
+        int retainedFrameCount = 0;
+        int retainedCommitCount = 0;
+
+        long sourceOffset = retainedWalStartOffset;
+        long destinationOffset = PageConstants.WalHeaderSize;
+        while (sourceOffset < retainedWalStartOffset + retainedByteCount)
+        {
+            int chunkLength = (int)Math.Min(moveBuffer.Length, retainedWalStartOffset + retainedByteCount - sourceOffset);
+            await ReadWalRangeIntoAsync(sourceOffset, moveBuffer.AsMemory(0, chunkLength), cancellationToken);
+            _stream.Position = destinationOffset;
+            await _stream.WriteAsync(moveBuffer.AsMemory(0, chunkLength), cancellationToken);
+            CaptureRetainedFrameMetadata(
+                moveBuffer.AsSpan(0, chunkLength),
+                destinationOffset,
+                retainedLatestPages,
+                ref retainedFrameCount,
+                ref retainedCommitCount);
+            sourceOffset += chunkLength;
+            destinationOffset += chunkLength;
+        }
+
+        _stream.SetLength(PageConstants.WalHeaderSize + retainedByteCount);
+        await RewriteWalHeaderAsync(pageCount, cancellationToken);
+        await _stream.FlushAsync(cancellationToken);
+
+        _index.ReplaceCommittedState(retainedLatestPages, retainedFrameCount, retainedCommitCount);
+        _uncommittedStartOffset = _stream.Length;
+    }
+
+    private async ValueTask ResetWalAsync(uint pageCount, bool generateNewSalts, CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            return;
+
+        _index.Reset();
+
+        if (generateNewSalts)
+        {
+            _salt1 = (uint)Random.Shared.Next();
+            _salt2 = (uint)Random.Shared.Next();
+        }
+
+        _stream.Position = 0;
+        WriteWalHeader(_walHeaderBuffer, pageCount);
+        await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
+        _stream.SetLength(PageConstants.WalHeaderSize);
+        await _stream.FlushAsync(cancellationToken);
+        _uncommittedStartOffset = PageConstants.WalHeaderSize;
+    }
+
+    private async ValueTask RewriteWalHeaderAsync(uint pageCount, CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            return;
+
+        _stream.Position = 0;
+        WriteWalHeader(_walHeaderBuffer, pageCount);
+        await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
+    }
+
+    private static void CaptureRetainedFrameMetadata(
+        ReadOnlySpan<byte> retainedBytes,
+        long relocatedChunkOffset,
+        Dictionary<uint, long> retainedLatestPages,
+        ref int retainedFrameCount,
+        ref int retainedCommitCount)
+    {
+        if (retainedBytes.Length == 0)
+            return;
+        if (retainedBytes.Length % PageConstants.WalFrameSize != 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Retained WAL suffix length {retainedBytes.Length} was not frame-aligned during compaction.");
+        }
+
+        for (int offset = 0; offset < retainedBytes.Length; offset += PageConstants.WalFrameSize)
+        {
+            ReadOnlySpan<byte> frameHeader = retainedBytes.Slice(offset, PageConstants.WalFrameHeaderSize);
+            uint pageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.Slice(0, 4));
+            uint dbPageCount = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.Slice(4, 4));
+            long relocatedFrameOffset = relocatedChunkOffset + offset;
+
+            retainedLatestPages[pageId] = relocatedFrameOffset;
+            retainedFrameCount++;
+            if (dbPageCount != 0)
+                retainedCommitCount++;
+        }
+    }
+
+    private sealed class IncrementalCheckpointState
+    {
+        public IncrementalCheckpointState(
+            KeyValuePair<uint, long>[] committedPages,
+            int committedPageCount,
+            long retainedWalStartOffset)
+        {
+            CommittedPages = committedPages;
+            CommittedPageCount = committedPageCount;
+            RetainedWalStartOffset = retainedWalStartOffset;
+        }
+
+        public KeyValuePair<uint, long>[] CommittedPages { get; }
+        public int CommittedPageCount { get; }
+        public int NextPageIndex { get; set; }
+        public long RetainedWalStartOffset { get; }
     }
 }
