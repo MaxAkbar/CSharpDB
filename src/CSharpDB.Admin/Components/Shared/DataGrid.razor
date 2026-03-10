@@ -173,11 +173,13 @@
     private readonly Dictionary<int, string> _filters = new();
     private readonly HashSet<DataGridRow> _selectedRows = new();
     private EditingCell? _editingCell;
+    private bool _loadedAllRows;
     private string? _lastTableName;
     private string? _lastViewName;
     private bool _sourceInitialized;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
+    private bool HasActiveFilters => _filters.Values.Any(value => !string.IsNullOrWhiteSpace(value));
 
     protected override async Task OnParametersSetAsync()
     {
@@ -194,6 +196,7 @@
         _page = 1;
         _sortCol = null;
         _sortAsc = true;
+        _loadedAllRows = false;
         _filters.Clear();
         Columns = null;
         ColumnTypes = null;
@@ -212,27 +215,10 @@
 
         try
         {
-            if (TableName is not null)
-            {
-                var result = await DbClient.BrowseTableAsync(TableName, _page, _pageSize);
-                _totalRows = result.TotalRows;
-                _allRows = result.Rows.Select(r => new DataGridRow(r)).ToList();
-
-                if (Columns is null || Columns.Length == 0)
-                {
-                    var schema = result.Schema;
-                    Columns = schema.Columns.Select(c => c.Name).ToArray();
-                    ColumnTypes = schema.Columns.Select(c => c.Type.ToString().ToUpperInvariant()).ToArray();
-                    PrimaryKeyColumn = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey)?.Name;
-                }
-            }
-            else if (ViewName is not null)
-            {
-                var result = await DbClient.BrowseViewAsync(ViewName, _page, _pageSize);
-                _totalRows = result.TotalRows;
-                Columns = result.ColumnNames;
-                _allRows = result.Rows.Select(r => new DataGridRow(r)).ToList();
-            }
+            if (ShouldLoadAllRows())
+                await LoadAllRowsAsync();
+            else
+                await LoadCurrentPageAsync();
 
             ApplyFiltersAndSort();
         }
@@ -257,9 +243,24 @@
             _sortCol = colIdx;
             _sortAsc = true;
         }
-        ApplyFiltersAndSort();
-        await NotifySelectionChangedAsync();
-        StateHasChanged();
+
+        _page = 1;
+
+        if (ShouldLoadAllRows())
+        {
+            if (!_loadedAllRows)
+            {
+                await LoadDataAsync();
+                return;
+            }
+
+            ApplyFiltersAndSort();
+            await NotifySelectionChangedAsync();
+            StateHasChanged();
+            return;
+        }
+
+        await LoadDataAsync();
     }
 
     // ─── Filtering ──────────────────
@@ -271,9 +272,24 @@
             _filters.Remove(colIdx);
         else
             _filters[colIdx] = value;
-        ApplyFiltersAndSort();
-        await NotifySelectionChangedAsync();
-        StateHasChanged();
+
+        _page = 1;
+
+        if (ShouldLoadAllRows())
+        {
+            if (!_loadedAllRows)
+            {
+                await LoadDataAsync();
+                return;
+            }
+
+            ApplyFiltersAndSort();
+            await NotifySelectionChangedAsync();
+            StateHasChanged();
+            return;
+        }
+
+        await LoadDataAsync();
     }
 
     // ─── Row Selection ──────────────
@@ -440,6 +456,13 @@
 
     private void ApplyFiltersAndSort()
     {
+        if (!_loadedAllRows)
+        {
+            _rows = _allRows.ToList();
+            _selectedRows.RemoveWhere(row => !_rows.Contains(row));
+            return;
+        }
+
         IEnumerable<DataGridRow> query = _allRows;
 
         foreach (var filter in _filters)
@@ -472,7 +495,23 @@
                 : query.OrderByDescending(row => GetSortValue(row, sortCol), CellValueComparer.Instance);
         }
 
-        _rows = query.ToList();
+        if (_loadedAllRows)
+        {
+            var filteredRows = query.ToList();
+            _totalRows = filteredRows.Count;
+
+            int totalPages = Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
+            if (_page > totalPages)
+                _page = totalPages;
+
+            int skip = (_page - 1) * _pageSize;
+            _rows = filteredRows.Skip(skip).Take(_pageSize).ToList();
+        }
+        else
+        {
+            _rows = query.ToList();
+        }
+
         _selectedRows.RemoveWhere(row => !_rows.Contains(row));
     }
 
@@ -517,13 +556,262 @@
     private async Task GoToPage(int page)
     {
         _page = Math.Max(1, Math.Min(TotalPages, page));
+
+        if (_loadedAllRows)
+        {
+            ApplyFiltersAndSort();
+            await NotifySelectionChangedAsync();
+            StateHasChanged();
+            return;
+        }
+
         await LoadDataAsync();
     }
 
     private async Task OnPageSizeChanged()
     {
         _page = 1;
+
+        if (_loadedAllRows)
+        {
+            ApplyFiltersAndSort();
+            await NotifySelectionChangedAsync();
+            StateHasChanged();
+            return;
+        }
+
         await LoadDataAsync();
+    }
+
+    private bool ShouldLoadAllRows() => HasPendingChanges;
+
+    private async Task LoadCurrentPageAsync()
+    {
+        _loadedAllRows = false;
+
+        if (TableName is not null)
+        {
+            string tableName = RequireIdentifier(TableName);
+            var schema = await DbClient.GetTableSchemaAsync(tableName)
+                ?? throw new InvalidOperationException($"Table '{tableName}' was not found.");
+
+            ApplyTableSchema(schema);
+            await LoadServerPageAsync(tableName);
+            return;
+        }
+
+        if (ViewName is not null)
+        {
+            string viewName = RequireIdentifier(ViewName);
+            await LoadServerPageAsync(viewName);
+
+            Columns ??= Array.Empty<string>();
+            ColumnTypes = null;
+            PrimaryKeyColumn = null;
+        }
+    }
+
+    private async Task LoadServerPageAsync(string sourceName)
+    {
+        var countResult = await DbClient.ExecuteSqlAsync(BuildCountSql(sourceName));
+        if (countResult.Error is not null)
+            throw new InvalidOperationException(countResult.Error);
+
+        var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName));
+        if (queryResult.Error is not null)
+            throw new InvalidOperationException(queryResult.Error);
+
+        _totalRows = ReadCount(countResult);
+        _allRows = (queryResult.Rows ?? []).Select(r => new DataGridRow(r)).ToList();
+
+        if (ViewName is not null)
+            Columns = queryResult.ColumnNames ?? Array.Empty<string>();
+    }
+
+    private async Task LoadAllRowsAsync()
+    {
+        var pendingRows = _allRows
+            .Where(row => row.State != RowState.Unmodified)
+            .Select(CloneRow)
+            .ToList();
+
+        if (TableName is not null)
+        {
+            string tableName = RequireIdentifier(TableName);
+            var schema = await DbClient.GetTableSchemaAsync(tableName)
+                ?? throw new InvalidOperationException($"Table '{tableName}' was not found.");
+            ApplyTableSchema(schema);
+
+            var result = await DbClient.ExecuteSqlAsync($"SELECT * FROM {tableName}");
+            if (result.Error is not null)
+                throw new InvalidOperationException(result.Error);
+
+            _allRows = (result.Rows ?? []).Select(r => new DataGridRow(r)).ToList();
+        }
+        else if (ViewName is not null)
+        {
+            string viewName = RequireIdentifier(ViewName);
+            var result = await DbClient.ExecuteSqlAsync($"SELECT * FROM {viewName}");
+            if (result.Error is not null)
+                throw new InvalidOperationException(result.Error);
+
+            Columns = result.ColumnNames ?? [];
+            ColumnTypes = null;
+            PrimaryKeyColumn = null;
+            _allRows = (result.Rows ?? []).Select(r => new DataGridRow(r)).ToList();
+        }
+        else
+        {
+            _allRows = new();
+            _rows = new();
+            _totalRows = 0;
+            _loadedAllRows = false;
+            return;
+        }
+
+        MergePendingRows(pendingRows);
+        _loadedAllRows = true;
+    }
+
+    private string BuildSelectSql(string sourceName)
+    {
+        string whereClause = BuildWhereClause();
+        string orderByClause = BuildOrderByClause();
+        int offset = (_page - 1) * _pageSize;
+        return $"SELECT * FROM {sourceName}{whereClause}{orderByClause} LIMIT {_pageSize} OFFSET {offset}";
+    }
+
+    private string BuildCountSql(string sourceName)
+        => $"SELECT COUNT(*) FROM {sourceName}{BuildWhereClause()}";
+
+    private string BuildWhereClause()
+    {
+        if (!HasActiveFilters || Columns is null || Columns.Length == 0)
+            return string.Empty;
+
+        var clauses = new List<string>();
+        foreach (var filter in _filters.OrderBy(pair => pair.Key))
+        {
+            if (string.IsNullOrWhiteSpace(filter.Value))
+                continue;
+
+            int colIdx = filter.Key;
+            if (colIdx < 0 || colIdx >= Columns.Length)
+                continue;
+
+            string columnName = RequireIdentifier(Columns[colIdx]);
+            string pattern = EscapeSqlString($"%{EscapeLikePattern(filter.Value)}%");
+            clauses.Add($"TEXT({columnName}) LIKE '{pattern}' ESCAPE '!'");
+        }
+
+        return clauses.Count == 0
+            ? string.Empty
+            : $" WHERE {string.Join(" AND ", clauses)}";
+    }
+
+    private string BuildOrderByClause()
+    {
+        if (_sortCol is not int sortCol || Columns is null || sortCol < 0 || sortCol >= Columns.Length)
+            return string.Empty;
+
+        string columnName = RequireIdentifier(Columns[sortCol]);
+        string direction = _sortAsc ? "ASC" : "DESC";
+        return $" ORDER BY {columnName} {direction}";
+    }
+
+    private static int ReadCount(CSharpDB.Client.Models.SqlExecutionResult result)
+    {
+        if (!result.IsQuery || result.Rows is not { Count: > 0 } || result.Rows[0].Length == 0 || result.Rows[0][0] is null)
+            return 0;
+
+        return Convert.ToInt32(result.Rows[0][0], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private void ApplyTableSchema(TableSchema schema)
+    {
+        Columns = schema.Columns.Select(c => c.Name).ToArray();
+        ColumnTypes = schema.Columns.Select(c => c.Type.ToString().ToUpperInvariant()).ToArray();
+        PrimaryKeyColumn = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey)?.Name;
+    }
+
+    private void MergePendingRows(IReadOnlyList<DataGridRow> pendingRows)
+    {
+        if (pendingRows.Count == 0)
+            return;
+
+        foreach (var pendingRow in pendingRows)
+        {
+            if (pendingRow.State == RowState.New)
+            {
+                _allRows.Add(CloneRow(pendingRow));
+                continue;
+            }
+
+            int existingIndex = FindExistingRowIndex(pendingRow);
+            if (existingIndex >= 0)
+            {
+                _allRows[existingIndex] = CloneRow(pendingRow);
+            }
+        }
+    }
+
+    private int FindExistingRowIndex(DataGridRow pendingRow)
+    {
+        if (Columns is null || PrimaryKeyColumn is null)
+            return -1;
+
+        int pkColIdx = Array.IndexOf(Columns, PrimaryKeyColumn);
+        if (pkColIdx < 0 || pkColIdx >= pendingRow.OriginalValues.Length)
+            return -1;
+
+        object? pkValue = pendingRow.OriginalValues[pkColIdx];
+        return _allRows.FindIndex(row =>
+            pkColIdx < row.OriginalValues.Length && AreEqual(row.OriginalValues[pkColIdx], pkValue));
+    }
+
+    private static DataGridRow CloneRow(DataGridRow row)
+        => new(row.OriginalValues, row.CurrentValues, row.State);
+
+    private static string EscapeLikePattern(string value)
+        => value
+            .Replace("!", "!!", StringComparison.Ordinal)
+            .Replace("%", "!%", StringComparison.Ordinal)
+            .Replace("_", "!_", StringComparison.Ordinal);
+
+    private static string EscapeSqlString(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
+
+    private static bool AreEqual(object? left, object? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left is null || right is null)
+            return false;
+
+        if (left is byte[] leftBytes && right is byte[] rightBytes)
+            return leftBytes.AsSpan().SequenceEqual(rightBytes);
+
+        return left.Equals(right);
+    }
+
+    private static string RequireIdentifier(string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(identifier))
+            throw new InvalidOperationException("Object name is required.");
+
+        for (int i = 0; i < identifier.Length; i++)
+        {
+            char ch = identifier[i];
+            bool isValid = i == 0
+                ? char.IsLetter(ch) || ch == '_'
+                : char.IsLetterOrDigit(ch) || ch == '_';
+
+            if (!isValid)
+                throw new InvalidOperationException($"Unsupported identifier '{identifier}'.");
+        }
+
+        return identifier;
     }
 
     // ─── Helpers ────────────────────

@@ -932,10 +932,18 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         switch (expr)
         {
             case FunctionCallExpression func:
-                if (!_aggregateIndices.ContainsKey(func))
+                if (ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName))
                 {
-                    _aggregateIndices.Add(func, _aggregateFunctions.Count);
-                    _aggregateFunctions.Add(func);
+                    if (!_aggregateIndices.ContainsKey(func))
+                    {
+                        _aggregateIndices.Add(func, _aggregateFunctions.Count);
+                        _aggregateFunctions.Add(func);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < func.Arguments.Count; i++)
+                        CollectAggregates(func.Arguments[i]);
                 }
                 break;
             case BinaryExpression bin:
@@ -1047,7 +1055,9 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
     {
         return expr switch
         {
-            FunctionCallExpression func => EvaluateAggregate(func, group),
+            FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
+                ? EvaluateAggregate(func, group)
+                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
             _ => group.FirstRow != null
@@ -1428,10 +1438,18 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         switch (expr)
         {
             case FunctionCallExpression func:
-                if (!_aggregateStates.ContainsKey(func))
+                if (ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName))
                 {
-                    _aggregateStates.Add(func, new AggregateState(func, _inputSchema));
-                    _aggregateFunctions.Add(func);
+                    if (!_aggregateStates.ContainsKey(func))
+                    {
+                        _aggregateStates.Add(func, new AggregateState(func, _inputSchema));
+                        _aggregateFunctions.Add(func);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < func.Arguments.Count; i++)
+                        CollectAggregates(func.Arguments[i]);
                 }
                 break;
             case BinaryExpression bin:
@@ -1448,7 +1466,9 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
     {
         return expr switch
         {
-            FunctionCallExpression func => EvaluateAggregate(func),
+            FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
+                ? EvaluateAggregate(func)
+                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
             _ => firstRow != null

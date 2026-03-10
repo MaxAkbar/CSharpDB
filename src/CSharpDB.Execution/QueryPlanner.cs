@@ -4472,7 +4472,8 @@ public sealed class QueryPlanner
     {
         return expr switch
         {
-            FunctionCallExpression => true,
+            FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
+                || func.Arguments.Any(ContainsAggregate),
             BinaryExpression bin => ContainsAggregate(bin.Left) || ContainsAggregate(bin.Right),
             UnaryExpression un => ContainsAggregate(un.Operand),
             _ => false,
