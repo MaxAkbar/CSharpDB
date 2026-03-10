@@ -4,6 +4,7 @@ using CSharpDB.Client.Models;
 using CSharpDB.Core;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using System.Runtime.ExceptionServices;
 
 namespace CSharpDB.Cli;
 
@@ -68,8 +69,28 @@ internal sealed class MetaCommandContext : IDisposable
         if (_transactionId is not null)
             throw new InvalidOperationException("An explicit transaction is already active.");
 
-        var tx = await Client.BeginTransactionAsync(ct);
-        _transactionId = tx.TransactionId;
+        DisableSnapshot();
+
+        bool releasedLocalDatabase = false;
+        if (_engineBackedClient is not null && _localDatabase is not null)
+        {
+            await _engineBackedClient.ReleaseCachedDatabaseAsync(ct);
+            _localDatabase = null;
+            releasedLocalDatabase = true;
+        }
+
+        try
+        {
+            var tx = await Client.BeginTransactionAsync(ct);
+            _transactionId = tx.TransactionId;
+        }
+        catch
+        {
+            if (releasedLocalDatabase)
+                await RefreshLocalDatabaseAsync(ct);
+
+            throw;
+        }
     }
 
     public async ValueTask CommitAsync(CancellationToken ct = default)
@@ -77,14 +98,22 @@ internal sealed class MetaCommandContext : IDisposable
         if (_transactionId is null)
             throw new InvalidOperationException("No explicit transaction is active.");
 
+        ExceptionDispatchInfo? captured = null;
         try
         {
             await Client.CommitTransactionAsync(_transactionId, ct);
+        }
+        catch (Exception ex)
+        {
+            captured = ExceptionDispatchInfo.Capture(ex);
         }
         finally
         {
             _transactionId = null;
         }
+
+        await RefreshLocalDatabaseAsync(ct);
+        captured?.Throw();
     }
 
     public async ValueTask RollbackAsync(CancellationToken ct = default)
@@ -92,14 +121,22 @@ internal sealed class MetaCommandContext : IDisposable
         if (_transactionId is null)
             throw new InvalidOperationException("No explicit transaction is active.");
 
+        ExceptionDispatchInfo? captured = null;
         try
         {
             await Client.RollbackTransactionAsync(_transactionId, ct);
+        }
+        catch (Exception ex)
+        {
+            captured = ExceptionDispatchInfo.Capture(ex);
         }
         finally
         {
             _transactionId = null;
         }
+
+        await RefreshLocalDatabaseAsync(ct);
+        captured?.Throw();
     }
 
     public async ValueTask CheckpointAsync(CancellationToken ct = default)

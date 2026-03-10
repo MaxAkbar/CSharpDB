@@ -86,6 +86,29 @@ public sealed class StorageEngineOptionsBuilder
     public StorageEngineOptionsBuilder UseCachingBTreeIndexes(int findCacheCapacity = 2048) =>
         UseIndexProvider(new CachingBTreeIndexProvider(findCacheCapacity));
 
+    /// <summary>
+    /// Applies the current recommended preset for file-backed lookup-heavy workloads.
+    /// Keeps the standard B-tree index provider and raises the pager cache size.
+    /// </summary>
+    public StorageEngineOptionsBuilder UseLookupOptimizedPreset(int maxCachedPages = 2048)
+    {
+        if (maxCachedPages <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxCachedPages), "Value must be greater than zero.");
+
+        _pagerOptions = new PagerOptions
+        {
+            WriterLockTimeout = _pagerOptions.WriterLockTimeout,
+            CheckpointPolicy = _pagerOptions.CheckpointPolicy,
+            MaxCachedPages = maxCachedPages,
+            PageCacheFactory = _pagerOptions.PageCacheFactory,
+            Interceptors = _pagerOptions.Interceptors,
+            MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+        };
+
+        _indexProvider = new BTreeIndexProvider();
+        return this;
+    }
+
     public StorageEngineOptionsBuilder UseCatalogStore(ICatalogStore catalogStore)
     {
         ArgumentNullException.ThrowIfNull(catalogStore);

@@ -253,30 +253,41 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default)
     {
-        var database = await Database.OpenAsync(_databasePath, ct);
+        await _lock.WaitAsync(ct);
         try
         {
-            await database.BeginTransactionAsync(ct);
-        }
-        catch
-        {
-            await database.DisposeAsync();
-            throw;
-        }
+            await ReleaseCachedDatabaseCoreAsync(
+                ct,
+                "Cannot start a client-managed transaction while direct snapshot readers are active.");
+            var database = await Database.OpenAsync(_databasePath, ct);
+            try
+            {
+                await database.BeginTransactionAsync(ct);
+            }
+            catch
+            {
+                await database.DisposeAsync();
+                throw;
+            }
 
-        string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-        if (!_transactions.TryAdd(transactionId, database))
-        {
-            await database.RollbackAsync(ct);
-            await database.DisposeAsync();
-            throw new CSharpDbClientException("Failed to register the transaction session.");
-        }
+            string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            if (!_transactions.TryAdd(transactionId, database))
+            {
+                await database.RollbackAsync(ct);
+                await database.DisposeAsync();
+                throw new CSharpDbClientException("Failed to register the transaction session.");
+            }
 
-        return new TransactionSessionInfo
+            return new TransactionSessionInfo
+            {
+                TransactionId = transactionId,
+                ExpiresAtUtc = DateTime.MaxValue,
+            };
+        }
+        finally
         {
-            TransactionId = transactionId,
-            ExpiresAtUtc = DateTime.MaxValue,
-        };
+            _lock.Release();
+        }
     }
 
     public async Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
@@ -434,6 +445,21 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)
         => await GetDatabaseAsync(ct);
+
+    public async ValueTask ReleaseCachedDatabaseAsync(CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await ReleaseCachedDatabaseCoreAsync(
+                ct,
+                "Cannot release the direct database handle while snapshot readers are active.");
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
 
     private static TableSchema MapTableSchema(CoreTableSchema schema)
         => new()
@@ -722,7 +748,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             long integer => integer.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
-            byte[] => throw new CSharpDbClientException("BLOB literals are not supported by the engine-only client."),
+            byte[] => throw new CSharpDbClientException("Blob parameters are not supported by the engine-only client."),
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
     }
@@ -788,5 +814,42 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         if (!_transactions.TryRemove(transactionId, out var db))
             throw new CSharpDbClientException($"Transaction '{transactionId}' was not found.");
         return db;
+    }
+
+    private async Task ReleaseCachedDatabaseCoreAsync(CancellationToken ct, string activeReaderMessage)
+    {
+        Task<Database>? openTask;
+        lock (_databaseGate)
+        {
+            openTask = _databaseTask;
+            _databaseTask = null;
+            _catalogsInitialized = false;
+        }
+
+        if (openTask is null)
+            return;
+
+        Database db;
+        try
+        {
+            db = await openTask.WaitAsync(ct);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (db.ActiveReaderCount > 0)
+        {
+            lock (_databaseGate)
+            {
+                if (_databaseTask is null)
+                    _databaseTask = openTask;
+            }
+
+            throw new CSharpDbClientException(activeReaderMessage);
+        }
+
+        await db.DisposeAsync();
     }
 }

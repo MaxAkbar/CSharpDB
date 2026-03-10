@@ -70,39 +70,9 @@ internal sealed partial class EngineTransportClient
         if (!_transactions.IsEmpty)
             throw new CSharpDbClientException("Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
 
-        Task<Database>? openTask;
-        lock (_databaseGate)
-        {
-            openTask = _databaseTask;
-            _databaseTask = null;
-            _catalogsInitialized = false;
-        }
-
-        if (openTask is null)
-            return;
-
-        Database db;
-        try
-        {
-            db = await openTask.WaitAsync(ct);
-        }
-        catch
-        {
-            return;
-        }
-
-        if (db.ActiveReaderCount > 0)
-        {
-            lock (_databaseGate)
-            {
-                if (_databaseTask is null)
-                    _databaseTask = openTask;
-            }
-
-            throw new CSharpDbClientException("Maintenance requires exclusive access. Close active snapshot readers and retry.");
-        }
-
-        await db.DisposeAsync();
+        await ReleaseCachedDatabaseCoreAsync(
+            ct,
+            "Maintenance requires exclusive access. Close active snapshot readers and retry.");
     }
 
     private async Task<SqlExecutionResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)

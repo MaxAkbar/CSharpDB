@@ -85,4 +85,8 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
         => _inner is IEngineBackedClient engineBacked
             ? engineBacked.TryGetDatabaseAsync(ct)
             : ValueTask.FromResult<Database?>(null);
+    public ValueTask ReleaseCachedDatabaseAsync(CancellationToken ct = default)
+        => _inner is IEngineBackedClient engineBacked
+            ? engineBacked.ReleaseCachedDatabaseAsync(ct)
+            : ValueTask.CompletedTask;
 }

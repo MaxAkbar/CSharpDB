@@ -74,19 +74,17 @@ internal static class IndexMaintenanceHelper
         CancellationToken ct = default)
     {
         var existing = await indexStore.FindAsync(indexKey, ct);
-        if (existing != null)
+        if (existing == null)
         {
-            var newPayload = new byte[existing.Length + sizeof(long)];
-            existing.CopyTo(newPayload, 0);
-            BitConverter.TryWriteBytes(newPayload.AsSpan(existing.Length), rowId);
-            await indexStore.DeleteAsync(indexKey, ct);
-            await indexStore.InsertAsync(indexKey, newPayload, ct);
+            await indexStore.InsertAsync(indexKey, RowIdPayloadCodec.CreateSingle(rowId), ct);
             return;
         }
 
-        var payload = new byte[sizeof(long)];
-        BitConverter.TryWriteBytes(payload, rowId);
-        await indexStore.InsertAsync(indexKey, payload, ct);
+        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
+            return;
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
     public static async ValueTask DeleteRowIdAsync(
@@ -99,24 +97,12 @@ internal static class IndexMaintenanceHelper
         if (existing == null)
             return;
 
-        int count = existing.Length / sizeof(long);
-        if (count <= 1)
-        {
-            await indexStore.DeleteAsync(indexKey, ct);
+        if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
             return;
-        }
-
-        var remaining = new MemoryStream(existing.Length);
-        for (int i = 0; i < count; i++)
-        {
-            long existingRowId = BitConverter.ToInt64(existing, i * sizeof(long));
-            if (existingRowId != rowId)
-                remaining.Write(BitConverter.GetBytes(existingRowId));
-        }
 
         await indexStore.DeleteAsync(indexKey, ct);
-        if (remaining.Length > 0)
-            await indexStore.InsertAsync(indexKey, remaining.ToArray(), ct);
+        if (newPayload != null)
+            await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
     public static bool TryResolveIndexColumnIndices(
@@ -245,7 +231,7 @@ internal static class IndexMaintenanceHelper
 
         for (int i = 0; i < entryCount; i++)
         {
-            long existingRowId = BitConverter.ToInt64(existing, i * sizeof(long));
+            long existingRowId = RowIdPayloadCodec.ReadAt(existing, i);
             var existingRowPayload = await tableTree.FindMemoryAsync(existingRowId, ct);
             if (existingRowPayload is not { } existingRowPayloadMemory)
                 continue;

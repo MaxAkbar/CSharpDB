@@ -349,20 +349,13 @@ public static class DatabaseMaintenanceCoordinator
         string jsonPropertyName,
         out long indexKey)
     {
-        indexKey = 0;
-        if (!CollectionPayloadCodec.IsDirectPayload(payload))
-            return false;
-
-        try
-        {
-            using var document = JsonDocument.Parse(CollectionPayloadCodec.GetJsonUtf8(payload).ToArray());
-            return TryBuildCollectionIndexKeyFromJson(document.RootElement, jsonPropertyName, out indexKey);
-        }
-        catch
+        if (!CollectionIndexedFieldReader.TryReadValue(payload, jsonPropertyName, out var value))
         {
             indexKey = 0;
             return false;
         }
+
+        return TryBuildCollectionIndexKeyFromValue(value, out indexKey);
     }
 
     private static bool TryBuildCollectionIndexKeyFromJson(

@@ -162,6 +162,16 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesLookupOptimizedPreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLookupOptimizedPreset());
+
+        Assert.Equal(2048, options.StorageEngineOptions.PagerOptions.MaxCachedPages);
+        Assert.IsType<BTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
+    }
+
+    [Fact]
     public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndRangeScans()
     {
         var ct = TestContext.Current.CancellationToken;

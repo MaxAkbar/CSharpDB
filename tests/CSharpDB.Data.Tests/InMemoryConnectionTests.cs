@@ -3,6 +3,7 @@ using CSharpDB.Engine;
 
 namespace CSharpDB.Data.Tests;
 
+[Collection("ConnectionPoolState")]
 public sealed class InMemoryConnectionTests : IAsyncLifetime
 {
     private readonly List<string> _paths = new();

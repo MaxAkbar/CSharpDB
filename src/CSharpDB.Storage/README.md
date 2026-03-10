@@ -16,23 +16,17 @@ If you are using SQL or the engine layer, customize storage like this:
 
 ```csharp
 using CSharpDB.Engine;
-using CSharpDB.Storage.Checkpointing;
-using CSharpDB.Storage.Paging;
 
 var options = new DatabaseOptions()
     .ConfigureStorageEngine(builder =>
     {
-        builder.UsePagerOptions(new PagerOptions
-        {
-            MaxCachedPages = 2048,
-            CheckpointPolicy = new FrameCountCheckpointPolicy(500),
-        });
-
-        builder.UseCachingBTreeIndexes(findCacheCapacity: 4096);
+        builder.UseLookupOptimizedPreset();
     });
 
 await using var db = await Database.OpenAsync("app.cdb", options);
 ```
+
+`UseLookupOptimizedPreset()` is the current recommended opt-in preset for file-backed lookup-heavy workloads. It sets `MaxCachedPages = 2048` and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
 
 ## Low-level use: open the storage graph directly
 

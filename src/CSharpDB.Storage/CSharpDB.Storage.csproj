@@ -6,6 +6,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CSharpDB.Engine" />
+    <InternalsVisibleTo Include="CSharpDB.Execution" />
+    <InternalsVisibleTo Include="CSharpDB.Tests" />
   </ItemGroup>
 
   <PropertyGroup>

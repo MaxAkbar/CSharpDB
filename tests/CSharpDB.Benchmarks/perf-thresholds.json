@@ -70,6 +70,33 @@
       ]
     },
     {
+      "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260309-212042",
+      "keyColumns": [
+        "Method"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'Collection FindByIndex int equality (1 match)'"
+        },
+        {
+          "Method": "'Collection FindByIndex text equality (1 match)'"
+        },
+        {
+          "Method": "'Collection Put with secondary indexes (insert, tx rollback)'"
+        },
+        {
+          "Method": "'Collection Put with secondary indexes (update, tx rollback)'"
+        },
+        {
+          "Method": "'Collection Delete with secondary indexes (tx rollback)'"
+        }
+      ],
+      "maxMeanRegressionPercent": 20.0,
+      "maxAllocRegressionPercent": 20.0,
+      "maxAllocRegressionBytes": 2048.0
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv",
       "keyColumns": [
         "Method"

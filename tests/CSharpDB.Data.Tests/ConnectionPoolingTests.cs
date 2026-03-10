@@ -2,6 +2,7 @@ using CSharpDB.Data;
 
 namespace CSharpDB.Data.Tests;
 
+[Collection("ConnectionPoolState")]
 public sealed class ConnectionPoolingTests : IAsyncLifetime
 {
     private readonly string _dbPath;

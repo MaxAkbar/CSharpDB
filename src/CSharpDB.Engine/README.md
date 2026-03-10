@@ -106,6 +106,8 @@ var result = await reader.ExecuteReadAsync("SELECT * FROM users");
 // Reads from a consistent snapshot while the writer continues
 ```
 
+Reuse the same `ReaderSession` for a burst of related reads when possible. The current file-backed tuning benchmarks show that reusing a snapshot is materially cheaper than creating a new reader session for every single query.
+
 ## Installation
 
 ```

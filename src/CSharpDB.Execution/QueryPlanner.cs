@@ -304,7 +304,7 @@ public sealed class QueryPlanner
                     throw new CSharpDbException(ErrorCode.SyntaxError, "Cannot drop the last column of a table.");
 
                 // Rewrite all rows without the dropped column
-                var tree = _catalog.GetTableTree(stmt.TableName);
+                var tree = _catalog.GetTableTree(stmt.TableName, _pager);
                 int? rewriteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
                 var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), rewriteCapacityHint);
                 await scan.OpenAsync(ct);
@@ -960,7 +960,7 @@ public sealed class QueryPlanner
         CancellationToken ct = default)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         int inserted = 0;
@@ -1717,7 +1717,7 @@ public sealed class QueryPlanner
 
         // Validate table exists and build the direct count operator.
         GetSchema(simpleRef.TableName);
-        var tree = _catalog.GetTableTree(simpleRef.TableName);
+        var tree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
         var outputSchema = new[]
         {
@@ -1883,7 +1883,7 @@ public sealed class QueryPlanner
             return false;
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        var tableTree = _catalog.GetTableTree(simpleRef.TableName);
+        var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new ScalarAggregateTableOperator(
             tableTree,
             columnIndex,
@@ -2039,7 +2039,7 @@ public sealed class QueryPlanner
             return false;
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        var tableTree = _catalog.GetTableTree(simpleRef.TableName);
+        var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new ScalarAggregateTableOperator(
             tableTree,
             columnIndex,
@@ -2054,7 +2054,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         // Collect rows to delete (can't modify tree while iterating)
@@ -2096,7 +2096,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
@@ -3388,13 +3388,9 @@ public sealed class QueryPlanner
 
             case DbType.Text:
             {
-                string text = value.AsText;
-                for (int i = 0; i < text.Length; i++)
+                foreach (byte b in System.Text.Encoding.UTF8.GetBytes(value.AsText))
                 {
-                    char c = text[i];
-                    hash ^= (byte)c;
-                    hash *= prime;
-                    hash ^= (byte)(c >> 8);
+                    hash ^= b;
                     hash *= prime;
                 }
 
@@ -4136,7 +4132,7 @@ public sealed class QueryPlanner
     private async ValueTask InsertIntoAllIndexesAsync(
         IReadOnlyList<IndexSchema> indexes, TableSchema schema, DbValue[] row, long rowId, CancellationToken ct)
     {
-        var tableTree = _catalog.GetTableTree(schema.TableName);
+        var tableTree = _catalog.GetTableTree(schema.TableName, _pager);
 
         foreach (var idx in indexes)
         {
@@ -4201,7 +4197,7 @@ public sealed class QueryPlanner
         IReadOnlyList<IndexSchema> indexes, TableSchema schema,
         DbValue[] oldRow, DbValue[] newRow, long oldRowId, long newRowId, CancellationToken ct)
     {
-        var tableTree = _catalog.GetTableTree(schema.TableName);
+        var tableTree = _catalog.GetTableTree(schema.TableName, _pager);
 
         foreach (var idx in indexes)
         {
