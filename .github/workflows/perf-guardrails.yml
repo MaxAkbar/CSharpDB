@@ -33,7 +33,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Run Perf Guardrails (Report)
         if: github.event_name != 'workflow_dispatch' || inputs.fail_on_regression != true
