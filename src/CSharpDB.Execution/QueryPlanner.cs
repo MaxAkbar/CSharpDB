@@ -3360,49 +3360,7 @@ public sealed class QueryPlanner
     }
 
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
-    {
-        if (keyComponents.Length == 1 && keyComponents[0].Type == DbType.Integer)
-            return keyComponents[0].AsInteger;
-
-        const ulong offsetBasis = 14695981039346656037UL;
-        const ulong prime = 1099511628211UL;
-
-        ulong hash = offsetBasis;
-        for (int i = 0; i < keyComponents.Length; i++)
-            hash = HashIndexKeyComponent(hash, keyComponents[i], prime);
-
-        return unchecked((long)hash);
-    }
-
-    private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
-    {
-        hash ^= (byte)value.Type;
-        hash *= prime;
-
-        switch (value.Type)
-        {
-            case DbType.Integer:
-                hash ^= unchecked((ulong)value.AsInteger);
-                hash *= prime;
-                return hash;
-
-            case DbType.Text:
-            {
-                foreach (byte b in System.Text.Encoding.UTF8.GetBytes(value.AsText))
-                {
-                    hash ^= b;
-                    hash *= prime;
-                }
-
-                return hash;
-            }
-
-            default:
-                throw new CSharpDbException(
-                    ErrorCode.TypeMismatch,
-                    $"Unsupported indexed value type '{value.Type}'.");
-        }
-    }
+        => IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
 
     /// <summary>
     /// Attempts to satisfy ORDER BY with natural/index order for a simple single-table query.

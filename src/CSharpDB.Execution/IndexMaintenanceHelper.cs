@@ -280,13 +280,21 @@ internal static class IndexMaintenanceHelper
                 hash *= prime;
                 return hash;
             case DbType.Text:
-                foreach (byte b in System.Text.Encoding.UTF8.GetBytes(value.AsText))
+            {
+                // Preserve the legacy SQL index hash format so persisted text indexes
+                // remain readable across upgrades.
+                string text = value.AsText;
+                for (int i = 0; i < text.Length; i++)
                 {
-                    hash ^= b;
+                    char c = text[i];
+                    hash ^= (byte)c;
+                    hash *= prime;
+                    hash ^= (byte)(c >> 8);
                     hash *= prime;
                 }
 
                 return hash;
+            }
             default:
                 throw new InvalidOperationException($"Cannot hash index component of type '{value.Type}'.");
         }

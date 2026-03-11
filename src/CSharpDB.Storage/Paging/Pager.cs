@@ -477,15 +477,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         await WaitForBackgroundCheckpointAsync(ct);
 
         await RunCheckpointWithInterceptorsAsync(ct);
-        _checkpoints?.ClearDeferredCheckpointRequest();
+        if (!HasCheckpointWorkPending())
+            _checkpoints?.ClearDeferredCheckpointRequest();
     }
 
-    private async ValueTask RunCheckpointWithInterceptorsAsync(CancellationToken ct)
+    private async ValueTask<bool> RunCheckpointWithInterceptorsAsync(CancellationToken ct)
     {
         if (_checkpoints is null || _checkpointAction is null)
-            return;
+            return false;
 
         int frameCount = _walIndex.FrameCount;
+        bool checkpointRan = false;
 
         if (_hasInterceptor)
         {
@@ -493,8 +495,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             await _interceptor.OnCheckpointStartAsync(frameCount, ct);
             try
             {
-                await _checkpoints.RunCheckpointAsync(frameCount, _checkpointAction, ct);
-                checkpointSucceeded = true;
+                await _checkpoints.RunCheckpointAsync(
+                    frameCount,
+                    async innerCt =>
+                    {
+                        checkpointRan = true;
+                        await _checkpointAction(innerCt);
+                    },
+                    ct);
+                checkpointSucceeded = checkpointRan;
             }
             finally
             {
@@ -503,8 +512,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         else
         {
-            await _checkpoints.RunCheckpointAsync(frameCount, _checkpointAction, ct);
+            await _checkpoints.RunCheckpointAsync(
+                frameCount,
+                async innerCt =>
+                {
+                    checkpointRan = true;
+                    await _checkpointAction(innerCt);
+                },
+                ct);
         }
+
+        return checkpointRan;
     }
 
     private async ValueTask RunBackgroundCheckpointStepWithInterceptorsAsync(CancellationToken ct)
@@ -512,8 +530,35 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_checkpoints is null)
             return;
 
-        bool completed = false;
+        while (true)
+        {
+            if (!HasCheckpointWorkPending())
+            {
+                _checkpoints.ClearDeferredCheckpointRequest();
+                return;
+            }
+
+            bool checkpointRan = await RunBackgroundCheckpointStepAsync(ct);
+            if (!checkpointRan)
+                return;
+
+            if (!HasCheckpointWorkPending())
+            {
+                _checkpoints.ClearDeferredCheckpointRequest();
+                return;
+            }
+
+            await Task.Yield();
+        }
+    }
+
+    private async ValueTask<bool> RunBackgroundCheckpointStepAsync(CancellationToken ct)
+    {
+        if (_checkpoints is null)
+            return false;
+
         int frameCount = _walIndex.FrameCount;
+        bool checkpointRan = false;
 
         if (_hasInterceptor)
         {
@@ -521,8 +566,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             await _interceptor.OnCheckpointStartAsync(frameCount, ct);
             try
             {
-                await _checkpoints.RunCheckpointAsync(frameCount, RunCheckpointStepCoreAsync, ct);
-                checkpointSucceeded = true;
+                await _checkpoints.RunCheckpointAsync(
+                    frameCount,
+                    async innerCt =>
+                    {
+                        checkpointRan = true;
+                        await RunCheckpointStepCoreAsync(innerCt);
+                    },
+                    ct);
+                checkpointSucceeded = checkpointRan;
             }
             finally
             {
@@ -531,12 +583,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         else
         {
-            await _checkpoints.RunCheckpointAsync(frameCount, RunCheckpointStepCoreAsync, ct);
+            await _checkpoints.RunCheckpointAsync(
+                frameCount,
+                async innerCt =>
+                {
+                    checkpointRan = true;
+                    await RunCheckpointStepCoreAsync(innerCt);
+                },
+                ct);
         }
 
-        completed = !_wal.HasPendingCheckpoint;
-        if (completed)
-            _checkpoints.ClearDeferredCheckpointRequest();
+        return checkpointRan;
     }
 
     private async ValueTask RunCheckpointCoreAsync(CancellationToken ct)
@@ -735,6 +792,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return PageConstants.WalHeaderSize;
         return PageConstants.WalHeaderSize + (long)frameCount * PageConstants.WalFrameSize;
     }
+
+    private bool HasCheckpointWorkPending()
+        => _walIndex.FrameCount > 0 || _wal.HasPendingCheckpoint;
 
     private static uint[] RentSortedPageIds(IReadOnlyCollection<uint> pageIds, out int count)
     {

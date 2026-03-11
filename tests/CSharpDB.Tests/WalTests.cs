@@ -1,4 +1,5 @@
 using CSharpDB.Core;
+using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Device;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Checkpointing;
@@ -369,6 +370,46 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BackgroundAutoCheckpoint_LargeCommit_CompletesRemainingSlicesWhileIdle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_background_idle_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(1),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = 1,
+        };
+
+        try
+        {
+            await using var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct);
+
+            await pager.BeginTransactionAsync(ct);
+            uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+            var tree = new BTree(pager, rootPageId);
+            byte[] payload = new byte[160];
+            for (int i = 1; i <= 1500; i++)
+            {
+                payload[0] = (byte)(i & 0xFF);
+                await tree.InsertAsync(i, payload, ct);
+            }
+
+            await pager.CommitAsync(ct);
+
+            await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(walPath))
+                File.Delete(walPath);
+        }
+    }
+
+    [Fact]
     public async Task ReaderWalBackpressureLimit_BlocksCommitUntilReadersDrain()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -620,6 +661,24 @@ public class WalTests : IAsyncLifetime
         int bytesRead = await device.ReadAsync((long)pageId * PageConstants.PageSize, buffer, ct);
         Assert.Equal(PageConstants.PageSize, bytesRead);
         Assert.All(buffer, b => Assert.Equal(expectedValue, b));
+    }
+
+    private static async ValueTask<Pager> OpenPagerAsync(
+        string dbPath,
+        PagerOptions options,
+        bool createNew,
+        CancellationToken ct)
+    {
+        var device = new FileStorageDevice(dbPath, createNew);
+        var walIndex = new WalIndex();
+        var wal = new WriteAheadLog(dbPath, walIndex);
+        var pager = await Pager.CreateAsync(device, wal, walIndex, options, ct);
+
+        if (createNew)
+            await pager.InitializeNewDatabaseAsync(ct);
+
+        await pager.RecoverAsync(ct);
+        return pager;
     }
 
     private sealed class BlockingCheckpointInterceptor : IPageOperationInterceptor
