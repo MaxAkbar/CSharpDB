@@ -129,14 +129,23 @@ public static class DatabaseMaintenanceCoordinator
     public static async ValueTask<DatabaseVacuumResult> VacuumAsync(
         string databasePath,
         CancellationToken ct = default)
+        => await VacuumAsync(databasePath, ct, ReplaceVacuumedDatabaseFilesAsync);
+
+    internal static async ValueTask<DatabaseVacuumResult> VacuumAsync(
+        string databasePath,
+        CancellationToken ct,
+        Func<string, string, string, CancellationToken, ValueTask<bool>> replaceDatabaseFilesAsync,
+        string? tempPathOverride = null,
+        string? backupPathOverride = null)
     {
         string fullPath = Path.GetFullPath(databasePath);
-        string tempPath = fullPath + $".vacuum.{Guid.NewGuid():N}.tmp";
-        string backupPath = fullPath + $".vacuumbak.{Guid.NewGuid():N}.tmp";
+        string tempPath = tempPathOverride ?? (fullPath + $".vacuum.{Guid.NewGuid():N}.tmp");
+        string backupPath = backupPathOverride ?? (fullPath + $".vacuumbak.{Guid.NewGuid():N}.tmp");
 
         StorageEngineContext? source = null;
         StorageEngineContext? destination = null;
         DatabaseInspectReport? beforeReport = null;
+        bool deleteBackupFiles = false;
         ClientMetadataSnapshot metadataSnapshot = await ReadClientMetadataSnapshotAsync(fullPath, ct);
 
         try
@@ -166,24 +175,7 @@ public static class DatabaseMaintenanceCoordinator
             await source.Pager.DisposeAsync();
             source = null;
 
-            string sourceWalPath = fullPath + ".wal";
-            if (File.Exists(sourceWalPath))
-                File.Delete(sourceWalPath);
-
-            File.Move(fullPath, backupPath, overwrite: true);
-            try
-            {
-                File.Move(tempPath, fullPath, overwrite: true);
-            }
-            catch
-            {
-                if (File.Exists(backupPath) && !File.Exists(fullPath))
-                    File.Move(backupPath, fullPath, overwrite: true);
-                throw;
-            }
-
-            if (File.Exists(backupPath))
-                File.Delete(backupPath);
+            deleteBackupFiles = await replaceDatabaseFilesAsync(fullPath, tempPath, backupPath, ct);
 
             var afterReport = await DatabaseInspector.InspectAsync(fullPath, new DatabaseInspectOptions(), ct);
             return new DatabaseVacuumResult
@@ -203,8 +195,49 @@ public static class DatabaseMaintenanceCoordinator
 
             TryDeleteFile(tempPath);
             TryDeleteFile(tempPath + ".wal");
-            TryDeleteFile(backupPath);
-            TryDeleteFile(backupPath + ".wal");
+
+            if (deleteBackupFiles)
+            {
+                TryDeleteFile(backupPath);
+                TryDeleteFile(backupPath + ".wal");
+            }
+        }
+    }
+
+    private static ValueTask<bool> ReplaceVacuumedDatabaseFilesAsync(
+        string fullPath,
+        string tempPath,
+        string backupPath,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        string sourceWalPath = fullPath + ".wal";
+        if (File.Exists(sourceWalPath))
+            File.Delete(sourceWalPath);
+
+        File.Move(fullPath, backupPath, overwrite: true);
+        try
+        {
+            File.Move(tempPath, fullPath, overwrite: true);
+            return ValueTask.FromResult(true);
+        }
+        catch
+        {
+            if (File.Exists(backupPath) && !File.Exists(fullPath))
+            {
+                try
+                {
+                    File.Move(backupPath, fullPath, overwrite: true);
+                    return ValueTask.FromResult(true);
+                }
+                catch
+                {
+                    // Keep the backup in place when rollback fails.
+                }
+            }
+
+            throw;
         }
     }
 

@@ -222,6 +222,56 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task VacuumAsync_WhenReplacementFailsAfterBackupMove_PreservesBackupCopy()
+    {
+        await _client.ExecuteSqlAsync("CREATE TABLE backup_guard (id INTEGER PRIMARY KEY, value TEXT);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO backup_guard VALUES (1, 'alpha');", Ct);
+        await _client.DisposeAsync();
+
+        string tempPath = _dbPath + ".vacuum-test.tmp";
+        string backupPath = _dbPath + ".vacuum-backup-test.tmp";
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<IOException>(() =>
+                DatabaseMaintenanceCoordinator.VacuumAsync(
+                    _dbPath,
+                    Ct,
+                    static (fullPath, _, backupFilePath, cancellationToken) =>
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        File.Move(fullPath, backupFilePath, overwrite: true);
+                        throw new IOException("Simulated replacement failure.");
+                    },
+                    tempPath,
+                    backupPath).AsTask());
+
+            Assert.Contains("Simulated replacement failure", ex.Message, StringComparison.Ordinal);
+            Assert.False(File.Exists(tempPath));
+            Assert.False(File.Exists(tempPath + ".wal"));
+            Assert.True(File.Exists(backupPath));
+
+            await using var backupDb = await Database.OpenAsync(backupPath, Ct);
+            await using var result = await backupDb.ExecuteAsync("SELECT COUNT(*) FROM backup_guard;", Ct);
+            var rows = await result.ToListAsync(Ct);
+            Assert.Equal(1L, Assert.Single(rows)[0].AsInteger);
+        }
+        finally
+        {
+            if (File.Exists(backupPath) && !File.Exists(_dbPath))
+                File.Move(backupPath, _dbPath, overwrite: true);
+
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+            if (File.Exists(tempPath + ".wal"))
+                File.Delete(tempPath + ".wal");
+
+            _client = CreateClient();
+            _ = await _client.GetInfoAsync(Ct);
+        }
+    }
+
+    [Fact]
     public async Task ReindexAsync_RejectsActiveClientManagedTransactions()
     {
         await _client.ExecuteSqlAsync("CREATE TABLE tx_guard (id INTEGER PRIMARY KEY, value TEXT);", Ct);
