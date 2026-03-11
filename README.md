@@ -15,7 +15,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 
 **Use cases:**
 
-- Embedded databases for desktop, CLI, or IoT applications
+- Embedded databases for mobile, desktop, CLI, or IoT applications
 - Prototyping and local development without setting up a database server
 - Educational reference for understanding database internals (storage engines, B+trees, WAL, query planning)
 - Cross-language interoperability via the native C library, REST API, or Node.js package
