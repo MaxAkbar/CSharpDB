@@ -1,5 +1,6 @@
 namespace CSharpDB.Service.Models;
 
+[Obsolete("CSharpDB.Service models are deprecated and will be removed in v2.0.0. Use CSharpDB.Client.Models instead.")]
 public sealed class ViewBrowseResult
 {
     public required string ViewName { get; init; }

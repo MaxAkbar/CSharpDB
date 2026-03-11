@@ -1,6 +1,6 @@
 # CSharpDB.Service
 
-Compatibility facade for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB) in ASP.NET Core, Blazor, or MCP server applications.
+Deprecated compatibility facade for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB) in ASP.NET Core, Blazor, or MCP server applications.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -12,6 +12,13 @@ Compatibility facade for hosting [CSharpDB](https://github.com/MaxAkbar/CSharpDB
 `CSharpDB.Service` now delegates to `CSharpDB.Client`.
 
 Its purpose is transition compatibility for existing in-process hosts that still inject `CSharpDbService`. The authoritative database API lives in `CSharpDB.Client`; this package preserves the old DI shape, events, and model surface while the repo retires direct service usage.
+
+## Status
+
+- `CSharpDB.Service` is deprecated for new development.
+- Existing `v1.x` applications can keep using it as a compatibility layer.
+- Planned removal target: `v2.0.0`
+- Migration target: `CSharpDB.Client`
 
 ## Features
 
@@ -140,6 +147,14 @@ var execution = await db.ExecuteProcedureAsync("GetUserById", new Dictionary<str
 
 ## Installation
 
+For new development, prefer:
+
+```
+dotnet add package CSharpDB.Client
+```
+
+Use this package only for compatibility with existing hosts:
+
 ```
 dotnet add package CSharpDB.Service
 ```
@@ -162,6 +177,16 @@ dotnet add package CSharpDB
 |---------|-------------|
 | [CSharpDB.Data](https://www.nuget.org/packages/CSharpDB.Data) | Underlying ADO.NET provider |
 | [CSharpDB.Engine](https://www.nuget.org/packages/CSharpDB.Engine) | Embedded database engine |
+
+## Removal Plan
+
+`CSharpDB.Service` is planned for removal in `v2.0.0`.
+
+Before `v2.0.0`, consumers should:
+
+- replace `CSharpDbService` injection with `ICSharpDbClient` or `CSharpDbClient`
+- move service-model usage to `CSharpDB.Client.Models` where applicable
+- stop adding new dependencies on `CSharpDB.Service`
 
 ## License
 

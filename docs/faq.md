@@ -58,7 +58,7 @@ dotnet run --project src/CSharpDB.Cli -- mydata.db
 Then:
 
 ```text
-csdb> .read samples/ecommerce-store.sql
+csdb> .read samples/ecommerce-store/schema.sql
 ```
 
 ### Can the Admin Query tab run multi-statement SQL?

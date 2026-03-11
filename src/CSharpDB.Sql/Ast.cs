@@ -273,7 +273,7 @@ public sealed class IsNullExpression : Expression
 
 public sealed class FunctionCallExpression : Expression
 {
-    public required string FunctionName { get; init; } // COUNT, SUM, AVG, MIN, MAX
+    public required string FunctionName { get; init; } // COUNT, SUM, AVG, MIN, MAX, TEXT
     public required List<Expression> Arguments { get; init; }
     public bool IsDistinct { get; init; }
     public bool IsStarArg { get; init; } // for COUNT(*)

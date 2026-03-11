@@ -14,6 +14,7 @@ public static class ExpressionEvaluator
             ColumnRefExpression col => EvalColumn(col, row, schema),
             BinaryExpression bin => EvalBinary(bin, row, schema),
             UnaryExpression un => EvalUnary(un, row, schema),
+            FunctionCallExpression func => EvalFunction(func, row, schema),
             LikeExpression like => EvalLike(like, row, schema),
             InExpression inExpr => EvalIn(inExpr, row, schema),
             BetweenExpression bet => EvalBetween(bet, row, schema),
@@ -94,6 +95,14 @@ public static class ExpressionEvaluator
             },
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown unary op: {un.Op}"),
         };
+    }
+
+    private static DbValue EvalFunction(FunctionCallExpression func, DbValue[] row, TableSchema schema)
+    {
+        if (ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName.ToUpperInvariant()))
+            throw new CSharpDbException(ErrorCode.Unknown, $"Aggregate function '{func.FunctionName}' requires aggregate context.");
+
+        return ScalarFunctionEvaluator.Evaluate(func, expr => Evaluate(expr, row, schema));
     }
 
     private static DbValue BoolToDb(bool value) => DbValue.FromInteger(value ? 1 : 0);

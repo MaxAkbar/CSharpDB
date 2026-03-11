@@ -2,8 +2,18 @@
 param(
     [string]$Configuration = "Release",
     [string]$OutputRoot = "",
+    [int]$MacroRepeatCount = 3,
     [string[]]$MicroFilters = @(
         "*PointLookupBenchmarks*",
+        "*InMemorySqlBenchmarks*",
+        "*InMemoryCollectionBenchmarks*",
+        "*InMemoryAdoNetBenchmarks*",
+        "*InMemoryPersistenceBenchmarks*",
+        "*CollectionPayloadBenchmarks*",
+        "*CollectionSchemaBreadthBenchmarks*",
+        "*ColdLookupBenchmarks*",
+        "*CollectionIndexBenchmarks*",
+        "*StorageTuningBenchmarks*",
         "*InsertBenchmarks*",
         "*JoinBenchmarks*",
         "*OrderByIndexBenchmarks*",
@@ -15,7 +25,8 @@ param(
     [switch]$SkipMicro,
     [switch]$SkipMacro,
     [switch]$SkipStress,
-    [switch]$SkipScaling
+    [switch]$SkipScaling,
+    [switch]$SkipRepro
 )
 
 Set-StrictMode -Version Latest
@@ -63,17 +74,39 @@ if (-not $SkipMicro)
 
 if (-not $SkipMacro)
 {
-    Invoke-BenchmarkRun -Label "Macro" -Arguments @("--macro")
+    $macroArgs = @("--macro")
+    if ($MacroRepeatCount -gt 1)
+    {
+        $macroArgs += @("--repeat", $MacroRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $macroArgs += "--repro"
+    }
+
+    Invoke-BenchmarkRun -Label "Macro" -Arguments $macroArgs
 }
 
 if (-not $SkipStress)
 {
-    Invoke-BenchmarkRun -Label "Stress" -Arguments @("--stress")
+    $stressArgs = @("--stress")
+    if (-not $SkipRepro)
+    {
+        $stressArgs += "--repro"
+    }
+
+    Invoke-BenchmarkRun -Label "Stress" -Arguments $stressArgs
 }
 
 if (-not $SkipScaling)
 {
-    Invoke-BenchmarkRun -Label "Scaling" -Arguments @("--scaling")
+    $scalingArgs = @("--scaling")
+    if (-not $SkipRepro)
+    {
+        $scalingArgs += "--repro"
+    }
+
+    Invoke-BenchmarkRun -Label "Scaling" -Arguments $scalingArgs
 }
 
 function Copy-NewArtifacts
@@ -120,6 +153,8 @@ $dotnetInfo = & dotnet --info
     "Repository: $repoRoot"
     "Benchmark project: $benchmarkProject"
     "Configuration: $Configuration"
+    "Macro repeat count: $MacroRepeatCount"
+    "Repro mode: $(if ($SkipRepro) { "disabled" } else { "enabled" })"
     "Commit: $gitHead"
     "Micro CSV copied: $copiedMicroCsv"
     "Micro logs copied: $copiedMicroLogs"

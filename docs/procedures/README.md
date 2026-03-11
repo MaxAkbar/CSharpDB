@@ -1,6 +1,6 @@
 # Stored Procedures (Table-Backed)
 
-This feature adds a managed, table-backed procedure catalog to CSharpDB. Procedures are stored in `__procedures`, executed in-process, and exposed through `CSharpDB.Service`, REST API, and Admin Web.
+This feature adds a managed, table-backed procedure catalog to CSharpDB. Procedures are stored in `__procedures`, executed in-process, and exposed through `CSharpDB.Client`, REST API, and Admin Web.
 
 Native SQL procedure syntax (`CREATE PROCEDURE` / `CALL`) is not part of v1. Instead, procedures are metadata plus parameterized SQL body text.
 
@@ -20,7 +20,7 @@ CREATE TABLE __procedures (
 CREATE INDEX idx___procedures_is_enabled ON __procedures (is_enabled);
 ```
 
-The service auto-creates this catalog on startup.
+The client layer auto-creates this catalog on first access.
 
 ## Parameter Metadata Format
 
@@ -126,7 +126,7 @@ Admin includes a **Procedures** section in Object Explorer and a dedicated Proce
 - On success:
   - transaction commits
   - response includes per-statement timing and result payloads
-- Schema-change statements still raise schema refresh events.
+- Schema-change statements are visible to subsequent client, API, and Admin reads. Hosts should handle refresh notifications at the host layer.
 
 ## Validation Rules
 

@@ -77,6 +77,7 @@ public sealed class ClientSqlExecutionTests
     [Fact]
     public async Task GetInfoAsync_CanceledWarmup_DoesNotPoisonClient()
     {
+        var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_test_{Guid.NewGuid():N}.db");
 
         try
@@ -91,10 +92,10 @@ public sealed class ClientSqlExecutionTests
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await client.GetInfoAsync(cts.Token));
 
-            var result = await client.ExecuteSqlAsync("CREATE TABLE warmup_ok (id INTEGER PRIMARY KEY);");
+            var result = await client.ExecuteSqlAsync("CREATE TABLE warmup_ok (id INTEGER PRIMARY KEY);", ct);
             Assert.Null(result.Error);
 
-            var info = await client.GetInfoAsync();
+            var info = await client.GetInfoAsync(ct);
             Assert.Equal(1, info.TableCount);
         }
         finally

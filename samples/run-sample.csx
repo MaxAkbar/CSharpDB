@@ -1,5 +1,6 @@
-// dotnet-script runner: dotnet script samples/run-sample.csx -- samples/ecommerce-store.sql
-// Optional second arg: explicit procedure definition file (.procedures.json)
+// dotnet-script runner: dotnet script samples/run-sample.csx -- samples/ecommerce-store
+// Accepts either a sample folder or an explicit SQL file path.
+// Optional second arg: explicit procedure definition file or a folder containing procedures.json.
 #nullable enable
 
 using System.Net.Http;
@@ -7,12 +8,11 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 
-var sqlFile = Args.Count > 0 ? Args[0] : "samples/ecommerce-store.sql";
-var sqlPath = Path.GetFullPath(sqlFile);
-var procedureFile = Args.Count > 1
-    ? Args[1]
-    : Path.Combine(Path.GetDirectoryName(sqlPath)!, $"{Path.GetFileNameWithoutExtension(sqlPath)}.procedures.json");
-var procedurePath = Path.GetFullPath(procedureFile);
+var sampleInput = Args.Count > 0 ? Args[0] : "samples/ecommerce-store";
+var sqlPath = ResolveSqlPath(sampleInput);
+var procedurePath = Args.Count > 1
+    ? ResolveProcedurePath(Args[1], sqlPath)
+    : GetDefaultProcedurePath(sqlPath);
 var baseUrl = Environment.GetEnvironmentVariable("CSHARPDB_API_BASEURL") ?? "http://localhost:61818";
 
 if (!File.Exists(sqlPath))
@@ -159,6 +159,48 @@ foreach (var procedure in procedures)
 }
 
 Console.WriteLine($"Procedure import ({Path.GetFileName(procedurePath)}): {created} created, {updated} updated, {procFail} failed");
+
+static string ResolveSqlPath(string input)
+{
+    string resolved = ResolvePath(input);
+    return Directory.Exists(resolved)
+        ? Path.Combine(resolved, "schema.sql")
+        : resolved;
+}
+
+static string ResolveProcedurePath(string input, string sqlPath)
+{
+    string resolved = ResolvePath(input);
+    return Directory.Exists(resolved)
+        ? Path.Combine(resolved, "procedures.json")
+        : resolved;
+}
+
+static string ResolvePath(string input)
+{
+    string direct = Path.GetFullPath(input);
+    if (File.Exists(direct) || Directory.Exists(direct))
+        return direct;
+
+    string underSamples = Path.GetFullPath(Path.Combine("samples", input));
+    if (File.Exists(underSamples) || Directory.Exists(underSamples))
+        return underSamples;
+
+    return direct;
+}
+
+static string GetDefaultProcedurePath(string sqlPath)
+{
+    string? directory = Path.GetDirectoryName(sqlPath);
+    if (string.IsNullOrWhiteSpace(directory))
+        return Path.GetFullPath("procedures.json");
+
+    string conventionalPath = Path.Combine(directory, "procedures.json");
+    if (string.Equals(Path.GetFileName(sqlPath), "schema.sql", StringComparison.OrdinalIgnoreCase) || File.Exists(conventionalPath))
+        return conventionalPath;
+
+    return Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(sqlPath)}.procedures.json");
+}
 
 public sealed class ProcedureDefinitionInput
 {

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Core;
@@ -6,6 +7,7 @@ namespace CSharpDB.Engine;
 
 internal sealed class CollectionDocumentCodec<T>
 {
+    private const int StackallocKeyThreshold = 256;
     private readonly IRecordSerializer _recordSerializer;
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
@@ -39,59 +41,85 @@ internal sealed class CollectionDocumentCodec<T>
             ]);
         }
 
-        byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
         byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes(document, s_jsonOptions);
-        return CollectionPayloadCodec.Encode(keyUtf8, jsonUtf8);
+        return CollectionPayloadCodec.Encode(key, jsonUtf8);
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal (string Key, T Document) Decode(ReadOnlySpan<byte> payload)
     {
-        if (!UsesDirectPayloadFormat || !CollectionPayloadCodec.IsDirectPayload(payload))
-            return DecodeLegacy(payload);
+        return (DecodeKey(payload), DecodeDocument(payload));
+    }
 
-        string storedKey = CollectionPayloadCodec.DecodeKey(payload);
-        T document = JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions)!;
-        return (storedKey, document);
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    internal T DecodeDocument(ReadOnlySpan<byte> payload)
+    {
+        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
+            return JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions)!;
+
+        return DecodeLegacy(payload).Document;
+    }
+
+    internal string DecodeKey(ReadOnlySpan<byte> payload)
+    {
+        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
+            return CollectionPayloadCodec.DecodeKey(payload);
+
+        return DecodeLegacyKey(payload);
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal bool TryDecodeDocumentForKey(
         ReadOnlySpan<byte> payload,
-        ReadOnlySpan<byte> expectedKeyUtf8,
         string expectedKey,
         out T? document)
     {
-        if (!PayloadMatchesKey(payload, expectedKeyUtf8, expectedKey))
+        if (!PayloadMatchesKey(payload, expectedKey))
         {
             document = default;
             return false;
         }
 
-        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
-        {
-            document = JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions);
-            return true;
-        }
-
-        document = DecodeLegacy(payload).Document;
+        document = DecodeDocument(payload);
         return true;
     }
 
     internal bool PayloadMatchesKey(
         ReadOnlySpan<byte> payload,
-        ReadOnlySpan<byte> expectedKeyUtf8,
         string expectedKey)
     {
-        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
-            return CollectionPayloadCodec.KeyEquals(payload, expectedKeyUtf8);
+        ArgumentNullException.ThrowIfNull(expectedKey);
 
-        if (_recordSerializer.TryColumnTextEquals(payload, 0, expectedKeyUtf8, out bool equals))
-            return equals;
+        int byteCount = Encoding.UTF8.GetByteCount(expectedKey);
+        byte[]? rented = null;
+        Span<byte> utf8 = byteCount <= StackallocKeyThreshold
+            ? stackalloc byte[StackallocKeyThreshold]
+            : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
 
-        return DecodeLegacyKey(payload) == expectedKey;
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(expectedKey.AsSpan(), utf8);
+            ReadOnlySpan<byte> expectedKeyUtf8 = utf8[..written];
+
+            if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
+                return CollectionPayloadCodec.KeyEquals(payload, expectedKeyUtf8);
+
+            if (_recordSerializer.TryColumnTextEquals(payload, 0, expectedKeyUtf8, out bool equals))
+                return equals;
+
+            return DecodeLegacyKey(payload) == expectedKey;
+        }
+        finally
+        {
+            if (rented != null)
+            {
+                utf8[..byteCount].Clear();
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
     }
 
     private (string Key, T Document) DecodeLegacy(ReadOnlySpan<byte> payload)

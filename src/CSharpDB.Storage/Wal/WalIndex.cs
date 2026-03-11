@@ -119,6 +119,35 @@ public sealed class WalIndex
             _frameCount = 0;
         }
     }
+
+    /// <summary>
+    /// Replace the committed WAL state after an in-place compaction that already
+    /// preserved the surviving committed frames on disk.
+    /// </summary>
+    internal void ReplaceCommittedState(
+        Dictionary<uint, long> latestPageMap,
+        int frameCount,
+        int commitAdvanceCount)
+    {
+        ArgumentNullException.ThrowIfNull(latestPageMap);
+
+        if (frameCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(frameCount));
+        if (commitAdvanceCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(commitAdvanceCount));
+
+        lock (_gate)
+        {
+            _pageMap.Clear();
+            _pageMap.EnsureCapacity(latestPageMap.Count);
+
+            foreach (var entry in latestPageMap)
+                _pageMap[entry.Key] = entry.Value;
+
+            _frameCount = frameCount;
+            _commitCounter += commitAdvanceCount;
+        }
+    }
 }
 
 /// <summary>

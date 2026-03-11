@@ -7,10 +7,27 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
+builder.Services.AddCSharpDbClient(sp =>
 {
-    ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
-        ?? "Data Source=csharpdb.db",
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    string? endpoint = configuration["CSharpDB:Endpoint"];
+    CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
+
+    if (!string.IsNullOrWhiteSpace(endpoint))
+    {
+        return new CSharpDbClientOptions
+        {
+            Transport = transport,
+            Endpoint = endpoint,
+        };
+    }
+
+    return new CSharpDbClientOptions
+    {
+        Transport = transport,
+        ConnectionString = configuration.GetConnectionString("CSharpDB")
+            ?? "Data Source=csharpdb.db",
+    };
 });
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
@@ -39,3 +56,22 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+static CSharpDbTransport? ParseTransport(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return null;
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "direct" => CSharpDbTransport.Direct,
+        "http" => CSharpDbTransport.Http,
+        "grpc" => CSharpDbTransport.Grpc,
+        "tcp" => CSharpDbTransport.Tcp,
+        "namedpipes" => CSharpDbTransport.NamedPipes,
+        "named-pipes" => CSharpDbTransport.NamedPipes,
+        "npipe" => CSharpDbTransport.NamedPipes,
+        "pipe" => CSharpDbTransport.NamedPipes,
+        _ => throw new InvalidOperationException($"Unsupported transport '{value}'."),
+    };
+}

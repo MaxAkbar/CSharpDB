@@ -304,7 +304,7 @@ public sealed class QueryPlanner
                     throw new CSharpDbException(ErrorCode.SyntaxError, "Cannot drop the last column of a table.");
 
                 // Rewrite all rows without the dropped column
-                var tree = _catalog.GetTableTree(stmt.TableName);
+                var tree = _catalog.GetTableTree(stmt.TableName, _pager);
                 int? rewriteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
                 var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), rewriteCapacityHint);
                 await scan.OpenAsync(ct);
@@ -433,61 +433,12 @@ public sealed class QueryPlanner
         };
 
         await _catalog.CreateIndexAsync(indexSchema, ct);
-
-        // Populate the index from existing rows
-        var tableTree = _catalog.GetTableTree(stmt.TableName);
-        var indexStore = _catalog.GetIndexStore(stmt.IndexName);
-        var scan = new TableScanOperator(
-            tableTree,
+        await IndexMaintenanceHelper.BackfillIndexAsync(
+            _catalog,
             tableSchema,
+            indexSchema,
             GetReadSerializer(tableSchema),
-            TryGetCachedTreeRowCountCapacityHint(tableTree));
-        await scan.OpenAsync(ct);
-        bool usesDirectIntegerKey =
-            indexColumnIndices.Length == 1 &&
-            tableSchema.Columns[indexColumnIndices[0]].Type == DbType.Integer;
-
-        while (await scan.MoveNextAsync(ct))
-        {
-            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
-                continue; // Don't index entries that include NULL.
-
-            if (stmt.IsUnique)
-            {
-                if (usesDirectIntegerKey)
-                {
-                    // Single-column unique index: key is exact integer value.
-                    var existing = await indexStore.FindAsync(indexKey, ct);
-                    if (existing != null)
-                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                            $"Duplicate key value in unique index '{stmt.IndexName}'.");
-
-                    var payload = new byte[8];
-                    BitConverter.TryWriteBytes(payload, scan.CurrentRowId);
-                    await indexStore.InsertAsync(indexKey, payload, ct);
-                }
-                else
-                {
-                    // Hashed index keys are collision-prone; verify uniqueness by comparing
-                    // the actual indexed column values for rows in the hash bucket.
-                    await EnsureHashedUniqueConstraintAsync(
-                        indexStore,
-                        tableTree,
-                        tableSchema,
-                        indexColumnIndices,
-                        keyComponents!,
-                        indexKey,
-                        stmt.IndexName,
-                        ct);
-
-                    await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
-                }
-            }
-            else
-            {
-                await InsertIntoIndexAsync(indexStore, indexKey, scan.CurrentRowId, ct);
-            }
-        }
+            ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -1009,7 +960,7 @@ public sealed class QueryPlanner
         CancellationToken ct = default)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         int inserted = 0;
@@ -1766,7 +1717,7 @@ public sealed class QueryPlanner
 
         // Validate table exists and build the direct count operator.
         GetSchema(simpleRef.TableName);
-        var tree = _catalog.GetTableTree(simpleRef.TableName);
+        var tree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
         var outputSchema = new[]
         {
@@ -1932,7 +1883,7 @@ public sealed class QueryPlanner
             return false;
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        var tableTree = _catalog.GetTableTree(simpleRef.TableName);
+        var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new ScalarAggregateTableOperator(
             tableTree,
             columnIndex,
@@ -2088,7 +2039,7 @@ public sealed class QueryPlanner
             return false;
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        var tableTree = _catalog.GetTableTree(simpleRef.TableName);
+        var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new ScalarAggregateTableOperator(
             tableTree,
             columnIndex,
@@ -2103,7 +2054,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         // Collect rows to delete (can't modify tree while iterating)
@@ -2145,7 +2096,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
     {
         var schema = GetSchema(stmt.TableName);
-        var tree = _catalog.GetTableTree(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
@@ -3409,53 +3360,7 @@ public sealed class QueryPlanner
     }
 
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
-    {
-        if (keyComponents.Length == 1 && keyComponents[0].Type == DbType.Integer)
-            return keyComponents[0].AsInteger;
-
-        const ulong offsetBasis = 14695981039346656037UL;
-        const ulong prime = 1099511628211UL;
-
-        ulong hash = offsetBasis;
-        for (int i = 0; i < keyComponents.Length; i++)
-            hash = HashIndexKeyComponent(hash, keyComponents[i], prime);
-
-        return unchecked((long)hash);
-    }
-
-    private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
-    {
-        hash ^= (byte)value.Type;
-        hash *= prime;
-
-        switch (value.Type)
-        {
-            case DbType.Integer:
-                hash ^= unchecked((ulong)value.AsInteger);
-                hash *= prime;
-                return hash;
-
-            case DbType.Text:
-            {
-                string text = value.AsText;
-                for (int i = 0; i < text.Length; i++)
-                {
-                    char c = text[i];
-                    hash ^= (byte)c;
-                    hash *= prime;
-                    hash ^= (byte)(c >> 8);
-                    hash *= prime;
-                }
-
-                return hash;
-            }
-
-            default:
-                throw new CSharpDbException(
-                    ErrorCode.TypeMismatch,
-                    $"Unsupported indexed value type '{value.Type}'.");
-        }
-    }
+        => IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
 
     /// <summary>
     /// Attempts to satisfy ORDER BY with natural/index order for a simple single-table query.
@@ -4185,7 +4090,7 @@ public sealed class QueryPlanner
     private async ValueTask InsertIntoAllIndexesAsync(
         IReadOnlyList<IndexSchema> indexes, TableSchema schema, DbValue[] row, long rowId, CancellationToken ct)
     {
-        var tableTree = _catalog.GetTableTree(schema.TableName);
+        var tableTree = _catalog.GetTableTree(schema.TableName, _pager);
 
         foreach (var idx in indexes)
         {
@@ -4250,7 +4155,7 @@ public sealed class QueryPlanner
         IReadOnlyList<IndexSchema> indexes, TableSchema schema,
         DbValue[] oldRow, DbValue[] newRow, long oldRowId, long newRowId, CancellationToken ct)
     {
-        var tableTree = _catalog.GetTableTree(schema.TableName);
+        var tableTree = _catalog.GetTableTree(schema.TableName, _pager);
 
         foreach (var idx in indexes)
         {
@@ -4525,7 +4430,8 @@ public sealed class QueryPlanner
     {
         return expr switch
         {
-            FunctionCallExpression => true,
+            FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
+                || func.Arguments.Any(ContainsAggregate),
             BinaryExpression bin => ContainsAggregate(bin.Left) || ContainsAggregate(bin.Right),
             UnaryExpression un => ContainsAggregate(un.Operand),
             _ => false,

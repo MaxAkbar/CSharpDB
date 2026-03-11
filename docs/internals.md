@@ -134,10 +134,21 @@ CSharpDB.slnx
 │   ├── tutorials/native-ffi/         FFI tutorials (JavaScript via koffi, Python via ctypes)
 │   └── service-daemon/               Service daemon design document
 │
-└── samples/                          Sample SQL datasets
-    ├── ecommerce-store.sql             Northwind Electronics
-    ├── medical-clinic.sql              Riverside Health Center
-    └── school-district.sql             Maplewood School District
+└── samples/                          Sample datasets + import helpers
+    ├── ecommerce-store/
+    │   ├── schema.sql                  Northwind Electronics
+    │   └── procedures.json
+    ├── medical-clinic/
+    │   ├── schema.sql                  Riverside Health Center
+    │   └── procedures.json
+    ├── school-district/
+    │   ├── schema.sql                  Maplewood School District
+    │   └── procedures.json
+    ├── feature-tour/
+    │   ├── schema.sql                  Northstar Field Services
+    │   ├── procedures.json
+    │   └── queries.sql
+    └── run-sample.csx
 ```
 
 ---

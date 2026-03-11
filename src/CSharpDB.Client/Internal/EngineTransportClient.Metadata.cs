@@ -47,7 +47,7 @@ internal sealed partial class EngineTransportClient
             {
                 DataSource = _databasePath,
                 TableCount = db.GetTableNames().Count(name => !IsInternalTable(name)),
-                IndexCount = db.GetIndexes().Count,
+                IndexCount = db.GetIndexes().Count(index => !IsInternalTable(index.TableName)),
                 ViewCount = db.GetViewNames().Count,
                 TriggerCount = db.GetTriggers().Count,
                 ProcedureCount = await CountRowsViaScalarAsync(db, ProcedureTableName, ct),

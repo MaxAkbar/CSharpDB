@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using CSharpDB.Core;
 using CSharpDB.Storage.Indexing;
 
@@ -10,6 +11,7 @@ namespace CSharpDB.Engine;
 internal sealed class CollectionIndexBinding<T>
 {
     private readonly Func<T, object?> _fieldAccessor;
+    private readonly string _jsonPropertyName;
     private readonly CollectionIndexValueKind _valueKind;
 
     private enum CollectionIndexValueKind
@@ -23,12 +25,14 @@ internal sealed class CollectionIndexBinding<T>
         string indexName,
         IIndexStore indexStore,
         Func<T, object?> fieldAccessor,
+        string jsonPropertyName,
         CollectionIndexValueKind valueKind)
     {
         FieldPath = fieldPath;
         IndexName = indexName;
         IndexStore = indexStore;
         _fieldAccessor = fieldAccessor;
+        _jsonPropertyName = jsonPropertyName;
         _valueKind = valueKind;
     }
 
@@ -38,6 +42,24 @@ internal sealed class CollectionIndexBinding<T>
 
     internal IIndexStore IndexStore { get; }
 
+    internal string JsonPropertyName => _jsonPropertyName;
+
+    internal bool UsesIntegerKey => _valueKind == CollectionIndexValueKind.Integer;
+
+    internal bool UsesTextKey => _valueKind == CollectionIndexValueKind.Text;
+
+    internal bool MatchesValue<TField>(T document, TField value, EqualityComparer<TField> comparer)
+    {
+        object? fieldValue = _fieldAccessor(document);
+        if (fieldValue is TField typed)
+            return comparer.Equals(typed, value);
+
+        if (fieldValue is null)
+            return value is null;
+
+        return false;
+    }
+    
     internal static string GetFieldPath<TField>(Expression<Func<T, TField>> fieldSelector)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
@@ -65,7 +87,14 @@ internal sealed class CollectionIndexBinding<T>
         MemberInfo member = ResolveMember(fieldPath);
         var accessor = BuildAccessor(member);
         var valueKind = ResolveValueKind(GetMemberType(member), fieldPath);
-        return new CollectionIndexBinding<T>(fieldPath, indexName, indexStore, accessor, valueKind);
+        string jsonPropertyName = JsonNamingPolicy.CamelCase.ConvertName(fieldPath);
+        return new CollectionIndexBinding<T>(
+            fieldPath,
+            indexName,
+            indexStore,
+            accessor,
+            jsonPropertyName,
+            valueKind);
     }
 
     internal static void ValidateFieldPath(string fieldPath)
@@ -81,11 +110,30 @@ internal sealed class CollectionIndexBinding<T>
     internal bool TryBuildKeyFromValue(object? value, out long indexKey)
         => TryBuildKey(value, out indexKey);
 
+    internal bool TryBuildKeyFromDirectPayload(ReadOnlySpan<byte> payload, out long indexKey)
+    {
+        indexKey = 0;
+        if (!CollectionIndexedFieldReader.TryReadValue(payload, _jsonPropertyName, out var value))
+            return false;
+
+        return TryBuildKey(value, out indexKey);
+    }
+
+    internal bool TryDirectPayloadTextEquals(ReadOnlySpan<byte> payload, string value)
+        => UsesTextKey && CollectionIndexedFieldReader.TryTextEquals(payload, _jsonPropertyName, value);
+
     private bool TryBuildKey(object? value, out long indexKey)
     {
         indexKey = 0;
         if (!TryConvertToDbValue(value, out var dbValue))
             return false;
+
+        return TryBuildKey(dbValue, out indexKey);
+    }
+
+    private bool TryBuildKey(DbValue dbValue, out long indexKey)
+    {
+        indexKey = 0;
 
         if (_valueKind == CollectionIndexValueKind.Integer)
         {
@@ -233,6 +281,7 @@ internal sealed class CollectionIndexBinding<T>
 
         return unchecked((long)hash);
     }
+
 
     private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
     {

@@ -2,6 +2,16 @@
 
 A persistent background service that keeps CSharpDB loaded in memory, serves multiple clients concurrently, and persists changes to disk automatically. Runs on Windows, Linux, and macOS.
 
+## Current Status
+
+The current implementation is intentionally narrower than the full roadmap:
+
+- `CSharpDB.Daemon` is now the dedicated gRPC host
+- `CSharpDB.Api` remains the separate REST/HTTP host
+- the daemon does not currently host the REST endpoints described later in this document
+
+The remainder of this file is still the broader service-daemon roadmap.
+
 ---
 
 ## Problem

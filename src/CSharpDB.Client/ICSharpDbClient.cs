@@ -71,6 +71,9 @@ public interface ICSharpDbClient : IAsyncDisposable
     Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default);
 
     Task CheckpointAsync(CancellationToken ct = default);
+    Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default);
+    Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default);
+    Task<VacuumResult> VacuumAsync(CancellationToken ct = default);
     Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default);
     Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default);
     Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default);

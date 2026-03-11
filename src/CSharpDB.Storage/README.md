@@ -16,23 +16,33 @@ If you are using SQL or the engine layer, customize storage like this:
 
 ```csharp
 using CSharpDB.Engine;
-using CSharpDB.Storage.Checkpointing;
-using CSharpDB.Storage.Paging;
 
 var options = new DatabaseOptions()
     .ConfigureStorageEngine(builder =>
     {
-        builder.UsePagerOptions(new PagerOptions
-        {
-            MaxCachedPages = 2048,
-            CheckpointPolicy = new FrameCountCheckpointPolicy(500),
-        });
-
-        builder.UseCachingBTreeIndexes(findCacheCapacity: 4096);
+        builder.UseLookupOptimizedPreset();
     });
 
 await using var db = await Database.OpenAsync("app.cdb", options);
 ```
+
+`UseLookupOptimizedPreset()` is the current recommended opt-in preset for file-backed lookup-heavy workloads. It sets `MaxCachedPages = 2048` and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
+
+For sustained durable writes, use the write-heavy preset instead:
+
+```csharp
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseWriteOptimizedPreset();
+    });
+
+await using var db = await Database.OpenAsync("ingest.cdb", options);
+```
+
+`UseWriteOptimizedPreset()` is the current recommended opt-in preset for file-backed write-heavy workloads. It keeps the existing cache and index configuration, raises the auto-checkpoint frame threshold to `4096`, and runs auto-checkpoints in background slices instead of blocking the triggering commit. `PagerOptions.AutoCheckpointMaxPagesPerStep` controls how much work each background slice performs; the default remains `64` pages. In the current durable-write diagnostics, the `64`-page background preset was the best measured background variant at `33.30K ops/sec`, slightly ahead of `256` pages at `33.24K` and foreground `FrameCount(4096)` at `33.13K`. The important difference is that background sliced mode kept checkpoint work off essentially all commits while the foreground policy still had `246` commits pay checkpoint cost in the median run.
 
 ## Low-level use: open the storage graph directly
 

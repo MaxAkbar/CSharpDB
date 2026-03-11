@@ -79,6 +79,21 @@ public sealed class SqlScriptSplitterTests
         Assert.Equal("INSERT INTO t VALUES (1)", statements[1]);
     }
 
+    [Fact]
+    public void SplitExecutableStatements_IgnoresTrailingCommentOnlyRemainder()
+    {
+        string sql = """
+            SELECT * FROM t;
+            -- Admin-only examples can live here without becoming executable statements
+            -- EXEC ExampleProc arg=1;
+            """;
+
+        var statements = SqlScriptSplitter.SplitExecutableStatements(sql);
+
+        Assert.Single(statements);
+        Assert.Equal("SELECT * FROM t;", statements[0]);
+    }
+
     [Theory]
     [InlineData("SELECT * FROM t;", true)]
     [InlineData("INSERT INTO t VALUES (1);", false)]

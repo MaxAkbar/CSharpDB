@@ -6,25 +6,38 @@ namespace CSharpDB.Storage.Checkpointing;
 internal sealed class CheckpointCoordinator : IDisposable
 {
     private readonly SemaphoreSlim _checkpointLock = new(1, 1);
+    private readonly object _backgroundCheckpointGate = new();
     private int _activeReaderCount;
     private int _deferredCheckpointRequested;
+    private Task? _backgroundCheckpointTask;
 
     public int ActiveReaderCount => Volatile.Read(ref _activeReaderCount);
+    public bool HasPendingCheckpointRequest => Volatile.Read(ref _deferredCheckpointRequested) != 0;
 
     public WalSnapshot AcquireReaderSnapshot(WalIndex index)
     {
-        Interlocked.Increment(ref _activeReaderCount);
-        return index.TakeSnapshot();
+        _checkpointLock.Wait();
+        try
+        {
+            Interlocked.Increment(ref _activeReaderCount);
+            return index.TakeSnapshot();
+        }
+        finally
+        {
+            _checkpointLock.Release();
+        }
     }
 
-    public void ReleaseReaderSnapshot()
+    public bool ReleaseReaderSnapshot()
     {
         int activeCount = Interlocked.Decrement(ref _activeReaderCount);
         if (activeCount < 0)
         {
             Interlocked.Exchange(ref _activeReaderCount, 0);
-            return;
+            return false;
         }
+
+        return activeCount == 0;
     }
 
     public bool ShouldCheckpoint(
@@ -54,6 +67,11 @@ internal sealed class CheckpointCoordinator : IDisposable
         return shouldCheckpoint;
     }
 
+    public void RequestDeferredCheckpoint()
+    {
+        Volatile.Write(ref _deferredCheckpointRequested, 1);
+    }
+
     public bool TryConsumeDeferredCheckpointRequest()
     {
         if (ActiveReaderCount != 0)
@@ -75,21 +93,64 @@ internal sealed class CheckpointCoordinator : IDisposable
         if (committedFrameCount == 0)
             return;
 
-        if (ActiveReaderCount > 0)
-        {
-            Volatile.Write(ref _deferredCheckpointRequested, 1);
-            return;
-        }
-
         await _checkpointLock.WaitAsync(ct);
         try
         {
+            if (ActiveReaderCount > 0)
+            {
+                Volatile.Write(ref _deferredCheckpointRequested, 1);
+                return;
+            }
+
             await checkpointAction(ct);
-            Interlocked.Exchange(ref _deferredCheckpointRequested, 0);
         }
         finally
         {
             _checkpointLock.Release();
+        }
+    }
+
+    public bool TryStartBackgroundCheckpoint(Func<CancellationToken, ValueTask> checkpointAction)
+    {
+        if (ActiveReaderCount > 0 || !HasPendingCheckpointRequest)
+            return false;
+
+        lock (_backgroundCheckpointGate)
+        {
+            if (_backgroundCheckpointTask is { IsCompleted: false })
+                return false;
+
+            _backgroundCheckpointTask = Task.Run(
+                async () => await checkpointAction(CancellationToken.None));
+            return true;
+        }
+    }
+
+    public async ValueTask WaitForBackgroundCheckpointAsync(CancellationToken ct = default)
+    {
+        Task? backgroundCheckpointTask;
+        lock (_backgroundCheckpointGate)
+        {
+            backgroundCheckpointTask = _backgroundCheckpointTask;
+        }
+
+        if (backgroundCheckpointTask is null)
+            return;
+
+        try
+        {
+            await backgroundCheckpointTask.WaitAsync(ct);
+        }
+        finally
+        {
+            lock (_backgroundCheckpointGate)
+            {
+                if (ReferenceEquals(_backgroundCheckpointTask, backgroundCheckpointTask) &&
+                    backgroundCheckpointTask.IsCompleted)
+                {
+                    _backgroundCheckpointTask = null;
+                }
+            }
         }
     }
 
