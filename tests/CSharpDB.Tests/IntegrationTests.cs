@@ -820,6 +820,31 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TextFunction_AllowsLikeFilteringAcrossValueTypes()
+    {
+        await _db.ExecuteAsync("CREATE TABLE mixed_filter (id INTEGER, code INTEGER, note TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO mixed_filter VALUES (1, 5, 'alpha')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO mixed_filter VALUES (2, 15, 'bravo')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO mixed_filter VALUES (3, NULL, 'charlie')", TestContext.Current.CancellationToken);
+
+        await using var numericResult = await _db.ExecuteAsync(
+            "SELECT id FROM mixed_filter WHERE TEXT(code) LIKE '%15%' ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var numericRows = await numericResult.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(numericRows);
+        Assert.Equal(2L, numericRows[0][0].AsInteger);
+
+        await using var nullResult = await _db.ExecuteAsync(
+            "SELECT id FROM mixed_filter WHERE TEXT(code) LIKE '%NULL%' ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var nullRows = await nullResult.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(nullRows);
+        Assert.Equal(3L, nullRows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task In_WithNull()
     {
         await _db.ExecuteAsync("CREATE TABLE innull (id INTEGER, val INTEGER)", TestContext.Current.CancellationToken);
@@ -848,6 +873,23 @@ public class IntegrationTests : IAsyncLifetime
         var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
         Assert.Single(rows);
         Assert.Equal(3, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task TextFunction_CanWrapAggregateOutput()
+    {
+        await _db.ExecuteAsync("CREATE TABLE agg_text (id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO agg_text VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO agg_text VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO agg_text VALUES (3)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT TEXT(COUNT(*)) FROM agg_text",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal("3", rows[0][0].AsText);
     }
 
     [Fact]

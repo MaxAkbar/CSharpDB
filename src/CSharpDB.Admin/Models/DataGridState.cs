@@ -15,9 +15,14 @@ public sealed class DataGridRow
     public RowState State { get; set; }
 
     public DataGridRow(object?[] values, RowState state = RowState.Unmodified)
+        : this(values, values, state)
     {
-        OriginalValues = (object?[])values.Clone();
-        CurrentValues = (object?[])values.Clone();
+    }
+
+    public DataGridRow(object?[] originalValues, object?[] currentValues, RowState state = RowState.Unmodified)
+    {
+        OriginalValues = (object?[])originalValues.Clone();
+        CurrentValues = (object?[])currentValues.Clone();
         State = state;
     }
 

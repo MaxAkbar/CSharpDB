@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>CSharpDB.Service</RootNamespace>
-    <Description>Thread-safe service layer for hosting CSharpDB in ASP.NET Core, Blazor, or MCP server applications.</Description>
+    <Description>Deprecated compatibility facade over CSharpDB.Client for existing hosts. Planned for removal in v2.0.0.</Description>
   </PropertyGroup>
 
   <ItemGroup>

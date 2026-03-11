@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using CSharpDB.Core;
 using CSharpDB.Storage.Indexing;
+using CSharpDB.Storage.Serialization;
 
 namespace CSharpDB.Engine;
 
@@ -58,7 +59,6 @@ public sealed class Collection<T>
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
-            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
             byte[] newPayload = _codec.Encode(key, document);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
@@ -73,13 +73,10 @@ public sealed class Collection<T>
                     return;
                 }
 
-                if (_codec.PayloadMatchesKey(existingPayload.Span, keyUtf8, key))
+                if (_codec.PayloadMatchesKey(existingPayload.Span, key))
                 {
                     if (_indexes.Count > 0)
-                    {
-                        var existingDocument = _codec.Decode(existingPayload.Span).Document;
-                        await DeleteFromIndexesAsync(probeHash, existingDocument, ct);
-                    }
+                        await DeleteFromIndexesAsync(probeHash, existingPayload, ct);
 
                     await _tree.DeleteAsync(probeHash, ct);
                     await _tree.InsertAsync(probeHash, newPayload, ct);
@@ -102,7 +99,6 @@ public sealed class Collection<T>
         ArgumentNullException.ThrowIfNull(key);
 
         long startHash = HashDocumentKey(key);
-        byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
         for (int probe = 0; probe < MaxProbeDistance; probe++)
         {
@@ -112,7 +108,7 @@ public sealed class Collection<T>
             if (payload is not { } payloadMemory)
                 return default;
 
-            if (_codec.TryDecodeDocumentForKey(payloadMemory.Span, keyUtf8, key, out var doc))
+            if (_codec.TryDecodeDocumentForKey(payloadMemory.Span, key, out var doc))
                 return doc;
         }
 
@@ -132,7 +128,6 @@ public sealed class Collection<T>
         await AutoCommitAsync(async () =>
         {
             long startHash = HashDocumentKey(key);
-            byte[] keyUtf8 = Encoding.UTF8.GetBytes(key);
 
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
@@ -142,13 +137,10 @@ public sealed class Collection<T>
                 if (payload is not { } payloadMemory)
                     return;
 
-                if (_codec.PayloadMatchesKey(payloadMemory.Span, keyUtf8, key))
+                if (_codec.PayloadMatchesKey(payloadMemory.Span, key))
                 {
                     if (_indexes.Count > 0)
-                    {
-                        var existingDocument = _codec.Decode(payloadMemory.Span).Document;
-                        await DeleteFromIndexesAsync(probeHash, existingDocument, ct);
-                    }
+                        await DeleteFromIndexesAsync(probeHash, payloadMemory, ct);
 
                     await _tree.DeleteAsync(probeHash, ct);
                     deleted = true;
@@ -294,12 +286,13 @@ public sealed class Collection<T>
         RefreshIndexesIfSchemaChanged();
 
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        Func<T, TField> fieldAccessor = fieldSelector.Compile();
         var comparer = EqualityComparer<TField>.Default;
-
+        
         if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
             !binding.TryBuildKeyFromValue(value, out long indexKey))
         {
+            var fieldAccessor = fieldSelector.Compile();
+
             await foreach (var kvp in ScanAsync(ct))
             {
                 if (comparer.Equals(fieldAccessor(kvp.Value), value))
@@ -316,13 +309,31 @@ public sealed class Collection<T>
         int rowIdCount = payload.Length / sizeof(long);
         for (int i = 0; i < rowIdCount; i++)
         {
-            long rowId = BitConverter.ToInt64(payload, i * sizeof(long));
+            long rowId = RowIdPayloadCodec.ReadAt(payload, i);
             var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
             if (documentPayload is not { } documentMemory)
                 continue;
 
+            if (binding.UsesIntegerKey)
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
+            if (binding.UsesTextKey &&
+                value is string textValue &&
+                binding.TryDirectPayloadTextEquals(documentMemory.Span, textValue))
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
             var (key, document) = _codec.Decode(documentMemory.Span);
-            if (comparer.Equals(fieldAccessor(document), value))
+            if (binding.MatchesValue(document, value, comparer))
                 yield return new KeyValuePair<string, T>(key, document);
         }
     }
@@ -427,7 +438,15 @@ public sealed class Collection<T>
         var cursor = _tree.CreateCursor();
         while (await cursor.MoveNextAsync(ct))
         {
-            var (_, document) = _codec.Decode(cursor.CurrentValue.Span);
+            if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
+            {
+                if (binding.TryBuildKeyFromDirectPayload(cursor.CurrentValue.Span, out long directIndexKey))
+                    await InsertRowIdAsync(binding.IndexStore, directIndexKey, cursor.CurrentKey, ct);
+
+                continue;
+            }
+
+            T document = _codec.DecodeDocument(cursor.CurrentValue.Span);
             await InsertIntoIndexAsync(binding, cursor.CurrentKey, document, ct);
         }
     }
@@ -448,6 +467,26 @@ public sealed class Collection<T>
 
         foreach (var binding in _indexes.Values)
             await DeleteFromIndexAsync(binding, rowId, document, ct);
+    }
+
+    private async ValueTask DeleteFromIndexesAsync(long rowId, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        if (_indexes.Count == 0)
+            return;
+
+        if (CollectionPayloadCodec.IsDirectPayload(payload.Span))
+        {
+            foreach (var binding in _indexes.Values)
+            {
+                if (binding.TryBuildKeyFromDirectPayload(payload.Span, out long indexKey))
+                    await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+            }
+
+            return;
+        }
+
+        T document = _codec.DecodeDocument(payload.Span);
+        await DeleteFromIndexesAsync(rowId, document, ct);
     }
 
     private static async ValueTask InsertIntoIndexAsync(
@@ -483,22 +522,13 @@ public sealed class Collection<T>
         byte[]? existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
         {
-            byte[] payload = new byte[sizeof(long)];
-            BitConverter.TryWriteBytes(payload, rowId);
-            await indexStore.InsertAsync(indexKey, payload, ct);
+            await indexStore.InsertAsync(indexKey, RowIdPayloadCodec.CreateSingle(rowId), ct);
             return;
         }
 
-        int count = existing.Length / sizeof(long);
-        for (int i = 0; i < count; i++)
-        {
-            if (BitConverter.ToInt64(existing, i * sizeof(long)) == rowId)
-                return;
-        }
+        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
+            return;
 
-        byte[] newPayload = new byte[existing.Length + sizeof(long)];
-        existing.CopyTo(newPayload, 0);
-        BitConverter.TryWriteBytes(newPayload.AsSpan(existing.Length), rowId);
         await indexStore.DeleteAsync(indexKey, ct);
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
@@ -513,28 +543,12 @@ public sealed class Collection<T>
         if (existing == null)
             return;
 
-        int count = existing.Length / sizeof(long);
-        if (count == 0)
-        {
-            await indexStore.DeleteAsync(indexKey, ct);
+        if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
             return;
-        }
-
-        var remaining = new List<long>(count);
-        for (int i = 0; i < count; i++)
-        {
-            long existingRowId = BitConverter.ToInt64(existing, i * sizeof(long));
-            if (existingRowId != rowId)
-                remaining.Add(existingRowId);
-        }
 
         await indexStore.DeleteAsync(indexKey, ct);
-        if (remaining.Count == 0)
+        if (newPayload == null)
             return;
-
-        byte[] newPayload = new byte[remaining.Count * sizeof(long)];
-        for (int i = 0; i < remaining.Count; i++)
-            BitConverter.TryWriteBytes(newPayload.AsSpan(i * sizeof(long)), remaining[i]);
 
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }

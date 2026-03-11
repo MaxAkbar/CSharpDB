@@ -1,6 +1,10 @@
 using System.Text.Json;
+using System.Text;
+using System.Reflection;
 using CSharpDB.Core;
 using CSharpDB.Engine;
+using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
 
@@ -250,6 +254,91 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         Assert.Equal(2, reopenedMatches.Count);
     }
 
+    [Fact]
+    public async Task FindByIndex_SkipsMissingRowIds_FromIndexPayload()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+
+        var binding = GetBinding(users, nameof(User.Age));
+        await InsertRowIdAsync(binding.IndexStore, 30, long.MaxValue - 1, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Age, 30, ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByIndex_FiltersTextCandidates_WhenIndexPayloadContainsWrongRow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 31, "beta@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        var binding = GetBinding(users, nameof(User.Email));
+        Assert.True(binding.TryBuildKeyFromValue("alpha@example.com", out long alphaIndexKey));
+
+        long wrongRowId = await FindStoredRowIdAsync(users, "u:2", ct);
+        await InsertRowIdAsync(binding.IndexStore, alphaIndexKey, wrongRowId, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Email, "alpha@example.com", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task Delete_UsesDirectPayloadIndexCleanup_WhenStoredDocumentCannotDeserialize()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await InsertMalformedDirectPayloadAsync(
+            users,
+            "u:broken",
+            """{"name":"Broken","age":"not-an-int","email":"broken@example.com"}""",
+            ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        Assert.True(await users.DeleteAsync("u:broken", ct));
+        Assert.Empty(await CollectAsync(users.FindByIndexAsync(x => x.Email, "broken@example.com", ct), ct));
+    }
+
+    [Fact]
+    public async Task Put_UpdateExistingDocument_UsesDirectPayloadIndexCleanup_WhenStoredDocumentCannotDeserialize()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await InsertMalformedDirectPayloadAsync(
+            users,
+            "u:broken",
+            """{"name":"Broken","age":"not-an-int","email":"broken@example.com"}""",
+            ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        await users.PutAsync("u:broken", new User("Fixed", 33, "fixed@example.com"), ct);
+
+        Assert.Empty(await CollectAsync(users.FindByIndexAsync(x => x.Email, "broken@example.com", ct), ct));
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Email, "fixed@example.com", ct), ct);
+        Assert.Single(matches);
+        Assert.Equal("u:broken", matches[0].Key);
+
+        var stored = await users.GetAsync("u:broken", ct);
+        Assert.NotNull(stored);
+        Assert.Equal("Fixed", stored!.Name);
+        Assert.Equal(33, stored.Age);
+        Assert.Equal("fixed@example.com", stored.Email);
+    }
+
     private static async Task<List<KeyValuePair<string, TDocument>>> CollectAsync<TDocument>(
         IAsyncEnumerable<KeyValuePair<string, TDocument>> source,
         CancellationToken ct)
@@ -258,6 +347,109 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         await foreach (var item in source.WithCancellation(ct))
             items.Add(item);
         return items;
+    }
+
+    private async Task InsertMalformedDirectPayloadAsync<TDocument>(
+        Collection<TDocument> collection,
+        string key,
+        string json,
+        CancellationToken ct)
+    {
+        var tree = GetCollectionTree(collection);
+        byte[] payload = CollectionPayloadCodec.Encode(key, Encoding.UTF8.GetBytes(json));
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await tree.InsertAsync(Collection<TDocument>.HashDocumentKey(key), payload, ct);
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private static CollectionIndexBinding<TDocument> GetBinding<TDocument>(
+        Collection<TDocument> collection,
+        string fieldPath)
+    {
+        var indexesField = typeof(Collection<TDocument>).GetField("_indexes", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection indexes field not found.");
+        var indexes = (Dictionary<string, CollectionIndexBinding<TDocument>>)indexesField.GetValue(collection)!
+            ?? throw new InvalidOperationException("Collection indexes were not initialized.");
+
+        return indexes[fieldPath];
+    }
+
+    private static BTree GetCollectionTree<TDocument>(Collection<TDocument> collection)
+    {
+        var treeField = typeof(Collection<TDocument>).GetField("_tree", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection tree field not found.");
+        return (BTree?)treeField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection tree was not initialized.");
+    }
+
+    private static CollectionDocumentCodec<TDocument> GetCollectionCodec<TDocument>(Collection<TDocument> collection)
+    {
+        var codecField = typeof(Collection<TDocument>).GetField("_codec", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection codec field not found.");
+        return (CollectionDocumentCodec<TDocument>?)codecField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection codec was not initialized.");
+    }
+
+    private static async Task<long> FindStoredRowIdAsync<TDocument>(
+        Collection<TDocument> collection,
+        string key,
+        CancellationToken ct)
+    {
+        var tree = GetCollectionTree(collection);
+        var codec = GetCollectionCodec(collection);
+        long startHash = Collection<TDocument>.HashDocumentKey(key);
+
+        for (int probe = 0; probe < 128; probe++)
+        {
+            long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
+            var payload = await tree.FindMemoryAsync(probeHash, ct);
+            if (payload is not { } payloadMemory)
+                break;
+
+            if (codec.PayloadMatchesKey(payloadMemory.Span, key))
+                return probeHash;
+        }
+
+        throw new InvalidOperationException($"Stored row for key '{key}' was not found.");
+    }
+
+    private async Task InsertRowIdAsync(
+        IIndexStore indexStore,
+        long indexKey,
+        long rowId,
+        CancellationToken ct)
+    {
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+        {
+            await indexStore.InsertAsync(indexKey, RowIdPayloadCodec.CreateSingle(rowId), ct);
+            return;
+        }
+
+        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] payload))
+            return;
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await indexStore.DeleteAsync(indexKey, ct);
+            await indexStore.InsertAsync(indexKey, payload, ct);
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
     }
 
     private sealed class PrefixCollisionSerializerProvider : ISerializerProvider

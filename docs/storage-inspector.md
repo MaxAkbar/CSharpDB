@@ -36,9 +36,9 @@ csharpdb check-indexes <dbfile> [--index <name>] [--sample <n>] [--json]
 
 `inspect` supports `--out` to write JSON to a file.
 
-## Service/API/Admin
+## Client/API/Admin
 
-In-process service methods (`CSharpDB.Service`):
+Client SDK methods (`CSharpDB.Client`):
 
 - `InspectStorageAsync(path?, includePages?)`
 - `CheckWalAsync(path?)`

@@ -5,7 +5,7 @@ A lightweight, embedded SQL database engine written from scratch in C#. Single-f
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/MaxAkbar/CSharpDB?display_name=tag&label=Release)](https://github.com/MaxAkbar/CSharpDB/releases/latest)
-[![NuGet](https://img.shields.io/nuget/v/CSharpDB.Service)](https://www.nuget.org/packages/CSharpDB.Service)
+[![NuGet](https://img.shields.io/nuget/v/CSharpDB)](https://www.nuget.org/packages/CSharpDB)
 
 ---
 
@@ -27,18 +27,25 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes, and `sys.*` catalog queries |
+| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, GROUP BY, HAVING, CTEs, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes) |
+| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
 | **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, and more |
 | **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
+| **gRPC Daemon** | `CSharpDB.Daemon` - dedicated gRPC host for remote `CSharpDB.Client` access |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
-| **Admin UI** | Blazor Server dashboard for browsing tables, views, indexes, triggers |
+| **Admin UI** | Blazor Server dashboard for table/view browsing, schema editing, procedures, saved queries, and storage inspection |
 | **Procedures** | Table-backed stored procedure catalog (`__procedures`) with typed params and transactional execution |
 | **CLI** | Interactive REPL with meta-commands, file execution, snapshot mode, remote connectivity |
 | **Dependencies** | Zero — pure .NET 10, nothing else |
+
+## Compatibility Notice
+
+- New application code should target `CSharpDB.Client`.
+- New low-level/shared-type usage should target `CSharpDB.Primitives`.
+- `CSharpDB.Service` and the `CSharpDB.Core` compatibility package remain available in `v1.x`, but both are planned for removal in `v2.0.0`.
 
 ## Admin UI Preview
 
@@ -47,6 +54,8 @@ See the product first, then dive into the API and internals:
 | Querying Metadata | Table Data View | Table Schema View |
 |---|---|---|
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
+
+Planned next for the Admin query surface: a classic visual [Query Designer](docs/query-designer/README.md) with a source canvas, join lines, design grid, SQL preview, and saved layouts.
 
 ## Quick Start
 
@@ -198,7 +207,39 @@ await client.InsertRowAsync("users", new Dictionary<string, object?>
 services.AddCSharpDbClient(new CSharpDbClientOptions { DataSource = "mydata.db" });
 ```
 
-The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes. Direct is fully implemented; network transports are part of the public API contract and planned for the service daemon milestone.
+The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes.
+
+Current host mapping:
+
+- `CSharpDB.Api` is the REST/HTTP host
+- `CSharpDB.Daemon` is the gRPC host used by `CSharpDB.Client` when `Transport = Grpc`
+
+Direct is fully implemented. gRPC is available through `CSharpDB.Daemon`. The other network transports remain part of the client contract and broader service-daemon roadmap.
+
+### gRPC Daemon
+
+Start the daemon host:
+
+```bash
+dotnet run --project src/CSharpDB.Daemon
+```
+
+Connect to it from `CSharpDB.Client`:
+
+```csharp
+using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "https://localhost:49995"
+});
+
+var info = await client.GetInfoAsync();
+var tables = await client.GetTableNamesAsync();
+```
+
+For local admin + daemon startup, see [scripts/README.md](scripts/README.md).
 
 ### Cross-Language Interop (Native FFI)
 
@@ -273,9 +314,10 @@ CSharpDB.slnx
 │   ├── CSharpDB.Native/      NativeAOT C FFI library for cross-language interop
 │   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
 │   ├── CSharpDB.Cli/         Interactive REPL with remote connectivity
-│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client
+│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client (planned removal in v2.0.0)
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
+│   ├── CSharpDB.Daemon/      gRPC daemon host for remote `CSharpDB.Client` access
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration
 ├── clients/
 │   └── node/                  Node.js/TypeScript client package (csharpdb)
@@ -300,6 +342,8 @@ CSharpDB.slnx
 | **CTEs** | `WITH name AS (select) SELECT ...` |
 | **JOINs** | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` |
 | **Aggregates** | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX` |
+| **Scalar Functions** | `TEXT(expr)` |
+| **Modifiers** | `SELECT DISTINCT` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
 | **Expressions** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
@@ -346,13 +390,20 @@ Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. Full results in [tests/C
 
 ## Samples
 
-The [`samples/`](samples/) directory contains ready-to-run SQL scripts for three realistic scenarios:
+The [`samples/`](samples/) directory now includes both realistic datasets and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
 
-- **[ecommerce-store.sql](samples/ecommerce-store.sql)** — Northwind Electronics (customers, products, orders, reviews)
-- **[medical-clinic.sql](samples/medical-clinic.sql)** — Riverside Health Center (patients, doctors, appointments, billing)
-- **[school-district.sql](samples/school-district.sql)** — Maplewood School District (students, courses, enrollments, attendance)
+- **[ecommerce-store/schema.sql](samples/ecommerce-store/schema.sql)** — retail schema with procedures, views, and inventory-style triggers
+- **[medical-clinic/schema.sql](samples/medical-clinic/schema.sql)** — appointments, billing, and procedure-driven updates
+- **[school-district/schema.sql](samples/school-district/schema.sql)** — schedules, enrollments, attendance, and defaulted procedure params
+- **[feature-tour/schema.sql](samples/feature-tour/schema.sql)** — Northstar Field Services, a fictitious multi-region field service company with customer sites, contracts, dispatch, inventory, billing workflows, triggers, procedures, and `TEXT(...)` filtering
 
-Each script creates 7 tables with sample data, indexes, views, and triggers. See the [samples README](samples/README.md) for execution instructions.
+Companion assets:
+
+- Per-sample `procedures.json` files for procedure catalog import
+- **[feature-tour/queries.sql](samples/feature-tour/queries.sql)** for ready-to-run workbook queries
+- **[run-sample.csx](samples/run-sample.csx)** for REST API import of SQL + procedures
+
+See the [samples README](samples/README.md) for loading options through the API, CLI, and `CSharpDB.Client`.
 
 ## Roadmap
 
@@ -378,6 +429,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Python and Go client packages
 
 **Mid-term**
+- Visual query designer for Admin UI ([plan](docs/query-designer/README.md))
 - Subqueries and `EXISTS`
 - `UNION` / `INTERSECT` / `EXCEPT`
 - Window functions (`ROW_NUMBER`, `RANK`)
@@ -395,14 +447,17 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
-| [Client SDK](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
-| [Native Library Reference](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
+| [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
+| [CSharpDB.Daemon](src/CSharpDB.Daemon/README.md) | gRPC daemon host runtime model, configuration, and deployment notes |
+| [CSharpDB.Native](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
 | [Node.js Client](clients/node/README.md) | TypeScript/JavaScript package documentation |
 | [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
 | [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
 | [Service Daemon Design](docs/service-daemon/README.md) | Background service architecture and roadmap |
+| [Query Designer Plan](docs/query-designer/README.md) | Detailed Admin UI plan for a classic visual `SELECT` builder with SQL sync |
+| [Admin Startup Scripts](scripts/README.md) | Start, stop, and configure the admin site and daemon for local workflows |
 | [FFI Tutorials](docs/tutorials/native-ffi/) | Step-by-step JavaScript and Python interop guides |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |

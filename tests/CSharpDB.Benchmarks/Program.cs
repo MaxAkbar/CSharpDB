@@ -46,6 +46,11 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount);
                 return;
 
+            case "--write-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount);
+                return;
+
             case "--all":
                 Console.WriteLine("=== Micro-Benchmarks (BenchmarkDotNet) ===");
                 RunMicroBenchmarks(StripCustomArgs(RemoveFirstToken(args, "--all")));
@@ -78,6 +83,14 @@ public static class Program
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
             await RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--write-diagnostics"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -148,6 +161,12 @@ public static class Program
     {
         Console.WriteLine("--- In-Memory Batch Benchmark ---");
         return await InMemoryBatchBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunWriteDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Durable Write Diagnostics Benchmark ---");
+        return await DurableWriteDiagnosticsBenchmark.RunAsync();
     }
 
     private static async Task<List<BenchmarkResult>> RunStressTestsOnceAsync()
@@ -335,13 +354,14 @@ public static class Program
         Console.WriteLine("  dotnet run -- --micro --filter *Insert*   Filter micro-benchmarks");
         Console.WriteLine("  dotnet run -- --macro              Run macro-benchmarks (sustained workloads)");
         Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
+        Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --scaling --repro    Run non-micro suite with high-priority + pinned CPU affinity");
         Console.WriteLine("  dotnet run -- --scaling --repro --cpu-threads 8   Pin to first 8 logical CPUs");
-        Console.WriteLine("  --repro applies to macro/stress/scaling only (micro remains BenchmarkDotNet-managed)");
+        Console.WriteLine("  --repro applies to non-micro suites only (micro remains BenchmarkDotNet-managed)");
         Console.WriteLine("  dotnet run -- --all                Run everything in sequence");
     }
 }

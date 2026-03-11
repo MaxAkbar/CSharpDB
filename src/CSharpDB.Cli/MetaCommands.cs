@@ -391,6 +391,51 @@ internal sealed class CheckpointCommand : IMetaCommand
     }
 }
 
+internal sealed class ReindexCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".reindex"];
+    public string Name => ".reindex [--all|--table <name>|--index <name>]";
+    public string Description => "Rebuild indexes for the database, one table, or one index";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (!MetaCommandHelpers.TryParseReindexArgument(argument, out var request, out string? error))
+        {
+            output.WriteLine(Ansi.Colorize(error ?? "Usage: .reindex [--all|--table <name>|--index <name>]", Ansi.Yellow));
+            return;
+        }
+
+        var result = await context.ReindexAsync(request, ct);
+        string target = result.Scope == ReindexScope.All || string.IsNullOrWhiteSpace(result.Name)
+            ? "all indexes"
+            : $"{result.Scope.ToString().ToLowerInvariant()} '{result.Name}'";
+
+        output.WriteLine(Ansi.Colorize($"Reindexed {result.RebuiltIndexCount} index(es) for {target}.", Ansi.Green));
+    }
+}
+
+internal sealed class VacuumCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".vacuum"];
+    public string Name => ".vacuum";
+    public string Description => "Rewrite the database file to reclaim free pages";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (!string.IsNullOrWhiteSpace(argument))
+        {
+            output.WriteLine(Ansi.Colorize("Usage: .vacuum", Ansi.Yellow));
+            return;
+        }
+
+        var result = await context.VacuumAsync(ct);
+        output.WriteLine(Ansi.Colorize(
+            $"Vacuum complete: bytes {result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter}, " +
+            $"pages {result.PhysicalPageCountBefore} -> {result.PhysicalPageCountAfter}.",
+            Ansi.Green));
+    }
+}
+
 internal sealed class SnapshotCommand : IMetaCommand
 {
     public IReadOnlyList<string> Aliases => [".snapshot"];
@@ -596,6 +641,39 @@ internal sealed class ReadCommand : IMetaCommand
 internal static class MetaCommandHelpers
 {
     internal const string CollectionPrefix = "_col_";
+
+    internal static bool TryParseReindexArgument(string argument, out ReindexRequest request, out string? error)
+    {
+        error = null;
+        string[] tokens = argument.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+        {
+            request = new ReindexRequest { Scope = ReindexScope.All };
+            return true;
+        }
+
+        if (tokens.Length == 1 && tokens[0].Equals("--all", StringComparison.OrdinalIgnoreCase))
+        {
+            request = new ReindexRequest { Scope = ReindexScope.All };
+            return true;
+        }
+
+        if (tokens.Length == 2 && tokens[0].Equals("--table", StringComparison.OrdinalIgnoreCase))
+        {
+            request = new ReindexRequest { Scope = ReindexScope.Table, Name = tokens[1] };
+            return true;
+        }
+
+        if (tokens.Length == 2 && tokens[0].Equals("--index", StringComparison.OrdinalIgnoreCase))
+        {
+            request = new ReindexRequest { Scope = ReindexScope.Index, Name = tokens[1] };
+            return true;
+        }
+
+        request = new ReindexRequest();
+        error = "Usage: .reindex [--all|--table <name>|--index <name>]";
+        return false;
+    }
 
     internal static async Task<IReadOnlyList<string>> GetTableNamesAsync(
         MetaCommandContext context,

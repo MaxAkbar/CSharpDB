@@ -73,6 +73,9 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     public Task PutDocumentAsync(string collectionName, string key, System.Text.Json.JsonElement document, CancellationToken ct = default) => _inner.PutDocumentAsync(collectionName, key, document, ct);
     public Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default) => _inner.DeleteDocumentAsync(collectionName, key, ct);
     public Task CheckpointAsync(CancellationToken ct = default) => _inner.CheckpointAsync(ct);
+    public Task<CSharpDB.Client.Models.DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default) => _inner.GetMaintenanceReportAsync(ct);
+    public Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default) => _inner.ReindexAsync(request, ct);
+    public Task<VacuumResult> VacuumAsync(CancellationToken ct = default) => _inner.VacuumAsync(ct);
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default) => _inner.InspectStorageAsync(databasePath, includePages, ct);
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default) => _inner.CheckWalAsync(databasePath, ct);
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default) => _inner.InspectPageAsync(pageId, includeHex, databasePath, ct);
@@ -82,4 +85,8 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
         => _inner is IEngineBackedClient engineBacked
             ? engineBacked.TryGetDatabaseAsync(ct)
             : ValueTask.FromResult<Database?>(null);
+    public ValueTask ReleaseCachedDatabaseAsync(CancellationToken ct = default)
+        => _inner is IEngineBackedClient engineBacked
+            ? engineBacked.ReleaseCachedDatabaseAsync(ct)
+            : ValueTask.CompletedTask;
 }

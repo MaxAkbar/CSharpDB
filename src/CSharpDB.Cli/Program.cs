@@ -8,6 +8,9 @@ Ansi.EnableVirtualTerminal();
 if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
     return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);
 
+if (args.Length > 0 && MaintenanceCommandRunner.IsKnownCommand(args[0]))
+    return await MaintenanceCommandRunner.RunAsync(args, Console.Out, Console.Error);
+
 if (!CliShellOptions.TryParse(args, out var shellOptions, out var parseError))
 {
     Console.Error.WriteLine(Ansi.Colorize($"Error: {parseError}", Ansi.Red));
@@ -56,6 +59,8 @@ await using (client)
     commands.Add(new CommitCommand());
     commands.Add(new RollbackCommand());
     commands.Add(new CheckpointCommand());
+    commands.Add(new ReindexCommand());
+    commands.Add(new VacuumCommand());
     commands.Add(new SnapshotCommand());
     commands.Add(new SyncPointCommand());
     commands.Add(new TimingCommand());

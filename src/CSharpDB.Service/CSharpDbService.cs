@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace CSharpDB.Service;
 
+[Obsolete("CSharpDB.Service is deprecated and will be removed in v2.0.0. Use CSharpDB.Client instead.")]
 public sealed class CSharpDbService : IAsyncDisposable
 {
     private const string ProcedureTableName = "__procedures";
@@ -227,6 +228,15 @@ public sealed class CSharpDbService : IAsyncDisposable
 
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false)
         => WithLockAsync(() => _client.InspectStorageAsync(databasePath, includePages));
+
+    public Task<ClientModels.DatabaseMaintenanceReport> GetMaintenanceReportAsync()
+        => WithLockAsync(() => _client.GetMaintenanceReportAsync());
+
+    public Task<ClientModels.ReindexResult> ReindexAsync(ClientModels.ReindexRequest request)
+        => WithLockAsync(() => _client.ReindexAsync(request));
+
+    public Task<ClientModels.VacuumResult> VacuumAsync()
+        => WithLockAsync(() => _client.VacuumAsync());
 
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null)
         => WithLockAsync(() => _client.CheckWalAsync(databasePath));

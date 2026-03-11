@@ -15,7 +15,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.29.3" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.71.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0-preview.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Protos\csharpdb_rpc.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>

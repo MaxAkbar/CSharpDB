@@ -375,6 +375,37 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_ScalarTextFunction()
+    {
+        var stmt = Parser.Parse("SELECT TEXT(id) AS id_text FROM t WHERE TEXT(id) LIKE '%1%'");
+        var select = Assert.IsType<SelectStatement>(stmt);
+
+        var projection = Assert.IsType<FunctionCallExpression>(select.Columns[0].Expression);
+        Assert.Equal("TEXT", projection.FunctionName);
+        Assert.Single(projection.Arguments);
+        Assert.False(projection.IsDistinct);
+        Assert.False(projection.IsStarArg);
+
+        var where = Assert.IsType<LikeExpression>(select.Where);
+        var predicate = Assert.IsType<FunctionCallExpression>(where.Operand);
+        Assert.Equal("TEXT", predicate.FunctionName);
+    }
+
+    [Fact]
+    public void Parse_ScalarTextAroundAggregate()
+    {
+        var stmt = Parser.Parse("SELECT TEXT(COUNT(*)) FROM t");
+        var select = Assert.IsType<SelectStatement>(stmt);
+
+        var outer = Assert.IsType<FunctionCallExpression>(select.Columns[0].Expression);
+        Assert.Equal("TEXT", outer.FunctionName);
+
+        var inner = Assert.IsType<FunctionCallExpression>(Assert.Single(outer.Arguments));
+        Assert.Equal("COUNT", inner.FunctionName);
+        Assert.True(inner.IsStarArg);
+    }
+
+    [Fact]
     public void Parse_AsAlias()
     {
         var stmt = Parser.Parse("SELECT name AS n, COUNT(*) AS cnt FROM t GROUP BY name");

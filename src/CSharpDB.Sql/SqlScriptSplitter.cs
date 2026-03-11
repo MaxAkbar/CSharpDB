@@ -117,9 +117,15 @@ public static class SqlScriptSplitter
             return;
 
         string trailingStatement = remainder.Trim();
-        if (trailingStatement.Length > 0)
+        if (trailingStatement.Length > 0 && ContainsExecutableTokens(trailingStatement))
             statements.Add(trailingStatement);
 
         remainder = string.Empty;
+    }
+
+    private static bool ContainsExecutableTokens(string sql)
+    {
+        var tokens = new Tokenizer(sql).Tokenize();
+        return tokens.Any(token => token.Type != TokenType.Eof);
     }
 }

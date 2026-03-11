@@ -18,6 +18,7 @@ internal static class ExpressionCompiler
             ColumnRefExpression col => CompileColumn(col, schema),
             BinaryExpression bin => CompileBinary(bin, schema),
             UnaryExpression un => CompileUnary(un, schema),
+            FunctionCallExpression func => CompileFunction(func, schema),
             LikeExpression like => CompileLike(like, schema),
             InExpression inExpr => CompileIn(inExpr, schema),
             BetweenExpression between => CompileBetween(between, schema),
@@ -120,6 +121,27 @@ internal static class ExpressionCompiler
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown unary op: {un.Op}"),
             };
         };
+    }
+
+    private static Func<DbValue[], DbValue> CompileFunction(FunctionCallExpression func, TableSchema schema)
+    {
+        if (ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName.ToUpperInvariant()))
+            return row => ExpressionEvaluator.Evaluate(func, row, schema);
+
+        var argumentEvaluators = new Func<DbValue[], DbValue>[func.Arguments.Count];
+        for (int i = 0; i < func.Arguments.Count; i++)
+            argumentEvaluators[i] = Compile(func.Arguments[i], schema);
+
+        return row => ScalarFunctionEvaluator.Evaluate(func, expr =>
+        {
+            for (int i = 0; i < func.Arguments.Count; i++)
+            {
+                if (ReferenceEquals(func.Arguments[i], expr))
+                    return argumentEvaluators[i](row);
+            }
+
+            return ExpressionEvaluator.Evaluate(expr, row, schema);
+        });
     }
 
     private static Func<DbValue[], DbValue> CompileLike(LikeExpression like, TableSchema schema)

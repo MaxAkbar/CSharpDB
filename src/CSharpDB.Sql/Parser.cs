@@ -1928,45 +1928,59 @@ public sealed class Parser
     private static bool IsAggregateFunctionToken(TokenType type) =>
         type is TokenType.Count or TokenType.Sum or TokenType.Avg or TokenType.Min or TokenType.Max;
 
+    private static bool IsScalarFunctionToken(TokenType type) =>
+        type is TokenType.Text;
+
+    private bool IsFunctionCallStart(Token token) =>
+        (IsAggregateFunctionToken(token.Type) || IsScalarFunctionToken(token.Type) || token.Type == TokenType.Identifier)
+        && _pos + 1 < _tokens.Count
+        && _tokens[_pos + 1].Type == TokenType.LeftParen;
+
+    private Expression ParseFunctionCall(Token token, bool allowAggregateModifiers)
+    {
+        string funcName = token.Value.ToUpperInvariant();
+        Advance();
+        Expect(TokenType.LeftParen);
+
+        bool isStar = false;
+        bool isDistinct = false;
+        var args = new List<Expression>();
+
+        if (allowAggregateModifiers && Peek().Type == TokenType.Star)
+        {
+            Advance();
+            isStar = true;
+        }
+        else
+        {
+            if (Peek().Type == TokenType.Distinct)
+            {
+                if (!allowAggregateModifiers)
+                    throw Error($"DISTINCT is only supported for aggregate functions, not {funcName}().");
+
+                Advance();
+                isDistinct = true;
+            }
+
+            args.Add(ParseExpression());
+        }
+
+        Expect(TokenType.RightParen);
+        return new FunctionCallExpression
+        {
+            FunctionName = funcName,
+            Arguments = args,
+            IsStarArg = isStar,
+            IsDistinct = isDistinct,
+        };
+    }
+
     private Expression ParsePrimary()
     {
         var token = Peek();
 
-        // Aggregate function call: COUNT/SUM/AVG/MIN/MAX followed by '('
-        if (IsAggregateFunctionToken(token.Type) && _pos + 1 < _tokens.Count && _tokens[_pos + 1].Type == TokenType.LeftParen)
-        {
-            string funcName = token.Value.ToUpperInvariant();
-            Advance(); // consume function name
-            Expect(TokenType.LeftParen);
-
-            bool isStar = false;
-            bool isDistinct = false;
-            var args = new List<Expression>();
-
-            if (Peek().Type == TokenType.Star)
-            {
-                Advance();
-                isStar = true;
-            }
-            else
-            {
-                if (Peek().Type == TokenType.Distinct)
-                {
-                    Advance();
-                    isDistinct = true;
-                }
-                args.Add(ParseExpression());
-            }
-
-            Expect(TokenType.RightParen);
-            return new FunctionCallExpression
-            {
-                FunctionName = funcName,
-                Arguments = args,
-                IsStarArg = isStar,
-                IsDistinct = isDistinct,
-            };
-        }
+        if (IsFunctionCallStart(token))
+            return ParseFunctionCall(token, allowAggregateModifiers: IsAggregateFunctionToken(token.Type));
 
         switch (token.Type)
         {

@@ -14,7 +14,7 @@ All-in-one package for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embe
 - Unified client (`CSharpDB.Client`)
 - Engine API (`CSharpDB.Engine`)
 - ADO.NET provider (`CSharpDB.Data`)
-- Service layer (`CSharpDB.Service`)
+- Deprecated compatibility facade (`CSharpDB.Service`, planned removal in `v2.0.0`)
 - Diagnostics (`CSharpDB.Storage.Diagnostics`)
 - Required internal dependencies (`CSharpDB.Primitives`, `Sql`, `Storage`, `Execution`)
 

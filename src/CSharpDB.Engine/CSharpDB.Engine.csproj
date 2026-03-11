@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+    <ProjectReference Include="..\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
     <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
   </ItemGroup>

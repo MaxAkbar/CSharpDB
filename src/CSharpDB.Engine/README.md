@@ -106,6 +106,8 @@ var result = await reader.ExecuteReadAsync("SELECT * FROM users");
 // Reads from a consistent snapshot while the writer continues
 ```
 
+Reuse the same `ReaderSession` for a burst of related reads when possible. The current file-backed tuning benchmarks show that reusing a snapshot is materially cheaper than creating a new reader session for every single query.
+
 ## Installation
 
 ```
@@ -130,7 +132,7 @@ dotnet add package CSharpDB
 | Package | Description |
 |---------|-------------|
 | [CSharpDB.Data](https://www.nuget.org/packages/CSharpDB.Data) | ADO.NET provider built on this engine |
-| [CSharpDB.Service](https://www.nuget.org/packages/CSharpDB.Service) | Thread-safe service layer for web apps |
+| [CSharpDB.Client](https://www.nuget.org/packages/CSharpDB.Client) | Authoritative client SDK over direct and remote transports |
 | [CSharpDB.Storage.Diagnostics](https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics) | Storage inspection and integrity checking |
 
 ## License

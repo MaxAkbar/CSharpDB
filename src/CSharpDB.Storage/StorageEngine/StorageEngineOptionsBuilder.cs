@@ -44,6 +44,8 @@ public sealed class StorageEngineOptionsBuilder
             WriterLockTimeout = _pagerOptions.WriterLockTimeout,
             CheckpointPolicy = _pagerOptions.CheckpointPolicy,
             MaxCachedPages = _pagerOptions.MaxCachedPages,
+            AutoCheckpointExecutionMode = _pagerOptions.AutoCheckpointExecutionMode,
+            AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
             PageCacheFactory = _pagerOptions.PageCacheFactory,
             Interceptors = _pagerOptions.Interceptors,
             MaxWalBytesWhenReadersActive = maxWalBytes,
@@ -85,6 +87,56 @@ public sealed class StorageEngineOptionsBuilder
 
     public StorageEngineOptionsBuilder UseCachingBTreeIndexes(int findCacheCapacity = 2048) =>
         UseIndexProvider(new CachingBTreeIndexProvider(findCacheCapacity));
+
+    /// <summary>
+    /// Applies the current recommended preset for file-backed lookup-heavy workloads.
+    /// Keeps the standard B-tree index provider and raises the pager cache size.
+    /// </summary>
+    public StorageEngineOptionsBuilder UseLookupOptimizedPreset(int maxCachedPages = 2048)
+    {
+        if (maxCachedPages <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxCachedPages), "Value must be greater than zero.");
+
+        _pagerOptions = new PagerOptions
+        {
+            WriterLockTimeout = _pagerOptions.WriterLockTimeout,
+            CheckpointPolicy = _pagerOptions.CheckpointPolicy,
+            MaxCachedPages = maxCachedPages,
+            AutoCheckpointExecutionMode = _pagerOptions.AutoCheckpointExecutionMode,
+            AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
+            PageCacheFactory = _pagerOptions.PageCacheFactory,
+            Interceptors = _pagerOptions.Interceptors,
+            MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+        };
+
+        _indexProvider = new BTreeIndexProvider();
+        return this;
+    }
+
+    /// <summary>
+    /// Applies the current recommended preset for file-backed write-heavy workloads.
+    /// Keeps the current cache and index configuration, raises the auto-checkpoint frame threshold,
+    /// and schedules auto-checkpoints in the background instead of blocking the triggering commit.
+    /// </summary>
+    public StorageEngineOptionsBuilder UseWriteOptimizedPreset(int checkpointFrameThreshold = 4096)
+    {
+        if (checkpointFrameThreshold <= 0)
+            throw new ArgumentOutOfRangeException(nameof(checkpointFrameThreshold), "Value must be greater than zero.");
+
+        _pagerOptions = new PagerOptions
+        {
+            WriterLockTimeout = _pagerOptions.WriterLockTimeout,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(checkpointFrameThreshold),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
+            MaxCachedPages = _pagerOptions.MaxCachedPages,
+            PageCacheFactory = _pagerOptions.PageCacheFactory,
+            Interceptors = _pagerOptions.Interceptors,
+            MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+        };
+
+        return this;
+    }
 
     public StorageEngineOptionsBuilder UseCatalogStore(ICatalogStore catalogStore)
     {

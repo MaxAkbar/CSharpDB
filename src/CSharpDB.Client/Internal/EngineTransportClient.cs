@@ -23,15 +23,27 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
     private readonly string _databasePath;
+    private readonly Func<string, CancellationToken, Task<Database>> _openDatabaseAsync;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _databaseGate = new();
     private readonly ConcurrentDictionary<string, Database> _transactions = new(StringComparer.Ordinal);
     private Task<Database>? _databaseTask;
+    private TaskCompletionSource? _databaseReleaseCompletion;
     private bool _catalogsInitialized;
 
     public EngineTransportClient(string databasePath)
+        : this(
+            databasePath,
+            static (path, ct) => Database.OpenAsync(path, ct).AsTask())
+    {
+    }
+
+    internal EngineTransportClient(
+        string databasePath,
+        Func<string, CancellationToken, Task<Database>> openDatabaseAsync)
     {
         _databasePath = Path.GetFullPath(databasePath);
+        _openDatabaseAsync = openDatabaseAsync ?? throw new ArgumentNullException(nameof(openDatabaseAsync));
     }
 
     public string DataSource => _databasePath;
@@ -253,30 +265,41 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default)
     {
-        var database = await Database.OpenAsync(_databasePath, ct);
+        await _lock.WaitAsync(ct);
         try
         {
-            await database.BeginTransactionAsync(ct);
-        }
-        catch
-        {
-            await database.DisposeAsync();
-            throw;
-        }
+            await ReleaseCachedDatabaseCoreAsync(
+                ct,
+                "Cannot start a client-managed transaction while direct snapshot readers are active.");
+            var database = await _openDatabaseAsync(_databasePath, ct);
+            try
+            {
+                await database.BeginTransactionAsync(ct);
+            }
+            catch
+            {
+                await database.DisposeAsync();
+                throw;
+            }
 
-        string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-        if (!_transactions.TryAdd(transactionId, database))
-        {
-            await database.RollbackAsync(ct);
-            await database.DisposeAsync();
-            throw new CSharpDbClientException("Failed to register the transaction session.");
-        }
+            string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            if (!_transactions.TryAdd(transactionId, database))
+            {
+                await database.RollbackAsync(ct);
+                await database.DisposeAsync();
+                throw new CSharpDbClientException("Failed to register the transaction session.");
+            }
 
-        return new TransactionSessionInfo
+            return new TransactionSessionInfo
+            {
+                TransactionId = transactionId,
+                ExpiresAtUtc = DateTime.MaxValue,
+            };
+        }
+        finally
         {
-            TransactionId = transactionId,
-            ExpiresAtUtc = DateTime.MaxValue,
-        };
+            _lock.Release();
+        }
     }
 
     public async Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
@@ -396,44 +419,93 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         _lock.Dispose();
     }
 
-    private Task<Database> GetDatabaseAsync(CancellationToken ct)
+    private async Task<Database> GetDatabaseAsync(CancellationToken ct)
     {
-        Task<Database> openTask;
-        lock (_databaseGate)
+        while (true)
         {
-            if (_databaseTask is null)
+            Task<Database>? openTask = null;
+            Task? releaseTask = null;
+
+            lock (_databaseGate)
             {
-                Task<Database>? createdTask = null;
-                createdTask = OpenDatabaseCoreAsync();
-                _databaseTask = createdTask;
-
-                async Task<Database> OpenDatabaseCoreAsync()
+                if (_databaseReleaseCompletion is { Task.IsCompleted: false } releaseCompletion)
                 {
-                    try
-                    {
-                        return await Database.OpenAsync(_databasePath, CancellationToken.None);
-                    }
-                    catch
-                    {
-                        lock (_databaseGate)
-                        {
-                            if (ReferenceEquals(_databaseTask, createdTask))
-                                _databaseTask = null;
-                        }
+                    releaseTask = releaseCompletion.Task;
+                }
+                else
+                {
+                    _databaseReleaseCompletion = null;
 
-                        throw;
+                    if (_databaseTask is null)
+                    {
+                        Task<Database>? createdTask = null;
+                        createdTask = OpenDatabaseCoreAsync();
+                        _databaseTask = createdTask;
+
+                        async Task<Database> OpenDatabaseCoreAsync()
+                        {
+                            try
+                            {
+                                return await _openDatabaseAsync(_databasePath, CancellationToken.None);
+                            }
+                            catch
+                            {
+                                lock (_databaseGate)
+                                {
+                                    if (ReferenceEquals(_databaseTask, createdTask))
+                                        _databaseTask = null;
+                                }
+
+                                throw;
+                            }
+                        }
                     }
+
+                    openTask = _databaseTask;
                 }
             }
 
-            openTask = _databaseTask;
-        }
+            if (releaseTask is not null)
+            {
+                await releaseTask.WaitAsync(ct);
+                continue;
+            }
 
-        return openTask.WaitAsync(ct);
+            Database db = await openTask!.WaitAsync(ct);
+
+            lock (_databaseGate)
+            {
+                if (ReferenceEquals(_databaseTask, openTask))
+                    return db;
+
+                if (_databaseReleaseCompletion is { Task.IsCompleted: false } completion)
+                    releaseTask = completion.Task;
+            }
+
+            if (releaseTask is not null)
+            {
+                await releaseTask.WaitAsync(ct);
+            }
+        }
     }
 
     public async ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)
         => await GetDatabaseAsync(ct);
+
+    public async ValueTask ReleaseCachedDatabaseAsync(CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await ReleaseCachedDatabaseCoreAsync(
+                ct,
+                "Cannot release the direct database handle while snapshot readers are active.");
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
 
     private static TableSchema MapTableSchema(CoreTableSchema schema)
         => new()
@@ -482,6 +554,67 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
                 _ => throw new CSharpDbClientException($"Unsupported trigger event '{trigger.Event}'."),
             },
             BodySql = trigger.BodySql,
+        };
+
+    private static CSharpDB.Client.Models.DatabaseMaintenanceReport MapMaintenanceReport(CSharpDB.Engine.DatabaseMaintenanceReport report)
+        => new()
+        {
+            SchemaVersion = report.SchemaVersion,
+            DatabasePath = report.DatabasePath,
+            SpaceUsage = new SpaceUsageReport
+            {
+                DatabaseFileBytes = report.SpaceUsage.DatabaseFileBytes,
+                WalFileBytes = report.SpaceUsage.WalFileBytes,
+                PageSizeBytes = report.SpaceUsage.PageSizeBytes,
+                PhysicalPageCount = report.SpaceUsage.PhysicalPageCount,
+                DeclaredPageCount = report.SpaceUsage.DeclaredPageCount,
+                FreelistPageCount = report.SpaceUsage.FreelistPageCount,
+                FreelistBytes = report.SpaceUsage.FreelistBytes,
+            },
+            Fragmentation = new FragmentationReport
+            {
+                BTreeFreeBytes = report.Fragmentation.BTreeFreeBytes,
+                PagesWithFreeSpace = report.Fragmentation.PagesWithFreeSpace,
+                TailFreelistPageCount = report.Fragmentation.TailFreelistPageCount,
+                TailFreelistBytes = report.Fragmentation.TailFreelistBytes,
+            },
+            PageTypeHistogram = new Dictionary<string, int>(report.PageTypeHistogram, StringComparer.OrdinalIgnoreCase),
+        };
+
+    private static DatabaseReindexRequest MapReindexRequest(ReindexRequest request)
+        => new()
+        {
+            Scope = request.Scope switch
+            {
+                ReindexScope.All => DatabaseReindexScope.All,
+                ReindexScope.Table => DatabaseReindexScope.Table,
+                ReindexScope.Index => DatabaseReindexScope.Index,
+                _ => throw new ArgumentOutOfRangeException(nameof(request.Scope), request.Scope, null),
+            },
+            Name = request.Name,
+        };
+
+    private static ReindexResult MapReindexResult(DatabaseReindexResult result)
+        => new()
+        {
+            Scope = result.Scope switch
+            {
+                DatabaseReindexScope.All => ReindexScope.All,
+                DatabaseReindexScope.Table => ReindexScope.Table,
+                DatabaseReindexScope.Index => ReindexScope.Index,
+                _ => throw new ArgumentOutOfRangeException(nameof(result.Scope), result.Scope, null),
+            },
+            Name = result.Name,
+            RebuiltIndexCount = result.RebuiltIndexCount,
+        };
+
+    private static VacuumResult MapVacuumResult(DatabaseVacuumResult result)
+        => new()
+        {
+            DatabaseFileBytesBefore = result.DatabaseFileBytesBefore,
+            DatabaseFileBytesAfter = result.DatabaseFileBytesAfter,
+            PhysicalPageCountBefore = result.PhysicalPageCountBefore,
+            PhysicalPageCountAfter = result.PhysicalPageCountAfter,
         };
 
     private static async Task<SqlExecutionResult> ExecuteQueryAsync(Database db, string sql, CancellationToken ct)
@@ -661,7 +794,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             long integer => integer.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
-            byte[] => throw new CSharpDbClientException("BLOB literals are not supported by the engine-only client."),
+            byte[] => throw new CSharpDbClientException("Blob parameters are not supported by the engine-only client."),
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
     }
@@ -727,5 +860,68 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         if (!_transactions.TryRemove(transactionId, out var db))
             throw new CSharpDbClientException($"Transaction '{transactionId}' was not found.");
         return db;
+    }
+
+    private async Task ReleaseCachedDatabaseCoreAsync(CancellationToken ct, string activeReaderMessage)
+    {
+        Task<Database>? openTask;
+        TaskCompletionSource releaseCompletion;
+        lock (_databaseGate)
+        {
+            openTask = _databaseTask;
+            _catalogsInitialized = false;
+            if (openTask is null)
+                return;
+
+            _databaseTask = null;
+            releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _databaseReleaseCompletion = releaseCompletion;
+        }
+
+        Database db;
+        try
+        {
+            try
+            {
+                db = await openTask.WaitAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                lock (_databaseGate)
+                {
+                    if (_databaseTask is null)
+                        _databaseTask = openTask;
+                }
+
+                throw;
+            }
+            catch
+            {
+                return;
+            }
+
+            if (db.ActiveReaderCount > 0)
+            {
+                lock (_databaseGate)
+                {
+                    if (_databaseTask is null)
+                        _databaseTask = openTask;
+                }
+
+                throw new CSharpDbClientException(activeReaderMessage);
+            }
+
+            await db.DisposeAsync();
+        }
+        finally
+        {
+            lock (_databaseGate)
+            {
+                if (ReferenceEquals(_databaseReleaseCompletion, releaseCompletion))
+                    _databaseReleaseCompletion = null;
+            }
+
+            releaseCompletion.TrySetResult();
+        }
     }
 }
