@@ -56,3 +56,6 @@ Desktop.ini
 *.db.journal
 *.wal
 
+# node
+node_modules/
+dist/

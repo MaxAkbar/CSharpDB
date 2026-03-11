@@ -15,4 +15,10 @@ internal static class Utf8StringMemory
         Marshal.WriteByte(buffer, bytes.Length, 0);
         return buffer;
     }
+
+    public static void Free(IntPtr pointer)
+    {
+        if (pointer != IntPtr.Zero)
+            Marshal.FreeHGlobal(pointer);
+    }
 }

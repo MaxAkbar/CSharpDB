@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: compile (vscode-extension)",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "compile"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/vscode-extension"
+      },
+      "problemMatcher": "$ts-webpack-watch",
+      "detail": "Compile the VS Code extension"
+    },
+    {
+      "label": "npm: watch (vscode-extension)",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "watch"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/vscode-extension"
+      },
+      "problemMatcher": "$ts-webpack-watch",
+      "isBackground": true,
+      "detail": "Watch the VS Code extension"
+    }
+  ]
+}

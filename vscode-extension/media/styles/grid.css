@@ -1,0 +1,84 @@
+.data-grid {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.data-grid th,
+.data-grid td {
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border) 72%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-grid th {
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--vscode-editor-background) 86%, var(--vscode-sideBar-background));
+  font-weight: 600;
+}
+
+.data-grid th.sortable {
+  cursor: pointer;
+}
+
+.data-grid tbody tr:nth-child(odd) {
+  background: color-mix(in srgb, var(--vscode-editor-background) 92%, transparent);
+}
+
+.data-grid tbody tr:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 80%, transparent);
+}
+
+.null-cell {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.blob-cell {
+  color: var(--vscode-textLink-foreground);
+}
+
+.results-scroll {
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border) 70%, transparent);
+}
+
+.filter-row input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.editable-cell {
+  min-width: 120px;
+}
+
+.editable-cell[contenteditable="true"] {
+  outline: none;
+  border-radius: 8px;
+}
+
+.editable-cell[contenteditable="true"]:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
+  background: color-mix(in srgb, var(--vscode-inputOption-activeBackground) 55%, transparent);
+}
+
+.row-deleted {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.row-new {
+  background: color-mix(in srgb, var(--vscode-terminal-ansiGreen) 14%, transparent) !important;
+}
+
+.row-modified {
+  background: color-mix(in srgb, var(--vscode-terminal-ansiYellow) 14%, transparent) !important;
+}
+
+.row-selected {
+  outline: 2px solid color-mix(in srgb, var(--vscode-focusBorder) 65%, transparent);
+  outline-offset: -2px;
+}

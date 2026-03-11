@@ -321,6 +321,7 @@ CSharpDB.slnx
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration
 ├── clients/
 │   └── node/                  Node.js/TypeScript client package (csharpdb)
+├── vscode-extension/          VS Code extension using the NativeAOT library
 ├── tests/
 │   ├── CSharpDB.Tests/       Engine unit + integration tests
 │   ├── CSharpDB.Data.Tests/  ADO.NET provider tests
@@ -451,6 +452,8 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [CSharpDB.Daemon](src/CSharpDB.Daemon/README.md) | gRPC daemon host runtime model, configuration, and deployment notes |
 | [CSharpDB.Native](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
 | [Node.js Client](clients/node/README.md) | TypeScript/JavaScript package documentation |
+| [VS Code Extension](vscode-extension/README.md) | Overview of the local NativeAOT-backed VS Code extension |
+| [VS Code Extension Development](vscode-extension/DEVELOPMENT.md) | How to build, debug, and modify the extension in this repo |
 | [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |

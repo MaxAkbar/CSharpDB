@@ -1,5 +1,7 @@
 # CSharpDB VS Code Extension
 
+> Note: this document is the original implementation plan/spec. The current extension implementation lives in [`vscode-extension/`](../../vscode-extension/), and day-to-day development/debugging is documented in [`vscode-extension/DEVELOPMENT.md`](../../vscode-extension/DEVELOPMENT.md).
+
 A VS Code extension providing a full IDE experience for working with CSharpDB databases: schema exploration, SQL editing with IntelliSense, query results, data browsing with CRUD, table designer, and storage diagnostics.
 
 The extension connects via the existing [REST API](../architecture.md) (34 endpoints on port 61818) and can auto-start the `CSharpDB.Api` server when `.db` files are detected.
@@ -77,7 +79,7 @@ vscode-extension/
 `src/providers/schemaTreeProvider.ts` implements `TreeDataProvider<SchemaTreeItem>`:
 
 - **Tree hierarchy:** Database > Tables / Views / Indexes / Triggers groups > items > columns
-- **Context menus:** Browse Data, View Schema, New Query, Drop, Rename
+- **Context menus:** Browse Data, Open Table Designer, New Query, Drop, Rename
 - **Refresh:** On command and after DDL mutations
 - **Icons:** Custom SVG icons in `media/icons/`
 - **Blueprint:** Modeled after `src/CSharpDB.Admin/Components/Layout/NavMenu.razor`
@@ -163,8 +165,26 @@ Blueprint: modeled after `src/CSharpDB.Admin/Components/Tabs/StorageTab.razor`.
 2. **Settings validation** — URL format, dotnet path, project path
 3. **Theming** — Test light, dark, high-contrast themes
 4. **Tests** — Unit tests for API client and schema tree; integration test against live server
-5. **Build** — Webpack bundle, `.vscodeignore`, `vsce package` to produce `.vsix`
+5. **Build** — Webpack bundle, `.vscodeignore`, NativeAOT publish per RID, `vsce package --target` to produce platform-specific `.vsix`
 6. **README** — Screenshots, quick start, configuration reference
+
+#### NativeAOT Distribution Notes
+
+The native extension client is platform-specific. We do not ship one NativeAOT binary for every OS. Instead, we publish the native library once per runtime identifier (RID) and package a matching VSIX for each VS Code target.
+
+| VS Code target | NativeAOT RID | Native library |
+|------|------|------|
+| `win32-x64` | `win-x64` | `.dll` |
+| `win32-arm64` | `win-arm64` | `.dll` |
+| `darwin-x64` | `osx-x64` | `.dylib` |
+| `darwin-arm64` | `osx-arm64` | `.dylib` |
+| `linux-x64` | `linux-x64` | `.so` |
+| `linux-arm64` | `linux-arm64` | `.so` |
+
+- Build and publish the NativeAOT library once per RID that we support.
+- Package and publish one VSIX per VS Code target by using `vsce package --target <target>`.
+- Include only the matching native binary in each package rather than shipping every platform in one VSIX.
+- The required native binary is determined by the extension host, not always the local desktop OS. In Remote SSH, Dev Containers, WSL, and Codespaces, the remote host platform is the one that matters.
 
 ---
 

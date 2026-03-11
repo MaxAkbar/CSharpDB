@@ -184,6 +184,78 @@ int csharpdb_commit(csharpdb_t db);
 int csharpdb_rollback(csharpdb_t db);
 
 /* ------------------------------------------------------------------ */
+/*  Diagnostics and maintenance                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Inspect a database file and return a JSON report.
+ * @param path           UTF-8 database path.
+ * @param include_pages  1 to include page details, 0 for summary only.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_inspect_storage_json(const char* path, int include_pages);
+
+/**
+ * Inspect the companion WAL file and return a JSON report.
+ * @param path  UTF-8 database path.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_inspect_wal_json(const char* path);
+
+/**
+ * Inspect a single page and return a JSON report.
+ * @param path         UTF-8 database path.
+ * @param page_id      Zero-based page id.
+ * @param include_hex  1 to include a hex dump, 0 otherwise.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_inspect_page_json(const char* path, uint32_t page_id, int include_hex);
+
+/**
+ * Inspect indexes and return a JSON report.
+ * @param path        UTF-8 database path.
+ * @param index_name  Optional UTF-8 index name filter, or NULL.
+ * @param sample_size Optional sample size. Pass 0 to use the default.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_check_indexes_json(const char* path, const char* index_name, int sample_size);
+
+/**
+ * Compute maintenance metrics and return a JSON report.
+ * @param path  UTF-8 database path.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_get_maintenance_report_json(const char* path);
+
+/**
+ * Rebuild indexes and return a JSON result.
+ * @param path   UTF-8 database path.
+ * @param scope  0 = all, 1 = table, 2 = index.
+ * @param name   Optional UTF-8 table/index name depending on scope, or NULL.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_reindex_json(const char* path, int scope, const char* name);
+
+/**
+ * Vacuum the database file and return a JSON result.
+ * @param path  UTF-8 database path.
+ * @return UTF-8 JSON string, or NULL on error. Free with csharpdb_string_free().
+ */
+const char* csharpdb_vacuum_json(const char* path);
+
+/**
+ * Free a UTF-8 string returned by a JSON export.
+ * Safe to call with NULL.
+ */
+void csharpdb_string_free(const char* value);
+
+/**
+ * Return the length, in bytes, of a UTF-8 string returned by a JSON export.
+ * Safe to call with NULL.
+ */
+int csharpdb_string_length(const char* value);
+
+/* ------------------------------------------------------------------ */
 /*  Error handling                                                     */
 /* ------------------------------------------------------------------ */
 
