@@ -20,7 +20,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
-| **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Done |
+| **Architecture enforcement** | Consumers have been refactored onto `CSharpDB.Client`, but strict API-only / HTTP-only enforcement is not complete because direct engine-backed transport remains available | In progress |
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
@@ -47,6 +47,7 @@ SQL feature parity and ecosystem expansion.
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Planned |
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | In progress |
+| **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Planned |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Planned |
 
 ---
@@ -139,11 +140,11 @@ Major features already implemented:
 - [Backup/Export/Import Plan](backup-export-import/README.md) — Planned tooling for diagnostics, backups, import/export, and reclaim
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
+- [Query Designer Plan](query-designer/README.md) — Classic visual `SELECT` builder for the Admin UI with SQL round-trip and saved layouts
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
-- [Collection Optimization Plan](collection-optimization/README.md) — Separate storage path, direct hydration, and document field indexing for Collection<T>
 - [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
 - [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library

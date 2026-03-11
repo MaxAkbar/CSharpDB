@@ -55,6 +55,8 @@ See the product first, then dive into the API and internals:
 |---|---|---|
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
 
+Planned next for the Admin query surface: a classic visual [Query Designer](docs/query-designer/README.md) with a source canvas, join lines, design grid, SQL preview, and saved layouts.
+
 ## Quick Start
 
 Install the recommended entry package:
@@ -427,6 +429,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Python and Go client packages
 
 **Mid-term**
+- Visual query designer for Admin UI ([plan](docs/query-designer/README.md))
 - Subqueries and `EXISTS`
 - `UNION` / `INTERSECT` / `EXCEPT`
 - Window functions (`ROW_NUMBER`, `RANK`)
@@ -453,6 +456,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [CLI Reference](docs/cli.md) | Interactive REPL commands and meta-commands |
 | [Storage Inspector](docs/storage-inspector.md) | Read-only DB/WAL integrity diagnostics and page-level inspection |
 | [Service Daemon Design](docs/service-daemon/README.md) | Background service architecture and roadmap |
+| [Query Designer Plan](docs/query-designer/README.md) | Detailed Admin UI plan for a classic visual `SELECT` builder with SQL sync |
 | [Admin Startup Scripts](scripts/README.md) | Start, stop, and configure the admin site and daemon for local workflows |
 | [FFI Tutorials](docs/tutorials/native-ffi/) | Step-by-step JavaScript and Python interop guides |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |

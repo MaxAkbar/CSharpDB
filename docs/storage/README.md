@@ -1399,6 +1399,5 @@ foreach (var (_, volume) in volumes)
 ## See Also
 
 - [Architecture Guide](../architecture.md)
-- [Collection Optimization Plan](../collection-optimization/README.md)
 - [Benchmark Suite](../../tests/CSharpDB.Benchmarks/README.md)
 - [Roadmap](../roadmap.md)
