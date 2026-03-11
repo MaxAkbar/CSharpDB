@@ -1,12 +1,12 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v1.8.0` state of the repo.
 
 ---
 
 ## Near-Term
 
-Recently completed improvements to query performance, storage/runtime behavior, and developer ergonomics.
+Recently completed improvements to query performance, storage/runtime behavior, maintenance workflows, and developer ergonomics.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
@@ -21,7 +21,10 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
 | **Architecture enforcement** | Single authoritative API access layer — CLI, Admin, MCP communicate via HTTP client SDK | Done |
-| **Database administration** | Reindex (full + incremental), VACUUM/compact, fragmentation analysis, database size report | Planned |
+| **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
+| **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
+| **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
+| **Background WAL checkpointing** | Incremental/sliced auto-checkpointing to move work off the triggering commit | Done |
 | **Table/index statistics** | ANALYZE command with persisted row counts, column NDV, min/max; cost-based index selection in query planner | Planned |
 
 ---
@@ -32,18 +35,18 @@ SQL feature parity and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **User-defined functions** | Built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
+| **User-defined functions** | Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` | Planned |
 | **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results | Planned |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
-| **Service daemon** | Persistent background service keeping the database loaded with concurrent readers, cross-platform (systemd, Windows Service, launchd) | Planned |
+| **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Planned |
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
-| **Admin dashboard improvements** | Schema editing, SQL editor with syntax highlighting, query history | In progress |
+| **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | In progress |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Planned |
 
 ---
@@ -75,7 +78,7 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **Functions** | No scalar functions (UPPER, ABS, etc.) — only aggregate functions (COUNT, SUM, AVG, MIN, MAX) |
+| **Functions** | Very limited scalar function surface today: built-in `TEXT(expr)` plus aggregate functions; no broader built-in function library or user-defined functions yet |
 | **Query** | No scalar/`IN`/`EXISTS` subqueries, and no `UNION`/`INTERSECT`/`EXCEPT` |
 | **Query** | No window functions |
 | **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
@@ -83,12 +86,11 @@ These are known simplifications in the current implementation:
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
 | **Collections** | No JSON-path querying or expression/path-based document indexes yet |
+| **Networking** | `CSharpDB.Daemon` provides the current gRPC remote host; TCP and Named Pipes transports remain part of the client contract but are not implemented yet |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | No mmap read path |
-| **Storage** | No VACUUM/compaction — database file grows monotonically, freed pages go to freelist but file never shrinks |
-| **Storage** | No REINDEX — indexes cannot be rebuilt without DROP + CREATE |
 | **Query** | No ANALYZE — query planner uses rule-based heuristics instead of statistics-driven cost estimation |
 
 ---
@@ -104,6 +106,7 @@ Major features already implemented:
 - Full SQL pipeline: tokenizer, parser, query planner, operator tree
 - JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs
 - `SELECT DISTINCT` and DISTINCT aggregates
+- Scalar `TEXT(expr)` for filter-friendly text coercion
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - SQL statement and SELECT plan caching
@@ -117,6 +120,9 @@ Major features already implemented:
 - Document Collection API (NoSQL) with typed Put/Get/Delete/Scan/Find
 - Collection UTF-8 payload fast path with compatibility for legacy backing rows
 - Collection secondary field indexes via `EnsureIndexAsync` / `FindByIndexAsync`
+- Maintenance report, `REINDEX`, and `VACUUM` flows across client, CLI, API, and Admin UI
+- Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
+- Storage tuning presets and sliced background WAL auto-checkpointing
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
