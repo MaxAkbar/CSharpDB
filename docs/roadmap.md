@@ -87,7 +87,7 @@ These are known simplifications in the current implementation:
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
 | **Collections** | No JSON-path querying or expression/path-based document indexes yet |
-| **Networking** | `CSharpDB.Daemon` provides the current gRPC remote host; TCP and Named Pipes transports remain part of the client contract but are not implemented yet |
+| **Networking** | `CSharpDB.Api` now backs the HTTP transport and `CSharpDB.Daemon` provides the gRPC remote host; named pipes remain the only planned extra client transport and are not implemented yet |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
@@ -145,7 +145,6 @@ Major features already implemented:
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
-- [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
 - [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing

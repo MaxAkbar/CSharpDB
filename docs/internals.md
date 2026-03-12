@@ -50,7 +50,7 @@ CSharpDB.slnx
 │   │   ├── ICSharpDbClient.cs          Public client contract (all database operations)
 │   │   ├── CSharpDbClient.cs           Factory: Create() → transport-specific implementation
 │   │   ├── CSharpDbClientOptions.cs    Configuration (DataSource, Endpoint, Transport, ConnectionString)
-│   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, Tcp, NamedPipes)
+│   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, NamedPipes)
 │   │   ├── ServiceCollectionExtensions.cs  DI registration (AddCSharpDbClient)
 │   │   ├── Internal/                   Direct-transport implementation (engine-backed client)
 │   │   └── Models/                     Schema, data, procedure, transaction, and collection models

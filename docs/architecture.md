@@ -428,8 +428,9 @@ Key pieces:
 Current direction:
 
 - **Direct transport is implemented today** and is backed by `CSharpDB.Engine`
-- **HTTP, gRPC, TCP, and Named Pipes are part of the public transport model**
-  but are not implemented yet
+- **HTTP transport is implemented** and targets `CSharpDB.Api`
+- **gRPC transport is implemented** and targets `CSharpDB.Daemon`
+- **Named Pipes is part of the public transport model** but is not implemented yet
 - **The client does not depend on `CSharpDB.Data`**
 - **New database-facing functionality should be added here first**
 

@@ -8,8 +8,8 @@ It owns the public client contract used to talk to a database, while transport a
 
 - `CSharpDB.Client` is now the real implementation layer for database access.
 - `CSharpDB.Service` is a compatibility facade over the client while the repo retires direct service usage.
-- `Direct` and `Grpc` are implemented transports today.
-- `Http`, `Tcp`, and `NamedPipes` remain future transport targets.
+- `Direct`, `Http`, and `Grpc` are implemented transports today.
+- `NamedPipes` remains the only future transport target.
 
 ## Current Transport Model
 
@@ -37,10 +37,11 @@ Resolution rules:
 - direct is the default when transport cannot be inferred from a network endpoint
 - supplied direct inputs must resolve to the same target
 - `http://` and `https://` infer `Http` unless `Transport = CSharpDbTransport.Grpc` is set explicitly
-- `tcp://`, `pipe://`, and `npipe://` infer their corresponding future transport
+- `pipe://` and `npipe://` infer `NamedPipes`
 - `Grpc` uses `http://` or `https://` endpoints and talks to `CSharpDB.Daemon`
-- `Http`, `Tcp`, and `NamedPipes` still validate their endpoint shape and then fail with a not-implemented error
-- `HttpClient` is supported for `Grpc` and reserved for future `Http`
+- `Http` uses `http://` or `https://` endpoints and talks to `CSharpDB.Api`
+- `NamedPipes` still validates its endpoint shape and then fails with a not-implemented error
+- `HttpClient` is supported for both `Http` and `Grpc`
 
 Example gRPC selection:
 
