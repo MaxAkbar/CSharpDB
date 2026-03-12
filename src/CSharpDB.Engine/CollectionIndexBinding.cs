@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -8,7 +9,9 @@ using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Engine;
 
-internal sealed class CollectionIndexBinding<T>
+internal sealed class CollectionIndexBinding<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    T>
 {
     private readonly Func<T, object?> _fieldAccessor;
     private readonly string _jsonPropertyName;
@@ -147,17 +150,23 @@ internal sealed class CollectionIndexBinding<T>
 
     private static MemberInfo ResolveMember(string fieldPath)
     {
-        var property = typeof(T).GetProperty(
-            fieldPath,
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-        if (property != null)
-            return property;
+        foreach (PropertyInfo property in typeof(T).GetProperties())
+        {
+            if (property.GetMethod?.IsStatic == true)
+                continue;
 
-        var field = typeof(T).GetField(
-            fieldPath,
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-        if (field != null)
-            return field;
+            if (string.Equals(property.Name, fieldPath, StringComparison.OrdinalIgnoreCase))
+                return property;
+        }
+
+        foreach (FieldInfo field in typeof(T).GetFields())
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (string.Equals(field.Name, fieldPath, StringComparison.OrdinalIgnoreCase))
+                return field;
+        }
 
         throw new InvalidOperationException(
             $"Cannot bind collection index field '{fieldPath}' for document type '{typeof(T).Name}'.");
