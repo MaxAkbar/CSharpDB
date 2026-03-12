@@ -9,7 +9,7 @@ Engine-level change event system for CSharpDB that hooks directly into the DML w
 
 ## Motivation
 
-CSharpDB currently has no way for consumers to react to data changes in real time. The existing `CSharpDbService` has basic `Action` delegates (`TablesChanged`, `SchemaChanged`) that carry no payload and are used only for UI refresh. Real-time change events unlock:
+CSharpDB currently has no way for consumers to react to data changes in real time. Earlier host layers exposed basic `Action` delegates (`TablesChanged`, `SchemaChanged`) that carried no payload and were used only for UI refresh. Real-time change events unlock:
 
 - **Reactive UIs** that refresh when data changes without polling
 - **Audit logging** that captures every committed mutation

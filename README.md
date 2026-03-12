@@ -31,7 +31,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, GROUP BY, HAVING, CTEs, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
+| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC; Named Pipes planned), with gRPC hosted by `CSharpDB.Daemon` |
 | **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`/static lib) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, iOS, and more |
 | **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
 | **VS Code Extension** | NativeAOT-backed local extension with auto-connect, schema explorer, `.csql` language support, query results, data browser CRUD, table designer, and storage diagnostics |
@@ -45,9 +45,9 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 
 ## Compatibility Notice
 
-- New application code should target `CSharpDB.Client`.
-- New low-level/shared-type usage should target `CSharpDB.Primitives`.
-- `CSharpDB.Service` and the `CSharpDB.Core` compatibility package remain available in `v1.x`, but both are planned for removal in `v2.0.0`.
+- `v2.0` application code should target `CSharpDB.Client`.
+- `v2.0` low-level/shared-type usage should target `CSharpDB.Primitives`.
+- The legacy `CSharpDB.Service` and `CSharpDB.Core` compatibility packages are removed from the `v2.0` repo surface. Migrate to `CSharpDB.Client` and `CSharpDB.Primitives`.
 
 ## Admin UI Preview
 
@@ -215,14 +215,29 @@ await client.InsertRowAsync("users", new Dictionary<string, object?>
 services.AddCSharpDbClient(new CSharpDbClientOptions { DataSource = "mydata.db" });
 ```
 
-The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes.
+For the REST host, point the same client API at `CSharpDB.Api`:
+
+```csharp
+using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Http,
+    Endpoint = "http://localhost:61818"
+});
+
+var info = await client.GetInfoAsync();
+var tables = await client.GetTableNamesAsync();
+```
+
+The transport layer supports Direct (in-process), HTTP, and gRPC today. If you pass an `http://` or `https://` endpoint without setting `Transport`, the client infers `Http`. Named Pipes remain planned for future same-machine daemon scenarios.
 
 Current host mapping:
 
 - `CSharpDB.Api` is the REST/HTTP host
 - `CSharpDB.Daemon` is the gRPC host used by `CSharpDB.Client` when `Transport = Grpc`
 
-Direct is fully implemented. gRPC is available through `CSharpDB.Daemon`. The other network transports remain part of the client contract and broader service-daemon roadmap.
+Direct, HTTP, and gRPC are implemented. Named Pipes remain the only planned additional client transport.
 
 ### gRPC Daemon
 
@@ -326,7 +341,6 @@ CSharpDB.slnx
 │   ├── CSharpDB.Native/      NativeAOT C FFI library for cross-language interop
 │   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
 │   ├── CSharpDB.Cli/         Interactive REPL with remote connectivity
-│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client (planned removal in v2.0.0)
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
 │   ├── CSharpDB.Daemon/      gRPC daemon host for remote `CSharpDB.Client` access
@@ -435,8 +449,8 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 
 **In progress**
 - Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
-- Service daemon for persistent background hosting (HTTP/gRPC/TCP/Named Pipes)
-- Network transport implementations for `CSharpDB.Client`
+- Service daemon expansion for persistent background hosting and same-machine local transport support
+- Named Pipes transport work for `CSharpDB.Client`
 
 **Still planned**
 - B+tree delete rebalancing

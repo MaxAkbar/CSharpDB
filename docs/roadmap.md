@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v1.9.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.0.0` state of the repo.
 
 ---
 
@@ -20,7 +20,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
-| **Architecture enforcement** | Consumers have been refactored onto `CSharpDB.Client`, but strict API-only / HTTP-only enforcement is not complete because direct engine-backed transport remains available | In progress |
+| **Architecture enforcement** | `CSharpDB.Client` is now the main caller-facing interaction layer across local and remote scenarios, with direct engine-backed transport intentionally retained for in-process access | Done |
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
