@@ -249,13 +249,14 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         if (maxPages <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxPages), "Value must be greater than zero.");
 
+        long requiredLength = 0;
         try
         {
             var checkpoint = EnsureIncrementalCheckpointState();
             if (checkpoint is null)
                 return true;
 
-            long requiredLength = (long)pageCount * PageConstants.PageSize;
+            requiredLength = (long)pageCount * PageConstants.PageSize;
             if (device.Length < requiredLength)
                 await device.SetLengthAsync(requiredLength, cancellationToken);
 
@@ -279,7 +280,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
             int committedPageCount = _incrementalCheckpoint?.CommittedPageCount ?? _index.FrameCount;
             throw new CSharpDbException(
                 ErrorCode.WalError,
-                $"Failed to checkpoint in-memory WAL with {committedPageCount} committed page(s).",
+                $"Failed to checkpoint in-memory WAL with {committedPageCount} committed page(s), pageCount={pageCount}, requiredLength={requiredLength}, deviceLength={device.Length}.",
                 ex);
         }
     }
