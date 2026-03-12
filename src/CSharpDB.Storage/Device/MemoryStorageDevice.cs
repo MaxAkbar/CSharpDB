@@ -108,12 +108,29 @@ public sealed class MemoryStorageDevice : IStorageDevice
         if (requiredLength <= _buffer.Length)
             return;
 
+        if (requiredLength > Array.MaxLength)
+        {
+            throw new InvalidOperationException(
+                $"Memory storage device exceeded the supported buffer size (requiredLength={requiredLength}, currentLength={_length}, currentBufferLength={_buffer.Length}, requestedCapacity={requiredLength}, maxSupportedLength={Array.MaxLength}).");
+        }
+
         long newLength = _buffer.Length == 0 ? requiredLength : _buffer.Length;
         while (newLength < requiredLength)
-            newLength *= 2;
+        {
+            if (newLength > Array.MaxLength / 2)
+            {
+                newLength = requiredLength;
+                break;
+            }
 
-        if (newLength > int.MaxValue)
-            throw new InvalidOperationException("Memory storage device exceeded the supported buffer size.");
+            newLength *= 2;
+        }
+
+        if (newLength > Array.MaxLength)
+        {
+            throw new InvalidOperationException(
+                $"Memory storage device exceeded the supported buffer size (requiredLength={requiredLength}, currentLength={_length}, currentBufferLength={_buffer.Length}, requestedCapacity={newLength}, maxSupportedLength={Array.MaxLength}).");
+        }
 
         Array.Resize(ref _buffer, (int)newLength);
     }

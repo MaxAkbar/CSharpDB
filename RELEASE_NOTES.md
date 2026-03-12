@@ -1,33 +1,23 @@
 # What's New
 
-## v1.8.0 (2026-03-10)
+## v1.9.0 (2026-03-12)
 
-### Database Maintenance and Admin Workflows
-- Added first-class maintenance APIs via `GetMaintenanceReportAsync()`, `ReindexAsync(...)`, and `VacuumAsync()` on `ICSharpDbClient` and `CSharpDbClient`.
-- Added CLI maintenance commands and REPL meta commands for maintenance report, reindex, and vacuum operations.
-- Added Web API maintenance endpoints and Admin storage-tab support for maintenance report, reindex, and vacuum flows.
-- Reindex now supports full-database, table-scoped, index-scoped, and collection-index rebuild paths.
-- Vacuum rewrites the database while preserving catalog objects, saved queries, procedures, and legacy next-row-id cases.
+### NativeAOT VS Code Extension
+- Added the first NativeAOT-backed local VS Code extension for CSharpDB, using `CSharpDB.Native` through the embedded C API instead of a REST API or daemon for local IDE workflows.
+- Added workspace `.db` auto-connect, schema explorer support for tables, columns, views, indexes, triggers, and procedures, and `.csql` language support with syntax highlighting, completion, and hover help.
+- Added integrated query results, data browser CRUD for tables with read-only view browsing, table designer flows, and storage diagnostics inside the VS Code extension.
 
-### Daemon and gRPC Transport
-- Added the standalone `CSharpDB.Daemon` host as the dedicated gRPC surface for remote clients.
-- Implemented explicit gRPC RPCs and model/value mapping for SQL execution, schema browsing, collections, procedures, maintenance, and storage inspection.
-- Added gRPC client coverage for primitive rows, nested collection documents, procedure execution, and explicit RPC contract exposure.
-- Added startup scripts and documentation for running the Admin UI either directly or against the daemon.
+### In-Memory Storage Stability
+- Fixed in-memory storage growth near the managed array limit so checkpoints can grow directly to the required size instead of failing when a doubling step would overflow the supported buffer ceiling.
+- Prevented intermittent `Collection put (in-memory)` benchmark and checkpoint failures caused by the memory device rejecting a valid small growth request near the high-water mark.
+- Expanded in-memory WAL checkpoint error context to include committed page count, target page count, required length, and device length for faster failure analysis.
 
-### Collection and Storage Performance
-- Refined collection secondary-index reads so integer-key lookups trust the index key and text-key lookups verify raw payloads before materializing documents.
-- Shared row-id payload encoding and maintenance between collection and SQL index paths through `RowIdPayloadCodec`.
-- Added `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for opt-in file-backed read-heavy and write-heavy storage tuning.
-- Reworked WAL auto-checkpointing to support background sliced execution and incremental checkpoint progress, reducing foreground commit disruption without changing the default checkpoint policy.
-- Expanded benchmark coverage with collection-index microbenchmarks, storage tuning sweeps, durable-write diagnostics, and refreshed reproducible macro capture defaults.
+### NativeAOT and Trimming Clarity
+- Moved `Collection<T>` trim/AOT warnings to the public API boundary so NativeAOT and trimmed-app limitations are explicit where the typed collection API is consumed.
+- Added linker-friendly annotations for reflected collection member access and removed internal analyzer noise around collection index binding resolution.
+- Clarified the runtime requirements of typed collection JSON serialization and deserialization while preserving the existing SQL-first path for NativeAOT-sensitive scenarios.
 
-### Benchmark Highlights
-- File-backed SQL single insert now measures about **~30.0K ops/sec**, with batched insert at **~740K rows/sec**.
-- File-backed collection single put now measures about **34.6K ops/sec**, with indexed equality lookup at **~742K ops/sec** and single put with one secondary index at **~27.9K ops/sec**.
-- The best measured write-heavy auto-checkpoint preset currently is `UseWriteOptimizedPreset()` at about **~31.96K ops/sec**, while keeping checkpoint work off the triggering commit.
-- Cold/cache-pressured point lookups currently measure about **~36.2K ops/sec** for SQL file-backed, **~35.0K ops/sec** for collections file-backed, and about **~582K / ~554K ops/sec** in-memory for SQL and collections respectively.
+### Tooling and Repo Baseline
+- Updated the VS Code extension TypeScript configuration from the deprecated Node 10 resolver to the Node 16 module and resolution settings.
+- Bumped the repo SDK baseline to `.NET 10.0.200` for the current branch and release prep workflow.
 
-### Validation and Coverage
-- Added maintenance regression coverage, collection-index tests, row-id payload codec tests, WAL/background-checkpoint tests, storage extensibility tests, and daemon gRPC tests.
-- Refreshed the benchmark README and reproducible baseline workflow around `--macro --repeat 3 --repro`.

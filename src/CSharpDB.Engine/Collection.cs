@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -12,7 +13,11 @@ namespace CSharpDB.Engine;
 /// Documents are serialized as JSON and stored with string keys hashed to long B+tree keys.
 /// Provides a NoSQL-style API that bypasses the SQL parser/planner entirely.
 /// </summary>
-public sealed class Collection<T>
+[RequiresUnreferencedCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
+[RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
+public sealed class Collection<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    T>
 {
     private const int MaxProbeDistance = 128;
     private const string CollectionIndexPrefix = "_cidx_";

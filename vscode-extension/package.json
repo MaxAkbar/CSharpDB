@@ -1,0 +1,275 @@
+{
+  "name": "csharpdb-vscode",
+  "displayName": "CSharpDB",
+  "description": "VS Code extension for exploring and editing CSharpDB databases.",
+  "version": "0.1.0",
+  "publisher": "csharpdb",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Data Science"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:**/*.db",
+    "onLanguage:csharpdb-sql",
+    "onView:csharpdb.schemaExplorer",
+    "onCommand:csharpdb.connect",
+    "onCommand:csharpdb.createDatabase",
+    "onCommand:csharpdb.disconnect",
+    "onCommand:csharpdb.refresh",
+    "onCommand:csharpdb.newQuery",
+    "onCommand:csharpdb.executeQuery",
+    "onCommand:csharpdb.browseTable",
+    "onCommand:csharpdb.browseView",
+    "onCommand:csharpdb.openTableDesigner",
+    "onCommand:csharpdb.openProcedureDesigner",
+    "onCommand:csharpdb.newProcedure",
+    "onCommand:csharpdb.openDiagnostics",
+    "onCommand:csharpdb.renameTable",
+    "onCommand:csharpdb.dropObject"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "csharpdb.connect",
+        "title": "CSharpDB: Connect",
+        "icon": {
+          "light": "media/icons/connect-light.svg",
+          "dark": "media/icons/connect-dark.svg"
+        }
+      },
+      {
+        "command": "csharpdb.createDatabase",
+        "title": "CSharpDB: Create Database"
+      },
+      {
+        "command": "csharpdb.disconnect",
+        "title": "CSharpDB: Disconnect",
+        "icon": {
+          "light": "media/icons/disconnect-light.svg",
+          "dark": "media/icons/disconnect-dark.svg"
+        }
+      },
+      {
+        "command": "csharpdb.refresh",
+        "title": "CSharpDB: Refresh",
+        "icon": {
+          "light": "media/icons/refresh-light.svg",
+          "dark": "media/icons/refresh-dark.svg"
+        }
+      },
+      {
+        "command": "csharpdb.newQuery",
+        "title": "CSharpDB: New Query"
+      },
+      {
+        "command": "csharpdb.newQueryWithText",
+        "title": "CSharpDB: New Query With Text"
+      },
+      {
+        "command": "csharpdb.executeQuery",
+        "title": "CSharpDB: Execute Query"
+      },
+      {
+        "command": "csharpdb.browseTable",
+        "title": "CSharpDB: Browse Table"
+      },
+      {
+        "command": "csharpdb.browseView",
+        "title": "CSharpDB: Browse View"
+      },
+      {
+        "command": "csharpdb.openTableDesigner",
+        "title": "CSharpDB: Open Table Designer"
+      },
+      {
+        "command": "csharpdb.openProcedureDesigner",
+        "title": "CSharpDB: Open Procedure Designer"
+      },
+      {
+        "command": "csharpdb.newProcedure",
+        "title": "CSharpDB: New Procedure"
+      },
+      {
+        "command": "csharpdb.openDiagnostics",
+        "title": "CSharpDB: Open Storage Diagnostics",
+        "icon": {
+          "light": "media/icons/diagnostics-light.svg",
+          "dark": "media/icons/diagnostics-dark.svg"
+        }
+      },
+      {
+        "command": "csharpdb.renameTable",
+        "title": "CSharpDB: Rename Table"
+      },
+      {
+        "command": "csharpdb.dropObject",
+        "title": "CSharpDB: Drop Object"
+      }
+    ],
+    "configuration": {
+      "title": "CSharpDB",
+      "properties": {
+        "csharpdb.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the first workspace .db file when the extension activates."
+        },
+        "csharpdb.nativeLibraryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the published CSharpDB NativeAOT library or its containing folder. If empty, the extension will try to auto-discover it."
+        },
+        "csharpdb.reuseDataBrowserTab": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse the shared CSharpDB workbench tab when opening tables and views from the schema explorer."
+        },
+        "csharpdb.reuseDesignerTab": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse the shared CSharpDB workbench tab when opening tables, indexes, triggers, and procedures from the schema explorer."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "csharpdb",
+          "title": "CSharpDB",
+          "icon": "media/icons/database.svg"
+        }
+      ]
+    },
+    "views": {
+      "csharpdb": [
+        {
+          "id": "csharpdb.schemaExplorer",
+          "name": "Schema Explorer"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "csharpdb.connect",
+          "when": "view == csharpdb.schemaExplorer && !csharpdb.connected",
+          "group": "navigation@1"
+        },
+        {
+          "command": "csharpdb.createDatabase",
+          "when": "view == csharpdb.schemaExplorer && !csharpdb.connected",
+          "group": "navigation@2"
+        },
+        {
+          "command": "csharpdb.disconnect",
+          "when": "view == csharpdb.schemaExplorer && csharpdb.connected",
+          "group": "navigation@1"
+        },
+        {
+          "command": "csharpdb.refresh",
+          "when": "view == csharpdb.schemaExplorer && csharpdb.connected",
+          "group": "navigation@2"
+        },
+        {
+          "command": "csharpdb.openDiagnostics",
+          "when": "view == csharpdb.schemaExplorer && csharpdb.connected",
+          "group": "navigation@3"
+        },
+        {
+          "command": "csharpdb.newProcedure",
+          "when": "view == csharpdb.schemaExplorer && csharpdb.connected",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "csharpdb.browseTable",
+          "when": "view == csharpdb.schemaExplorer && viewItem == csharpdb.table",
+          "group": "inline@1"
+        },
+        {
+          "command": "csharpdb.browseView",
+          "when": "view == csharpdb.schemaExplorer && viewItem == csharpdb.view",
+          "group": "inline@1"
+        },
+        {
+          "command": "csharpdb.openTableDesigner",
+          "when": "view == csharpdb.schemaExplorer && viewItem == csharpdb.table",
+          "group": "navigation@1"
+        },
+        {
+          "command": "csharpdb.newQueryWithText",
+          "when": "view == csharpdb.schemaExplorer && viewItem =~ /^csharpdb\\.(table|view|index|trigger|procedure)$/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "csharpdb.openProcedureDesigner",
+          "when": "view == csharpdb.schemaExplorer && viewItem == csharpdb.procedure",
+          "group": "navigation@3"
+        },
+        {
+          "command": "csharpdb.renameTable",
+          "when": "view == csharpdb.schemaExplorer && viewItem == csharpdb.table",
+          "group": "modification@1"
+        },
+        {
+          "command": "csharpdb.dropObject",
+          "when": "view == csharpdb.schemaExplorer && viewItem =~ /^csharpdb\\.(table|view|index|trigger|procedure)$/",
+          "group": "modification@2"
+        }
+      ]
+    },
+    "languages": [
+      {
+        "id": "csharpdb-sql",
+        "aliases": [
+          "CSharpDB SQL",
+          "csql"
+        ],
+        "extensions": [
+          ".csql"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "csharpdb-sql",
+        "scopeName": "source.csharpdb.sql",
+        "path": "./syntaxes/csharpdb-sql.tmLanguage.json"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "csharpdb.executeQuery",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == csharpdb-sql"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "webpack --mode development",
+    "watch": "webpack --mode development --watch",
+    "package": "webpack --mode production",
+    "vscode:prepublish": "npm run package"
+  },
+  "dependencies": {
+    "koffi": "^2.15.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.96.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.7.2",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^6.0.1"
+  }
+}

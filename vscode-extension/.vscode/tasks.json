@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "compile",
+      "problemMatcher": "$ts-webpack-watch",
+      "label": "npm: compile",
+      "detail": "Compile the extension"
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "problemMatcher": "$ts-webpack-watch",
+      "isBackground": true,
+      "label": "npm: watch",
+      "detail": "Watch the extension"
+    }
+  ]
+}

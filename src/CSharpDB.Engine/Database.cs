@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Core;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
@@ -400,7 +401,13 @@ public sealed class Database : IAsyncDisposable
     /// Get or create a document collection with the given name.
     /// Collections are stored as internal tables with a "_col_" prefix.
     /// </summary>
-    public async ValueTask<Collection<T>> GetCollectionAsync<T>(string name, CancellationToken ct = default)
+    [RequiresUnreferencedCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
+    public async ValueTask<Collection<T>> GetCollectionAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+        T>(
+        string name,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         InvalidateCachesIfSchemaChanged();

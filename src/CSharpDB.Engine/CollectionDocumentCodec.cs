@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Core;
@@ -24,8 +25,8 @@ internal sealed class CollectionDocumentCodec<T>
 
     internal bool UsesDirectPayloadFormat { get; }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    [RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal byte[] Encode(string key, T document)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -45,15 +46,15 @@ internal sealed class CollectionDocumentCodec<T>
         return CollectionPayloadCodec.Encode(key, jsonUtf8);
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal (string Key, T Document) Decode(ReadOnlySpan<byte> payload)
     {
         return (DecodeKey(payload), DecodeDocument(payload));
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal T DecodeDocument(ReadOnlySpan<byte> payload)
     {
         if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
@@ -70,8 +71,8 @@ internal sealed class CollectionDocumentCodec<T>
         return DecodeLegacyKey(payload);
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal bool TryDecodeDocumentForKey(
         ReadOnlySpan<byte> payload,
         string expectedKey,
@@ -122,6 +123,8 @@ internal sealed class CollectionDocumentCodec<T>
         }
     }
 
+    [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     private (string Key, T Document) DecodeLegacy(ReadOnlySpan<byte> payload)
     {
         var values = _recordSerializer.Decode(payload);

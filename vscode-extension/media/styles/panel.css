@@ -1,0 +1,237 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  color: var(--vscode-editor-foreground);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent), transparent 40%),
+    linear-gradient(180deg, color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background)) 0%, var(--vscode-editor-background) 100%);
+  font-family: var(--vscode-font-family);
+}
+
+.panel-shell {
+  padding: 18px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.panel-subtitle {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.button,
+button {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--vscode-button-background) 70%, var(--vscode-editorWidget-border));
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border-radius: 999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.button.secondary,
+button.secondary {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+}
+
+.button.danger,
+button.danger {
+  background: color-mix(in srgb, var(--vscode-errorForeground) 20%, var(--vscode-editor-background));
+  color: var(--vscode-errorForeground);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.input,
+input,
+select,
+textarea {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.card {
+  background: color-mix(in srgb, var(--vscode-sideBar-background) 54%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border) 70%, transparent);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+}
+
+.card h2,
+.card h3,
+.card h4 {
+  margin-top: 0;
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.status-banner {
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: color-mix(in srgb, var(--vscode-infoForeground) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-infoForeground) 28%, transparent);
+}
+
+.status-banner.error {
+  background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-errorForeground) 32%, transparent);
+}
+
+.status-banner.warning {
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 14%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 30%, transparent);
+}
+
+.mono {
+  font-family: var(--vscode-editor-font-family);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 18%, transparent);
+  color: var(--vscode-foreground);
+}
+
+.grid-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.split-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1.2fr 0.8fr;
+}
+
+.mode-switcher {
+  display: inline-flex;
+  gap: 8px;
+}
+
+button.active {
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 22%, var(--vscode-button-background));
+  border-color: color-mix(in srgb, var(--vscode-textLink-foreground) 38%, var(--vscode-button-background));
+}
+
+.form-card,
+.field-group {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 14px;
+}
+
+.editor-textarea {
+  min-height: 220px;
+}
+
+.help-text {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.card-header h2,
+.card-header h3 {
+  margin: 0 0 6px;
+}
+
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-button {
+  border-radius: 10px;
+  padding-inline: 10px;
+}
+
+.checkbox-cell {
+  text-align: center;
+}
+
+.empty-state {
+  color: var(--vscode-descriptionForeground);
+  padding: 10px 0;
+}
+
+@media (max-width: 900px) {
+  .split-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .card-header {
+    flex-direction: column;
+  }
+}

@@ -1,7 +1,10 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using CSharpDB.Core;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Native;
 
@@ -394,6 +397,194 @@ public static class NativeExports
     }
 
     // ================================================================
+    //  Diagnostics and maintenance
+    // ================================================================
+
+    /// <summary>
+    /// Inspect a database file and return the report as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_inspect_storage_json")]
+    public static IntPtr InspectStorageJson(IntPtr pathPtr, int includePages)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var report = DatabaseInspector.InspectAsync(
+                path,
+                new DatabaseInspectOptions { IncludePages = includePages != 0 },
+                CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(report, NativeJsonContext.Default.DatabaseInspectReport);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Inspect the companion WAL file and return the report as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_inspect_wal_json")]
+    public static IntPtr InspectWalJson(IntPtr pathPtr)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var report = WalInspector.InspectAsync(path, options: null, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(report, NativeJsonContext.Default.WalInspectReport);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Inspect a single database page and return the report as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_inspect_page_json")]
+    public static IntPtr InspectPageJson(IntPtr pathPtr, uint pageId, int includeHex)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var report = DatabaseInspector.InspectPageAsync(path, pageId, includeHex != 0, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(report, NativeJsonContext.Default.PageInspectReport);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Inspect indexes and return the report as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_check_indexes_json")]
+    public static IntPtr CheckIndexesJson(IntPtr pathPtr, IntPtr indexNamePtr, int sampleSize)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            string? indexName = ReadOptionalUtf8String(indexNamePtr);
+            int? normalizedSampleSize = sampleSize > 0 ? sampleSize : null;
+            var report = IndexInspector.CheckAsync(path, indexName, normalizedSampleSize, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(report, NativeJsonContext.Default.IndexInspectReport);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Compute maintenance metrics and return the report as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_get_maintenance_report_json")]
+    public static IntPtr GetMaintenanceReportJson(IntPtr pathPtr)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var report = DatabaseMaintenanceCoordinator.GetMaintenanceReportAsync(path, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(report, NativeJsonContext.Default.DatabaseMaintenanceReport);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Rebuild indexes and return the result as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_reindex_json")]
+    public static IntPtr ReindexJson(IntPtr pathPtr, int scope, IntPtr namePtr)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var request = new DatabaseReindexRequest
+            {
+                Scope = scope switch
+                {
+                    0 => DatabaseReindexScope.All,
+                    1 => DatabaseReindexScope.Table,
+                    2 => DatabaseReindexScope.Index,
+                    _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "Scope must be 0 (all), 1 (table), or 2 (index)."),
+                },
+                Name = ReadOptionalUtf8String(namePtr),
+            };
+
+            var result = DatabaseMaintenanceCoordinator.ReindexAsync(path, request, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(result, NativeJsonContext.Default.DatabaseReindexResult);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Vacuum a database file and return the result as JSON.
+    /// Caller must free the returned string with csharpdb_string_free.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_vacuum_json")]
+    public static IntPtr VacuumJson(IntPtr pathPtr)
+    {
+        try
+        {
+            string path = ReadRequiredUtf8String(pathPtr, nameof(pathPtr));
+            var result = DatabaseMaintenanceCoordinator.VacuumAsync(path, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            return SerializeJson(result, NativeJsonContext.Default.DatabaseVacuumResult);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Free an unmanaged UTF-8 string returned by a JSON export.
+    /// Safe to call with IntPtr.Zero.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_string_free")]
+    public static void StringFree(IntPtr valuePtr)
+    {
+        Utf8StringMemory.Free(valuePtr);
+    }
+
+    /// <summary>
+    /// Return the length, in bytes, of a UTF-8 string returned by a JSON export.
+    /// Safe to call with IntPtr.Zero.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_string_length")]
+    public static int StringLength(IntPtr valuePtr)
+    {
+        if (valuePtr == IntPtr.Zero)
+            return 0;
+
+        int length = 0;
+        while (Marshal.ReadByte(valuePtr, length) != 0)
+            length++;
+
+        return length;
+    }
+
+    // ================================================================
     //  Error reporting
     // ================================================================
 
@@ -423,5 +614,29 @@ public static class NativeExports
     public static void ClearError()
     {
         ErrorState.Clear();
+    }
+
+    private static string ReadRequiredUtf8String(IntPtr valuePtr, string paramName)
+    {
+        if (valuePtr == IntPtr.Zero)
+            throw new ArgumentNullException(paramName);
+
+        return Marshal.PtrToStringUTF8(valuePtr)
+            ?? throw new ArgumentException("Expected a UTF-8 string pointer.", paramName);
+    }
+
+    private static string? ReadOptionalUtf8String(IntPtr valuePtr)
+    {
+        if (valuePtr == IntPtr.Zero)
+            return null;
+
+        string? value = Marshal.PtrToStringUTF8(valuePtr);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static IntPtr SerializeJson<TValue>(TValue value, JsonTypeInfo<TValue> typeInfo)
+    {
+        string json = JsonSerializer.Serialize(value, typeInfo);
+        return Utf8StringMemory.Allocate(json);
     }
 }

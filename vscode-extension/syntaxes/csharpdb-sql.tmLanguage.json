@@ -1,0 +1,75 @@
+{
+  "name": "CSharpDB SQL",
+  "scopeName": "source.csharpdb.sql",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.sql",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.sql",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.sql",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.sql",
+              "match": "''"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.sql",
+          "match": "\\b\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.sql",
+          "match": "\\b(?i:select|from|where|and|or|not|in|is|null|insert|into|values|update|set|delete|create|alter|drop|table|index|view|trigger|join|inner|left|right|outer|cross|on|order|by|asc|desc|group|having|limit|offset|as|distinct|all|exists|between|like|union|begin|end|commit|rollback|transaction|primary|key|unique|default|check|foreign|references|if|else|case|when|then|column|add|rename|to|before|after|for|each|row|instead|of|identity|autoincrement|integer|text|real|blob|boolean|int|varchar|char|true|false|exec|execute)\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.sql",
+          "match": "\\b(?i:count|sum|avg|min|max|cast|coalesce|ifnull|upper|lower|length|substr|trim|replace|abs|round|date|time|datetime|typeof|total|group_concat|text)\\b"
+        }
+      ]
+    }
+  }
+}
