@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v1.8.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v1.9.0` state of the repo.
 
 ---
 

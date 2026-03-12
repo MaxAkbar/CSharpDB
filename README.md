@@ -1,6 +1,6 @@
 # CSharpDB
 
-A lightweight, embedded SQL database engine written from scratch in C#. Single-file storage, WAL-based crash recovery, concurrent readers, async-first API, zero external dependencies.
+A lightweight, embedded SQL database engine written from scratch in C#. Single-file storage, WAL-based crash recovery, concurrent readers, async-first API, zero external dependencies, and a NativeAOT-backed VS Code extension for local IDE workflows.
 
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -15,9 +15,10 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 
 **Use cases:**
 
-- Embedded databases for desktop, CLI, or IoT applications
+- Embedded databases for desktop, mobile, CLI, or IoT applications
 - Prototyping and local development without setting up a database server
 - Educational reference for understanding database internals (storage engines, B+trees, WAL, query planning)
+- Local IDE tooling through the VS Code extension, which talks directly to the embedded NativeAOT library
 - Cross-language interoperability via the native C library, REST API, or Node.js package
 
 ## Features
@@ -31,8 +32,9 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
-| **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, and more |
+| **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`/static lib) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, iOS, and more |
 | **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
+| **VS Code Extension** | NativeAOT-backed local extension with auto-connect, schema explorer, `.csql` language support, query results, data browser CRUD, table designer, and storage diagnostics |
 | **REST API** | ASP.NET Core Minimal API with 33 endpoints, OpenAPI/Scalar UI |
 | **gRPC Daemon** | `CSharpDB.Daemon` - dedicated gRPC host for remote `CSharpDB.Client` access |
 | **MCP Server** | Model Context Protocol server — let AI assistants query and modify your database |
@@ -56,6 +58,12 @@ See the product first, then dive into the API and internals:
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
 
 Planned next for the Admin query surface: a classic visual [Query Designer](docs/query-designer/README.md) with a source canvas, join lines, design grid, SQL preview, and saved layouts.
+
+## VS Code Extension
+
+The repo includes a local VS Code extension in [`vscode-extension/`](vscode-extension/) that runs inside the VS Code extension host and connects directly to [`CSharpDB.Native`](src/CSharpDB.Native/README.md) through the embedded C API. There is no REST API or daemon in the local extension path.
+
+The current implementation supports auto-connecting to workspace `.db` files, a schema explorer for tables, columns, views, indexes, triggers, and procedures, `.csql` syntax highlighting/completion/hover help, a query results panel, a data browser with CRUD for tables and read-only view browsing, a table designer, and storage diagnostics. It is also a practical end-to-end example of using CSharpDB through NativeAOT from a non-.NET host. See [vscode-extension/README.md](vscode-extension/README.md) for setup and [vscode-extension/DEVELOPMENT.md](vscode-extension/DEVELOPMENT.md) for the maintainer workflow.
 
 ## Quick Start
 
@@ -245,6 +253,10 @@ For local admin + daemon startup, see [scripts/README.md](scripts/README.md).
 
 CSharpDB compiles to a standalone native library via NativeAOT — no .NET runtime required at the call site. Any language with C FFI support can use it.
 
+The VS Code extension in [`vscode-extension/`](vscode-extension/) is another concrete NativeAOT consumer: it runs inside VS Code and talks to the same embedded C API directly for local schema browsing, query execution, data editing, and diagnostics.
+
+Mobile deployment is supported as well. .NET MAUI apps can reference `CSharpDB` directly for an on-device embedded database, while non-.NET Android apps can load the NativeAOT `.so` and iOS apps can statically link the `ios-arm64` native output into an Xcode project. See the [Native Library Reference](src/CSharpDB.Native/README.md) for Android and iOS build details.
+
 **Node.js (via `csharpdb` package):**
 
 ```javascript
@@ -321,7 +333,7 @@ CSharpDB.slnx
 │   └── CSharpDB.Mcp/         MCP server for AI assistant integration
 ├── clients/
 │   └── node/                  Node.js/TypeScript client package (csharpdb)
-├── vscode-extension/          VS Code extension using the NativeAOT library
+├── vscode-extension/          VS Code extension using the NativeAOT library for local IDE tooling
 ├── tests/
 │   ├── CSharpDB.Tests/       Engine unit + integration tests
 │   ├── CSharpDB.Data.Tests/  ADO.NET provider tests
@@ -414,6 +426,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Unified Client SDK (`CSharpDB.Client`) with transport abstraction
 - NativeAOT C FFI library (`CSharpDB.Native`) for cross-language interop
 - Node.js/TypeScript client package (`csharpdb`)
+- NativeAOT-backed VS Code extension for local schema, query, data, and diagnostics workflows
 - CLI remote connectivity (`--endpoint`, `--transport`)
 - SQL script splitter and statement classifier (`CSharpDB.Sql`)
 - Service layer refactor to facade over `CSharpDB.Client`
@@ -452,7 +465,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [CSharpDB.Daemon](src/CSharpDB.Daemon/README.md) | gRPC daemon host runtime model, configuration, and deployment notes |
 | [CSharpDB.Native](src/CSharpDB.Native/README.md) | C FFI API, build instructions, and cross-language examples |
 | [Node.js Client](clients/node/README.md) | TypeScript/JavaScript package documentation |
-| [VS Code Extension](vscode-extension/README.md) | Overview of the local NativeAOT-backed VS Code extension |
+| [VS Code Extension](vscode-extension/README.md) | Overview of the local NativeAOT-backed VS Code extension and a concrete AOT integration example |
 | [VS Code Extension Development](vscode-extension/DEVELOPMENT.md) | How to build, debug, and modify the extension in this repo |
 | [REST API Reference](docs/rest-api.md) | All 33 API endpoints with request/response examples |
 | [MCP Server Reference](docs/mcp-server.md) | AI assistant integration via Model Context Protocol |
