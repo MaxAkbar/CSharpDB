@@ -8,10 +8,17 @@ public static class MaintenanceEndpoints
     public static RouteGroupBuilder MapMaintenanceEndpoints(this RouteGroupBuilder group)
     {
         var maintenance = group.MapGroup("/maintenance");
+        maintenance.MapPost("/checkpoint", Checkpoint);
         maintenance.MapGet("/report", GetReport);
         maintenance.MapPost("/reindex", Reindex);
         maintenance.MapPost("/vacuum", Vacuum);
         return group;
+    }
+
+    private static async Task<IResult> Checkpoint(ICSharpDbClient db)
+    {
+        await db.CheckpointAsync();
+        return Results.NoContent();
     }
 
     private static async Task<IResult> GetReport(ICSharpDbClient db)

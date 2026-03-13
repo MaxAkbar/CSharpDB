@@ -101,7 +101,6 @@ static CSharpDbTransport? ParseTransport(string? value)
         "direct" => CSharpDbTransport.Direct,
         "http" => CSharpDbTransport.Http,
         "grpc" => CSharpDbTransport.Grpc,
-        "tcp" => CSharpDbTransport.Tcp,
         "namedpipes" => CSharpDbTransport.NamedPipes,
         "named-pipes" => CSharpDbTransport.NamedPipes,
         "npipe" => CSharpDbTransport.NamedPipes,

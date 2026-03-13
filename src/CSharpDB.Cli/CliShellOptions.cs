@@ -101,7 +101,7 @@ internal sealed class CliShellOptions
     }
 
     public static string Usage =>
-        "Usage: csharpdb [database-path] [--endpoint <uri>] [--transport <direct|http|grpc|tcp|namedpipes>]";
+        "Usage: csharpdb [database-path] [--endpoint <uri>] [--transport <direct|http|grpc|namedpipes>]";
 
     private static bool TryReadValue(
         string[] args,
@@ -134,9 +134,6 @@ internal sealed class CliShellOptions
                 return true;
             case "grpc":
                 transport = CSharpDbTransport.Grpc;
-                return true;
-            case "tcp":
-                transport = CSharpDbTransport.Tcp;
                 return true;
             case "namedpipes":
             case "named-pipes":

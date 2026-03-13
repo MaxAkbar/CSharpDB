@@ -13,12 +13,12 @@ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the 
 
 ## Features
 
-- **110 token types** covering SQL keywords, literals, identifiers, `@parameters`, operators, and punctuation
-- **Full DDL/DML parsing**: CREATE/DROP/ALTER TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE/DROP TRIGGER
+- **100+ token types** covering SQL keywords, literals, identifiers, `@parameters`, operators, and punctuation
+- **Full DDL/DML parsing**: CREATE/DROP/ALTER TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE/DROP TRIGGER, `ANALYZE`
 - **Identity syntax support**: `IDENTITY` and `AUTOINCREMENT` modifiers on `INTEGER PRIMARY KEY` columns
-- **Rich query support**: SELECT with JOINs (INNER, LEFT, RIGHT, CROSS), WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, CTEs (WITH)
-- **Expression tree**: binary/unary operators, LIKE, IN, BETWEEN, IS NULL, aggregate functions (COUNT, SUM, AVG, MIN, MAX with DISTINCT)
-- **Fast-path optimizers**: `TryParseSimpleSelect` and `TryParseSimplePrimaryKeyLookup` detect common patterns and skip full AST construction
+- **Rich query support**: SELECT with JOINs (INNER, LEFT, RIGHT, CROSS), WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, CTEs (`WITH`), set operations (`UNION`, `INTERSECT`, `EXCEPT`), and subquery syntax
+- **Expression tree**: binary/unary operators, LIKE, IN, BETWEEN, IS NULL, aggregate functions (COUNT, SUM, AVG, MIN, MAX with DISTINCT), scalar subqueries, `IN (SELECT ...)`, and `EXISTS (...)`
+- **Fast-path optimizers**: `TryParseSimpleSelect`, `TryParseSimplePrimaryKeyLookup`, and `TryParseSimpleInsert` detect common patterns and skip full AST construction
 
 ## Usage
 
@@ -26,10 +26,10 @@ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the 
 using CSharpDB.Sql;
 
 // Parse a SQL statement
-var statements = Parser.Parse("SELECT id, name FROM users WHERE age > 21");
+var statement = Parser.Parse("SELECT id, name FROM users WHERE age > 21");
 
-// The result is a list of strongly-typed AST nodes
-if (statements[0] is SelectStatement select)
+// The result is a strongly-typed AST node
+if (statement is SelectStatement select)
 {
     Console.WriteLine($"Table: {select.From}");
     Console.WriteLine($"Columns: {select.Columns.Count}");
@@ -46,6 +46,7 @@ var ddl = Parser.Parse("""
     """);
 
 // Fast-path detection for simple queries
+string sql = "SELECT name FROM users WHERE id = 1";
 if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var lookup))
 {
     // Skip full parsing for SELECT ... WHERE pk = value
@@ -54,9 +55,9 @@ if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var lookup))
 
 ## AST Hierarchy
 
-**Statements**: `CreateTableStatement`, `DropTableStatement`, `InsertStatement`, `SelectStatement`, `UpdateStatement`, `DeleteStatement`, `AlterTableStatement`, `CreateIndexStatement`, `DropIndexStatement`, `CreateViewStatement`, `DropViewStatement`, `CreateTriggerStatement`, `DropTriggerStatement`, `WithStatement`
+**Statements**: `CreateTableStatement`, `DropTableStatement`, `InsertStatement`, `SelectStatement`, `CompoundSelectStatement`, `UpdateStatement`, `DeleteStatement`, `AlterTableStatement`, `CreateIndexStatement`, `DropIndexStatement`, `CreateViewStatement`, `DropViewStatement`, `CreateTriggerStatement`, `DropTriggerStatement`, `AnalyzeStatement`, `WithStatement`
 
-**Expressions**: `LiteralExpression`, `ParameterExpression`, `ColumnRefExpression`, `BinaryExpression`, `UnaryExpression`, `LikeExpression`, `InExpression`, `BetweenExpression`, `IsNullExpression`, `FunctionCallExpression`
+**Expressions**: `LiteralExpression`, `ParameterExpression`, `ColumnRefExpression`, `BinaryExpression`, `UnaryExpression`, `LikeExpression`, `InExpression`, `InSubqueryExpression`, `ScalarSubqueryExpression`, `ExistsExpression`, `BetweenExpression`, `IsNullExpression`, `FunctionCallExpression`
 
 **Table References**: `SimpleTableRef`, `JoinTableRef` (Inner, LeftOuter, RightOuter, Cross)
 

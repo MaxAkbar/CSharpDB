@@ -28,10 +28,10 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, GROUP BY, HAVING, CTEs, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries |
+| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries including `sys.table_stats` and `sys.column_stats` |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
-| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC, TCP, Named Pipes), with gRPC hosted by `CSharpDB.Daemon` |
+| **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC; Named Pipes planned), with gRPC hosted by `CSharpDB.Daemon` |
 | **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`/static lib) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, iOS, and more |
 | **Node.js Client** | TypeScript/JavaScript package (`csharpdb`) wrapping the native library via koffi |
 | **VS Code Extension** | NativeAOT-backed local extension with auto-connect, schema explorer, `.csql` language support, query results, data browser CRUD, table designer, and storage diagnostics |
@@ -45,9 +45,9 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 
 ## Compatibility Notice
 
-- New application code should target `CSharpDB.Client`.
-- New low-level/shared-type usage should target `CSharpDB.Primitives`.
-- `CSharpDB.Service` and the `CSharpDB.Core` compatibility package remain available in `v1.x`, but both are planned for removal in `v2.0.0`.
+- `v2.0` application code should target `CSharpDB.Client`.
+- `v2.0` low-level/shared-type usage should target `CSharpDB.Primitives`.
+- The legacy `CSharpDB.Service` and `CSharpDB.Core` compatibility packages are removed from the `v2.0` repo surface. Migrate to `CSharpDB.Client` and `CSharpDB.Primitives`.
 
 ## Admin UI Preview
 
@@ -215,14 +215,29 @@ await client.InsertRowAsync("users", new Dictionary<string, object?>
 services.AddCSharpDbClient(new CSharpDbClientOptions { DataSource = "mydata.db" });
 ```
 
-The transport layer supports Direct (in-process), HTTP, gRPC, TCP, and Named Pipes.
+For the REST host, point the same client API at `CSharpDB.Api`:
+
+```csharp
+using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Http,
+    Endpoint = "http://localhost:61818"
+});
+
+var info = await client.GetInfoAsync();
+var tables = await client.GetTableNamesAsync();
+```
+
+The transport layer supports Direct (in-process), HTTP, and gRPC today. If you pass an `http://` or `https://` endpoint without setting `Transport`, the client infers `Http`. Named Pipes remain planned for future same-machine daemon scenarios.
 
 Current host mapping:
 
 - `CSharpDB.Api` is the REST/HTTP host
 - `CSharpDB.Daemon` is the gRPC host used by `CSharpDB.Client` when `Transport = Grpc`
 
-Direct is fully implemented. gRPC is available through `CSharpDB.Daemon`. The other network transports remain part of the client contract and broader service-daemon roadmap.
+Direct, HTTP, and gRPC are implemented. Named Pipes remain the only planned additional client transport.
 
 ### gRPC Daemon
 
@@ -326,7 +341,6 @@ CSharpDB.slnx
 │   ├── CSharpDB.Native/      NativeAOT C FFI library for cross-language interop
 │   ├── CSharpDB.Storage.Diagnostics/ Storage diagnostics and integrity checking
 │   ├── CSharpDB.Cli/         Interactive REPL with remote connectivity
-│   ├── CSharpDB.Service/     Compatibility facade over CSharpDB.Client (planned removal in v2.0.0)
 │   ├── CSharpDB.Admin/       Blazor Server admin dashboard
 │   ├── CSharpDB.Api/         REST API (ASP.NET Core Minimal API)
 │   ├── CSharpDB.Daemon/      gRPC daemon host for remote `CSharpDB.Client` access
@@ -354,12 +368,20 @@ CSharpDB.slnx
 | **Triggers** | `CREATE TRIGGER ... BEFORE/AFTER INSERT/UPDATE/DELETE ... BEGIN ... END` |
 | **CTEs** | `WITH name AS (select) SELECT ...` |
 | **JOINs** | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` |
+| **Set Operations** | `UNION`, `INTERSECT`, `EXCEPT` |
 | **Aggregates** | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX` |
 | **Scalar Functions** | `TEXT(expr)` |
 | **Modifiers** | `SELECT DISTINCT` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
+| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` |
+| **Statistics** | `ANALYZE`, `sys.table_stats`, `sys.column_stats` |
 | **Expressions** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
+
+Current boundary:
+- Correlated subqueries are supported in `WHERE`, non-aggregate projection expressions, and `UPDATE` / `DELETE` expressions.
+- Correlated subqueries in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections remain unsupported.
+- `UNION ALL` remains planned.
 
 ### System Catalog Queries
 
@@ -372,9 +394,11 @@ SELECT * FROM sys.indexes WHERE table_name = 'users';
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
+SELECT * FROM sys.table_stats ORDER BY table_name;
+SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;
 ```
 
-Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`.
+Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_table_stats`, `sys_column_stats`.
 
 ## Building and Testing
 
@@ -389,30 +413,31 @@ dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --
 
 ## Performance Highlights
 
-Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
+Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. The published snapshot below combines the latest March 12, 2026 macro reruns with focused micro validation from the current branch. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
 
 | Metric | Result |
 |--------|--------|
-| Single INSERT (auto-commit, durable) | 27,842 ops/sec |
-| Batched INSERT (100 rows/tx) | ~370K rows/sec |
-| Point lookup by PK (1K rows) | 786,596 ops/sec |
-| Collection `GetAsync` (10K docs) | 1,371,530 ops/sec |
-| Concurrent readers (8 sessions) | 256,088 ops/sec |
-| ADO.NET `ExecuteScalar` | 323 ns / 696 bytes |
-| Crash recovery | 100% reliable (50/50 cycles), P50 = 11.5 ms |
+| Single INSERT (auto-commit, durable) | 24,429 ops/sec |
+| Batched INSERT (100 rows/tx) | ~684K rows/sec |
+| Point lookup by PK (1K rows, hot) | ~1.60M ops/sec |
+| Collection `GetAsync` (10K docs) | 1,458,108 ops/sec |
+| Concurrent readers (8 readers, reused snapshots x32) | 4,753 COUNT(*) ops/sec |
+| ADO.NET `ExecuteScalar` (`:memory:`) | 138 ns |
 
 ## Samples
 
-The [`samples/`](samples/) directory now includes both realistic datasets and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
+The [`samples/`](samples/) directory now includes realistic datasets, a focused query/statistics workbook sample, and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
 
 - **[ecommerce-store/schema.sql](samples/ecommerce-store/schema.sql)** — retail schema with procedures, views, and inventory-style triggers
 - **[medical-clinic/schema.sql](samples/medical-clinic/schema.sql)** — appointments, billing, and procedure-driven updates
 - **[school-district/schema.sql](samples/school-district/schema.sql)** — schedules, enrollments, attendance, and defaulted procedure params
+- **[procurement-analytics/schema.sql](samples/procurement-analytics/schema.sql)** — suppliers, purchase orders, incidents, and a workbook for `UNION`, subqueries, `ANALYZE`, and persisted stats catalogs
 - **[feature-tour/schema.sql](samples/feature-tour/schema.sql)** — Northstar Field Services, a fictitious multi-region field service company with customer sites, contracts, dispatch, inventory, billing workflows, triggers, procedures, and `TEXT(...)` filtering
 
 Companion assets:
 
 - Per-sample `procedures.json` files for procedure catalog import
+- **[procurement-analytics/queries.sql](samples/procurement-analytics/queries.sql)** for set operations, subqueries, and statistics inspection
 - **[feature-tour/queries.sql](samples/feature-tour/queries.sql)** for ready-to-run workbook queries
 - **[run-sample.csx](samples/run-sample.csx)** for REST API import of SQL + procedures
 
@@ -432,11 +457,14 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Service layer refactor to facade over `CSharpDB.Client`
 - CI pipeline for cross-platform native library builds
 - `SELECT DISTINCT`, composite indexes, prepared statement caching
+- `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
+- `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
 
 **In progress**
 - Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
-- Service daemon for persistent background hosting (HTTP/gRPC/TCP/Named Pipes)
-- Network transport implementations for `CSharpDB.Client`
+- Broader statistics-driven planning for ranges, joins, and richer cost-based access-path choices
+- Service daemon expansion for persistent background hosting and same-machine local transport support
+- Named Pipes transport work for `CSharpDB.Client`
 
 **Still planned**
 - B+tree delete rebalancing
@@ -444,8 +472,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 
 **Mid-term**
 - Visual query designer for Admin UI ([plan](docs/query-designer/README.md))
-- Subqueries and `EXISTS`
-- `UNION` / `INTERSECT` / `EXCEPT`
+- Wider correlated subquery coverage and `UNION ALL`
 - Window functions (`ROW_NUMBER`, `RANK`)
 
 **Long-term**

@@ -9,17 +9,20 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 
 ## Overview
 
-`CSharpDB.Execution` transforms parsed SQL (AST from `CSharpDB.Sql`) into executable query plans. It implements the classic iterator model with physical operators for scans, joins, aggregation, sorting, filtering, and projection. Expression evaluation is handled by both an interpreter (for one-off use) and a compiler (for hot-path evaluation with column binding at compile time).
+`CSharpDB.Execution` transforms parsed SQL (AST from `CSharpDB.Sql`) into executable query plans. It implements the classic iterator model with physical operators for scans, joins, aggregation, sorting, filtering, projection, compound queries, and materialized subquery execution. Expression evaluation is handled by both an interpreter (for one-off use) and a compiler (for hot-path evaluation with column binding at compile time).
 
 ## Key Components
 
 ### Query Planner
 - Translates AST statements into physical operator trees
 - Dispatches to type-specific handlers for all DDL and DML statements
-- System catalog virtual tables: `system_tables`, `system_columns`, `system_indexes`, `system_views`, `system_triggers`
+- System catalog virtual tables: `sys.tables`, `sys.columns`, `sys.indexes`, `sys.views`, `sys.triggers`, `sys.objects`, `sys.saved_queries`, `sys.table_stats`, `sys.column_stats`
+- Compound query execution for `UNION`, `INTERSECT`, and `EXCEPT`
+- Subquery lowering for uncorrelated forms plus a correlated fallback path for supported contexts
 - Compiled expression cache (up to 4096 entries) for repeated queries
 - Trigger body caching with schema-sensitive invalidation
 - Sync point-lookup fast path for `SELECT ... WHERE pk = value`
+- Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, and fresh-column-stat-guided non-unique lookup selection
 
 ### Operator Tree (Iterator Model)
 - `IOperator` interface: `OpenAsync`, `MoveNextAsync`, `Current`, `OutputSchema`
@@ -40,14 +43,15 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 
 ```csharp
 using CSharpDB.Execution;
+using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Sql;
 
-// Parse SQL
-var statements = Parser.Parse("SELECT name, age FROM users WHERE age > 21");
+var context = await InMemoryStorageEngineFactory.OpenAsync();
+var planner = new QueryPlanner(context.Pager, context.Catalog, context.RecordSerializer);
+var statement = Parser.Parse("SELECT name, age FROM users WHERE age > 21");
 
 // Plan and execute (typically called through CSharpDB.Engine)
-var planner = new QueryPlanner(storageContext);
-var result = await planner.ExecuteAsync(statements[0]);
+await using var result = await planner.ExecuteAsync(statement);
 
 // Iterate results
 while (await result.MoveNextAsync())

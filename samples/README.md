@@ -1,6 +1,6 @@
 # Samples
 
-This folder contains realistic datasets plus a full-fidelity fictitious company example for the current CSharpDB surface area. Each sample now lives in its own folder with a conventional layout: `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries.
+This folder contains realistic datasets, a focused query/statistics workbook sample, and a full-fidelity fictitious company example for the current CSharpDB surface area. Each sample now lives in its own folder with a conventional layout: `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries.
 
 Each sample folder also includes a small `README.md` with domain notes, key features, and suggested starting points.
 
@@ -11,6 +11,7 @@ Each sample folder also includes a small `README.md` with domain notes, key feat
 | `ecommerce-store/` | Online retail | `schema.sql`, `procedures.json` |
 | `medical-clinic/` | Healthcare scheduling + billing | `schema.sql`, `procedures.json` |
 | `school-district/` | Education + attendance | `schema.sql`, `procedures.json` |
+| `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 
 Root-level helpers:
@@ -48,6 +49,14 @@ Root-level helpers:
 - Queries: [queries.sql](feature-tour/queries.sql)
 - Domain: multi-region field service operations for grocery, logistics, healthcare, and campus customers
 - Good for: customer/site hierarchies, contract coverage, dispatch workflows, inventory positions, billing snapshots, procedure execution, system catalog inspection, and `TEXT(...)` search over numeric IDs
+
+### Procurement Analytics Lab
+
+- SQL: [schema.sql](procurement-analytics/schema.sql)
+- Procedures: [procedures.json](procurement-analytics/procedures.json)
+- Queries: [queries.sql](procurement-analytics/queries.sql)
+- Domain: suppliers, warehouses, products, purchase orders, and quality incidents
+- Good for: `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, and `sys.table_stats` / `sys.column_stats`
 
 ## Running a Sample
 

@@ -326,4 +326,211 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         await using var objectCountResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.objects", ct);
         Assert.Equal(5L, Assert.Single(await objectCountResult.ToListAsync(ct))[0].AsInteger);
     }
+
+    [Fact]
+    public async Task SystemCatalog_TableStats_TracksExactRowCounts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE stats_users (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+
+        await using var initialStats = await _db.ExecuteAsync(
+            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
+            ct);
+        var initialRow = Assert.Single(await initialStats.ToListAsync(ct));
+        Assert.Equal(0L, initialRow[0].AsInteger);
+        Assert.Equal(0L, initialRow[1].AsInteger);
+
+        await _db.ExecuteAsync("INSERT INTO stats_users VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO stats_users VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("DELETE FROM stats_users WHERE id = 1", ct);
+        await _db.ExecuteAsync("ANALYZE stats_users", ct);
+
+        await using var refreshedStats = await _db.ExecuteAsync(
+            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
+            ct);
+        var refreshedRow = Assert.Single(await refreshedStats.ToListAsync(ct));
+        Assert.Equal(1L, refreshedRow[0].AsInteger);
+        Assert.Equal(0L, refreshedRow[1].AsInteger);
+
+        await using var tableStatsCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.table_stats", ct);
+        Assert.Equal(1L, Assert.Single(await tableStatsCount.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_TableStats_PersistAcrossReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE persisted_stats (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO persisted_stats VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO persisted_stats VALUES (2, 20)", ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var statsResult = await _db.ExecuteAsync(
+            "SELECT row_count FROM sys.table_stats WHERE table_name = 'persisted_stats'",
+            ct);
+        Assert.Equal(2L, Assert.Single(await statsResult.ToListAsync(ct))[0].AsInteger);
+
+        await using var countResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM persisted_stats", ct);
+        Assert.Equal(2L, Assert.Single(await countResult.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_TableStats_RollbackRestoresCounts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE rollback_stats (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO rollback_stats VALUES (1, 10)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("INSERT INTO rollback_stats VALUES (2, 20)", ct);
+
+        await using var inTxStats = await _db.ExecuteAsync(
+            "SELECT row_count FROM sys.table_stats WHERE table_name = 'rollback_stats'",
+            ct);
+        Assert.Equal(2L, Assert.Single(await inTxStats.ToListAsync(ct))[0].AsInteger);
+
+        await _db.RollbackAsync(ct);
+
+        await using var afterRollbackStats = await _db.ExecuteAsync(
+            "SELECT row_count FROM sys.table_stats WHERE table_name = 'rollback_stats'",
+            ct);
+        Assert.Equal(1L, Assert.Single(await afterRollbackStats.ToListAsync(ct))[0].AsInteger);
+
+        await using var countResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM rollback_stats", ct);
+        Assert.Equal(1L, Assert.Single(await countResult.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_ColumnStats_ExposeAnalyzeResultsAndUnderscoredAlias()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE column_stats_users (id INTEGER PRIMARY KEY, age INTEGER, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO column_stats_users VALUES (1, 20, 'Alice')", ct);
+        await _db.ExecuteAsync("INSERT INTO column_stats_users VALUES (2, NULL, 'Bob')", ct);
+        await _db.ExecuteAsync("INSERT INTO column_stats_users VALUES (3, 40, 'Bob')", ct);
+
+        await using var beforeAnalyze = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys_column_stats WHERE table_name = 'column_stats_users'",
+            ct);
+        Assert.Equal(0L, Assert.Single(await beforeAnalyze.ToListAsync(ct))[0].AsInteger);
+
+        await _db.ExecuteAsync("ANALYZE column_stats_users", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT column_name, ordinal_position, distinct_count, non_null_count, min_value, max_value, is_stale
+            FROM sys.column_stats
+            WHERE table_name = 'column_stats_users'
+            ORDER BY ordinal_position
+            """,
+            ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+
+        Assert.Equal("id", rows[0][0].AsText);
+        Assert.Equal(1L, rows[0][1].AsInteger);
+        Assert.Equal(3L, rows[0][2].AsInteger);
+        Assert.Equal(3L, rows[0][3].AsInteger);
+        Assert.Equal(1L, rows[0][4].AsInteger);
+        Assert.Equal(3L, rows[0][5].AsInteger);
+        Assert.Equal(0L, rows[0][6].AsInteger);
+
+        Assert.Equal("age", rows[1][0].AsText);
+        Assert.Equal(2L, rows[1][1].AsInteger);
+        Assert.Equal(2L, rows[1][2].AsInteger);
+        Assert.Equal(2L, rows[1][3].AsInteger);
+        Assert.Equal(20L, rows[1][4].AsInteger);
+        Assert.Equal(40L, rows[1][5].AsInteger);
+        Assert.Equal(0L, rows[1][6].AsInteger);
+
+        Assert.Equal("name", rows[2][0].AsText);
+        Assert.Equal(3L, rows[2][1].AsInteger);
+        Assert.Equal(2L, rows[2][2].AsInteger);
+        Assert.Equal(3L, rows[2][3].AsInteger);
+        Assert.Equal("Alice", rows[2][4].AsText);
+        Assert.Equal("Bob", rows[2][5].AsText);
+        Assert.Equal(0L, rows[2][6].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_ColumnStats_BecomeStaleOnWriteAndRollbackRestoresFreshState()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE stale_column_stats (id INTEGER PRIMARY KEY, age INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO stale_column_stats VALUES (1, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO stale_column_stats VALUES (2, 40)", ct);
+        await _db.ExecuteAsync("ANALYZE stale_column_stats", ct);
+
+        await _db.ExecuteAsync("INSERT INTO stale_column_stats VALUES (3, 60)", ct);
+
+        await using var staleTableStats = await _db.ExecuteAsync(
+            "SELECT has_stale_columns FROM sys.table_stats WHERE table_name = 'stale_column_stats'",
+            ct);
+        Assert.Equal(1L, Assert.Single(await staleTableStats.ToListAsync(ct))[0].AsInteger);
+
+        await using var staleColumnStats = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'stale_column_stats' AND is_stale = 1",
+            ct);
+        Assert.Equal(2L, Assert.Single(await staleColumnStats.ToListAsync(ct))[0].AsInteger);
+
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("ANALYZE stale_column_stats", ct);
+        await using var freshInTx = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'stale_column_stats' AND is_stale = 1",
+            ct);
+        Assert.Equal(0L, Assert.Single(await freshInTx.ToListAsync(ct))[0].AsInteger);
+
+        await _db.ExecuteAsync("INSERT INTO stale_column_stats VALUES (4, 80)", ct);
+        await using var staleInTx = await _db.ExecuteAsync(
+            "SELECT has_stale_columns FROM sys.table_stats WHERE table_name = 'stale_column_stats'",
+            ct);
+        Assert.Equal(1L, Assert.Single(await staleInTx.ToListAsync(ct))[0].AsInteger);
+
+        await _db.RollbackAsync(ct);
+
+        await using var afterRollbackTableStats = await _db.ExecuteAsync(
+            "SELECT has_stale_columns FROM sys.table_stats WHERE table_name = 'stale_column_stats'",
+            ct);
+        Assert.Equal(1L, Assert.Single(await afterRollbackTableStats.ToListAsync(ct))[0].AsInteger);
+
+        await using var afterRollbackColumnStats = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'stale_column_stats' AND is_stale = 1",
+            ct);
+        Assert.Equal(2L, Assert.Single(await afterRollbackColumnStats.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_ColumnStats_PersistAcrossReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE persisted_column_stats (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO persisted_column_stats VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO persisted_column_stats VALUES (2, 30)", ct);
+        await _db.ExecuteAsync("ANALYZE persisted_column_stats", ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT distinct_count, non_null_count, min_value, max_value, is_stale
+            FROM sys.column_stats
+            WHERE table_name = 'persisted_column_stats' AND column_name = 'score'
+            """,
+            ct);
+        var row = Assert.Single(await result.ToListAsync(ct));
+        Assert.Equal(2L, row[0].AsInteger);
+        Assert.Equal(2L, row[1].AsInteger);
+        Assert.Equal(10L, row[2].AsInteger);
+        Assert.Equal(30L, row[3].AsInteger);
+        Assert.Equal(0L, row[4].AsInteger);
+    }
 }

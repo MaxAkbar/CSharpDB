@@ -225,6 +225,22 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_AnalyzeAllTables()
+    {
+        var stmt = Parser.Parse("ANALYZE");
+        var analyze = Assert.IsType<AnalyzeStatement>(stmt);
+        Assert.Null(analyze.TableName);
+    }
+
+    [Fact]
+    public void Parse_AnalyzeSingleTable()
+    {
+        var stmt = Parser.Parse("ANALYZE sys.table_stats");
+        var analyze = Assert.IsType<AnalyzeStatement>(stmt);
+        Assert.Equal("sys.table_stats", analyze.TableName);
+    }
+
+    [Fact]
     public void Parse_ComplexExpression()
     {
         var stmt = Parser.Parse("SELECT * FROM t WHERE (a + b) * c > 10 AND name = 'test'");
@@ -291,6 +307,35 @@ public class ParserTests
         var inExpr = Assert.IsType<InExpression>(select.Where);
         Assert.True(inExpr.Negated);
         Assert.Equal(2, inExpr.Values.Count);
+    }
+
+    [Fact]
+    public void Parse_InSubquery()
+    {
+        var stmt = Parser.Parse("SELECT * FROM t WHERE id IN (SELECT ref_id FROM refs)");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var inExpr = Assert.IsType<InSubqueryExpression>(select.Where);
+        Assert.False(inExpr.Negated);
+        Assert.IsType<SelectStatement>(inExpr.Query);
+    }
+
+    [Fact]
+    public void Parse_ScalarSubquery()
+    {
+        var stmt = Parser.Parse("SELECT (SELECT value FROM cfg) AS current_value FROM t");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var scalar = Assert.IsType<ScalarSubqueryExpression>(select.Columns[0].Expression);
+        Assert.IsType<SelectStatement>(scalar.Query);
+        Assert.Equal("current_value", select.Columns[0].Alias);
+    }
+
+    [Fact]
+    public void Parse_ExistsSubquery()
+    {
+        var stmt = Parser.Parse("SELECT * FROM t WHERE EXISTS (SELECT id FROM flags)");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var exists = Assert.IsType<ExistsExpression>(select.Where);
+        Assert.IsType<SelectStatement>(exists.Query);
     }
 
     [Fact]
@@ -422,6 +467,49 @@ public class ParserTests
         Assert.Equal(5, select.Columns.Count);
         for (int i = 0; i < 5; i++)
             Assert.IsType<FunctionCallExpression>(select.Columns[i].Expression);
+    }
+
+    [Fact]
+    public void Parse_Union()
+    {
+        var stmt = Parser.Parse("SELECT id FROM a UNION SELECT id FROM b");
+        var compound = Assert.IsType<CompoundSelectStatement>(stmt);
+        Assert.Equal(SetOperationKind.Union, compound.Operation);
+        Assert.IsType<SelectStatement>(compound.Left);
+        Assert.IsType<SelectStatement>(compound.Right);
+    }
+
+    [Fact]
+    public void Parse_IntersectHasHigherPrecedenceThanUnion()
+    {
+        var stmt = Parser.Parse("SELECT id FROM a UNION SELECT id FROM b INTERSECT SELECT id FROM c");
+        var outer = Assert.IsType<CompoundSelectStatement>(stmt);
+        Assert.Equal(SetOperationKind.Union, outer.Operation);
+        Assert.IsType<SelectStatement>(outer.Left);
+
+        var right = Assert.IsType<CompoundSelectStatement>(outer.Right);
+        Assert.Equal(SetOperationKind.Intersect, right.Operation);
+    }
+
+    [Fact]
+    public void Parse_CompoundSelect_WithOuterOrderByLimitOffset()
+    {
+        var stmt = Parser.Parse("SELECT id FROM a UNION SELECT id FROM b ORDER BY id DESC LIMIT 5 OFFSET 2");
+        var compound = Assert.IsType<CompoundSelectStatement>(stmt);
+        Assert.NotNull(compound.OrderBy);
+        Assert.Single(compound.OrderBy);
+        Assert.True(compound.OrderBy[0].Descending);
+        Assert.Equal(5, compound.Limit);
+        Assert.Equal(2, compound.Offset);
+    }
+
+    [Fact]
+    public void Parse_CreateView_WithUnion()
+    {
+        var stmt = Parser.Parse("CREATE VIEW v AS SELECT id FROM a UNION SELECT id FROM b");
+        var create = Assert.IsType<CreateViewStatement>(stmt);
+        var query = Assert.IsType<CompoundSelectStatement>(create.Query);
+        Assert.Equal(SetOperationKind.Union, query.Operation);
     }
 
     #region JOIN Parsing
@@ -702,8 +790,8 @@ public class ParserTests
         var create = Assert.IsType<CreateViewStatement>(stmt);
         Assert.Equal("active_users", create.ViewName);
         Assert.False(create.IfNotExists);
-        Assert.NotNull(create.Query);
-        Assert.NotNull(create.Query.Where);
+        var query = Assert.IsType<SelectStatement>(create.Query);
+        Assert.NotNull(query.Where);
     }
 
     [Fact]
@@ -773,7 +861,8 @@ public class ParserTests
     {
         var stmt = Parser.Parse("WITH cte AS (SELECT id, val FROM t) SELECT * FROM cte WHERE val > 10");
         var with = Assert.IsType<WithStatement>(stmt);
-        Assert.NotNull(with.MainQuery.Where);
+        var mainQuery = Assert.IsType<SelectStatement>(with.MainQuery);
+        Assert.NotNull(mainQuery.Where);
     }
 
     [Fact]

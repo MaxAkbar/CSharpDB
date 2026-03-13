@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace CSharpDB.Api.Dtos;
 
 // ─── Table / Column ─────────────────────────────────────────
@@ -29,3 +31,11 @@ public sealed record UpdateTriggerRequest(string NewTriggerName, string TableNam
 // ─── SQL ────────────────────────────────────────────────────
 
 public sealed record ExecuteSqlRequest(string Sql);
+
+// ─── Saved Queries ──────────────────────────────────────────
+
+public sealed record UpsertSavedQueryRequest(string SqlText);
+
+// ─── Collections ────────────────────────────────────────────
+
+public sealed record PutDocumentRequest(JsonElement Document);

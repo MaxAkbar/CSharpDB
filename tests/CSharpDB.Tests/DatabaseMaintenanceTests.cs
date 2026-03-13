@@ -148,6 +148,7 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
 
         for (int i = 1; i <= 50; i++)
             await _client.ExecuteSqlAsync($"INSERT INTO orders VALUES ({i}, {i * 10});", Ct);
+        await _client.ExecuteSqlAsync("ANALYZE orders;", Ct);
 
         await _client.ExecuteSqlAsync("CREATE TABLE vacuum_junk (id INTEGER PRIMARY KEY, payload TEXT);", Ct);
         for (int i = 1; i <= 75; i++)
@@ -172,9 +173,13 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
         await using var auditResult = await rawDb.ExecuteAsync("SELECT COUNT(*) FROM order_audit;", Ct);
         await using var savedQueryResult = await rawDb.ExecuteAsync("SELECT COUNT(*) FROM __saved_queries WHERE name = 'orders_query';", Ct);
         await using var procedureResult = await rawDb.ExecuteAsync("SELECT COUNT(*) FROM __procedures WHERE name = 'orders_proc';", Ct);
+        await using var columnStatsResult = await rawDb.ExecuteAsync(
+            "SELECT distinct_count, min_value, max_value, is_stale FROM sys.column_stats WHERE table_name = 'orders' AND column_name = 'total';",
+            Ct);
         var queryRows = await auditResult.ToListAsync(Ct);
         var savedQueryRows = await savedQueryResult.ToListAsync(Ct);
         var procedureRows = await procedureResult.ToListAsync(Ct);
+        var columnStatsRows = await columnStatsResult.ToListAsync(Ct);
         _client = CreateClient();
 
         Assert.True(result.DatabaseFileBytesAfter <= result.DatabaseFileBytesBefore);
@@ -191,6 +196,11 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
         Assert.Equal(50L, Assert.Single(queryRows)[0].AsInteger);
         Assert.Equal(1L, Assert.Single(savedQueryRows)[0].AsInteger);
         Assert.Equal(1L, Assert.Single(procedureRows)[0].AsInteger);
+        var totalStats = Assert.Single(columnStatsRows);
+        Assert.Equal(50L, totalStats[0].AsInteger);
+        Assert.Equal(10L, totalStats[1].AsInteger);
+        Assert.Equal(500L, totalStats[2].AsInteger);
+        Assert.Equal(0L, totalStats[3].AsInteger);
     }
 
     [Fact]

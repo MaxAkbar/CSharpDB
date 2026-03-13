@@ -1,23 +1,30 @@
 # What's New
 
-## v1.9.0 (2026-03-12)
+## v2.0.0 (Unreleased)
 
-### NativeAOT VS Code Extension
-- Added the first NativeAOT-backed local VS Code extension for CSharpDB, using `CSharpDB.Native` through the embedded C API instead of a REST API or daemon for local IDE workflows.
-- Added workspace `.db` auto-connect, schema explorer support for tables, columns, views, indexes, triggers, and procedures, and `.csql` language support with syntax highlighting, completion, and hover help.
-- Added integrated query results, data browser CRUD for tables with read-only view browsing, table designer flows, and storage diagnostics inside the VS Code extension.
+### SQL Query Expansion
+- Added `UNION`, `INTERSECT`, and `EXCEPT` for combining `SELECT` results, including use inside top-level queries, views, and CTE query bodies.
+- Added scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`.
+- Added correlated subquery evaluation for `WHERE`, non-aggregate projection expressions, and `UPDATE`/`DELETE` expressions.
+- Correlated subqueries are still rejected in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections, and `UNION ALL` is not implemented yet.
 
-### In-Memory Storage Stability
-- Fixed in-memory storage growth near the managed array limit so checkpoints can grow directly to the required size instead of failing when a doubling step would overflow the supported buffer ceiling.
-- Prevented intermittent `Collection put (in-memory)` benchmark and checkpoint failures caused by the memory device rejecting a valid small growth request near the high-water mark.
-- Expanded in-memory WAL checkpoint error context to include committed page count, target page count, required length, and device length for faster failure analysis.
+### Statistics And Planning
+- Added `sys.column_stats` alongside `sys.table_stats`.
+- Added exact `distinct_count`, `non_null_count`, `min_value`, and `max_value` refresh during `ANALYZE`.
+- Added stale tracking for persisted column stats after writes, with rollback/reopen and VACUUM copy preserving catalog correctness.
+- Added initial planner use of fresh column stats to avoid obviously low-selectivity non-unique equality lookups and prefer more selective lookup terms.
 
-### NativeAOT and Trimming Clarity
-- Moved `Collection<T>` trim/AOT warnings to the public API boundary so NativeAOT and trimmed-app limitations are explicit where the typed collection API is consumed.
-- Added linker-friendly annotations for reflected collection member access and removed internal analyzer noise around collection index binding resolution.
-- Clarified the runtime requirements of typed collection JSON serialization and deserialization while preserving the existing SQL-first path for NativeAOT-sensitive scenarios.
+### Client Transport Completion
+- Added the REST-backed `Http` transport implementation for `CSharpDB.Client`, so the unified client now has working Direct, HTTP, and gRPC paths.
+- Completed the API coverage needed by the HTTP client for collections, saved queries, procedures, transaction sessions, checkpointing, maintenance, and storage inspection flows.
+- Updated client/CLI endpoint resolution so `http://` and `https://` endpoints map cleanly to the dedicated `CSharpDB.Api` host, while `CSharpDB.Daemon` remains the gRPC host.
 
-### Tooling and Repo Baseline
-- Updated the VS Code extension TypeScript configuration from the deprecated Node 10 resolver to the Node 16 module and resolution settings.
-- Bumped the repo SDK baseline to `.NET 10.0.200` for the current branch and release prep workflow.
+### Breaking Transport Cleanup
+- Removed the unsupported `Tcp` transport placeholder from the public client transport model, CLI parsing, and related docs so the contract matches the transports that actually exist.
+- Left `NamedPipes` as the only planned additional client transport for future same-machine daemon scenarios.
+
+### Compatibility Surface Cleanup
+- Removed the legacy `CSharpDB.Service` and `CSharpDB.Core` compatibility projects from the `v2.0` repo and solution.
+- Removed `CSharpDB.Service` from the all-in-one `CSharpDB` package so the `v2.0` entry package only pulls in the primary client, engine, ADO.NET, and diagnostics surface.
+- Updated the active docs to point legacy consumers directly to `CSharpDB.Client` and `CSharpDB.Primitives`.
 

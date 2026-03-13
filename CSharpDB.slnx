@@ -6,7 +6,6 @@
     <Project Path="src/CSharpDB/CSharpDB.csproj" />
     <Project Path="src/CSharpDB.Core/CSharpDB.Core.csproj" />
     <Project Path="src/CSharpDB.Client/CSharpDB.Client.csproj" />
-    <Project Path="src/CSharpDB.Core.Compatibility/CSharpDB.Core.Compatibility.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
@@ -15,7 +14,6 @@
     <Project Path="src/CSharpDB.Cli/CSharpDB.Cli.csproj" />
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
-    <Project Path="src/CSharpDB.Service/CSharpDB.Service.csproj" />
     <Project Path="src/CSharpDB.Api/CSharpDB.Api.csproj" />
     <Project Path="src/CSharpDB.Daemon/CSharpDB.Daemon.csproj" />
     <Project Path="src/CSharpDB.Mcp/CSharpDB.Mcp.csproj" />

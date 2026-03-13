@@ -62,6 +62,25 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "parent_table_name", Type = DbType.Text, Nullable = true },
     ];
 
+    private static readonly ColumnDefinition[] SystemTableStatsColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "row_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "has_stale_columns", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemColumnStatsColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "distinct_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "non_null_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "min_value", Type = DbType.Null, Nullable = true },
+        new ColumnDefinition { Name = "max_value", Type = DbType.Null, Nullable = true },
+        new ColumnDefinition { Name = "is_stale", Type = DbType.Integer, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] SystemSavedQueriesColumns =
     [
         new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
@@ -104,6 +123,8 @@ public sealed class QueryPlanner
     private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<TableRef, TableSchema> _correlationTableRefSchemaCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<QueryStatement, ColumnDefinition[]> _correlationQueryOutputSchemaCache = new(ReferenceEqualityComparer.Instance);
     private List<DbValue[]>? _systemTablesRowsCache;
     private List<DbValue[]>? _systemColumnsRowsCache;
     private List<DbValue[]>? _systemIndexesRowsCache;
@@ -119,6 +140,8 @@ public sealed class QueryPlanner
     private long _selectPlanCacheMissCount;
     private long _selectPlanCacheReclassificationCount;
     private long _selectPlanCacheStoreCount;
+
+    private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
@@ -173,7 +196,7 @@ public sealed class QueryPlanner
             CreateTableStatement create => ExecuteCreateTableAsync(create, ct),
             DropTableStatement drop => ExecuteDropTableAsync(drop, ct),
             InsertStatement insert => ExecuteInsertAsync(insert, persistRootChanges: true, ct),
-            SelectStatement select => ValueTask.FromResult(ExecuteSelect(select)),
+            QueryStatement query => ExecuteQueryAsync(query, ct),
             DeleteStatement delete => ExecuteDeleteAsync(delete, ct),
             UpdateStatement update => ExecuteUpdateAsync(update, ct),
             AlterTableStatement alter => ExecuteAlterTableAsync(alter, ct),
@@ -184,7 +207,45 @@ public sealed class QueryPlanner
             WithStatement with => ExecuteWithAsync(with, ct),
             CreateTriggerStatement createTrig => ExecuteCreateTriggerAsync(createTrig, ct),
             DropTriggerStatement dropTrig => ExecuteDropTriggerAsync(dropTrig, ct),
+            AnalyzeStatement analyze => ExecuteAnalyzeAsync(analyze, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
+        };
+    }
+
+    private ValueTask<QueryResult> ExecuteQueryAsync(QueryStatement stmt, CancellationToken ct)
+    {
+        if (ContainsSubqueries(stmt))
+            return ExecuteQueryWithSubqueriesAsync(stmt, ct);
+
+        return stmt switch
+        {
+            SelectStatement select => ValueTask.FromResult(ExecuteSelect(select)),
+            CompoundSelectStatement compound => ExecuteCompoundSelectAsync(compound, ct),
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {stmt.GetType().Name}"),
+        };
+    }
+
+    private async ValueTask<QueryResult> ExecuteQueryWithSubqueriesAsync(QueryStatement stmt, CancellationToken ct)
+    {
+        var lowered = await RewriteSubqueriesInQueryAsync(stmt, ct);
+        if (!ContainsSubqueries(lowered))
+        {
+            return lowered switch
+            {
+                SelectStatement select => ExecuteSelect(select),
+                CompoundSelectStatement compound => await ExecuteCompoundSelectAsync(compound, ct),
+                _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {lowered.GetType().Name}"),
+            };
+        }
+
+        return lowered switch
+        {
+            SelectStatement select => await ExecuteSelectWithCorrelatedSubqueriesAsync(
+                select,
+                Array.Empty<CorrelationScope>(),
+                ct),
+            CompoundSelectStatement compound => await ExecuteCompoundSelectWithSubqueriesAsync(compound, ct),
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {lowered.GetType().Name}"),
         };
     }
 
@@ -463,12 +524,7 @@ public sealed class QueryPlanner
         if (stmt.IfNotExists && _catalog.GetViewSql(stmt.ViewName) != null)
             return new QueryResult(0);
 
-        // Store the original SQL for the view query.
-        // We reconstruct the SQL from the parsed AST to normalize it.
-        // For simplicity, we store the SELECT portion as-is by re-serializing from AST.
-        // Actually, let's just store the SQL that was parsed. We need to reconstruct it.
-        // Simplest approach: serialize the SelectStatement back to SQL text.
-        string viewSql = SelectToSql(stmt.Query);
+        string viewSql = QueryToSql(stmt.Query);
 
         await _catalog.CreateViewAsync(stmt.ViewName, viewSql, ct);
         return new QueryResult(0);
@@ -483,10 +539,13 @@ public sealed class QueryPlanner
         return new QueryResult(0);
     }
 
-    /// <summary>
-    /// Reconstructs a SQL SELECT string from a SelectStatement AST node.
-    /// Used to store view definitions.
-    /// </summary>
+    private static string QueryToSql(QueryStatement stmt) => stmt switch
+    {
+        SelectStatement select => SelectToSql(select),
+        CompoundSelectStatement compound => CompoundSelectToSql(compound),
+        _ => throw new InvalidOperationException($"Cannot serialize query type: {stmt.GetType().Name}"),
+    };
+
     private static string SelectToSql(SelectStatement stmt)
     {
         var parts = new List<string>();
@@ -535,24 +594,43 @@ public sealed class QueryPlanner
             parts.Add(ExprToSql(stmt.Having));
         }
 
-        // ORDER BY
-        if (stmt.OrderBy != null)
+        AppendOrderingAndPagination(parts, stmt.OrderBy, stmt.Limit, stmt.Offset);
+
+        return string.Join(" ", parts);
+    }
+
+    private static string CompoundSelectToSql(CompoundSelectStatement stmt)
+    {
+        var parts = new List<string>
+        {
+            QueryToSql(stmt.Left),
+            SetOperationToSql(stmt.Operation),
+            QueryToSql(stmt.Right),
+        };
+
+        AppendOrderingAndPagination(parts, stmt.OrderBy, stmt.Limit, stmt.Offset);
+        return string.Join(" ", parts);
+    }
+
+    private static void AppendOrderingAndPagination(
+        List<string> parts,
+        List<OrderByClause>? orderBy,
+        int? limit,
+        int? offset)
+    {
+        if (orderBy != null)
         {
             parts.Add("ORDER BY");
-            var orderParts = stmt.OrderBy.Select(o =>
+            var orderParts = orderBy.Select(o =>
                 ExprToSql(o.Expression) + (o.Descending ? " DESC" : ""));
             parts.Add(string.Join(", ", orderParts));
         }
 
-        // LIMIT
-        if (stmt.Limit.HasValue)
-            parts.Add($"LIMIT {stmt.Limit.Value}");
+        if (limit.HasValue)
+            parts.Add($"LIMIT {limit.Value}");
 
-        // OFFSET
-        if (stmt.Offset.HasValue)
-            parts.Add($"OFFSET {stmt.Offset.Value}");
-
-        return string.Join(" ", parts);
+        if (offset.HasValue)
+            parts.Add($"OFFSET {offset.Value}");
     }
 
     private static string TableRefToSql(TableRef tableRef) => tableRef switch
@@ -572,6 +650,14 @@ public sealed class QueryPlanner
         _ => "JOIN",
     };
 
+    private static string SetOperationToSql(SetOperationKind operation) => operation switch
+    {
+        SetOperationKind.Union => "UNION",
+        SetOperationKind.Intersect => "INTERSECT",
+        SetOperationKind.Except => "EXCEPT",
+        _ => throw new InvalidOperationException(),
+    };
+
     private static string ExprToSql(Expression expr) => expr switch
     {
         LiteralExpression lit => lit.Value == null ? "NULL"
@@ -585,6 +671,9 @@ public sealed class QueryPlanner
             : $"{func.FunctionName}({(func.IsDistinct ? "DISTINCT " : "")}{string.Join(", ", func.Arguments.Select(ExprToSql))})",
         LikeExpression like => $"{ExprToSql(like.Operand)}{(like.Negated ? " NOT" : "")} LIKE {ExprToSql(like.Pattern)}",
         InExpression inE => $"{ExprToSql(inE.Operand)}{(inE.Negated ? " NOT" : "")} IN ({string.Join(", ", inE.Values.Select(ExprToSql))})",
+        InSubqueryExpression inSubquery => $"{ExprToSql(inSubquery.Operand)}{(inSubquery.Negated ? " NOT" : "")} IN ({QueryToSql(inSubquery.Query)})",
+        ScalarSubqueryExpression scalarSubquery => $"({QueryToSql(scalarSubquery.Query)})",
+        ExistsExpression exists => $"EXISTS ({QueryToSql(exists.Query)})",
         BetweenExpression bet => $"{ExprToSql(bet.Operand)}{(bet.Negated ? " NOT" : "")} BETWEEN {ExprToSql(bet.Low)} AND {ExprToSql(bet.High)}",
         IsNullExpression isn => $"{ExprToSql(isn.Operand)} IS{(isn.Negated ? " NOT" : "")} NULL",
         _ => throw new InvalidOperationException($"Cannot serialize expression: {expr.GetType().Name}"),
@@ -622,7 +711,7 @@ public sealed class QueryPlanner
             // Materialize each CTE
             foreach (var cte in stmt.Ctes)
             {
-                await using var result = ExecuteSelect(cte.Query);
+                await using var result = await ExecuteQueryAsync(cte.Query, ct);
                 var rows = await result.ToListAsync(ct);
 
                 // Build schema for this CTE
@@ -652,13 +741,785 @@ public sealed class QueryPlanner
             }
 
             // Execute the main query with CTE data available
-            return ExecuteSelect(stmt.MainQuery);
+            return await ExecuteQueryAsync(stmt.MainQuery, ct);
         }
         finally
         {
             _cteData = previousCteData;
         }
     }
+
+    #endregion
+
+    #region Subquery Lowering
+
+    private async ValueTask<InsertStatement> RewriteSubqueriesInInsertAsync(InsertStatement stmt, CancellationToken ct)
+    {
+        var valueRows = new List<List<Expression>>(stmt.ValueRows.Count);
+        for (int i = 0; i < stmt.ValueRows.Count; i++)
+            valueRows.Add(await RewriteSubqueriesInExpressionListAsync(stmt.ValueRows[i], ct));
+
+        return new InsertStatement
+        {
+            TableName = stmt.TableName,
+            ColumnNames = stmt.ColumnNames,
+            ValueRows = valueRows,
+        };
+    }
+
+    private async ValueTask<DeleteStatement> RewriteSubqueriesInDeleteAsync(DeleteStatement stmt, CancellationToken ct)
+    {
+        return new DeleteStatement
+        {
+            TableName = stmt.TableName,
+            Where = stmt.Where != null ? await RewriteSubqueriesInExpressionAsync(stmt.Where, ct) : null,
+        };
+    }
+
+    private async ValueTask<UpdateStatement> RewriteSubqueriesInUpdateAsync(UpdateStatement stmt, CancellationToken ct)
+    {
+        var setClauses = new List<SetClause>(stmt.SetClauses.Count);
+        for (int i = 0; i < stmt.SetClauses.Count; i++)
+        {
+            var setClause = stmt.SetClauses[i];
+            setClauses.Add(new SetClause
+            {
+                ColumnName = setClause.ColumnName,
+                Value = await RewriteSubqueriesInExpressionAsync(setClause.Value, ct),
+            });
+        }
+
+        return new UpdateStatement
+        {
+            TableName = stmt.TableName,
+            SetClauses = setClauses,
+            Where = stmt.Where != null ? await RewriteSubqueriesInExpressionAsync(stmt.Where, ct) : null,
+        };
+    }
+
+    private async ValueTask<QueryStatement> RewriteSubqueriesInQueryAsync(QueryStatement stmt, CancellationToken ct)
+    {
+        switch (stmt)
+        {
+            case SelectStatement select:
+                return new SelectStatement
+                {
+                    IsDistinct = select.IsDistinct,
+                    Columns = await RewriteSubqueriesInSelectColumnsAsync(select.Columns, ct),
+                    From = await RewriteSubqueriesInTableRefAsync(select.From, ct),
+                    Where = select.Where != null ? await RewriteSubqueriesInExpressionAsync(select.Where, ct) : null,
+                    GroupBy = select.GroupBy != null ? await RewriteSubqueriesInExpressionListAsync(select.GroupBy, ct) : null,
+                    Having = select.Having != null ? await RewriteSubqueriesInExpressionAsync(select.Having, ct) : null,
+                    OrderBy = select.OrderBy != null ? await RewriteSubqueriesInOrderByClausesAsync(select.OrderBy, ct) : null,
+                    Limit = select.Limit,
+                    Offset = select.Offset,
+                };
+            case CompoundSelectStatement compound:
+                return new CompoundSelectStatement
+                {
+                    Left = await RewriteSubqueriesInQueryAsync(compound.Left, ct),
+                    Right = await RewriteSubqueriesInQueryAsync(compound.Right, ct),
+                    Operation = compound.Operation,
+                    OrderBy = compound.OrderBy != null ? await RewriteSubqueriesInOrderByClausesAsync(compound.OrderBy, ct) : null,
+                    Limit = compound.Limit,
+                    Offset = compound.Offset,
+                };
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {stmt.GetType().Name}");
+        }
+    }
+
+    private async ValueTask<TableRef> RewriteSubqueriesInTableRefAsync(TableRef tableRef, CancellationToken ct)
+    {
+        if (tableRef is not JoinTableRef join)
+            return tableRef;
+
+        return new JoinTableRef
+        {
+            Left = await RewriteSubqueriesInTableRefAsync(join.Left, ct),
+            Right = await RewriteSubqueriesInTableRefAsync(join.Right, ct),
+            JoinType = join.JoinType,
+            Condition = join.Condition != null ? await RewriteSubqueriesInExpressionAsync(join.Condition, ct) : null,
+        };
+    }
+
+    private async ValueTask<List<SelectColumn>> RewriteSubqueriesInSelectColumnsAsync(List<SelectColumn> columns, CancellationToken ct)
+    {
+        var rewritten = new List<SelectColumn>(columns.Count);
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var column = columns[i];
+            rewritten.Add(new SelectColumn
+            {
+                IsStar = column.IsStar,
+                Alias = column.Alias,
+                Expression = column.Expression != null ? await RewriteSubqueriesInExpressionAsync(column.Expression, ct) : null,
+            });
+        }
+
+        return rewritten;
+    }
+
+    private async ValueTask<List<OrderByClause>> RewriteSubqueriesInOrderByClausesAsync(List<OrderByClause> clauses, CancellationToken ct)
+    {
+        var rewritten = new List<OrderByClause>(clauses.Count);
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            rewritten.Add(new OrderByClause
+            {
+                Expression = await RewriteSubqueriesInExpressionAsync(clauses[i].Expression, ct),
+                Descending = clauses[i].Descending,
+            });
+        }
+
+        return rewritten;
+    }
+
+    private async ValueTask<List<Expression>> RewriteSubqueriesInExpressionListAsync(List<Expression> expressions, CancellationToken ct)
+    {
+        var rewritten = new List<Expression>(expressions.Count);
+        for (int i = 0; i < expressions.Count; i++)
+            rewritten.Add(await RewriteSubqueriesInExpressionAsync(expressions[i], ct));
+
+        return rewritten;
+    }
+
+    private async ValueTask<Expression> RewriteSubqueriesInExpressionAsync(Expression expression, CancellationToken ct)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+            case ColumnRefExpression:
+                return expression;
+            case BinaryExpression binary:
+                return new BinaryExpression
+                {
+                    Op = binary.Op,
+                    Left = await RewriteSubqueriesInExpressionAsync(binary.Left, ct),
+                    Right = await RewriteSubqueriesInExpressionAsync(binary.Right, ct),
+                };
+            case UnaryExpression unary:
+                return new UnaryExpression
+                {
+                    Op = unary.Op,
+                    Operand = await RewriteSubqueriesInExpressionAsync(unary.Operand, ct),
+                };
+            case LikeExpression like:
+                return new LikeExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(like.Operand, ct),
+                    Pattern = await RewriteSubqueriesInExpressionAsync(like.Pattern, ct),
+                    EscapeChar = like.EscapeChar != null ? await RewriteSubqueriesInExpressionAsync(like.EscapeChar, ct) : null,
+                    Negated = like.Negated,
+                };
+            case InExpression inExpression:
+                return new InExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(inExpression.Operand, ct),
+                    Values = await RewriteSubqueriesInExpressionListAsync(inExpression.Values, ct),
+                    Negated = inExpression.Negated,
+                };
+            case InSubqueryExpression inSubquery:
+            {
+                var operand = await RewriteSubqueriesInExpressionAsync(inSubquery.Operand, ct);
+                var query = await RewriteSubqueriesInQueryAsync(inSubquery.Query, ct);
+                if (!CanExecuteStandalone(query))
+                {
+                    return new InSubqueryExpression
+                    {
+                        Operand = operand,
+                        Query = query,
+                        Negated = inSubquery.Negated,
+                    };
+                }
+
+                var values = await MaterializeSingleColumnSubqueryAsExpressionsAsync(query, ct);
+                return new InExpression
+                {
+                    Operand = operand,
+                    Values = values,
+                    Negated = inSubquery.Negated,
+                };
+            }
+            case ScalarSubqueryExpression scalarSubquery:
+            {
+                var query = await RewriteSubqueriesInQueryAsync(scalarSubquery.Query, ct);
+                if (!CanExecuteStandalone(query))
+                    return new ScalarSubqueryExpression { Query = query };
+
+                var value = await ExecuteScalarSubqueryAsync(query, ct);
+                return CreateLiteralExpression(value);
+            }
+            case ExistsExpression exists:
+            {
+                var query = await RewriteSubqueriesInQueryAsync(exists.Query, ct);
+                if (!CanExecuteStandalone(query))
+                    return new ExistsExpression { Query = query };
+
+                bool subqueryHasRows = await ExecuteExistsSubqueryAsync(query, ct);
+                return new LiteralExpression
+                {
+                    Value = subqueryHasRows ? 1L : 0L,
+                    LiteralType = TokenType.IntegerLiteral,
+                };
+            }
+            case BetweenExpression between:
+                return new BetweenExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(between.Operand, ct),
+                    Low = await RewriteSubqueriesInExpressionAsync(between.Low, ct),
+                    High = await RewriteSubqueriesInExpressionAsync(between.High, ct),
+                    Negated = between.Negated,
+                };
+            case IsNullExpression isNull:
+                return new IsNullExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(isNull.Operand, ct),
+                    Negated = isNull.Negated,
+                };
+            case FunctionCallExpression functionCall:
+            {
+                var args = new List<Expression>(functionCall.Arguments.Count);
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                    args.Add(await RewriteSubqueriesInExpressionAsync(functionCall.Arguments[i], ct));
+
+                return new FunctionCallExpression
+                {
+                    FunctionName = functionCall.FunctionName,
+                    Arguments = args,
+                    IsDistinct = functionCall.IsDistinct,
+                    IsStarArg = functionCall.IsStarArg,
+                };
+            }
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown expression type: {expression.GetType().Name}");
+        }
+    }
+
+    private async ValueTask<DbValue> ExecuteScalarSubqueryAsync(QueryStatement query, CancellationToken ct)
+    {
+        await using var result = await ExecuteQueryAsync(query, ct);
+        EnsureSingleColumnSubquery(result.Schema, "Scalar subquery");
+
+        if (!await result.MoveNextAsync(ct))
+            return DbValue.Null;
+
+        var value = result.Current[0];
+        if (await result.MoveNextAsync(ct))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Scalar subquery returned more than one row.");
+
+        return value;
+    }
+
+    private async ValueTask<bool> ExecuteExistsSubqueryAsync(QueryStatement query, CancellationToken ct)
+    {
+        await using var result = await ExecuteQueryAsync(query, ct);
+        return await result.MoveNextAsync(ct);
+    }
+
+    private async ValueTask<List<Expression>> MaterializeSingleColumnSubqueryAsExpressionsAsync(QueryStatement query, CancellationToken ct)
+    {
+        await using var result = await ExecuteQueryAsync(query, ct);
+        EnsureSingleColumnSubquery(result.Schema, "IN subquery");
+
+        var values = new List<Expression>();
+        while (await result.MoveNextAsync(ct))
+            values.Add(CreateLiteralExpression(result.Current[0]));
+
+        return values;
+    }
+
+    private static void EnsureSingleColumnSubquery(ColumnDefinition[] schema, string description)
+    {
+        if (schema.Length != 1)
+            throw new CSharpDbException(ErrorCode.SyntaxError, $"{description} must return exactly one column.");
+    }
+
+    private static LiteralExpression CreateLiteralExpression(DbValue value)
+    {
+        return value.Type switch
+        {
+            DbType.Null => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
+            DbType.Integer => new LiteralExpression { Value = value.AsInteger, LiteralType = TokenType.IntegerLiteral },
+            DbType.Real => new LiteralExpression { Value = value.AsReal, LiteralType = TokenType.RealLiteral },
+            DbType.Text => new LiteralExpression { Value = value.AsText, LiteralType = TokenType.StringLiteral },
+            DbType.Blob => throw new CSharpDbException(ErrorCode.TypeMismatch, "Blob-valued subqueries are not supported in expressions."),
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported subquery value type '{value.Type}'."),
+        };
+    }
+
+    private bool CanExecuteStandalone(QueryStatement query)
+        => !QueryHasExternalReferences(query, Array.Empty<TableSchema>());
+
+    private bool QueryHasExternalReferences(QueryStatement query, IReadOnlyList<TableSchema> ancestorQueryScopes)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+            {
+                var currentScope = ResolveCorrelationTableRefSchema(select.From);
+                var visibleScopes = PrependVisibleScope(currentScope, ancestorQueryScopes);
+                return TableRefHasExternalReferences(select.From, visibleScopes)
+                    || select.Columns.Any(column => column.Expression != null && ExpressionHasExternalReferences(column.Expression, visibleScopes))
+                    || (select.Where != null && ExpressionHasExternalReferences(select.Where, visibleScopes))
+                    || (select.GroupBy != null && select.GroupBy.Any(expr => ExpressionHasExternalReferences(expr, visibleScopes)))
+                    || (select.Having != null && ExpressionHasExternalReferences(select.Having, visibleScopes))
+                    || (select.OrderBy != null && select.OrderBy.Any(orderBy => ExpressionHasExternalReferences(orderBy.Expression, visibleScopes)));
+            }
+            case CompoundSelectStatement compound:
+            {
+                var outputScope = CreateQueryOutputScope(compound);
+                var visibleScopes = PrependVisibleScope(outputScope, ancestorQueryScopes);
+                return QueryHasExternalReferences(compound.Left, ancestorQueryScopes)
+                    || QueryHasExternalReferences(compound.Right, ancestorQueryScopes)
+                    || (compound.OrderBy != null && compound.OrderBy.Any(orderBy => ExpressionHasExternalReferences(orderBy.Expression, visibleScopes)));
+            }
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
+        }
+    }
+
+    private bool TableRefHasExternalReferences(TableRef tableRef, IReadOnlyList<TableSchema> visibleScopes)
+    {
+        if (tableRef is not JoinTableRef join)
+            return false;
+
+        return TableRefHasExternalReferences(join.Left, visibleScopes)
+            || TableRefHasExternalReferences(join.Right, visibleScopes)
+            || (join.Condition != null && ExpressionHasExternalReferences(join.Condition, visibleScopes));
+    }
+
+    private bool ExpressionHasExternalReferences(Expression expression, IReadOnlyList<TableSchema> visibleScopes)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return false;
+            case ColumnRefExpression columnRef:
+                return !CanResolveInVisibleScopes(columnRef, visibleScopes);
+            case BinaryExpression binary:
+                return ExpressionHasExternalReferences(binary.Left, visibleScopes)
+                    || ExpressionHasExternalReferences(binary.Right, visibleScopes);
+            case UnaryExpression unary:
+                return ExpressionHasExternalReferences(unary.Operand, visibleScopes);
+            case LikeExpression like:
+                return ExpressionHasExternalReferences(like.Operand, visibleScopes)
+                    || ExpressionHasExternalReferences(like.Pattern, visibleScopes)
+                    || (like.EscapeChar != null && ExpressionHasExternalReferences(like.EscapeChar, visibleScopes));
+            case InExpression inExpression:
+                return ExpressionHasExternalReferences(inExpression.Operand, visibleScopes)
+                    || inExpression.Values.Any(value => ExpressionHasExternalReferences(value, visibleScopes));
+            case InSubqueryExpression inSubquery:
+                return ExpressionHasExternalReferences(inSubquery.Operand, visibleScopes)
+                    || QueryHasExternalReferences(inSubquery.Query, visibleScopes);
+            case ScalarSubqueryExpression scalarSubquery:
+                return QueryHasExternalReferences(scalarSubquery.Query, visibleScopes);
+            case ExistsExpression exists:
+                return QueryHasExternalReferences(exists.Query, visibleScopes);
+            case BetweenExpression between:
+                return ExpressionHasExternalReferences(between.Operand, visibleScopes)
+                    || ExpressionHasExternalReferences(between.Low, visibleScopes)
+                    || ExpressionHasExternalReferences(between.High, visibleScopes);
+            case IsNullExpression isNull:
+                return ExpressionHasExternalReferences(isNull.Operand, visibleScopes);
+            case FunctionCallExpression functionCall:
+                return functionCall.Arguments.Any(argument => ExpressionHasExternalReferences(argument, visibleScopes));
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown expression type: {expression.GetType().Name}");
+        }
+    }
+
+    private QueryStatement BindOuterScopesInQuery(QueryStatement query, IReadOnlyList<CorrelationScope> outerScopes)
+        => BindOuterScopesInQuery(query, Array.Empty<TableSchema>(), outerScopes);
+
+    private QueryStatement BindOuterScopesInQuery(
+        QueryStatement query,
+        IReadOnlyList<TableSchema> ancestorQueryScopes,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+            {
+                var currentScope = ResolveCorrelationTableRefSchema(select.From);
+                var visibleScopes = PrependVisibleScope(currentScope, ancestorQueryScopes);
+                return new SelectStatement
+                {
+                    IsDistinct = select.IsDistinct,
+                    Columns = select.Columns.Select(column => new SelectColumn
+                    {
+                        IsStar = column.IsStar,
+                        Alias = column.Alias,
+                        Expression = column.Expression != null
+                            ? BindOuterScopesInExpression(column.Expression, visibleScopes, outerScopes)
+                            : null,
+                    }).ToList(),
+                    From = BindOuterScopesInTableRef(select.From, visibleScopes, outerScopes),
+                    Where = select.Where != null ? BindOuterScopesInExpression(select.Where, visibleScopes, outerScopes) : null,
+                    GroupBy = select.GroupBy?.Select(expr => BindOuterScopesInExpression(expr, visibleScopes, outerScopes)).ToList(),
+                    Having = select.Having != null ? BindOuterScopesInExpression(select.Having, visibleScopes, outerScopes) : null,
+                    OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
+                    {
+                        Expression = BindOuterScopesInExpression(orderBy.Expression, visibleScopes, outerScopes),
+                        Descending = orderBy.Descending,
+                    }).ToList(),
+                    Limit = select.Limit,
+                    Offset = select.Offset,
+                };
+            }
+            case CompoundSelectStatement compound:
+            {
+                var outputScope = CreateQueryOutputScope(compound);
+                var visibleScopes = PrependVisibleScope(outputScope, ancestorQueryScopes);
+                return new CompoundSelectStatement
+                {
+                    Left = BindOuterScopesInQuery(compound.Left, ancestorQueryScopes, outerScopes),
+                    Right = BindOuterScopesInQuery(compound.Right, ancestorQueryScopes, outerScopes),
+                    Operation = compound.Operation,
+                    OrderBy = compound.OrderBy?.Select(orderBy => new OrderByClause
+                    {
+                        Expression = BindOuterScopesInExpression(orderBy.Expression, visibleScopes, outerScopes),
+                        Descending = orderBy.Descending,
+                    }).ToList(),
+                    Limit = compound.Limit,
+                    Offset = compound.Offset,
+                };
+            }
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
+        }
+    }
+
+    private TableRef BindOuterScopesInTableRef(
+        TableRef tableRef,
+        IReadOnlyList<TableSchema> visibleScopes,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        if (tableRef is not JoinTableRef join)
+            return tableRef;
+
+        return new JoinTableRef
+        {
+            Left = BindOuterScopesInTableRef(join.Left, visibleScopes, outerScopes),
+            Right = BindOuterScopesInTableRef(join.Right, visibleScopes, outerScopes),
+            JoinType = join.JoinType,
+            Condition = join.Condition != null ? BindOuterScopesInExpression(join.Condition, visibleScopes, outerScopes) : null,
+        };
+    }
+
+    private Expression BindOuterScopesInExpression(
+        Expression expression,
+        IReadOnlyList<TableSchema> visibleScopes,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return expression;
+            case ColumnRefExpression columnRef:
+                return CanResolveInVisibleScopes(columnRef, visibleScopes)
+                    ? expression
+                    : TryResolveOuterScopeValue(columnRef, outerScopes, out var outerValue)
+                        ? CreateLiteralExpression(outerValue)
+                        : expression;
+            case BinaryExpression binary:
+                return new BinaryExpression
+                {
+                    Op = binary.Op,
+                    Left = BindOuterScopesInExpression(binary.Left, visibleScopes, outerScopes),
+                    Right = BindOuterScopesInExpression(binary.Right, visibleScopes, outerScopes),
+                };
+            case UnaryExpression unary:
+                return new UnaryExpression
+                {
+                    Op = unary.Op,
+                    Operand = BindOuterScopesInExpression(unary.Operand, visibleScopes, outerScopes),
+                };
+            case LikeExpression like:
+                return new LikeExpression
+                {
+                    Operand = BindOuterScopesInExpression(like.Operand, visibleScopes, outerScopes),
+                    Pattern = BindOuterScopesInExpression(like.Pattern, visibleScopes, outerScopes),
+                    EscapeChar = like.EscapeChar != null
+                        ? BindOuterScopesInExpression(like.EscapeChar, visibleScopes, outerScopes)
+                        : null,
+                    Negated = like.Negated,
+                };
+            case InExpression inExpression:
+                return new InExpression
+                {
+                    Operand = BindOuterScopesInExpression(inExpression.Operand, visibleScopes, outerScopes),
+                    Values = inExpression.Values
+                        .Select(value => BindOuterScopesInExpression(value, visibleScopes, outerScopes))
+                        .ToList(),
+                    Negated = inExpression.Negated,
+                };
+            case InSubqueryExpression inSubquery:
+                return new InSubqueryExpression
+                {
+                    Operand = BindOuterScopesInExpression(inSubquery.Operand, visibleScopes, outerScopes),
+                    Query = BindOuterScopesInQuery(inSubquery.Query, visibleScopes, outerScopes),
+                    Negated = inSubquery.Negated,
+                };
+            case ScalarSubqueryExpression scalarSubquery:
+                return new ScalarSubqueryExpression
+                {
+                    Query = BindOuterScopesInQuery(scalarSubquery.Query, visibleScopes, outerScopes),
+                };
+            case ExistsExpression exists:
+                return new ExistsExpression
+                {
+                    Query = BindOuterScopesInQuery(exists.Query, visibleScopes, outerScopes),
+                };
+            case BetweenExpression between:
+                return new BetweenExpression
+                {
+                    Operand = BindOuterScopesInExpression(between.Operand, visibleScopes, outerScopes),
+                    Low = BindOuterScopesInExpression(between.Low, visibleScopes, outerScopes),
+                    High = BindOuterScopesInExpression(between.High, visibleScopes, outerScopes),
+                    Negated = between.Negated,
+                };
+            case IsNullExpression isNull:
+                return new IsNullExpression
+                {
+                    Operand = BindOuterScopesInExpression(isNull.Operand, visibleScopes, outerScopes),
+                    Negated = isNull.Negated,
+                };
+            case FunctionCallExpression functionCall:
+                return new FunctionCallExpression
+                {
+                    FunctionName = functionCall.FunctionName,
+                    Arguments = functionCall.Arguments
+                        .Select(argument => BindOuterScopesInExpression(argument, visibleScopes, outerScopes))
+                        .ToList(),
+                    IsDistinct = functionCall.IsDistinct,
+                    IsStarArg = functionCall.IsStarArg,
+                };
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown expression type: {expression.GetType().Name}");
+        }
+    }
+
+    private TableSchema ResolveCorrelationTableRefSchema(TableRef tableRef)
+    {
+        if (_correlationTableRefSchemaCache.TryGetValue(tableRef, out var cached))
+            return cached;
+
+        TableSchema resolved;
+        switch (tableRef)
+        {
+            case SimpleTableRef simple:
+                resolved = ResolveCorrelationSimpleTableSchema(simple);
+                break;
+            case JoinTableRef join:
+                var left = ResolveCorrelationTableRefSchema(join.Left);
+                var right = ResolveCorrelationTableRefSchema(join.Right);
+                resolved = TableSchema.CreateJoinSchema(left, right);
+                break;
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
+        }
+
+        _correlationTableRefSchemaCache[tableRef] = resolved;
+        return resolved;
+    }
+
+    private TableSchema ResolveCorrelationSimpleTableSchema(SimpleTableRef tableRef)
+    {
+        if (_cteData != null && _cteData.TryGetValue(tableRef.TableName, out var cteInfo))
+            return CreateQualifiedSchema(cteInfo.Schema.TableName, cteInfo.Schema.Columns, tableRef.Alias ?? tableRef.TableName);
+
+        if (TryBuildSystemCatalogSource(tableRef, out var systemSource))
+            return systemSource.schema;
+
+        var viewSql = _catalog.GetViewSql(tableRef.TableName);
+        if (viewSql != null)
+        {
+            var viewQuery = Parser.Parse(viewSql) as QueryStatement
+                ?? throw new CSharpDbException(ErrorCode.SyntaxError, $"View '{tableRef.TableName}' does not contain a query definition.");
+            var outputColumns = ResolveCorrelationQueryOutputSchema(viewQuery);
+            return CreateQualifiedSchema(tableRef.TableName, outputColumns, tableRef.Alias ?? tableRef.TableName);
+        }
+
+        var baseSchema = GetSchema(tableRef.TableName);
+        return CreateQualifiedSchema(baseSchema.TableName, baseSchema.Columns, tableRef.Alias ?? tableRef.TableName);
+    }
+
+    private ColumnDefinition[] ResolveCorrelationQueryOutputSchema(QueryStatement query)
+    {
+        if (_correlationQueryOutputSchemaCache.TryGetValue(query, out var cached))
+            return cached;
+
+        ColumnDefinition[] output;
+        switch (query)
+        {
+            case SelectStatement select:
+            {
+                var sourceSchema = ResolveCorrelationTableRefSchema(select.From);
+                bool hasAggregates = select.GroupBy != null ||
+                                     select.Having != null ||
+                                     select.Columns.Any(column => column.Expression != null && ContainsAggregate(column.Expression));
+                if (hasAggregates)
+                {
+                    output = BuildAggregateOutputSchema(select.Columns, sourceSchema);
+                }
+                else if (select.Columns.Any(column => column.IsStar))
+                {
+                    output = GetSchemaColumnsArray(sourceSchema);
+                }
+                else if (TryBuildColumnProjection(select.Columns, sourceSchema, out _, out var projectedColumns))
+                {
+                    output = projectedColumns;
+                }
+                else
+                {
+                    var expressions = select.Columns.Select(column => column.Expression!).ToArray();
+                    output = new ColumnDefinition[expressions.Length];
+                    for (int i = 0; i < expressions.Length; i++)
+                        output[i] = InferColumnDef(expressions[i], select.Columns[i].Alias, sourceSchema, i);
+                }
+
+                break;
+            }
+            case CompoundSelectStatement compound:
+                output = MergeCompoundSchemas(
+                    ResolveCorrelationQueryOutputSchema(compound.Left),
+                    ResolveCorrelationQueryOutputSchema(compound.Right));
+                break;
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
+        }
+
+        _correlationQueryOutputSchemaCache[query] = output;
+        return output;
+    }
+
+    private static TableSchema CreateQualifiedSchema(
+        string tableName,
+        IReadOnlyList<ColumnDefinition> columns,
+        string qualifier)
+    {
+        var qualifiedMappings = new Dictionary<string, int>(columns.Count, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < columns.Count; i++)
+            qualifiedMappings[$"{qualifier}.{columns[i].Name}"] = i;
+
+        return new TableSchema
+        {
+            TableName = tableName,
+            Columns = columns,
+            QualifiedMappings = qualifiedMappings,
+        };
+    }
+
+    private TableSchema CreateQueryOutputScope(QueryStatement query)
+        => new()
+        {
+            TableName = "query",
+            Columns = ResolveCorrelationQueryOutputSchema(query),
+        };
+
+    private static TableSchema[] PrependVisibleScope(TableSchema currentScope, IReadOnlyList<TableSchema> ancestorScopes)
+    {
+        var visibleScopes = new TableSchema[ancestorScopes.Count + 1];
+        visibleScopes[0] = currentScope;
+        for (int i = 0; i < ancestorScopes.Count; i++)
+            visibleScopes[i + 1] = ancestorScopes[i];
+
+        return visibleScopes;
+    }
+
+    private static bool CanResolveInVisibleScopes(ColumnRefExpression columnRef, IReadOnlyList<TableSchema> visibleScopes)
+    {
+        for (int i = 0; i < visibleScopes.Count; i++)
+        {
+            if (TryResolveColumnIndex(columnRef, visibleScopes[i], out _))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveOuterScopeValue(
+        ColumnRefExpression columnRef,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        out DbValue value)
+    {
+        for (int i = 0; i < outerScopes.Count; i++)
+        {
+            var scope = outerScopes[i];
+            if (!TryResolveColumnIndex(columnRef, scope.Schema, out int index))
+                continue;
+
+            value = index < scope.Row.Length ? scope.Row[index] : DbValue.Null;
+            return true;
+        }
+
+        value = DbValue.Null;
+        return false;
+    }
+
+    private static bool TryResolveColumnIndex(ColumnRefExpression columnRef, TableSchema schema, out int index)
+    {
+        index = columnRef.TableAlias != null
+            ? schema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
+            : schema.GetColumnIndex(columnRef.ColumnName);
+        return index >= 0;
+    }
+
+    private static bool ContainsSubqueries(Statement statement) => statement switch
+    {
+        QueryStatement query => ContainsSubqueries(query),
+        InsertStatement insert => insert.ValueRows.Any(row => row.Any(ContainsSubqueries)),
+        DeleteStatement delete => delete.Where != null && ContainsSubqueries(delete.Where),
+        UpdateStatement update => update.SetClauses.Any(set => ContainsSubqueries(set.Value))
+            || (update.Where != null && ContainsSubqueries(update.Where)),
+        _ => false,
+    };
+
+    private static bool ContainsSubqueries(QueryStatement statement) => statement switch
+    {
+        SelectStatement select => select.Columns.Any(c => c.Expression != null && ContainsSubqueries(c.Expression))
+            || ContainsSubqueries(select.From)
+            || (select.Where != null && ContainsSubqueries(select.Where))
+            || (select.GroupBy != null && select.GroupBy.Any(ContainsSubqueries))
+            || (select.Having != null && ContainsSubqueries(select.Having))
+            || (select.OrderBy != null && select.OrderBy.Any(o => ContainsSubqueries(o.Expression))),
+        CompoundSelectStatement compound => ContainsSubqueries(compound.Left)
+            || ContainsSubqueries(compound.Right)
+            || (compound.OrderBy != null && compound.OrderBy.Any(o => ContainsSubqueries(o.Expression))),
+        _ => false,
+    };
+
+    private static bool ContainsSubqueries(TableRef tableRef) => tableRef switch
+    {
+        JoinTableRef join => ContainsSubqueries(join.Left)
+            || ContainsSubqueries(join.Right)
+            || (join.Condition != null && ContainsSubqueries(join.Condition)),
+        _ => false,
+    };
+
+    private static bool ContainsSubqueries(Expression expression) => expression switch
+    {
+        InSubqueryExpression => true,
+        ScalarSubqueryExpression => true,
+        ExistsExpression => true,
+        BinaryExpression binary => ContainsSubqueries(binary.Left) || ContainsSubqueries(binary.Right),
+        UnaryExpression unary => ContainsSubqueries(unary.Operand),
+        LikeExpression like => ContainsSubqueries(like.Operand)
+            || ContainsSubqueries(like.Pattern)
+            || (like.EscapeChar != null && ContainsSubqueries(like.EscapeChar)),
+        InExpression inExpression => ContainsSubqueries(inExpression.Operand)
+            || inExpression.Values.Any(ContainsSubqueries),
+        BetweenExpression between => ContainsSubqueries(between.Operand)
+            || ContainsSubqueries(between.Low)
+            || ContainsSubqueries(between.High),
+        IsNullExpression isNull => ContainsSubqueries(isNull.Operand),
+        FunctionCallExpression functionCall => functionCall.Arguments.Any(ContainsSubqueries),
+        _ => false,
+    };
 
     #endregion
 
@@ -697,6 +1558,97 @@ public sealed class QueryPlanner
         await _catalog.DropTriggerAsync(stmt.TriggerName, ct);
         _triggerBodyCache.Remove(stmt.TriggerName);
         return new QueryResult(0);
+    }
+
+    private async ValueTask<QueryResult> ExecuteAnalyzeAsync(AnalyzeStatement stmt, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(stmt.TableName))
+        {
+            await AnalyzeTableAsync(stmt.TableName, ct);
+            return new QueryResult(0);
+        }
+
+        foreach (string tableName in _catalog.GetTableNames())
+            await AnalyzeTableAsync(tableName, ct);
+
+        return new QueryResult(0);
+    }
+
+    private async ValueTask AnalyzeTableAsync(string tableName, CancellationToken ct)
+    {
+        if (_catalog.IsView(tableName) || IsSystemCatalogTable(tableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, $"ANALYZE does not support '{tableName}'.");
+
+        var schema = GetSchema(tableName);
+        var tree = _catalog.GetTableTree(tableName, _pager);
+        var columnStats = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
+        long rowCount = columnStats.RowCount;
+        await _catalog.SetTableRowCountAsync(tableName, rowCount, ct);
+        await _catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.Columns, ct);
+    }
+
+    private async ValueTask<(long RowCount, ColumnStatistics[] Columns)> CollectColumnStatisticsAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        CancellationToken ct)
+    {
+        int columnCount = schema.Columns.Count;
+        var distinctSets = new HashSet<DbValue>[columnCount];
+        var nonNullCounts = new long[columnCount];
+        var minValues = new DbValue[columnCount];
+        var maxValues = new DbValue[columnCount];
+        var hasValues = new bool[columnCount];
+
+        int? scanCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
+        await scan.OpenAsync(ct);
+
+        long rowCount = 0;
+        while (await scan.MoveNextAsync(ct))
+        {
+            rowCount++;
+            var row = scan.Current;
+            for (int i = 0; i < columnCount; i++)
+            {
+                DbValue value = row[i];
+                if (value.IsNull)
+                    continue;
+
+                nonNullCounts[i]++;
+                (distinctSets[i] ??= new HashSet<DbValue>()).Add(value);
+
+                if (!hasValues[i])
+                {
+                    minValues[i] = value;
+                    maxValues[i] = value;
+                    hasValues[i] = true;
+                    continue;
+                }
+
+                if (DbValue.Compare(value, minValues[i]) < 0)
+                    minValues[i] = value;
+                if (DbValue.Compare(value, maxValues[i]) > 0)
+                    maxValues[i] = value;
+            }
+        }
+
+        var result = new ColumnStatistics[columnCount];
+        for (int i = 0; i < columnCount; i++)
+        {
+            result[i] = new ColumnStatistics
+            {
+                TableName = tableName,
+                ColumnName = schema.Columns[i].Name,
+                DistinctCount = distinctSets[i]?.Count ?? 0,
+                NonNullCount = nonNullCounts[i],
+                MinValue = hasValues[i] ? minValues[i] : DbValue.Null,
+                MaxValue = hasValues[i] ? maxValues[i] : DbValue.Null,
+                IsStale = false,
+            };
+        }
+
+        return (rowCount, result);
     }
 
     /// <summary>
@@ -880,12 +1832,11 @@ public sealed class QueryPlanner
     private static Statement ResolveNewOldReferences(
         Statement stmt, DbValue[] compositeRow, TableSchema compositeSchema, TableSchema tableSchema)
     {
-        // For each statement, evaluate expressions that reference NEW/OLD and replace with literal values
         switch (stmt)
         {
             case InsertStatement ins:
                 var resolvedRows = ins.ValueRows.Select(row =>
-                    row.Select(expr => ResolveExprToLiteral(expr, compositeRow, compositeSchema)).ToList()
+                    row.Select(expr => ResolveNewOldRefsInExpression(expr, compositeRow, compositeSchema)).ToList()
                 ).ToList();
                 return new InsertStatement
                 {
@@ -898,20 +1849,20 @@ public sealed class QueryPlanner
                 var resolvedSets = upd.SetClauses.Select(s => new SetClause
                 {
                     ColumnName = s.ColumnName,
-                    Value = ResolveExprToLiteral(s.Value, compositeRow, compositeSchema),
+                    Value = ResolveNewOldRefsInExpression(s.Value, compositeRow, compositeSchema),
                 }).ToList();
                 return new UpdateStatement
                 {
                     TableName = upd.TableName,
                     SetClauses = resolvedSets,
-                    Where = upd.Where != null ? ResolveExprToLiteral(upd.Where, compositeRow, compositeSchema) : null,
+                    Where = upd.Where != null ? ResolveNewOldRefsInExpression(upd.Where, compositeRow, compositeSchema) : null,
                 };
 
             case DeleteStatement del:
                 return new DeleteStatement
                 {
                     TableName = del.TableName,
-                    Where = del.Where != null ? ResolveExprToLiteral(del.Where, compositeRow, compositeSchema) : null,
+                    Where = del.Where != null ? ResolveNewOldRefsInExpression(del.Where, compositeRow, compositeSchema) : null,
                 };
 
             default:
@@ -919,36 +1870,154 @@ public sealed class QueryPlanner
         }
     }
 
-    /// <summary>
-    /// If an expression contains NEW.col or OLD.col references, evaluate them and return a literal.
-    /// Otherwise, return the expression unchanged.
-    /// </summary>
-    private static Expression ResolveExprToLiteral(Expression expr, DbValue[] compositeRow, TableSchema compositeSchema)
+    private static Expression ResolveNewOldRefsInExpression(Expression expr, DbValue[] compositeRow, TableSchema compositeSchema)
     {
-        if (!ContainsNewOldRef(expr)) return expr;
-
-        var value = ExpressionEvaluator.Evaluate(expr, compositeRow, compositeSchema);
-        return value.Type switch
+        switch (expr)
         {
-            DbType.Integer => new LiteralExpression { Value = value.AsInteger, LiteralType = TokenType.IntegerLiteral },
-            DbType.Real => new LiteralExpression { Value = value.AsReal, LiteralType = TokenType.RealLiteral },
-            DbType.Text => new LiteralExpression { Value = value.AsText, LiteralType = TokenType.StringLiteral },
-            _ => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
+            case ColumnRefExpression col when IsNewOldColumnRef(col):
+                return CreateLiteralExpression(ExpressionEvaluator.Evaluate(col, compositeRow, compositeSchema));
+            case BinaryExpression binary:
+                return new BinaryExpression
+                {
+                    Op = binary.Op,
+                    Left = ResolveNewOldRefsInExpression(binary.Left, compositeRow, compositeSchema),
+                    Right = ResolveNewOldRefsInExpression(binary.Right, compositeRow, compositeSchema),
+                };
+            case UnaryExpression unary:
+                return new UnaryExpression
+                {
+                    Op = unary.Op,
+                    Operand = ResolveNewOldRefsInExpression(unary.Operand, compositeRow, compositeSchema),
+                };
+            case LikeExpression like:
+                return new LikeExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(like.Operand, compositeRow, compositeSchema),
+                    Pattern = ResolveNewOldRefsInExpression(like.Pattern, compositeRow, compositeSchema),
+                    EscapeChar = like.EscapeChar != null
+                        ? ResolveNewOldRefsInExpression(like.EscapeChar, compositeRow, compositeSchema)
+                        : null,
+                    Negated = like.Negated,
+                };
+            case InExpression inExpression:
+                return new InExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(inExpression.Operand, compositeRow, compositeSchema),
+                    Values = inExpression.Values
+                        .Select(value => ResolveNewOldRefsInExpression(value, compositeRow, compositeSchema))
+                        .ToList(),
+                    Negated = inExpression.Negated,
+                };
+            case InSubqueryExpression inSubquery:
+                return new InSubqueryExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(inSubquery.Operand, compositeRow, compositeSchema),
+                    Query = ResolveNewOldRefsInQuery(inSubquery.Query, compositeRow, compositeSchema),
+                    Negated = inSubquery.Negated,
+                };
+            case ScalarSubqueryExpression scalarSubquery:
+                return new ScalarSubqueryExpression
+                {
+                    Query = ResolveNewOldRefsInQuery(scalarSubquery.Query, compositeRow, compositeSchema),
+                };
+            case ExistsExpression exists:
+                return new ExistsExpression
+                {
+                    Query = ResolveNewOldRefsInQuery(exists.Query, compositeRow, compositeSchema),
+                };
+            case BetweenExpression between:
+                return new BetweenExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(between.Operand, compositeRow, compositeSchema),
+                    Low = ResolveNewOldRefsInExpression(between.Low, compositeRow, compositeSchema),
+                    High = ResolveNewOldRefsInExpression(between.High, compositeRow, compositeSchema),
+                    Negated = between.Negated,
+                };
+            case IsNullExpression isNull:
+                return new IsNullExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(isNull.Operand, compositeRow, compositeSchema),
+                    Negated = isNull.Negated,
+                };
+            case FunctionCallExpression functionCall:
+                return new FunctionCallExpression
+                {
+                    FunctionName = functionCall.FunctionName,
+                    Arguments = functionCall.Arguments
+                        .Select(arg => ResolveNewOldRefsInExpression(arg, compositeRow, compositeSchema))
+                        .ToList(),
+                    IsDistinct = functionCall.IsDistinct,
+                    IsStarArg = functionCall.IsStarArg,
+                };
+            default:
+                return expr;
+        }
+    }
+
+    private static QueryStatement ResolveNewOldRefsInQuery(QueryStatement query, DbValue[] compositeRow, TableSchema compositeSchema)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+                return new SelectStatement
+                {
+                    IsDistinct = select.IsDistinct,
+                    Columns = select.Columns.Select(column => new SelectColumn
+                    {
+                        IsStar = column.IsStar,
+                        Alias = column.Alias,
+                        Expression = column.Expression != null
+                            ? ResolveNewOldRefsInExpression(column.Expression, compositeRow, compositeSchema)
+                            : null,
+                    }).ToList(),
+                    From = ResolveNewOldRefsInTableRef(select.From, compositeRow, compositeSchema),
+                    Where = select.Where != null ? ResolveNewOldRefsInExpression(select.Where, compositeRow, compositeSchema) : null,
+                    GroupBy = select.GroupBy?.Select(expr => ResolveNewOldRefsInExpression(expr, compositeRow, compositeSchema)).ToList(),
+                    Having = select.Having != null ? ResolveNewOldRefsInExpression(select.Having, compositeRow, compositeSchema) : null,
+                    OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
+                    {
+                        Expression = ResolveNewOldRefsInExpression(orderBy.Expression, compositeRow, compositeSchema),
+                        Descending = orderBy.Descending,
+                    }).ToList(),
+                    Limit = select.Limit,
+                    Offset = select.Offset,
+                };
+            case CompoundSelectStatement compound:
+                return new CompoundSelectStatement
+                {
+                    Left = ResolveNewOldRefsInQuery(compound.Left, compositeRow, compositeSchema),
+                    Right = ResolveNewOldRefsInQuery(compound.Right, compositeRow, compositeSchema),
+                    Operation = compound.Operation,
+                    OrderBy = compound.OrderBy?.Select(orderBy => new OrderByClause
+                    {
+                        Expression = ResolveNewOldRefsInExpression(orderBy.Expression, compositeRow, compositeSchema),
+                        Descending = orderBy.Descending,
+                    }).ToList(),
+                    Limit = compound.Limit,
+                    Offset = compound.Offset,
+                };
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
+        }
+    }
+
+    private static TableRef ResolveNewOldRefsInTableRef(TableRef tableRef, DbValue[] compositeRow, TableSchema compositeSchema)
+    {
+        if (tableRef is not JoinTableRef join)
+            return tableRef;
+
+        return new JoinTableRef
+        {
+            Left = ResolveNewOldRefsInTableRef(join.Left, compositeRow, compositeSchema),
+            Right = ResolveNewOldRefsInTableRef(join.Right, compositeRow, compositeSchema),
+            JoinType = join.JoinType,
+            Condition = join.Condition != null ? ResolveNewOldRefsInExpression(join.Condition, compositeRow, compositeSchema) : null,
         };
     }
 
-    private static bool ContainsNewOldRef(Expression expr)
-    {
-        return expr switch
-        {
-            ColumnRefExpression col => col.TableAlias != null &&
-                (col.TableAlias.Equals("NEW", StringComparison.OrdinalIgnoreCase) ||
-                 col.TableAlias.Equals("OLD", StringComparison.OrdinalIgnoreCase)),
-            BinaryExpression bin => ContainsNewOldRef(bin.Left) || ContainsNewOldRef(bin.Right),
-            UnaryExpression un => ContainsNewOldRef(un.Operand),
-            _ => false,
-        };
-    }
+    private static bool IsNewOldColumnRef(ColumnRefExpression col) => col.TableAlias != null &&
+        (col.TableAlias.Equals("NEW", StringComparison.OrdinalIgnoreCase) ||
+         col.TableAlias.Equals("OLD", StringComparison.OrdinalIgnoreCase));
 
     #endregion
 
@@ -959,6 +2028,15 @@ public sealed class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInInsertAsync(stmt, ct);
+        if (ContainsSubqueries(stmt))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Correlated subqueries are not supported in INSERT VALUES.");
+        }
+
         var schema = GetSchema(stmt.TableName);
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
@@ -971,10 +2049,390 @@ public sealed class QueryPlanner
             inserted++;
         }
 
+        if (inserted > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
         if (persistRootChanges)
             await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
         return QueryResult.FromRowsAffected(inserted);
+    }
+
+    private async ValueTask<QueryResult> ExecuteCompoundSelectAsync(CompoundSelectStatement stmt, CancellationToken ct)
+    {
+        await using var leftResult = await ExecuteQueryAsync(stmt.Left, ct);
+        await using var rightResult = await ExecuteQueryAsync(stmt.Right, ct);
+
+        var outputSchema = MergeCompoundSchemas(leftResult.Schema, rightResult.Schema);
+        var leftRows = await leftResult.ToListAsync(ct);
+        var rightRows = await rightResult.ToListAsync(ct);
+        var rows = stmt.Operation switch
+        {
+            SetOperationKind.Union => ExecuteUnion(leftRows, rightRows),
+            SetOperationKind.Intersect => ExecuteIntersect(leftRows, rightRows),
+            SetOperationKind.Except => ExecuteExcept(leftRows, rightRows),
+            _ => throw new InvalidOperationException($"Unknown set operation: {stmt.Operation}"),
+        };
+
+        if (stmt.OrderBy is not { Count: > 0 } && !stmt.Offset.HasValue && !stmt.Limit.HasValue)
+            return QueryResult.FromMaterializedRows(outputSchema, rows);
+
+        IOperator op = new MaterializedOperator(rows, outputSchema);
+        var schema = new TableSchema
+        {
+            TableName = "compound",
+            Columns = outputSchema,
+        };
+
+        op = ApplyOrdering(op, stmt.OrderBy, schema, GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset));
+        if (stmt.Offset.HasValue)
+            op = new OffsetOperator(op, stmt.Offset.Value);
+        if (stmt.Limit.HasValue)
+            op = new LimitOperator(op, stmt.Limit.Value);
+
+        return new QueryResult(op);
+    }
+
+    private async ValueTask<QueryResult> ExecuteCompoundSelectWithSubqueriesAsync(CompoundSelectStatement stmt, CancellationToken ct)
+    {
+        if (stmt.OrderBy != null && stmt.OrderBy.Any(orderBy => ContainsSubqueries(orderBy.Expression)))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in compound ORDER BY are not supported.");
+        }
+
+        return await ExecuteCompoundSelectAsync(stmt, ct);
+    }
+
+    private async ValueTask<QueryResult> ExecuteSelectWithCorrelatedSubqueriesAsync(
+        SelectStatement stmt,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        ValidateCorrelatedSelectSupport(stmt);
+
+        bool hasAggregates = stmt.GroupBy != null ||
+                             stmt.Having != null ||
+                             stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
+        int? orderByTopN = stmt.IsDistinct ? null : GetOrderByTopN(stmt);
+
+        var (sourceOp, sourceSchema) = BuildFromOperator(stmt.From);
+        List<DbValue[]> filteredRows;
+        await using (sourceOp)
+        {
+            filteredRows = await MaterializeFilteredRowsAsync(sourceOp, stmt.Where, sourceSchema, outerScopes, ct);
+        }
+
+        IOperator op = new MaterializedOperator(filteredRows, GetSchemaColumnsArray(sourceSchema));
+        if (hasAggregates)
+        {
+            var outputCols = BuildAggregateOutputSchema(stmt.Columns, sourceSchema);
+            if (stmt.GroupBy is { Count: > 0 })
+            {
+                op = new HashAggregateOperator(op, stmt.Columns, stmt.GroupBy, stmt.Having, sourceSchema, outputCols);
+            }
+            else
+            {
+                op = new ScalarAggregateOperator(op, stmt.Columns, stmt.Having, sourceSchema, outputCols);
+            }
+
+            var aggregateSchema = new TableSchema
+            {
+                TableName = sourceSchema.TableName,
+                Columns = outputCols,
+            };
+
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
+
+            op = ApplyOrdering(op, stmt.OrderBy, aggregateSchema, orderByTopN);
+        }
+        else
+        {
+            op = ApplyOrdering(op, stmt.OrderBy, sourceSchema, orderByTopN);
+            if (!stmt.Columns.Any(c => c.IsStar))
+            {
+                if (TryBuildColumnProjection(stmt.Columns, sourceSchema, out var columnIndices, out var outputCols))
+                {
+                    op = new ProjectionOperator(op, columnIndices, outputCols, sourceSchema);
+                }
+                else
+                {
+                    var expressions = stmt.Columns.Select(c => c.Expression!).ToArray();
+                    outputCols = new ColumnDefinition[expressions.Length];
+                    for (int i = 0; i < expressions.Length; i++)
+                        outputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, sourceSchema, i);
+
+                    List<DbValue[]> projectedRows;
+                    await using (op)
+                    {
+                        projectedRows = await MaterializeProjectedRowsAsync(op, expressions, sourceSchema, outerScopes, ct);
+                    }
+
+                    op = new MaterializedOperator(projectedRows, outputCols);
+                }
+            }
+
+            if (stmt.IsDistinct)
+                op = new DistinctOperator(op);
+        }
+
+        if (stmt.Offset.HasValue)
+            op = new OffsetOperator(op, stmt.Offset.Value);
+
+        if (stmt.Limit.HasValue)
+            op = new LimitOperator(op, stmt.Limit.Value);
+
+        return new QueryResult(op);
+    }
+
+    private void ValidateCorrelatedSelectSupport(SelectStatement stmt)
+    {
+        if (ContainsSubqueries(stmt.From))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in JOIN conditions are not supported.");
+        }
+
+        if (stmt.GroupBy != null && stmt.GroupBy.Any(ContainsSubqueries))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in GROUP BY are not supported.");
+        }
+
+        if (stmt.Having != null && ContainsSubqueries(stmt.Having))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in HAVING are not supported.");
+        }
+
+        if (stmt.OrderBy != null && stmt.OrderBy.Any(orderBy => ContainsSubqueries(orderBy.Expression)))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in ORDER BY are not supported.");
+        }
+
+        bool hasAggregates = stmt.GroupBy != null ||
+                             stmt.Having != null ||
+                             stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
+        if (hasAggregates &&
+            stmt.Columns.Any(c => c.Expression != null && ContainsSubqueries(c.Expression)))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Subqueries in aggregate projections are not supported.");
+        }
+    }
+
+    private async ValueTask<List<DbValue[]>> MaterializeFilteredRowsAsync(
+        IOperator source,
+        Expression? predicate,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        int initialCapacity = source is IEstimatedRowCountProvider estimated &&
+                              estimated.EstimatedRowCount is int rowCount &&
+                              rowCount > 0
+            ? rowCount
+            : 0;
+        var rows = initialCapacity > 0
+            ? new List<DbValue[]>(initialCapacity)
+            : new List<DbValue[]>();
+
+        await source.OpenAsync(ct);
+        while (await source.MoveNextAsync(ct))
+        {
+            if (predicate != null)
+            {
+                var predicateResult = await EvaluateExpressionWithSubqueriesAsync(
+                    predicate,
+                    source.Current,
+                    schema,
+                    outerScopes,
+                    ct);
+                if (!predicateResult.IsTruthy)
+                    continue;
+            }
+
+            rows.Add((DbValue[])source.Current.Clone());
+        }
+
+        return rows;
+    }
+
+    private async ValueTask<List<DbValue[]>> MaterializeProjectedRowsAsync(
+        IOperator source,
+        IReadOnlyList<Expression> expressions,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        int initialCapacity = source is IEstimatedRowCountProvider estimated &&
+                              estimated.EstimatedRowCount is int rowCount &&
+                              rowCount > 0
+            ? rowCount
+            : 0;
+        var rows = initialCapacity > 0
+            ? new List<DbValue[]>(initialCapacity)
+            : new List<DbValue[]>();
+
+        await source.OpenAsync(ct);
+        while (await source.MoveNextAsync(ct))
+        {
+            var row = source.Current;
+            var projectedRow = new DbValue[expressions.Count];
+            for (int i = 0; i < expressions.Count; i++)
+            {
+                projectedRow[i] = await EvaluateExpressionWithSubqueriesAsync(
+                    expressions[i],
+                    row,
+                    schema,
+                    outerScopes,
+                    ct);
+            }
+
+            rows.Add(projectedRow);
+        }
+
+        return rows;
+    }
+
+    private async ValueTask<DbValue> EvaluateExpressionWithSubqueriesAsync(
+        Expression expression,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        if (!ContainsSubqueries(expression))
+            return ExpressionEvaluator.Evaluate(expression, row, schema);
+
+        var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
+        var rewritten = await RewriteCorrelatedExpressionAsync(expression, correlationScopes, ct);
+        return ExpressionEvaluator.Evaluate(rewritten, row, schema);
+    }
+
+    private async ValueTask<Expression> RewriteCorrelatedExpressionAsync(
+        Expression expression,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+            case ColumnRefExpression:
+                return expression;
+            case BinaryExpression binary:
+                return new BinaryExpression
+                {
+                    Op = binary.Op,
+                    Left = await RewriteCorrelatedExpressionAsync(binary.Left, outerScopes, ct),
+                    Right = await RewriteCorrelatedExpressionAsync(binary.Right, outerScopes, ct),
+                };
+            case UnaryExpression unary:
+                return new UnaryExpression
+                {
+                    Op = unary.Op,
+                    Operand = await RewriteCorrelatedExpressionAsync(unary.Operand, outerScopes, ct),
+                };
+            case LikeExpression like:
+                return new LikeExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(like.Operand, outerScopes, ct),
+                    Pattern = await RewriteCorrelatedExpressionAsync(like.Pattern, outerScopes, ct),
+                    EscapeChar = like.EscapeChar != null
+                        ? await RewriteCorrelatedExpressionAsync(like.EscapeChar, outerScopes, ct)
+                        : null,
+                    Negated = like.Negated,
+                };
+            case InExpression inExpression:
+                return new InExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(inExpression.Operand, outerScopes, ct),
+                    Values = await RewriteCorrelatedExpressionListAsync(inExpression.Values, outerScopes, ct),
+                    Negated = inExpression.Negated,
+                };
+            case InSubqueryExpression inSubquery:
+            {
+                var boundQuery = BindOuterScopesInQuery(inSubquery.Query, outerScopes);
+                return new InExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(inSubquery.Operand, outerScopes, ct),
+                    Values = await MaterializeSingleColumnSubqueryAsExpressionsAsync(boundQuery, ct),
+                    Negated = inSubquery.Negated,
+                };
+            }
+            case ScalarSubqueryExpression scalarSubquery:
+            {
+                var boundQuery = BindOuterScopesInQuery(scalarSubquery.Query, outerScopes);
+                return CreateLiteralExpression(await ExecuteScalarSubqueryAsync(boundQuery, ct));
+            }
+            case ExistsExpression exists:
+            {
+                var boundQuery = BindOuterScopesInQuery(exists.Query, outerScopes);
+                return new LiteralExpression
+                {
+                    Value = await ExecuteExistsSubqueryAsync(boundQuery, ct) ? 1L : 0L,
+                    LiteralType = TokenType.IntegerLiteral,
+                };
+            }
+            case BetweenExpression between:
+                return new BetweenExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(between.Operand, outerScopes, ct),
+                    Low = await RewriteCorrelatedExpressionAsync(between.Low, outerScopes, ct),
+                    High = await RewriteCorrelatedExpressionAsync(between.High, outerScopes, ct),
+                    Negated = between.Negated,
+                };
+            case IsNullExpression isNull:
+                return new IsNullExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(isNull.Operand, outerScopes, ct),
+                    Negated = isNull.Negated,
+                };
+            case FunctionCallExpression functionCall:
+                return new FunctionCallExpression
+                {
+                    FunctionName = functionCall.FunctionName,
+                    Arguments = await RewriteCorrelatedExpressionListAsync(functionCall.Arguments, outerScopes, ct),
+                    IsDistinct = functionCall.IsDistinct,
+                    IsStarArg = functionCall.IsStarArg,
+                };
+            default:
+                throw new CSharpDbException(ErrorCode.Unknown, $"Unknown expression type: {expression.GetType().Name}");
+        }
+    }
+
+    private async ValueTask<List<Expression>> RewriteCorrelatedExpressionListAsync(
+        IReadOnlyList<Expression> expressions,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        var rewritten = new List<Expression>(expressions.Count);
+        for (int i = 0; i < expressions.Count; i++)
+            rewritten.Add(await RewriteCorrelatedExpressionAsync(expressions[i], outerScopes, ct));
+
+        return rewritten;
+    }
+
+    private static CorrelationScope[] CreateCorrelationScopes(
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        var scopes = new CorrelationScope[outerScopes.Count + 1];
+        scopes[0] = new CorrelationScope(row, schema);
+        for (int i = 0; i < outerScopes.Count; i++)
+            scopes[i + 1] = outerScopes[i];
+
+        return scopes;
     }
 
     private QueryResult ExecuteSelect(SelectStatement stmt)
@@ -1280,13 +2738,19 @@ public sealed class QueryPlanner
     }
 
     private static int? GetOrderByTopN(SelectStatement stmt)
+        => GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset);
+
+    private static int? GetOrderByTopN(
+        List<OrderByClause>? orderBy,
+        int? limit,
+        int? offset)
     {
-        if (stmt.OrderBy is not { Count: > 0 } || !stmt.Limit.HasValue)
+        if (orderBy is not { Count: > 0 } || !limit.HasValue)
             return null;
 
-        long topN = stmt.Limit.Value;
-        if (stmt.Offset.HasValue)
-            topN += stmt.Offset.Value;
+        long topN = limit.Value;
+        if (offset.HasValue)
+            topN += offset.Value;
 
         if (topN <= 0)
             return 0;
@@ -1318,6 +2782,145 @@ public sealed class QueryPlanner
             return pushdownTarget.TrySetOutputProjection(columnIndices, outputCols);
 
         return false;
+    }
+
+    private static ColumnDefinition[] MergeCompoundSchemas(
+        IReadOnlyList<ColumnDefinition> leftSchema,
+        IReadOnlyList<ColumnDefinition> rightSchema)
+    {
+        if (leftSchema.Count != rightSchema.Count)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Set operations require matching column counts. Left query has {leftSchema.Count} column(s); right query has {rightSchema.Count}.");
+        }
+
+        var output = new ColumnDefinition[leftSchema.Count];
+        for (int i = 0; i < output.Length; i++)
+        {
+            var left = leftSchema[i];
+            var right = rightSchema[i];
+            output[i] = new ColumnDefinition
+            {
+                Name = string.IsNullOrWhiteSpace(left.Name) ? right.Name : left.Name,
+                Type = MergeCompoundType(left.Type, right.Type),
+                Nullable = left.Nullable || right.Nullable || left.Type != right.Type,
+            };
+        }
+
+        return output;
+    }
+
+    private static DbType MergeCompoundType(DbType left, DbType right)
+    {
+        if (left == right)
+            return left;
+        if (left == DbType.Null)
+            return right;
+        if (right == DbType.Null)
+            return left;
+        if (left is DbType.Integer or DbType.Real && right is DbType.Integer or DbType.Real)
+            return DbType.Real;
+
+        return DbType.Null;
+    }
+
+    private static List<DbValue[]> ExecuteUnion(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
+    {
+        var seen = new HashSet<RowSetKey>(new RowSetKeyComparer());
+        var output = new List<DbValue[]>(leftRows.Count + rightRows.Count);
+        AddDistinctRows(leftRows, output, seen);
+        AddDistinctRows(rightRows, output, seen);
+        return output;
+    }
+
+    private static List<DbValue[]> ExecuteIntersect(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
+    {
+        var rightSet = CreateRowSet(rightRows);
+        var emitted = new HashSet<RowSetKey>(new RowSetKeyComparer());
+        var output = new List<DbValue[]>();
+
+        for (int i = 0; i < leftRows.Count; i++)
+        {
+            var row = leftRows[i];
+            var key = new RowSetKey(row, ComputeRowHashCode(row));
+            if (rightSet.Contains(key) && emitted.Add(key))
+                output.Add(row);
+        }
+
+        return output;
+    }
+
+    private static List<DbValue[]> ExecuteExcept(List<DbValue[]> leftRows, List<DbValue[]> rightRows)
+    {
+        var rightSet = CreateRowSet(rightRows);
+        var emitted = new HashSet<RowSetKey>(new RowSetKeyComparer());
+        var output = new List<DbValue[]>();
+
+        for (int i = 0; i < leftRows.Count; i++)
+        {
+            var row = leftRows[i];
+            var key = new RowSetKey(row, ComputeRowHashCode(row));
+            if (!rightSet.Contains(key) && emitted.Add(key))
+                output.Add(row);
+        }
+
+        return output;
+    }
+
+    private static HashSet<RowSetKey> CreateRowSet(List<DbValue[]> rows)
+    {
+        var set = new HashSet<RowSetKey>(new RowSetKeyComparer());
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            set.Add(new RowSetKey(row, ComputeRowHashCode(row)));
+        }
+
+        return set;
+    }
+
+    private static void AddDistinctRows(
+        List<DbValue[]> sourceRows,
+        List<DbValue[]> output,
+        HashSet<RowSetKey> seen)
+    {
+        for (int i = 0; i < sourceRows.Count; i++)
+        {
+            var row = sourceRows[i];
+            var key = new RowSetKey(row, ComputeRowHashCode(row));
+            if (seen.Add(key))
+                output.Add(row);
+        }
+    }
+
+    private static int ComputeRowHashCode(DbValue[] row)
+    {
+        var hash = new HashCode();
+        for (int i = 0; i < row.Length; i++)
+            hash.Add(row[i]);
+        return hash.ToHashCode();
+    }
+
+    private readonly record struct RowSetKey(DbValue[] Values, int HashCode);
+
+    private sealed class RowSetKeyComparer : IEqualityComparer<RowSetKey>
+    {
+        public bool Equals(RowSetKey x, RowSetKey y)
+        {
+            if (x.HashCode != y.HashCode || x.Values.Length != y.Values.Length)
+                return false;
+
+            for (int i = 0; i < x.Values.Length; i++)
+            {
+                if (!x.Values[i].Equals(y.Values[i]))
+                    return false;
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(RowSetKey obj) => obj.HashCode;
     }
 
     public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)
@@ -1460,6 +3063,9 @@ public sealed class QueryPlanner
             await ExecuteResolvedInsertRowAsync(insert.TableName, schema, tree, indexes, row, ct);
             inserted++;
         }
+
+        if (inserted > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(insert.TableName, ct);
 
         if (persistRootChanges)
             await _catalog.PersistRootPageChangesAsync(insert.TableName, ct);
@@ -1717,7 +3323,6 @@ public sealed class QueryPlanner
 
         // Validate table exists and build the direct count operator.
         GetSchema(simpleRef.TableName);
-        var tree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
         var outputSchema = new[]
         {
@@ -1729,6 +3334,13 @@ public sealed class QueryPlanner
             },
         };
 
+        if (_catalog.TryGetTableRowCount(simpleRef.TableName, out long rowCount))
+        {
+            result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+            return true;
+        }
+
+        var tree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new CountStarTableOperator(tree, outputSchema));
         return true;
     }
@@ -1775,6 +3387,8 @@ public sealed class QueryPlanner
             "sys.views" => _catalog.GetViewNames().Count,
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
+            "sys.table_stats" => _catalog.GetTableStatistics().Count,
+            "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             _ => 0,
         };
 
@@ -2053,6 +3667,10 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
     {
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInDeleteAsync(stmt, ct);
+        bool hasRemainingSubqueries = ContainsSubqueries(stmt);
+
         var schema = GetSchema(stmt.TableName);
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
@@ -2068,7 +3686,14 @@ public sealed class QueryPlanner
         {
             if (stmt.Where != null)
             {
-                var result = ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
+                var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
+                    ? await EvaluateExpressionWithSubqueriesAsync(
+                        stmt.Where,
+                        scan.Current,
+                        schema,
+                        Array.Empty<CorrelationScope>(),
+                        ct)
+                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
                 if (!result.IsTruthy) continue;
             }
             rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
@@ -2083,10 +3708,14 @@ public sealed class QueryPlanner
 
             // Maintain indexes
             await DeleteFromAllIndexesAsync(indexes, schema, row, rowId, ct);
+            await _catalog.AdjustTableRowCountAsync(stmt.TableName, -1, ct);
 
             // AFTER DELETE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null, schema, ct);
         }
+
+        if (rowsToDelete.Count > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -2095,6 +3724,10 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
     {
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInUpdateAsync(stmt, ct);
+        bool hasRemainingSubqueries = ContainsSubqueries(stmt);
+
         var schema = GetSchema(stmt.TableName);
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
@@ -2112,7 +3745,14 @@ public sealed class QueryPlanner
         {
             if (stmt.Where != null)
             {
-                var result = ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
+                var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
+                    ? await EvaluateExpressionWithSubqueriesAsync(
+                        stmt.Where,
+                        scan.Current,
+                        schema,
+                        Array.Empty<CorrelationScope>(),
+                        ct)
+                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
                 if (!result.IsTruthy) continue;
             }
 
@@ -2123,7 +3763,14 @@ public sealed class QueryPlanner
                 int colIdx = schema.GetColumnIndex(set.ColumnName);
                 if (colIdx < 0)
                     throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
-                newRow[colIdx] = ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema);
+                newRow[colIdx] = hasRemainingSubqueries && ContainsSubqueries(set.Value)
+                    ? await EvaluateExpressionWithSubqueriesAsync(
+                        set.Value,
+                        scan.Current,
+                        schema,
+                        Array.Empty<CorrelationScope>(),
+                        ct)
+                    : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema);
             }
             updates.Add((scan.CurrentRowId, oldRow, newRow));
         }
@@ -2157,6 +3804,9 @@ public sealed class QueryPlanner
             // AFTER UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
         }
+
+        if (updates.Count > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -2206,72 +3856,96 @@ public sealed class QueryPlanner
             var viewSql = _catalog.GetViewSql(simple.TableName);
             if (viewSql != null)
             {
-                // Re-parse the stored SQL and build operator pipeline
-                var viewStmt = (SelectStatement)Parser.Parse(viewSql);
-                var (viewOp, viewSchema) = BuildFromOperator(viewStmt.From);
+                var viewQuery = Parser.Parse(viewSql) as QueryStatement
+                    ?? throw new CSharpDbException(ErrorCode.SyntaxError, $"View '{simple.TableName}' does not contain a query definition.");
 
-                bool hasAggregates = viewStmt.GroupBy != null ||
-                                     viewStmt.Having != null ||
-                                     viewStmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
+                IOperator viewOp;
+                TableSchema viewSchema;
 
-                // Aggregate optimization for simple view pipelines.
-                if (hasAggregates)
+                if (viewQuery is SelectStatement viewStmt && !ContainsSubqueries(viewStmt))
                 {
-                    if (TryGetAggregateDecodeUpperBound(viewStmt, viewSchema, viewStmt.Where, out int maxColumnIndex))
-                        TrySetDecodedColumnUpperBound(viewOp, maxColumnIndex);
-                }
+                    (viewOp, viewSchema) = BuildFromOperator(viewStmt.From);
 
-                // Apply view's WHERE
-                if (viewStmt.Where != null)
-                    viewOp = new FilterOperator(viewOp, GetOrCompileExpression(viewStmt.Where, viewSchema));
+                    bool hasAggregates = viewStmt.GroupBy != null ||
+                                         viewStmt.Having != null ||
+                                         viewStmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
 
-                if (hasAggregates)
-                {
-                    var outputCols = BuildAggregateOutputSchema(viewStmt.Columns, viewSchema);
-                    bool hasGroupBy = viewStmt.GroupBy is { Count: > 0 };
-                    if (hasGroupBy)
+                    // Aggregate optimization for simple view pipelines.
+                    if (hasAggregates)
                     {
-                        viewOp = new HashAggregateOperator(
-                            viewOp, viewStmt.Columns, viewStmt.GroupBy, viewStmt.Having, viewSchema, outputCols);
+                        if (TryGetAggregateDecodeUpperBound(viewStmt, viewSchema, viewStmt.Where, out int maxColumnIndex))
+                            TrySetDecodedColumnUpperBound(viewOp, maxColumnIndex);
+                    }
+
+                    if (viewStmt.Where != null)
+                        viewOp = new FilterOperator(viewOp, GetOrCompileExpression(viewStmt.Where, viewSchema));
+
+                    if (hasAggregates)
+                    {
+                        var outputCols = BuildAggregateOutputSchema(viewStmt.Columns, viewSchema);
+                        bool hasGroupBy = viewStmt.GroupBy is { Count: > 0 };
+                        if (hasGroupBy)
+                        {
+                            viewOp = new HashAggregateOperator(
+                                viewOp, viewStmt.Columns, viewStmt.GroupBy, viewStmt.Having, viewSchema, outputCols);
+                        }
+                        else
+                        {
+                            viewOp = new ScalarAggregateOperator(
+                                viewOp, viewStmt.Columns, viewStmt.Having, viewSchema, outputCols);
+                        }
+
+                        viewSchema = new TableSchema
+                        {
+                            TableName = simple.TableName,
+                            Columns = outputCols,
+                        };
+                    }
+                    else if (!viewStmt.Columns.Any(c => c.IsStar))
+                    {
+                        var expressions = viewStmt.Columns.Select(c => c.Expression!).ToArray();
+                        var outputCols = new ColumnDefinition[expressions.Length];
+                        for (int i = 0; i < expressions.Length; i++)
+                            outputCols[i] = InferColumnDef(expressions[i], viewStmt.Columns[i].Alias, viewSchema, i);
+                        viewOp = new ProjectionOperator(
+                            viewOp,
+                            Array.Empty<int>(),
+                            outputCols,
+                            GetOrCompileExpressions(expressions, viewSchema));
+
+                        viewSchema = new TableSchema
+                        {
+                            TableName = simple.TableName,
+                            Columns = outputCols,
+                        };
                     }
                     else
                     {
-                        viewOp = new ScalarAggregateOperator(
-                            viewOp, viewStmt.Columns, viewStmt.Having, viewSchema, outputCols);
+                        viewSchema = new TableSchema
+                        {
+                            TableName = simple.TableName,
+                            Columns = viewSchema.Columns,
+                        };
                     }
-
-                    viewSchema = new TableSchema
-                    {
-                        TableName = simple.TableName,
-                        Columns = outputCols,
-                    };
-                }
-                else if (!viewStmt.Columns.Any(c => c.IsStar))
-                {
-                    // Apply view's projection if not SELECT *
-                    var expressions = viewStmt.Columns.Select(c => c.Expression!).ToArray();
-                    var outputCols = new ColumnDefinition[expressions.Length];
-                    for (int i = 0; i < expressions.Length; i++)
-                        outputCols[i] = InferColumnDef(expressions[i], viewStmt.Columns[i].Alias, viewSchema, i);
-                    viewOp = new ProjectionOperator(
-                        viewOp,
-                        Array.Empty<int>(),
-                        outputCols,
-                        GetOrCompileExpressions(expressions, viewSchema));
-
-                    viewSchema = new TableSchema
-                    {
-                        TableName = simple.TableName,
-                        Columns = outputCols,
-                    };
                 }
                 else
                 {
-                    viewSchema = new TableSchema
+                    var materialized = ExecuteQueryAsync(viewQuery, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                    try
                     {
-                        TableName = simple.TableName,
-                        Columns = viewSchema.Columns,
-                    };
+                        var rows = materialized.ToListAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                        var outputCols = materialized.Schema.ToArray();
+                        viewOp = new MaterializedOperator(rows, outputCols);
+                        viewSchema = new TableSchema
+                        {
+                            TableName = simple.TableName,
+                            Columns = outputCols,
+                        };
+                    }
+                    finally
+                    {
+                        materialized.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
                 }
 
                 // Create qualified mappings
@@ -2585,6 +4259,9 @@ public sealed class QueryPlanner
                 return false;
             if (_cteData != null && _cteData.ContainsKey(simple.TableName))
                 return false;
+
+            if (_catalog.TryGetTableRowCount(simple.TableName, out count))
+                return true;
 
             try
             {
@@ -2939,48 +4616,27 @@ public sealed class QueryPlanner
             schema.Columns[pkIdx].Type == DbType.Integer;
         var indexes = _catalog.GetIndexesForTable(tableName);
 
-        // Fast path: single equality lookup term.
-        if (TryPickLookupCandidate(where, schema, indexes, hasIntegerPk, pkIdx, out var singleCandidate))
-        {
-            remaining = singleCandidate.RequiresResidualPredicate ? where : null;
-            return BuildLookupOperator(tableName, schema, singleCandidate.IsPrimaryKey, singleCandidate.Index, singleCandidate.LookupValue);
-        }
-
-        // Fast path: two-term AND where one side can be consumed as the lookup and the other stays as residual.
-        if (where is BinaryExpression { Op: BinaryOp.And } andExpr)
-        {
-            bool hasLeft = TryPickLookupCandidate(andExpr.Left, schema, indexes, hasIntegerPk, pkIdx, out var leftCandidate);
-            bool hasRight = TryPickLookupCandidate(andExpr.Right, schema, indexes, hasIntegerPk, pkIdx, out var rightCandidate);
-
-            if (hasLeft || hasRight)
-            {
-                bool useLeft = hasLeft && (!hasRight || leftCandidate.Rank <= rightCandidate.Rank);
-                var selected = useLeft ? leftCandidate : rightCandidate;
-                remaining = selected.RequiresResidualPredicate
-                    ? where
-                    : (useLeft ? andExpr.Right : andExpr.Left);
-                return BuildLookupOperator(tableName, schema, selected.IsPrimaryKey, selected.Index, selected.LookupValue);
-            }
-        }
-
         remaining = where;
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(where, conjuncts);
 
         int selectedConjunctIndex = -1;
-        int selectedRank = int.MaxValue;
         LookupCandidate selectedCandidate = default;
+        bool hasSelectedCandidate = false;
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (!TryPickLookupCandidate(conjuncts[i], schema, indexes, hasIntegerPk, pkIdx, out var candidate))
+            if (!TryPickLookupCandidate(tableName, conjuncts[i], schema, indexes, hasIntegerPk, pkIdx, out var candidate))
                 continue;
 
-            if (candidate.Rank < selectedRank)
+            if (!ShouldUseLookupCandidate(candidate))
+                continue;
+
+            if (!hasSelectedCandidate || IsBetterLookupCandidate(candidate, selectedCandidate))
             {
-                selectedRank = candidate.Rank;
                 selectedConjunctIndex = i;
                 selectedCandidate = candidate;
+                hasSelectedCandidate = true;
 
                 if (candidate.Rank == 0)
                     break;
@@ -2995,7 +4651,7 @@ public sealed class QueryPlanner
             out long compositeLookupKey);
 
         if (hasCompositeCandidate &&
-            (selectedConjunctIndex < 0 || (compositeIndex!.IsUnique ? 1 : 2) < selectedRank))
+            (!hasSelectedCandidate || (compositeIndex!.IsUnique ? 1 : 2) < selectedCandidate.Rank))
         {
             // Composite index keys are hashed; keep the full predicate as residual
             // so hash collisions are filtered out by expression evaluation.
@@ -3008,7 +4664,7 @@ public sealed class QueryPlanner
                 compositeLookupKey);
         }
 
-        if (selectedConjunctIndex < 0)
+        if (!hasSelectedCandidate || selectedConjunctIndex < 0)
             return null;
         IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
 
@@ -3042,9 +4698,12 @@ public sealed class QueryPlanner
         bool IsPrimaryKey,
         IndexSchema? Index,
         int Rank,
-        bool RequiresResidualPredicate);
+        bool RequiresResidualPredicate,
+        long? EstimatedRows,
+        long? TableRowCount);
 
-    private static bool TryPickLookupCandidate(
+    private bool TryPickLookupCandidate(
+        string tableName,
         Expression expression,
         TableSchema schema,
         IReadOnlyList<IndexSchema> indexes,
@@ -3066,7 +4725,9 @@ public sealed class QueryPlanner
                 IsPrimaryKey: true,
                 Index: null,
                 Rank: 0,
-                RequiresResidualPredicate: false);
+                RequiresResidualPredicate: false,
+                EstimatedRows: 1,
+                TableRowCount: 1);
             return true;
         }
 
@@ -3081,14 +4742,95 @@ public sealed class QueryPlanner
         long lookupValue = usesDirectIntegerKey
             ? lookupLiteral.AsInteger
             : ComputeIndexKey(new[] { lookupLiteral });
+        long estimatedRows = 0;
+        long tableRowCount = 0;
+        bool hasEstimatedRows = !matchedIndex.IsUnique &&
+            TryEstimateLookupRowCount(tableName, columnName, out estimatedRows, out tableRowCount);
 
         candidate = new LookupCandidate(
             lookupValue,
             IsPrimaryKey: false,
             Index: matchedIndex,
             Rank: matchedIndex.IsUnique ? 1 : 2,
-            RequiresResidualPredicate: !usesDirectIntegerKey);
+            RequiresResidualPredicate: !usesDirectIntegerKey,
+            EstimatedRows: matchedIndex.IsUnique
+                ? 1
+                : hasEstimatedRows ? estimatedRows : null,
+            TableRowCount: matchedIndex.IsUnique
+                ? 1
+                : hasEstimatedRows ? tableRowCount : null);
         return true;
+    }
+
+    private bool TryEstimateLookupRowCount(string tableName, string columnName, out long estimatedRows, out long tableRowCount)
+    {
+        estimatedRows = 0;
+        tableRowCount = 0;
+
+        if (!_catalog.TryGetTableRowCount(tableName, out tableRowCount) ||
+            tableRowCount <= 0 ||
+            !_catalog.TryGetFreshColumnStatistics(tableName, columnName, out var stats) ||
+            stats.DistinctCount <= 0)
+        {
+            return false;
+        }
+
+        estimatedRows = Math.Max(1, DivideRoundUp(tableRowCount, stats.DistinctCount));
+        return true;
+    }
+
+    private static bool ShouldUseLookupCandidate(LookupCandidate candidate)
+    {
+        if (candidate.IsPrimaryKey || candidate.Index?.IsUnique == true)
+            return true;
+
+        if (!candidate.EstimatedRows.HasValue)
+            return true;
+
+        if (!candidate.TableRowCount.HasValue)
+            return true;
+
+        return ShouldPreferNonUniqueLookup(candidate.TableRowCount.Value, candidate.EstimatedRows.Value, candidate.RequiresResidualPredicate);
+    }
+
+    private static bool ShouldPreferNonUniqueLookup(long tableRowCount, long estimatedRows, bool requiresResidualPredicate)
+    {
+        tableRowCount = Math.Max(tableRowCount, 1);
+        estimatedRows = Math.Clamp(estimatedRows, 1, tableRowCount);
+
+        if (tableRowCount <= 64)
+            return true;
+
+        long divisor = requiresResidualPredicate ? 8 : 4;
+        return estimatedRows <= Math.Max(1, tableRowCount / divisor);
+    }
+
+    private static bool IsBetterLookupCandidate(LookupCandidate candidate, LookupCandidate currentBest)
+    {
+        if (candidate.Rank != currentBest.Rank)
+            return candidate.Rank < currentBest.Rank;
+
+        if (candidate.EstimatedRows.HasValue && currentBest.EstimatedRows.HasValue &&
+            candidate.EstimatedRows.Value != currentBest.EstimatedRows.Value)
+        {
+            return candidate.EstimatedRows.Value < currentBest.EstimatedRows.Value;
+        }
+
+        if (candidate.EstimatedRows.HasValue != currentBest.EstimatedRows.HasValue)
+            return candidate.EstimatedRows.HasValue;
+
+        if (candidate.RequiresResidualPredicate != currentBest.RequiresResidualPredicate)
+            return !candidate.RequiresResidualPredicate;
+
+        return false;
+    }
+
+    private static long DivideRoundUp(long dividend, long divisor)
+    {
+        if (divisor <= 0)
+            throw new ArgumentOutOfRangeException(nameof(divisor));
+
+        return dividend / divisor + (dividend % divisor == 0 ? 0 : 1);
     }
 
     private static bool TryPickCompositeLookupCandidate(
@@ -5069,6 +6811,20 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.table_stats";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.column_stats";
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
@@ -5134,6 +6890,16 @@ public sealed class QueryPlanner
 
                 columns = SystemSavedQueriesColumns;
                 rows = new List<DbValue[]>();
+                break;
+
+            case "sys.table_stats":
+                columns = SystemTableStatsColumns;
+                rows = BuildSystemTableStatsRows();
+                break;
+
+            case "sys.column_stats":
+                columns = SystemColumnStatsColumns;
+                rows = BuildSystemColumnStatsRows();
                 break;
 
             default:
@@ -5364,6 +7130,58 @@ public sealed class QueryPlanner
         return rows;
     }
 
+    private List<DbValue[]> BuildSystemTableStatsRows()
+    {
+        var tableStats = _catalog.GetTableStatistics();
+        var rows = new List<DbValue[]>(tableStats.Count);
+        foreach (var stats in tableStats.OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(stats.TableName),
+                DbValue.FromInteger(stats.RowCount),
+                DbValue.FromInteger(stats.HasStaleColumns ? 1 : 0),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemColumnStatsRows()
+    {
+        var columnStats = _catalog.GetColumnStatistics();
+        var rows = new List<DbValue[]>(columnStats.Count);
+        foreach (var stats in columnStats
+                     .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(item => GetColumnOrdinal(item.TableName, item.ColumnName))
+                     .ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(stats.TableName),
+                DbValue.FromText(stats.ColumnName),
+                DbValue.FromInteger(GetColumnOrdinal(stats.TableName, stats.ColumnName)),
+                DbValue.FromInteger(stats.DistinctCount),
+                DbValue.FromInteger(stats.NonNullCount),
+                stats.MinValue,
+                stats.MaxValue,
+                DbValue.FromInteger(stats.IsStale ? 1 : 0),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private int GetColumnOrdinal(string tableName, string columnName)
+    {
+        var schema = _catalog.GetTable(tableName);
+        if (schema == null)
+            return 0;
+
+        int columnIndex = schema.GetColumnIndex(columnName);
+        return columnIndex >= 0 ? columnIndex + 1 : 0;
+    }
+
     private ColumnDefinition[] BuildAggregateOutputSchema(List<SelectColumn> columns, TableSchema schema)
     {
         var outputCols = new ColumnDefinition[columns.Count];
@@ -5494,6 +7312,7 @@ public sealed class QueryPlanner
 
         // Maintain indexes
         await InsertIntoAllIndexesAsync(indexes, schema, row, rowId, ct);
+        await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
 
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);

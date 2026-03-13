@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v1.9.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.0.0` state of the repo.
 
 ---
 
@@ -20,12 +20,12 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
-| **Architecture enforcement** | Consumers have been refactored onto `CSharpDB.Client`, but strict API-only / HTTP-only enforcement is not complete because direct engine-backed transport remains available | In progress |
+| **Architecture enforcement** | `CSharpDB.Client` is now the main caller-facing interaction layer across local and remote scenarios, with direct engine-backed transport intentionally retained for in-process access | Done |
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
 | **Background WAL checkpointing** | Incremental/sliced auto-checkpointing to move work off the triggering commit | Done |
-| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV, min/max; cost-based index selection in query planner | Planned |
+| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | In progress |
 
 ---
 
@@ -36,12 +36,14 @@ SQL feature parity and ecosystem expansion.
 | Feature | Description | Status |
 |---------|-------------|--------|
 | **User-defined functions** | Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
-| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` | Planned |
-| **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results | Planned |
+| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, including correlated evaluation in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions | Done |
+| **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies | Done |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
+| **Remote host consolidation** | Fold the current `CSharpDB.Api` REST/HTTP surface into `CSharpDB.Daemon` so one long-running server host can serve REST, gRPC, and future local transports from a shared warm `Database` instance | Planned |
+| **Remote host security** | Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support | Planned |
 | **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
@@ -80,19 +82,21 @@ These are known simplifications in the current implementation:
 | Area | Limitation |
 |------|-----------|
 | **Functions** | Very limited scalar function surface today: built-in `TEXT(expr)` plus aggregate functions; no broader built-in function library or user-defined functions yet |
-| **Query** | No scalar/`IN`/`EXISTS` subqueries, and no `UNION`/`INTERSECT`/`EXCEPT` |
+| **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
+| **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
 | **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
 | **Collections** | No JSON-path querying or expression/path-based document indexes yet |
-| **Networking** | `CSharpDB.Daemon` provides the current gRPC remote host; TCP and Named Pipes transports remain part of the client contract but are not implemented yet |
+| **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
+| **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | No mmap read path |
-| **Query** | No ANALYZE — query planner uses rule-based heuristics instead of statistics-driven cost estimation |
+| **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` exist, but range and join costing still lean on heuristics rather than broader statistics-driven estimation |
 
 ---
 
@@ -106,10 +110,14 @@ Major features already implemented:
 - Concurrent snapshot-isolated readers via WAL-based MVCC
 - Full SQL pipeline: tokenizer, parser, query planner, operator tree
 - JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs
+- Set operations: `UNION`, `INTERSECT`, `EXCEPT`
 - `SELECT DISTINCT` and DISTINCT aggregates
+- Scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`, including correlated evaluation in filters, non-aggregate projections, and `UPDATE`/`DELETE` expressions
 - Scalar `TEXT(expr)` for filter-friendly text coercion
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
+- `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
+- Initial statistics-guided non-unique equality lookup selection
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
@@ -145,7 +153,6 @@ Major features already implemented:
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
-- [Architecture Enforcement Plan](architecture-enforcement/README.md) — Single API gateway with HTTP client SDK for all consumers
 - [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing

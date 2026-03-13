@@ -50,7 +50,7 @@ CSharpDB.slnx
 │   │   ├── ICSharpDbClient.cs          Public client contract (all database operations)
 │   │   ├── CSharpDbClient.cs           Factory: Create() → transport-specific implementation
 │   │   ├── CSharpDbClientOptions.cs    Configuration (DataSource, Endpoint, Transport, ConnectionString)
-│   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, Tcp, NamedPipes)
+│   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, NamedPipes)
 │   │   ├── ServiceCollectionExtensions.cs  DI registration (AddCSharpDbClient)
 │   │   ├── Internal/                   Direct-transport implementation (engine-backed client)
 │   │   └── Models/                     Schema, data, procedure, transaction, and collection models
@@ -81,23 +81,19 @@ CSharpDB.slnx
 │   │   ├── MetaCommands.cs             .tables, .schema, .quit, etc.
 │   │   └── MetaCommandContext.cs       Session state (client, transactions, snapshots)
 │   │
-│   ├── CSharpDB.Service/            Compatibility facade over CSharpDB.Client (depends on Client)
-│   │   ├── CSharpDbService.cs          Delegates to ICSharpDbClient
-│   │   └── Models/                     TableBrowseResult, ViewBrowseResult, SqlExecutionResult, ViewDefinition
-│   │
-│   ├── CSharpDB.Admin/              Blazor Server admin dashboard (depends on Service)
+│   ├── CSharpDB.Admin/              Blazor Server admin dashboard (depends on Client)
 │   │   ├── Program.cs                  Blazor Server entry point
 │   │   ├── Services/                   Theme, toast, modal, tab manager, DatabaseChangeService
 │   │   └── Components/                 Razor components for UI
 │   │
-│   ├── CSharpDB.Api/                REST API (depends on Service)
+│   ├── CSharpDB.Api/                REST API (depends on Client)
 │   │   ├── Program.cs                  ASP.NET Core Minimal API entry point
 │   │   ├── Endpoints/                  TableEndpoints, RowEndpoints, IndexEndpoints, ViewEndpoints, etc.
 │   │   ├── Dtos/                       Request/response record types
 │   │   ├── Helpers/                    JSON coercion helpers
 │   │   └── Middleware/                 Exception handling middleware
 │   │
-│   └── CSharpDB.Mcp/                MCP server for AI assistants (depends on Service)
+│   └── CSharpDB.Mcp/                MCP server for AI assistants (depends on Client)
 │       ├── Program.cs                  Generic Host with stdio transport
 │       ├── Tools/                      SchemaTools, DataTools, MutationTools, SqlTools (15 tools)
 │       └── Helpers/                    JSON serialization and value coercion

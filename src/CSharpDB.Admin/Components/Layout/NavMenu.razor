@@ -183,6 +183,8 @@
         new SystemCatalogItem("sys.tables", "tables", "SELECT * FROM sys.tables ORDER BY table_name;"),
         new SystemCatalogItem("sys.columns", "columns", "SELECT * FROM sys.columns ORDER BY table_name, ordinal_position;"),
         new SystemCatalogItem("sys.indexes", "indexes", "SELECT * FROM sys.indexes ORDER BY table_name, index_name, ordinal_position;"),
+        new SystemCatalogItem("sys.table_stats", "table stats", "SELECT * FROM sys.table_stats ORDER BY table_name;"),
+        new SystemCatalogItem("sys.column_stats", "column stats", "SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;"),
         new SystemCatalogItem("sys.views", "views", "SELECT * FROM sys.views ORDER BY view_name;"),
         new SystemCatalogItem("sys.triggers", "triggers", "SELECT * FROM sys.triggers ORDER BY trigger_name;"),
         new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
