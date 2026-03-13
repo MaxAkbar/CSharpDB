@@ -134,6 +134,21 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Rewrite README links for NuGet
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/fix-nuget-readme-links.sh
+          scripts/fix-nuget-readme-links.sh main \
+            src/CSharpDB.Primitives/README.md \
+            src/CSharpDB.Sql/README.md \
+            src/CSharpDB.Storage/README.md \
+            src/CSharpDB.Execution/README.md \
+            src/CSharpDB.Engine/README.md \
+            src/CSharpDB.Data/README.md \
+            src/CSharpDB.Storage.Diagnostics/README.md \
+            src/CSharpDB.Client/README.md
+
       - name: Pack projects
         shell: bash
         run: |

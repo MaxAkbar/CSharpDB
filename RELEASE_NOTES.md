@@ -2,6 +2,13 @@
 
 ## v2.0.1 (Unreleased)
 
+### NuGet README Link Rewriting
+
+- Added `scripts/fix-nuget-readme-links.sh` — a pre-pack step that rewrites relative markdown links in project README files to absolute GitHub blob URLs so they resolve correctly when displayed on NuGet.org.
+- The release workflow passes the git tag (e.g. `v2.0.1`) as the blob ref, so NuGet README links point to the exact tagged source.
+- The CI workflow uses `main` as the ref for artifact-only packs.
+- Links to docs, sibling projects, and local source files are all rewritten; absolute URLs, anchors, and badge images are left unchanged.
+
 ### Visual Query Designer
 
 - Added a **Designer mode** toggle to the existing query tab, alongside the existing SQL mode. Switching to Designer opens the visual query builder without leaving the query workspace.
