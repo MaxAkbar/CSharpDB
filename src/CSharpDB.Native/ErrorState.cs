@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Native;
 

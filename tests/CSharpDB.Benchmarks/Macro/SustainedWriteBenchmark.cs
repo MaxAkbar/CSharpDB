@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using CSharpDB.Benchmarks.Infrastructure;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Benchmarks.Macro;
 

@@ -1,4 +1,4 @@
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using Microsoft.Win32.SafeHandles;
 using System.Buffers.Binary;
 

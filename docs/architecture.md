@@ -25,7 +25,7 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 │ CSharpDB.Sql                  │ CSharpDB.Storage                   │
 │ Tokenizer, Parser, AST        │ Pager, B+Tree, WAL, RecordCodec    │
 ├───────────────────────────────┴────────────────────────────────────┤
-│ CSharpDB.Core                                                      │
+│ CSharpDB.Primitives                                                      │
 │ DbValue, DbType, Schema, ErrorCodes                                │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -46,16 +46,16 @@ Client  → Engine
 Client  → Sql
 Client  → Storage.Diagnostics
 Engine  → Execution → Sql
-                    → Storage → Core
-          Execution → Core
+                    → Storage → Primitives
+          Execution → Primitives
 Engine  → Storage
 Engine  → Sql
-Engine  → Core
+Engine  → Primitives
 ```
 
 ---
 
-## Layer 1: Core (`CSharpDB.Core`)
+## Layer 1: Primitives (`CSharpDB.Primitives`)
 
 Shared types used by every other layer. No dependencies.
 

@@ -1,5 +1,5 @@
 using System.Data;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Data;
 
 namespace CSharpDB.Data.Tests;
@@ -113,9 +113,9 @@ public class ConnectionTests : IDisposable
         Assert.Equal(3, schema.Columns.Count);
         Assert.Equal("id", schema.Columns[0].Name);
         Assert.True(schema.Columns[0].IsPrimaryKey);
-        Assert.Equal(CSharpDB.Core.DbType.Integer, schema.Columns[0].Type);
+        Assert.Equal(CSharpDB.Primitives.DbType.Integer, schema.Columns[0].Type);
         Assert.Equal("name", schema.Columns[1].Name);
-        Assert.Equal(CSharpDB.Core.DbType.Text, schema.Columns[1].Type);
+        Assert.Equal(CSharpDB.Primitives.DbType.Text, schema.Columns[1].Type);
     }
 
     [Fact]

@@ -1,7 +1,7 @@
 using CSharpDB.Client;
 using System.Diagnostics;
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Sql;
 

@@ -32,6 +32,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Guard legacy primitives identity
+        shell: pwsh
+        run: ./scripts/Test-NoLegacyCoreReferences.ps1
+
       - name: Restore
         run: dotnet restore CSharpDB.slnx
 
@@ -135,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/nuget
-          dotnet pack src/CSharpDB.Core/CSharpDB.Core.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Primitives/CSharpDB.Primitives.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Sql/CSharpDB.Sql.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Execution/CSharpDB.Execution.csproj -c Release -o artifacts/nuget

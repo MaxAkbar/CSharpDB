@@ -1,5 +1,5 @@
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Storage.Serialization;
 

@@ -1,5 +1,5 @@
 using CSharpDB.Benchmarks.Infrastructure;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 
 namespace CSharpDB.Benchmarks.Macro;

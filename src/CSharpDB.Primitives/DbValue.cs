@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace CSharpDB.Core;
+namespace CSharpDB.Primitives;
 
 /// <summary>
 /// A dynamically-typed database value (discriminated union).

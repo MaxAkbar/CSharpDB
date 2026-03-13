@@ -1,5 +1,5 @@
 using System.Globalization;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Sql;
 
@@ -1283,16 +1283,16 @@ public sealed class Parser
         string triggerName = ExpectIdentifier();
 
         // BEFORE | AFTER
-        CSharpDB.Core.TriggerTiming timing;
-        if (Peek().Type == TokenType.Before) { Advance(); timing = CSharpDB.Core.TriggerTiming.Before; }
-        else if (Peek().Type == TokenType.After) { Advance(); timing = CSharpDB.Core.TriggerTiming.After; }
+        CSharpDB.Primitives.TriggerTiming timing;
+        if (Peek().Type == TokenType.Before) { Advance(); timing = CSharpDB.Primitives.TriggerTiming.Before; }
+        else if (Peek().Type == TokenType.After) { Advance(); timing = CSharpDB.Primitives.TriggerTiming.After; }
         else throw Error("Expected BEFORE or AFTER.");
 
         // INSERT | UPDATE | DELETE
-        CSharpDB.Core.TriggerEvent evt;
-        if (Peek().Type == TokenType.Insert) { Advance(); evt = CSharpDB.Core.TriggerEvent.Insert; }
-        else if (Peek().Type == TokenType.Update) { Advance(); evt = CSharpDB.Core.TriggerEvent.Update; }
-        else if (Peek().Type == TokenType.Delete) { Advance(); evt = CSharpDB.Core.TriggerEvent.Delete; }
+        CSharpDB.Primitives.TriggerEvent evt;
+        if (Peek().Type == TokenType.Insert) { Advance(); evt = CSharpDB.Primitives.TriggerEvent.Insert; }
+        else if (Peek().Type == TokenType.Update) { Advance(); evt = CSharpDB.Primitives.TriggerEvent.Update; }
+        else if (Peek().Type == TokenType.Delete) { Advance(); evt = CSharpDB.Primitives.TriggerEvent.Delete; }
         else throw Error("Expected INSERT, UPDATE, or DELETE.");
 
         Expect(TokenType.On);

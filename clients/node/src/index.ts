@@ -20,7 +20,7 @@
 import koffi from "koffi";
 import { loadNativeLibrary, type NativeBindings, type DbHandle, type ResultHandle } from "./native.js";
 
-// ---------- Column type constants (matches CSharpDB.Core.DbType) ----------
+// ---------- Column type constants (matches CSharpDB.Primitives.DbType) ----------
 
 /** Column type codes returned by the native library. */
 export const ColumnType = {

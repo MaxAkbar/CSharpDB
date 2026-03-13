@@ -32,7 +32,7 @@ dotnet add package CSharpDB
 ## Usage
 
 ```csharp
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 // Create typed values
 var id = DbValue.FromInteger(42);

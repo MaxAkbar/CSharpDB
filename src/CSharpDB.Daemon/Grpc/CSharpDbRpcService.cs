@@ -4,8 +4,8 @@ using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
-using CoreDbException = CSharpDB.Core.CSharpDbException;
-using CoreErrorCode = CSharpDB.Core.ErrorCode;
+using CoreDbException = CSharpDB.Primitives.CSharpDbException;
+using CoreErrorCode = CSharpDB.Primitives.ErrorCode;
 
 namespace CSharpDB.Daemon.Grpc;
 

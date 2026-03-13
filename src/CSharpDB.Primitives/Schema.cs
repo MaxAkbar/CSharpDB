@@ -1,4 +1,4 @@
-namespace CSharpDB.Core;
+namespace CSharpDB.Primitives;
 
 public sealed class ColumnDefinition
 {

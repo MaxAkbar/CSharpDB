@@ -192,8 +192,8 @@ public sealed class CreateTriggerStatement : Statement
 {
     public required string TriggerName { get; init; }
     public required string TableName { get; init; }
-    public required CSharpDB.Core.TriggerTiming Timing { get; init; }
-    public required CSharpDB.Core.TriggerEvent Event { get; init; }
+    public required CSharpDB.Primitives.TriggerTiming Timing { get; init; }
+    public required CSharpDB.Primitives.TriggerEvent Event { get; init; }
     public Expression? WhenCondition { get; init; }
     public required List<Statement> Body { get; init; }
     public bool IfNotExists { get; init; }
