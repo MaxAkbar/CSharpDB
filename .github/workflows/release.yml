@@ -85,7 +85,6 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Core/CSharpDB.Core.csproj -c Release -o artifacts/nuget -p:Version="$version"
-          dotnet pack src/CSharpDB.Core.Compatibility/CSharpDB.Core.Compatibility.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Sql/CSharpDB.Sql.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Execution/CSharpDB.Execution.csproj -c Release -o artifacts/nuget -p:Version="$version"
@@ -93,7 +92,6 @@ jobs:
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget -p:Version="$version"
-          dotnet pack src/CSharpDB.Service/CSharpDB.Service.csproj -c Release -o artifacts/nuget -p:Version="$version"
 
       - name: Push packages to NuGet.org
         env:
