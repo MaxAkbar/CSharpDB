@@ -413,17 +413,16 @@ dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --
 
 ## Performance Highlights
 
-Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
+Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. The published snapshot below combines the latest March 12, 2026 macro reruns with focused micro validation from the current branch. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
 
 | Metric | Result |
 |--------|--------|
-| Single INSERT (auto-commit, durable) | 27,842 ops/sec |
-| Batched INSERT (100 rows/tx) | ~370K rows/sec |
-| Point lookup by PK (1K rows) | 786,596 ops/sec |
-| Collection `GetAsync` (10K docs) | 1,371,530 ops/sec |
-| Concurrent readers (8 sessions) | 256,088 ops/sec |
-| ADO.NET `ExecuteScalar` | 323 ns / 696 bytes |
-| Crash recovery | 100% reliable (50/50 cycles), P50 = 11.5 ms |
+| Single INSERT (auto-commit, durable) | 24,429 ops/sec |
+| Batched INSERT (100 rows/tx) | ~684K rows/sec |
+| Point lookup by PK (1K rows, hot) | ~1.60M ops/sec |
+| Collection `GetAsync` (10K docs) | 1,458,108 ops/sec |
+| Concurrent readers (8 readers, reused snapshots x32) | 4,753 COUNT(*) ops/sec |
+| ADO.NET `ExecuteScalar` (`:memory:`) | 138 ns |
 
 ## Samples
 
