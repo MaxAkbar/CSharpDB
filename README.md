@@ -426,16 +426,18 @@ Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. The published snapshot b
 
 ## Samples
 
-The [`samples/`](samples/) directory now includes both realistic datasets and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
+The [`samples/`](samples/) directory now includes realistic datasets, a focused query/statistics workbook sample, and a full-fidelity fictitious company example. Each sample lives in its own folder with `schema.sql` plus companion `procedures.json` and optional `queries.sql` files.
 
 - **[ecommerce-store/schema.sql](samples/ecommerce-store/schema.sql)** — retail schema with procedures, views, and inventory-style triggers
 - **[medical-clinic/schema.sql](samples/medical-clinic/schema.sql)** — appointments, billing, and procedure-driven updates
 - **[school-district/schema.sql](samples/school-district/schema.sql)** — schedules, enrollments, attendance, and defaulted procedure params
+- **[procurement-analytics/schema.sql](samples/procurement-analytics/schema.sql)** — suppliers, purchase orders, incidents, and a workbook for `UNION`, subqueries, `ANALYZE`, and persisted stats catalogs
 - **[feature-tour/schema.sql](samples/feature-tour/schema.sql)** — Northstar Field Services, a fictitious multi-region field service company with customer sites, contracts, dispatch, inventory, billing workflows, triggers, procedures, and `TEXT(...)` filtering
 
 Companion assets:
 
 - Per-sample `procedures.json` files for procedure catalog import
+- **[procurement-analytics/queries.sql](samples/procurement-analytics/queries.sql)** for set operations, subqueries, and statistics inspection
 - **[feature-tour/queries.sql](samples/feature-tour/queries.sql)** for ready-to-run workbook queries
 - **[run-sample.csx](samples/run-sample.csx)** for REST API import of SQL + procedures
 
