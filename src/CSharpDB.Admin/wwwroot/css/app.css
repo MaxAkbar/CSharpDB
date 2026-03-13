@@ -1327,6 +1327,16 @@ body {
     flex-wrap: wrap;
 }
 
+.query-shortcuts-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
 .query-saved-label {
     display: inline-flex;
     align-items: center;
@@ -1338,7 +1348,8 @@ body {
 }
 
 .query-saved-input,
-.query-saved-select {
+.query-saved-select,
+.query-shortcuts-select {
     height: 28px;
     padding: 4px 10px;
     border: 1px solid var(--border-color);
@@ -1360,14 +1371,21 @@ body {
     max-width: 360px;
 }
 
+.query-shortcuts-select {
+    min-width: 320px;
+    max-width: 520px;
+}
+
 .query-saved-input:focus,
-.query-saved-select:focus {
+.query-saved-select:focus,
+.query-shortcuts-select:focus {
     border-color: var(--accent-blue);
 }
 
 @media (max-width: 980px) {
     .query-saved-input,
-    .query-saved-select {
+    .query-saved-select,
+    .query-shortcuts-select {
         flex: 1 1 220px;
         min-width: 0;
         max-width: none;

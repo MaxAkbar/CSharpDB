@@ -12,6 +12,9 @@
         <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
             <i class="bi bi-play-fill"></i> Run
         </button>
+        <button class="toolbar-btn" @onclick="RunAnalyzeAsync" disabled="@_loading" title="Refresh persisted table and column statistics">
+            <i class="bi bi-bar-chart-line"></i> Analyze
+        </button>
         <button class="toolbar-btn" @onclick="ClearEditor">
             <i class="bi bi-eraser"></i> Clear
         </button>
@@ -31,6 +34,45 @@
                 <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
             </div>
         }
+    </div>
+
+    <div class="query-shortcuts-bar">
+        <span class="query-saved-label">
+            <i class="bi bi-stars"></i> Shortcuts
+        </span>
+        <button class="toolbar-btn"
+                @onclick="LoadTableStatsQuery"
+                disabled="@_loading"
+                title="Open sys.table_stats in this tab">
+            <i class="bi bi-table"></i> Table Stats
+        </button>
+        <button class="toolbar-btn"
+                @onclick="LoadColumnStatsQuery"
+                disabled="@_loading"
+                title="Open sys.column_stats in this tab">
+            <i class="bi bi-list-columns"></i> Column Stats
+        </button>
+        <select class="query-shortcuts-select"
+                @bind="_selectedShortcutId"
+                disabled="@_loading">
+            <option value="">Load procurement workbook example...</option>
+            @foreach (var shortcut in s_queryShortcuts)
+            {
+                <option value="@shortcut.Id">@shortcut.Label</option>
+            }
+        </select>
+        <button class="toolbar-btn"
+                @onclick="LoadSelectedShortcut"
+                disabled="@(_loading || string.IsNullOrWhiteSpace(_selectedShortcutId))"
+                title="Load the selected workbook example into the editor">
+            <i class="bi bi-download"></i> Load
+        </button>
+        <button class="toolbar-btn"
+                @onclick="RunSelectedShortcutAsync"
+                disabled="@(_loading || string.IsNullOrWhiteSpace(_selectedShortcutId))"
+                title="Load and execute the selected workbook example">
+            <i class="bi bi-lightning-charge"></i> Load & Run
+        </button>
     </div>
 
     <div class="query-saved-bar">
@@ -141,9 +183,87 @@
 </div>
 
 @code {
+    private sealed record QueryShortcut(string Id, string Label, string Sql);
+
     private static readonly Regex s_execRegex = new(
         @"^\s*EXEC(?:UTE)?\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<rest>[\s\S]*)$",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly IReadOnlyList<QueryShortcut> s_queryShortcuts = new[]
+    {
+        new QueryShortcut(
+            "procurement-scorecard",
+            "Procurement: Supplier scorecard view",
+            """
+            SELECT *
+            FROM supplier_scorecard
+            ORDER BY open_incident_count DESC, open_po_count DESC, supplier_name;
+            """),
+        new QueryShortcut(
+            "procurement-scalar-filter",
+            "Procurement: Products above category average",
+            """
+            SELECT p.id, p.name, p.category, p.unit_cost
+            FROM products p
+            WHERE p.unit_cost > (
+                SELECT AVG(p2.unit_cost)
+                FROM products p2
+                WHERE p2.category = p.category
+            )
+            ORDER BY p.category, p.unit_cost DESC;
+            """),
+        new QueryShortcut(
+            "procurement-in-subquery",
+            "Procurement: Products tied to open incidents",
+            """
+            SELECT p.sku, p.name, p.category
+            FROM products p
+            WHERE p.preferred_supplier_id IN (
+                SELECT supplier_id
+                FROM quality_incidents
+                WHERE status <> 'closed'
+            )
+            ORDER BY p.category, p.name;
+            """),
+        new QueryShortcut(
+            "procurement-exists-subquery",
+            "Procurement: Suppliers with active PO pipeline",
+            """
+            SELECT s.id, s.name, s.region
+            FROM suppliers s
+            WHERE EXISTS (
+                SELECT 1
+                FROM purchase_orders po
+                WHERE po.supplier_id = s.id
+                  AND po.status IN ('open', 'approved', 'partial')
+            )
+            ORDER BY s.name;
+            """),
+        new QueryShortcut(
+            "procurement-union-queue",
+            "Procurement: Incident and reorder queue",
+            """
+            SELECT 'incident' AS queue_type, s.name AS supplier_name, qi.summary AS detail
+            FROM suppliers s
+            INNER JOIN quality_incidents qi ON qi.supplier_id = s.id
+            WHERE qi.status <> 'closed'
+            UNION
+            SELECT 'reorder' AS queue_type, s.name AS supplier_name, p.name AS detail
+            FROM suppliers s
+            INNER JOIN products p ON p.preferred_supplier_id = s.id
+            INNER JOIN stock_levels sl ON sl.product_id = p.id
+            WHERE sl.on_hand_qty < sl.reorder_point
+            ORDER BY queue_type, supplier_name, detail;
+            """),
+        new QueryShortcut(
+            "procurement-refresh-procedure",
+            "Procurement: Refresh stats procedure",
+            "EXEC RefreshProcurementStats;"),
+    };
+
+    private const string AnalyzeSql = "ANALYZE;";
+    private const string TableStatsSql = "SELECT * FROM sys.table_stats ORDER BY table_name;";
+    private const string ColumnStatsSql = "SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;";
 
     [Parameter] public TabDescriptor? Tab { get; set; }
 
@@ -158,6 +278,7 @@
     private IReadOnlyList<SavedQueryDefinition> _savedQueries = [];
     private string _savedQueryName = string.Empty;
     private string? _selectedSavedQueryName;
+    private string? _selectedShortcutId;
     private bool _loadingSavedQueries;
 
     protected override async Task OnInitializedAsync()
@@ -245,6 +366,42 @@
     private void FormatSql()
     {
         _sqlText = SqlFormatter.Format(_sqlText);
+    }
+
+    private async Task RunAnalyzeAsync()
+    {
+        LoadSql(AnalyzeSql);
+        await RunQuery();
+    }
+
+    private void LoadTableStatsQuery() => LoadSql(TableStatsSql);
+
+    private void LoadColumnStatsQuery() => LoadSql(ColumnStatsSql);
+
+    private void LoadSelectedShortcut()
+    {
+        var shortcut = GetSelectedShortcut();
+        if (shortcut is null)
+        {
+            Toast.Warning("Select a workbook example to load.");
+            return;
+        }
+
+        LoadSql(shortcut.Sql);
+        Toast.Info($"Loaded '{shortcut.Label}'.");
+    }
+
+    private async Task RunSelectedShortcutAsync()
+    {
+        var shortcut = GetSelectedShortcut();
+        if (shortcut is null)
+        {
+            Toast.Warning("Select a workbook example to run.");
+            return;
+        }
+
+        LoadSql(shortcut.Sql);
+        await RunQuery();
     }
 
     private async Task SaveQueryAsync()
@@ -382,6 +539,22 @@
         Toast.Success(_nonQueryMessage);
         Changes.NotifyChanged();
     }
+
+    private void LoadSql(string sql)
+    {
+        _sqlText = sql;
+        _error = null;
+        _resultColumns = null;
+        _resultRows = null;
+        _nonQueryMessage = null;
+        _elapsed = null;
+
+        if (Tab is not null)
+            Tab.SqlText = _sqlText;
+    }
+
+    private QueryShortcut? GetSelectedShortcut()
+        => s_queryShortcuts.FirstOrDefault(shortcut => shortcut.Id == _selectedShortcutId);
 
     private static bool TryParseExecuteCommand(
         string sql,
