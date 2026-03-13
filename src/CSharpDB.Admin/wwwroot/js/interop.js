@@ -99,6 +99,88 @@ window.resizeInterop = {
     }
 };
 
+// Query Designer — node drag and canvas splitter
+window.designerInterop = {
+    _dotNetRef: null,
+    _initialized: false,
+
+    // Called once on first render. Subsequent calls just update the dotNetRef.
+    // Uses document-level listeners so there are no timing or element-reference issues.
+    initDrag: (dotNetRef) => {
+        window.designerInterop._dotNetRef = dotNetRef;
+        if (window.designerInterop._initialized) return;
+        window.designerInterop._initialized = true;
+
+        let dragging = false, node = null, tableName = '', startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+        document.addEventListener('mousedown', (e) => {
+            const header = e.target.closest('.designer-table-node-header');
+            if (!header) return;
+            const n = header.closest('.designer-table-node');
+            if (!n) return;
+            e.preventDefault();
+            dragging = true;
+            node = n;
+            tableName = n.dataset.table;
+            startX = e.clientX;
+            startY = e.clientY;
+            origLeft = parseFloat(n.style.left) || 0;
+            origTop  = parseFloat(n.style.top)  || 0;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging || !node) return;
+            node.style.left = Math.max(0, origLeft + e.clientX - startX) + 'px';
+            node.style.top  = Math.max(0, origTop  + e.clientY - startY) + 'px';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging || !node) return;
+            dragging = false;
+            const left = parseFloat(node.style.left) || 0;
+            const top  = parseFloat(node.style.top)  || 0;
+            const ref  = window.designerInterop._dotNetRef;
+            const name = tableName;
+            node = null;
+            if (ref) ref.invokeMethodAsync('OnTableMoved', name, left, top);
+        });
+    },
+
+    dispose: () => {
+        window.designerInterop._dotNetRef = null;
+    },
+
+    // Vertical splitter drag — resizes the canvas height.
+    // Calls dotNetRef.invokeMethodAsync('OnSplitterMoved', newHeight).
+    startSplitterDrag: (e, canvasElement, dotNetRef) => {
+        const canvas = canvasElement;
+        if (!canvas) return;
+
+        const startY  = e.clientY;
+        const startH  = canvas.offsetHeight;
+
+        const onMove = (ev) => {
+            const dy = ev.clientY - startY;
+            const newH = Math.max(100, Math.min(800, startH + dy));
+            canvas.style.height = newH + 'px';
+        };
+
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            const finalH = parseFloat(canvas.style.height) || startH;
+            dotNetRef.invokeMethodAsync('OnSplitterMoved', Math.round(finalH));
+        };
+
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }
+};
+
 // SQL editor scroll sync
 window.editorInterop = {
     syncScroll: (editorId) => {
