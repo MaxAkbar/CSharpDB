@@ -58,7 +58,7 @@ See the product first, then dive into the API and internals:
 |---|---|---|
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
 
-Planned next for the Admin query surface: a classic visual [Query Designer](docs/query-designer/README.md) with a source canvas, join lines, design grid, SQL preview, and saved layouts.
+The Admin query tab now includes a built-in visual [Query Designer](docs/query-designer/README.md): a classic source canvas with draggable table nodes, SVG join lines, a design grid for column/sort/filter configuration, a live SQL preview, and saved designer layouts.
 
 ## VS Code Extension
 
