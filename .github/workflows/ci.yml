@@ -143,7 +143,6 @@ jobs:
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget
-          dotnet pack src/CSharpDB.Service/CSharpDB.Service.csproj -c Release -o artifacts/nuget
 
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v4
