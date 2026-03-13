@@ -157,7 +157,15 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             new Dictionary<string, object?> { ["id"] = 12L },
             Ct);
         Assert.True(execution.Succeeded);
-        Assert.NotEmpty(execution.Statements);
+        Assert.Equal(3, execution.Statements.Count);
+        Assert.False(execution.Statements[0].IsQuery);
+        Assert.Null(execution.Statements[0].Rows);
+        Assert.False(execution.Statements[1].IsQuery);
+        Assert.Null(execution.Statements[1].Rows);
+        Assert.True(execution.Statements[2].IsQuery);
+        var row = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<object?[]>>(execution.Statements[2].Rows));
+        Assert.Equal(12L, row[0]);
+        Assert.Equal("ok", row[1]);
 
         var failedExecution = await _client.ExecuteProcedureAsync(
             "HttpProc",

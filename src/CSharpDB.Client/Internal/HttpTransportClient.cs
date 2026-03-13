@@ -831,7 +831,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
                 StatementText = statement.StatementText,
                 IsQuery = statement.IsQuery,
                 ColumnNames = statement.ColumnNames,
-                Rows = MapRows(statement.ColumnNames ?? [], statement.Rows),
+                Rows = statement.Rows is null ? null : MapRows(statement.ColumnNames ?? [], statement.Rows),
                 RowsAffected = statement.RowsAffected,
                 Elapsed = TimeSpan.FromMilliseconds(statement.ElapsedMs),
             }).ToList(),
