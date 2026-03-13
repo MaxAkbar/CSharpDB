@@ -2,10 +2,9 @@
 
 `CSharpDB.Api` is the REST/HTTP host for CSharpDB.
 
-It is a thin ASP.NET Core layer over `CSharpDB.Client`. The API does not talk to
-`CSharpDB.Service` or `CSharpDB.Data`. Requests are handled through
-`ICSharpDbClient`, which currently uses the direct engine-backed client under the
-hood.
+It is a thin ASP.NET Core layer over `CSharpDB.Client`. Requests are handled
+through `ICSharpDbClient`, which currently uses the direct engine-backed client
+under the hood.
 
 gRPC is not hosted here. The dedicated gRPC host lives in
 `CSharpDB.Daemon`.

@@ -21,6 +21,8 @@ public static class SchemaEndpoints
             info.IndexCount,
             info.ViewCount,
             info.TriggerCount,
-            info.ProcedureCount));
+            info.ProcedureCount,
+            info.CollectionCount,
+            info.SavedQueryCount));
     }
 }

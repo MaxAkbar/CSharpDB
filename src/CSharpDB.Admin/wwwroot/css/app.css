@@ -1327,6 +1327,16 @@ body {
     flex-wrap: wrap;
 }
 
+.query-shortcuts-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
 .query-saved-label {
     display: inline-flex;
     align-items: center;

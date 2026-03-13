@@ -13,8 +13,8 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 │ CSharpDB.Api   CSharpDB.Admin   CSharpDB.Cli   CSharpDB.Mcp        │
 ├────────────────────────────────────────────────────────────────────┤
 │ Consumer Access Layer                                              │
-│ CSharpDB.Client        CSharpDB.Data        CSharpDB.Service       │
-│ ICSharpDbClient        ADO.NET Provider     Compatibility Facade   │
+│ CSharpDB.Client                     CSharpDB.Data                  │
+│ ICSharpDbClient                     ADO.NET Provider               │
 ├────────────────────────────────────────────────────────────────────┤
 │ CSharpDB.Engine                                                    │
 │ Database.OpenAsync / ExecuteAsync / Transactions / ReaderSession   │
@@ -428,8 +428,9 @@ Key pieces:
 Current direction:
 
 - **Direct transport is implemented today** and is backed by `CSharpDB.Engine`
-- **HTTP, gRPC, TCP, and Named Pipes are part of the public transport model**
-  but are not implemented yet
+- **HTTP transport is implemented** and targets `CSharpDB.Api`
+- **gRPC transport is implemented** and targets `CSharpDB.Daemon`
+- **Named Pipes is part of the public transport model** but is not implemented yet
 - **The client does not depend on `CSharpDB.Data`**
 - **New database-facing functionality should be added here first**
 
@@ -488,32 +489,7 @@ while (await reader.ReadAsync())
 
 ---
 
-## Layer 8: Compatibility Service (`CSharpDB.Service`)
-
-`CSharpDB.Service` is no longer the authoritative database API.
-
-It now acts as a compatibility facade over `CSharpDB.Client` for hosts that
-still inject `CSharpDbService`.
-
-Key design:
-
-- **Compatibility layer** — preserves the old `CSharpDbService` DI shape
-- **`SemaphoreSlim` locking** — serializes calls for existing in-process hosts
-- **Configuration-driven** — reads `ConnectionStrings:CSharpDB` from `IConfiguration`
-- **Event bridge** — preserves `TablesChanged`, `SchemaChanged`, and `ProceduresChanged`
-- **Delegates to client** — schema, CRUD, SQL, procedures, saved queries, and
-  diagnostics flow through `CSharpDB.Client`
-
-Current primary consumer:
-
-- `CSharpDB.Mcp`
-
-This layer remains useful during migration, but it is not the long-term center
-of the architecture anymore.
-
----
-
-## Layer 9: REST API (`CSharpDB.Api`)
+## Layer 8: REST API (`CSharpDB.Api`)
 
 The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.
 
@@ -524,14 +500,14 @@ Components:
 - **Exception middleware** — Maps `CSharpDbException` error codes to HTTP status codes (404, 409, 422, etc.)
 - **OpenAPI + Scalar** — Auto-generated API spec with interactive documentation at `/scalar`
 
-The API now injects `ICSharpDbClient` directly. It no longer depends on
-`CSharpDB.Service` or `CSharpDB.Data`.
+The API now injects `ICSharpDbClient` directly. It does not depend on
+`CSharpDB.Data` or engine internals directly.
 
 See the [REST API Reference](../docs/rest-api.md) for the complete endpoint documentation.
 
 ---
 
-## Layer 10: Admin Dashboard (`CSharpDB.Admin`)
+## Layer 9: Admin Dashboard (`CSharpDB.Admin`)
 
 A Blazor Server application that provides a web-based UI for database administration. Features:
 - Tab-based interface for browsing tables, views, indexes, and triggers
@@ -542,12 +518,11 @@ A Blazor Server application that provides a web-based UI for database administra
 - Schema introspection (columns, types, constraints)
 
 The Admin dashboard now injects `ICSharpDbClient` directly. It uses an
-admin-local change notification service to refresh UI state after mutations
-without depending on `CSharpDB.Service`.
+admin-local change notification service to refresh UI state after mutations.
 
 ---
 
-## Layer 11: CLI And MCP Hosts
+## Layer 10: CLI And MCP Hosts
 
 Two additional host applications sit above the consumer access layer:
 
@@ -555,8 +530,8 @@ Two additional host applications sit above the consumer access layer:
   now routes normal database access through `CSharpDB.Client`, while still
   keeping a few local-only direct helpers for engine- and diagnostics-specific
   features.
-- **`CSharpDB.Mcp`** — the MCP server host. It currently still uses
-  `CSharpDB.Service`, which in turn delegates to `CSharpDB.Client`.
+- **`CSharpDB.Mcp`** — the MCP server host. It resolves `ICSharpDbClient`
+  directly and shares the same client configuration model as the other hosts.
 
 ---
 

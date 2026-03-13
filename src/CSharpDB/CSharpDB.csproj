@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>CSharpDB</PackageId>
-    <Description>All-in-one package for CSharpDB application development. Includes the unified client, engine, ADO.NET provider, service layer, and diagnostics.</Description>
+    <Description>All-in-one package for CSharpDB application development. Includes the unified client, engine, ADO.NET provider, and diagnostics.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
@@ -19,7 +19,6 @@
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.Data\CSharpDB.Data.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
-    <ProjectReference Include="..\CSharpDB.Service\CSharpDB.Service.csproj" />
   </ItemGroup>
 
 </Project>

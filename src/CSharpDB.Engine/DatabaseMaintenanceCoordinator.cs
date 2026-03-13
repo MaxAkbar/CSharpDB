@@ -253,11 +253,16 @@ public static class DatabaseMaintenanceCoordinator
                 continue;
 
             await destination.Catalog.CreateTableExactAsync(CloneTableSchema(schema), ct);
+            long copiedRowCount;
             if (IsClientMetadataTable(tableName))
-                await CopyMetadataTableRowsAsync(source, destination, schema, ct);
+                copiedRowCount = await CopyMetadataTableRowsAsync(source, destination, schema, ct);
             else
-                await CopyTableRowsAsync(source, destination, tableName, ct);
+                copiedRowCount = await CopyTableRowsAsync(source, destination, tableName, ct);
 
+            await destination.Catalog.SetTableRowCountAsync(tableName, copiedRowCount, ct);
+            var columnStats = source.Catalog.GetColumnStatistics(tableName);
+            if (columnStats.Count > 0)
+                await destination.Catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.ToArray(), ct);
             await destination.Catalog.PersistRootPageChangesAsync(tableName, ct);
         }
 
@@ -523,7 +528,7 @@ public static class DatabaseMaintenanceCoordinator
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
     }
 
-    private static async ValueTask CopyTableRowsAsync(
+    private static async ValueTask<long> CopyTableRowsAsync(
         StorageEngineContext source,
         StorageEngineContext destination,
         string tableName,
@@ -532,11 +537,17 @@ public static class DatabaseMaintenanceCoordinator
         var sourceTree = source.Catalog.GetTableTree(tableName);
         var destinationTree = destination.Catalog.GetTableTree(tableName);
         var cursor = sourceTree.CreateCursor();
+        long count = 0;
         while (await cursor.MoveNextAsync(ct))
+        {
             await destinationTree.InsertAsync(cursor.CurrentKey, cursor.CurrentValue, ct);
+            count++;
+        }
+
+        return count;
     }
 
-    private static async ValueTask CopyMetadataTableRowsAsync(
+    private static async ValueTask<long> CopyMetadataTableRowsAsync(
         StorageEngineContext source,
         StorageEngineContext destination,
         TableSchema schema,
@@ -545,13 +556,17 @@ public static class DatabaseMaintenanceCoordinator
         var sourceTree = source.Catalog.GetTableTree(schema.TableName);
         var destinationTree = destination.Catalog.GetTableTree(schema.TableName);
         var cursor = sourceTree.CreateCursor();
+        long count = 0;
 
         while (await cursor.MoveNextAsync(ct))
         {
             var values = source.RecordSerializer.Decode(cursor.CurrentValue.Span);
             byte[] payload = destination.RecordSerializer.Encode(values);
             await destinationTree.InsertAsync(cursor.CurrentKey, payload, ct);
+            count++;
         }
+
+        return count;
     }
 
     private static bool IsClientMetadataTable(string tableName)

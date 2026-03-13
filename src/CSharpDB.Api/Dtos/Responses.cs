@@ -22,6 +22,7 @@ public sealed record BrowseResponse(
 
 public sealed record RowCountResponse(string TableName, int Count);
 public sealed record MutationResponse(int RowsAffected);
+public sealed record CollectionCountResponse(string CollectionName, int Count);
 
 // ─── Indexes ────────────────────────────────────────────────
 
@@ -53,4 +54,6 @@ public sealed record DatabaseInfoResponse(
     int IndexCount,
     int ViewCount,
     int TriggerCount,
-    int ProcedureCount);
+    int ProcedureCount,
+    int CollectionCount = 0,
+    int SavedQueryCount = 0);

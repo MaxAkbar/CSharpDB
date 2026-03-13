@@ -305,6 +305,12 @@ public sealed class BTree
         return false;
     }
 
+    public void SetCachedEntryCount(long count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        _cachedEntryCount = count;
+    }
+
     #region Internal Insert
 
     private struct InsertResult

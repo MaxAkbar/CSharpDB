@@ -7,9 +7,8 @@ It owns the public client contract used to talk to a database, while transport a
 ## Current Direction
 
 - `CSharpDB.Client` is now the real implementation layer for database access.
-- `CSharpDB.Service` is a compatibility facade over the client while the repo retires direct service usage.
-- `Direct` and `Grpc` are implemented transports today.
-- `Http`, `Tcp`, and `NamedPipes` remain future transport targets.
+- `Direct`, `Http`, and `Grpc` are implemented transports today.
+- `NamedPipes` remains the only future transport target.
 
 ## Current Transport Model
 
@@ -37,10 +36,23 @@ Resolution rules:
 - direct is the default when transport cannot be inferred from a network endpoint
 - supplied direct inputs must resolve to the same target
 - `http://` and `https://` infer `Http` unless `Transport = CSharpDbTransport.Grpc` is set explicitly
-- `tcp://`, `pipe://`, and `npipe://` infer their corresponding future transport
+- `pipe://` and `npipe://` infer `NamedPipes`
 - `Grpc` uses `http://` or `https://` endpoints and talks to `CSharpDB.Daemon`
-- `Http`, `Tcp`, and `NamedPipes` still validate their endpoint shape and then fail with a not-implemented error
-- `HttpClient` is supported for `Grpc` and reserved for future `Http`
+- `Http` uses `http://` or `https://` endpoints and talks to `CSharpDB.Api`
+- `NamedPipes` still validates its endpoint shape and then fails with a not-implemented error
+- `HttpClient` is supported for both `Http` and `Grpc`
+
+Example HTTP selection:
+
+```csharp
+var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Http,
+    Endpoint = "http://localhost:61818"
+});
+```
+
+This resolves to the dedicated `CSharpDB.Api` REST host.
 
 Example gRPC selection:
 
@@ -75,10 +87,10 @@ The current `ICSharpDbClient` includes:
 
 - The direct client depends on `CSharpDB.Engine`, `CSharpDB.Sql`, and `CSharpDB.Storage.Diagnostics`.
 - `CSharpDB.Client` does not reference `CSharpDB.Data`.
+- The HTTP transport runs against `CSharpDB.Api` and now covers the same public `ICSharpDbClient` surface as the direct client.
 - The gRPC transport uses generated protobuf RPC methods, not a generic JSON tunnel.
 - Dynamic values such as row cells, procedure args, and collection documents are carried through a recursive protobuf value contract that preserves blobs and nested objects.
-- Schema, data, procedure, and saved-query operations all run through direct engine access.
-- Collection access and client-managed transaction sessions use direct engine instances.
+- The direct transport talks to the engine in-process, the HTTP transport uses JSON endpoints, and the gRPC transport uses the dedicated daemon host.
 - Internal tables such as `__procedures`, `__saved_queries`, and collection backing tables are hidden from normal table listing.
 
 ## Dependency Injection

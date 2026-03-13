@@ -19,11 +19,12 @@ public static class ProcedureEndpoints
         return group;
     }
 
-    private static async Task<IResult> GetProcedures(ICSharpDbClient db, bool includeDisabled = true)
+    private static async Task<IResult> GetProcedures(ICSharpDbClient db, bool includeDisabled = true, bool details = false)
     {
         var procedures = await db.GetProceduresAsync(includeDisabled);
-        var response = procedures.Select(MapSummary).ToList();
-        return Results.Ok(response);
+        return details
+            ? Results.Ok(procedures.Select(MapDetail).ToList())
+            : Results.Ok(procedures.Select(MapSummary).ToList());
     }
 
     private static async Task<IResult> GetProcedure(string name, ICSharpDbClient db)
@@ -41,7 +42,7 @@ public static class ProcedureEndpoints
         await db.CreateProcedureAsync(definition);
 
         var created = await db.GetProcedureAsync(req.Name);
-        return Results.Created($"/api/procedures/{req.Name}", created is null ? MapDetail(definition) : MapDetail(created));
+        return Results.Created($"/api/procedures/{Uri.EscapeDataString(req.Name)}", created is null ? MapDetail(definition) : MapDetail(created));
     }
 
     private static async Task<IResult> UpdateProcedure(string name, UpdateProcedureRequest req, ICSharpDbClient db)

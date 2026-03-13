@@ -139,11 +139,12 @@ public sealed class Parser
             TokenType.Create => ParseCreate(),
             TokenType.Drop => ParseDrop(),
             TokenType.Insert => ParseInsert(),
-            TokenType.Select => ParseSelect(),
+            TokenType.Select => ParseQueryExpression(),
             TokenType.Delete => ParseDelete(),
             TokenType.Update => ParseUpdate(),
             TokenType.Alter => ParseAlterTable(),
             TokenType.With => ParseWith(),
+            TokenType.Analyze => ParseAnalyze(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
 
@@ -1126,7 +1127,7 @@ public sealed class Parser
 
         string viewName = ExpectIdentifier();
         Expect(TokenType.As);
-        var query = ParseSelect();
+        var query = ParseQueryExpression();
 
         return new CreateViewStatement
         {
@@ -1458,7 +1459,85 @@ public sealed class Parser
         return new InsertStatement { TableName = tableName, ColumnNames = columnNames, ValueRows = valueRows };
     }
 
-    private SelectStatement ParseSelect()
+    private QueryStatement ParseQueryExpression()
+    {
+        QueryStatement query = ParseUnionExceptExpression();
+        var orderBy = ParseOptionalOrderBy();
+        int? limit = ParseOptionalLimit();
+        int? offset = ParseOptionalOffset();
+
+        return query switch
+        {
+            SelectStatement select => new SelectStatement
+            {
+                IsDistinct = select.IsDistinct,
+                Columns = select.Columns,
+                From = select.From,
+                Where = select.Where,
+                GroupBy = select.GroupBy,
+                Having = select.Having,
+                OrderBy = orderBy,
+                Limit = limit,
+                Offset = offset,
+            },
+            CompoundSelectStatement compound => new CompoundSelectStatement
+            {
+                Left = compound.Left,
+                Right = compound.Right,
+                Operation = compound.Operation,
+                OrderBy = orderBy,
+                Limit = limit,
+                Offset = offset,
+            },
+            _ => throw new InvalidOperationException($"Unknown query statement type: {query.GetType().Name}"),
+        };
+    }
+
+    private QueryStatement ParseUnionExceptExpression()
+    {
+        QueryStatement left = ParseIntersectExpression();
+
+        while (Peek().Type is TokenType.Union or TokenType.Except)
+        {
+            var op = Advance().Type switch
+            {
+                TokenType.Union => SetOperationKind.Union,
+                TokenType.Except => SetOperationKind.Except,
+                _ => throw new InvalidOperationException(),
+            };
+
+            var right = ParseIntersectExpression();
+            left = new CompoundSelectStatement
+            {
+                Left = left,
+                Right = right,
+                Operation = op,
+            };
+        }
+
+        return left;
+    }
+
+    private QueryStatement ParseIntersectExpression()
+    {
+        QueryStatement left = ParseSelectCore();
+
+        while (Peek().Type == TokenType.Intersect)
+        {
+            Advance();
+            var right = ParseSelectCore();
+            left = new CompoundSelectStatement
+            {
+                Left = left,
+                Right = right,
+                Operation = SetOperationKind.Intersect,
+            };
+        }
+
+        return left;
+    }
+
+    private SelectStatement ParseSelectCore()
     {
         Expect(TokenType.Select);
         bool isDistinct = TryConsume(TokenType.Distinct);
@@ -1519,38 +1598,6 @@ public sealed class Parser
             having = ParseExpression();
         }
 
-        List<OrderByClause>? orderBy = null;
-        if (Peek().Type == TokenType.Order)
-        {
-            Advance();
-            Expect(TokenType.By);
-            orderBy = new List<OrderByClause>();
-            do
-            {
-                var expr = ParseExpression();
-                bool desc = false;
-                if (Peek().Type == TokenType.Desc) { Advance(); desc = true; }
-                else if (Peek().Type == TokenType.Asc) { Advance(); }
-                orderBy.Add(new OrderByClause { Expression = expr, Descending = desc });
-            } while (TryConsume(TokenType.Comma));
-        }
-
-        int? limit = null;
-        if (Peek().Type == TokenType.Limit)
-        {
-            Advance();
-            var limitToken = Expect(TokenType.IntegerLiteral);
-            limit = int.Parse(limitToken.Value, CultureInfo.InvariantCulture);
-        }
-
-        int? offset = null;
-        if (Peek().Type == TokenType.Offset)
-        {
-            Advance();
-            var offsetToken = Expect(TokenType.IntegerLiteral);
-            offset = int.Parse(offsetToken.Value, CultureInfo.InvariantCulture);
-        }
-
         return new SelectStatement
         {
             IsDistinct = isDistinct,
@@ -1559,10 +1606,59 @@ public sealed class Parser
             Where = where,
             GroupBy = groupBy,
             Having = having,
-            OrderBy = orderBy,
-            Limit = limit,
-            Offset = offset,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
         };
+    }
+
+    private List<OrderByClause>? ParseOptionalOrderBy()
+    {
+        if (Peek().Type != TokenType.Order)
+            return null;
+
+        Advance();
+        Expect(TokenType.By);
+
+        var orderBy = new List<OrderByClause>();
+        do
+        {
+            var expr = ParseExpression();
+            bool desc = false;
+            if (Peek().Type == TokenType.Desc)
+            {
+                Advance();
+                desc = true;
+            }
+            else if (Peek().Type == TokenType.Asc)
+            {
+                Advance();
+            }
+
+            orderBy.Add(new OrderByClause { Expression = expr, Descending = desc });
+        } while (TryConsume(TokenType.Comma));
+
+        return orderBy;
+    }
+
+    private int? ParseOptionalLimit()
+    {
+        if (Peek().Type != TokenType.Limit)
+            return null;
+
+        Advance();
+        var limitToken = Expect(TokenType.IntegerLiteral);
+        return int.Parse(limitToken.Value, CultureInfo.InvariantCulture);
+    }
+
+    private int? ParseOptionalOffset()
+    {
+        if (Peek().Type != TokenType.Offset)
+            return null;
+
+        Advance();
+        var offsetToken = Expect(TokenType.IntegerLiteral);
+        return int.Parse(offsetToken.Value, CultureInfo.InvariantCulture);
     }
 
     private DeleteStatement ParseDelete()
@@ -1579,6 +1675,17 @@ public sealed class Parser
         }
 
         return new DeleteStatement { TableName = tableName, Where = where };
+    }
+
+    private AnalyzeStatement ParseAnalyze()
+    {
+        Expect(TokenType.Analyze);
+
+        string? tableName = null;
+        if (Peek().Type == TokenType.Identifier)
+            tableName = ParseMultipartIdentifier();
+
+        return new AnalyzeStatement { TableName = tableName };
     }
 
     private UpdateStatement ParseUpdate()
@@ -1639,14 +1746,14 @@ public sealed class Parser
 
             Expect(TokenType.As);
             Expect(TokenType.LeftParen);
-            var query = ParseSelect();
+            var query = ParseQueryExpression();
             Expect(TokenType.RightParen);
 
             ctes.Add(new CteDefinition { Name = cteName, ColumnNames = columnNames, Query = query });
         } while (TryConsume(TokenType.Comma));
 
         // The main query after the CTEs
-        var mainQuery = ParseSelect();
+        var mainQuery = ParseQueryExpression();
 
         return new WithStatement { Ctes = ctes, MainQuery = mainQuery };
     }
@@ -1678,11 +1785,7 @@ public sealed class Parser
 
     private SimpleTableRef ParseSimpleTableRef()
     {
-        string tableName = ExpectIdentifier();
-        while (TryConsume(TokenType.Dot))
-        {
-            tableName = $"{tableName}.{ExpectIdentifier()}";
-        }
+        string tableName = ParseMultipartIdentifier();
         string? alias = null;
 
         // Check for alias: FROM users AS u  or  FROM users u
@@ -1699,6 +1802,15 @@ public sealed class Parser
         }
 
         return new SimpleTableRef { TableName = tableName, Alias = alias };
+    }
+
+    private string ParseMultipartIdentifier()
+    {
+        string identifier = ExpectIdentifier();
+        while (TryConsume(TokenType.Dot))
+            identifier = $"{identifier}.{ExpectIdentifier()}";
+
+        return identifier;
     }
 
     private JoinType ParseJoinType()
@@ -1838,6 +1950,13 @@ public sealed class Parser
         {
             Advance();
             Expect(TokenType.LeftParen);
+            if (IsSubqueryStart(Peek().Type))
+            {
+                var query = ParseQueryExpression();
+                Expect(TokenType.RightParen);
+                return new InSubqueryExpression { Operand = left, Query = query, Negated = negated };
+            }
+
             var values = new List<Expression>();
             do
             {
@@ -1930,6 +2049,9 @@ public sealed class Parser
 
     private static bool IsScalarFunctionToken(TokenType type) =>
         type is TokenType.Text;
+
+    private static bool IsSubqueryStart(TokenType type) =>
+        type == TokenType.Select;
 
     private bool IsFunctionCallStart(Token token) =>
         (IsAggregateFunctionToken(token.Type) || IsScalarFunctionToken(token.Type) || token.Type == TokenType.Identifier)
@@ -2028,8 +2150,22 @@ public sealed class Parser
                 }
                 // NEW/OLD without dot — treat as identifier
                 return new ColumnRefExpression { ColumnName = token.Value };
+            case TokenType.Exists:
+                Advance();
+                Expect(TokenType.LeftParen);
+                if (!IsSubqueryStart(Peek().Type))
+                    throw Error("EXISTS requires a subquery.");
+                var existsQuery = ParseQueryExpression();
+                Expect(TokenType.RightParen);
+                return new ExistsExpression { Query = existsQuery };
             case TokenType.LeftParen:
                 Advance();
+                if (IsSubqueryStart(Peek().Type))
+                {
+                    var query = ParseQueryExpression();
+                    Expect(TokenType.RightParen);
+                    return new ScalarSubqueryExpression { Query = query };
+                }
                 var expr = ParseExpression();
                 Expect(TokenType.RightParen);
                 return expr;

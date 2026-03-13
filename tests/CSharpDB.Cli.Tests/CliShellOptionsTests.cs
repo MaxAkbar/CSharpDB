@@ -43,4 +43,17 @@ public sealed class CliShellOptionsTests
         Assert.Null(options);
         Assert.Equal("Unknown option '--unknown'.", error);
     }
+
+    [Fact]
+    public void TryParse_TcpTransport_Fails()
+    {
+        bool ok = CliShellOptions.TryParse(
+            ["--transport", "tcp", "--endpoint", "tcp://localhost:5820"],
+            out var options,
+            out var error);
+
+        Assert.False(ok);
+        Assert.Null(options);
+        Assert.Equal("Unknown transport 'tcp'.", error);
+    }
 }

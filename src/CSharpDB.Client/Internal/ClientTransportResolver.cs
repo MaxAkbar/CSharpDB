@@ -12,9 +12,8 @@ internal static class ClientTransportResolver
         return resolution.Transport switch
         {
             CSharpDbTransport.Direct => new EngineTransportClient(resolution.DatabasePath!),
-            CSharpDbTransport.Http => throw CreateNotImplementedTransportException(CSharpDbTransport.Http),
+            CSharpDbTransport.Http => new HttpTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.Grpc => new GrpcTransportClient(resolution.EndpointUri!, options.HttpClient),
-            CSharpDbTransport.Tcp => throw CreateNotImplementedTransportException(CSharpDbTransport.Tcp),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{resolution.Transport}'."),
         };
@@ -33,7 +32,6 @@ internal static class ClientTransportResolver
             CSharpDbTransport.Direct => ResolveDirect(options, ResolveDirectEndpointPath(endpoint, endpointUri)),
             CSharpDbTransport.Http => ResolveHttp(options, endpointUri),
             CSharpDbTransport.Grpc => ResolveGrpc(options, endpointUri),
-            CSharpDbTransport.Tcp => ResolveTcp(options, endpointUri),
             CSharpDbTransport.NamedPipes => ResolveNamedPipes(options, endpointUri),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{transport}'."),
         };
@@ -104,18 +102,6 @@ internal static class ClientTransportResolver
         };
     }
 
-    private static Resolution ResolveTcp(CSharpDbClientOptions options, Uri? endpointUri)
-    {
-        EnsureNoDirectInputs(options, CSharpDbTransport.Tcp);
-        EnsureEndpointScheme(endpointUri, CSharpDbTransport.Tcp, "tcp");
-
-        return new Resolution
-        {
-            Transport = CSharpDbTransport.Tcp,
-            EndpointUri = endpointUri,
-        };
-    }
-
     private static Resolution ResolveNamedPipes(CSharpDbClientOptions options, Uri? endpointUri)
     {
         EnsureNoDirectInputs(options, CSharpDbTransport.NamedPipes);
@@ -137,9 +123,6 @@ internal static class ClientTransportResolver
 
             if (endpointUri.Scheme is "http" or "https")
                 return CSharpDbTransport.Http;
-
-            if (string.Equals(endpointUri.Scheme, "tcp", StringComparison.OrdinalIgnoreCase))
-                return CSharpDbTransport.Tcp;
 
             if (endpointUri.Scheme is "pipe" or "npipe")
                 return CSharpDbTransport.NamedPipes;

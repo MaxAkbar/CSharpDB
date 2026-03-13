@@ -6,17 +6,17 @@ A persistent background service that keeps CSharpDB loaded in memory, serves mul
 
 The current implementation is intentionally narrower than the full roadmap:
 
-- `CSharpDB.Daemon` is now the dedicated gRPC host
-- `CSharpDB.Api` remains the separate REST/HTTP host
-- the daemon does not currently host the REST endpoints described later in this document
+- `CSharpDB.Daemon` is the dedicated gRPC host for `CSharpDB.Client`
+- `CSharpDB.Api` is the separate REST/HTTP host and backs the client `Http` transport
+- The daemon does not currently host the REST endpoints or local socket/named-pipe listeners described later in this document
 
-The remainder of this file is still the broader service-daemon roadmap.
+The remainder of this file describes the broader end-state daemon roadmap rather than the exact shipping host layout.
 
 ---
 
 ## Problem
 
-Today, every client connection opens the database file from scratch — parsing the file header, loading the schema catalog, and building the page cache from cold. The existing `CSharpDbService` serializes all requests behind a single `SemaphoreSlim` lock, meaning only one query runs at a time. There is no way to keep the database warm between client sessions or serve concurrent reads.
+Today, every client connection opens the database file from scratch — parsing the file header, loading the schema catalog, and building the page cache from cold. Older host/service patterns serialized all requests behind a single `SemaphoreSlim` lock, meaning only one query ran at a time. There is no way to keep the database warm between client sessions or serve concurrent reads.
 
 ## Goal
 
@@ -27,7 +27,7 @@ A long-running service process that:
 3. **Persists writes immediately** through the WAL, with periodic checkpoint to the main `.db` file
 4. **Manages memory intelligently** — only the working set (hot pages) lives in RAM, cold pages are read from disk on demand and evicted under memory pressure
 5. **Runs cross-platform** — systemd on Linux, Windows Service on Windows, launchd on macOS
-6. **Exposes multiple protocols** — HTTP/REST for broad compatibility, plus fast local transports (Unix sockets, named pipes)
+6. **Supports multiple access patterns over time** — today HTTP lives in `CSharpDB.Api` and gRPC lives in `CSharpDB.Daemon`; the broader daemon roadmap also includes fast local transports (Unix sockets, named pipes)
 
 ---
 
@@ -41,7 +41,9 @@ A long-running service process that:
 
 ---
 
-## Architecture
+## Target Architecture
+
+The diagram below shows the intended end-state once the remote host surface is consolidated. It is broader than the current shipping split between `CSharpDB.Api` and `CSharpDB.Daemon`.
 
 ```
                     ┌─────────────────────────────────────────────────┐
@@ -136,13 +138,13 @@ Client C: SELECT * FROM products WHERE price > 10
 
 ---
 
-## Implementation Phases
+## Roadmap Phases
 
-### Phase 1: Core Daemon — DatabaseHost + Kestrel REST
+### Phase 1: Expand `CSharpDB.Daemon` Beyond the Current gRPC Host
 
-**Goal:** A single-binary service that keeps the database open and serves the existing REST API endpoints concurrently.
+**Goal:** A long-running service that keeps the database open and, in the unified-host end state, can serve the existing remote API surface concurrently.
 
-**New project:** `src/CSharpDB.Daemon/`
+**Project:** Evolve the existing `src/CSharpDB.Daemon/` host rather than introducing a second daemon project.
 
 #### 1A. DatabaseHost (IHostedService)
 
@@ -201,14 +203,14 @@ Configuration model:
 
 #### 1B. Concurrent Request Handler
 
-Replace the single-lock `CSharpDbService` with a handler that uses reader sessions for SELECTs and the writer path for mutations.
+Replace the old single-lock service pattern with a handler that uses reader sessions for SELECTs and the writer path for mutations.
 
 **File:** `src/CSharpDB.Daemon/ConcurrentDbService.cs`
 
 Routing logic:
 - `SELECT` statements → `Database.CreateReaderSession()` → execute → dispose session
 - `INSERT/UPDATE/DELETE/DDL` → `Database.ExecuteAsync()` (writer lock handled by engine)
-- Each HTTP request gets its own reader session — no global lock for reads
+- Each remote request in the unified-host design gets its own reader session — no global lock for reads
 
 ```csharp
 // Pseudo-code — concurrent read handling
@@ -228,7 +230,7 @@ public async Task<QueryResult> ExecuteAsync(string sql)
 
 #### 1C. Wire Up Existing REST Endpoints
 
-Reuse the existing endpoint extension methods (`MapTableEndpoints`, `MapRowEndpoints`, etc.) from `CSharpDB.Api`, pointing them at `ConcurrentDbService` instead of the old `CSharpDbService`.
+Reuse the existing endpoint extension methods (`MapTableEndpoints`, `MapRowEndpoints`, etc.) from `CSharpDB.Api` if and when the REST surface is consolidated into the daemon. In the current shipping model those endpoints remain in the separate API host.
 
 #### 1D. Cross-Platform Service Registration
 
@@ -249,9 +251,9 @@ builder.Services.AddSystemd();               // systemd support (Linux)
 ```
 
 **Deliverables:**
-- [ ] `CSharpDB.Daemon` project with `DatabaseHost`
+- [ ] Expand `CSharpDB.Daemon` beyond the current gRPC-only host
 - [ ] `ConcurrentDbService` replacing single-lock pattern
-- [ ] REST API endpoints wired to concurrent service
+- [ ] REST API endpoints optionally wired into the daemon's concurrent service model
 - [ ] `appsettings.json` with all configuration options
 - [ ] Build as self-contained binary for win-x64, linux-x64, osx-arm64
 
@@ -367,7 +369,7 @@ Kestrel natively supports Unix sockets:
 ```csharp
 builder.WebHost.ConfigureKestrel(options =>
 {
-    // TCP for remote clients
+    // Existing network listener for remote HTTP/gRPC clients
     options.ListenAnyIP(5820);
 
     // Unix socket for local clients (Linux / macOS)
@@ -416,8 +418,8 @@ Clients should auto-detect the fastest available transport:
 
 ```
 1. Check for Unix socket / named pipe → use if available (fastest)
-2. Check for localhost TCP → use if available
-3. Fall back to remote TCP
+2. Check for a localhost daemon endpoint → use if available
+3. Fall back to the configured remote HTTP/gRPC endpoint
 ```
 
 **Deliverables:**
@@ -513,7 +515,7 @@ Use `ILogger` with structured output for observability:
 
 ### Phase 5: Client SDK Updates
 
-**Goal:** Update the Python, Node.js, and TypeScript clients to connect to the daemon via HTTP (or local socket) instead of loading the native library directly.
+**Goal:** Update the Python and Node.js clients to connect to the daemon via HTTP (or local socket), while extending the already-shipping .NET client with local-daemon discovery conveniences.
 
 #### 5A. Python Client (HTTP Mode)
 
@@ -546,20 +548,23 @@ const db = Database.connect('http://localhost:5820');
 const db = Database.connect();
 ```
 
-#### 5C. .NET Client SDK
+#### 5C. .NET Client Enhancements
 
-A thin HTTP client package for .NET apps that want to connect to a remote daemon:
+`CSharpDB.Client` already supports remote HTTP and gRPC connections today. This phase is about same-machine daemon discovery and higher-level connection patterns:
 
 ```csharp
-// Instead of opening the file directly:
-await using var db = await CSharpDbClient.ConnectAsync("http://localhost:5820");
-var result = await db.ExecuteAsync("SELECT * FROM users");
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Endpoint = "http://localhost:5820"
+});
+
+var result = await client.ExecuteSqlAsync("SELECT * FROM users");
 ```
 
 **Deliverables:**
 - [ ] Python `CSharpDB.connect()` HTTP/socket client mode
 - [ ] Node.js `Database.connect()` HTTP/socket client mode
-- [ ] `CSharpDB.Client` NuGet package for .NET HTTP client
+- [ ] `CSharpDB.Client` auto-discovery / same-machine local transport selection
 - [ ] Connection string parsing (`csharpdb://localhost:5820/mydb`)
 
 ---

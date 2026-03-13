@@ -150,6 +150,26 @@ internal sealed class PreparedStatementTemplate
                 };
             }
 
+            case CompoundSelectStatement compound:
+            {
+                var left = BindQueryStatement(compound.Left, parameters, out bool leftChanged);
+                var right = BindQueryStatement(compound.Right, parameters, out bool rightChanged);
+                var orderBy = BindOrderByClauses(compound.OrderBy, parameters, out bool orderByChanged);
+
+                if (!leftChanged && !rightChanged && !orderByChanged)
+                    return compound;
+
+                return new CompoundSelectStatement
+                {
+                    Left = left,
+                    Right = right,
+                    Operation = compound.Operation,
+                    OrderBy = orderBy,
+                    Limit = compound.Limit,
+                    Offset = compound.Offset,
+                };
+            }
+
             case DeleteStatement delete:
             {
                 Expression? where = BindOptionalExpression(delete.Where, parameters, out bool whereChanged);
@@ -180,8 +200,8 @@ internal sealed class PreparedStatementTemplate
 
             case CreateViewStatement view:
             {
-                var query = (SelectStatement)BindStatement(view.Query, parameters);
-                if (ReferenceEquals(query, view.Query))
+                var query = BindQueryStatement(view.Query, parameters, out bool queryChanged);
+                if (!queryChanged)
                     return view;
 
                 return new CreateViewStatement
@@ -195,8 +215,8 @@ internal sealed class PreparedStatementTemplate
             case WithStatement with:
             {
                 var ctes = BindCtes(with.Ctes, parameters, out bool ctesChanged);
-                var mainQuery = (SelectStatement)BindStatement(with.MainQuery, parameters);
-                if (!ctesChanged && ReferenceEquals(mainQuery, with.MainQuery))
+                var mainQuery = BindQueryStatement(with.MainQuery, parameters, out bool mainQueryChanged);
+                if (!ctesChanged && !mainQueryChanged)
                     return with;
 
                 return new WithStatement
@@ -231,11 +251,22 @@ internal sealed class PreparedStatementTemplate
                 or CreateIndexStatement
                 or DropIndexStatement
                 or DropViewStatement
+                or AnalyzeStatement
                 or DropTriggerStatement:
                 return statement;
             default:
                 throw new NotSupportedException($"Unsupported statement type '{statement.GetType().Name}' in prepared execution.");
         }
+    }
+
+    private static QueryStatement BindQueryStatement(
+        QueryStatement statement,
+        CSharpDbParameterCollection parameters,
+        out bool changed)
+    {
+        var bound = BindStatement(statement, parameters);
+        changed = !ReferenceEquals(bound, statement);
+        return (QueryStatement)bound;
     }
 
     private static TableRef BindTableRef(TableRef tableRef, CSharpDbParameterCollection parameters, out bool changed)
@@ -351,6 +382,54 @@ internal sealed class PreparedStatementTemplate
                     Operand = operand,
                     Values = values,
                     Negated = inExpression.Negated,
+                };
+            }
+            case InSubqueryExpression inSubquery:
+            {
+                var operand = BindExpression(inSubquery.Operand, parameters, out bool operandChanged);
+                var query = BindQueryStatement(inSubquery.Query, parameters, out bool queryChanged);
+                if (!operandChanged && !queryChanged)
+                {
+                    changed = false;
+                    return inSubquery;
+                }
+
+                changed = true;
+                return new InSubqueryExpression
+                {
+                    Operand = operand,
+                    Query = query,
+                    Negated = inSubquery.Negated,
+                };
+            }
+            case ScalarSubqueryExpression scalarSubquery:
+            {
+                var query = BindQueryStatement(scalarSubquery.Query, parameters, out bool queryChanged);
+                if (!queryChanged)
+                {
+                    changed = false;
+                    return scalarSubquery;
+                }
+
+                changed = true;
+                return new ScalarSubqueryExpression
+                {
+                    Query = query,
+                };
+            }
+            case ExistsExpression exists:
+            {
+                var query = BindQueryStatement(exists.Query, parameters, out bool queryChanged);
+                if (!queryChanged)
+                {
+                    changed = false;
+                    return exists;
+                }
+
+                changed = true;
+                return new ExistsExpression
+                {
+                    Query = query,
                 };
             }
             case BetweenExpression between:
@@ -595,8 +674,8 @@ internal sealed class PreparedStatementTemplate
         for (int i = 0; i < ctes.Count; i++)
         {
             var cte = ctes[i];
-            var query = (SelectStatement)BindStatement(cte.Query, parameters);
-            if (ReferenceEquals(query, cte.Query))
+            var query = BindQueryStatement(cte.Query, parameters, out bool queryChanged);
+            if (!queryChanged)
                 continue;
 
             rewritten ??= ctes.ToArray();
@@ -752,6 +831,13 @@ internal sealed class PreparedStatementTemplate
                     for (int i = 0; i < select.OrderBy.Count; i++)
                         CollectParameterNames(select.OrderBy[i].Expression, names, seen);
                 return;
+            case CompoundSelectStatement compound:
+                CollectParameterNames(compound.Left, names, seen);
+                CollectParameterNames(compound.Right, names, seen);
+                if (compound.OrderBy != null)
+                    for (int i = 0; i < compound.OrderBy.Count; i++)
+                        CollectParameterNames(compound.OrderBy[i].Expression, names, seen);
+                return;
             case DeleteStatement delete:
                 if (delete.Where != null)
                     CollectParameterNames(delete.Where, names, seen);
@@ -815,6 +901,16 @@ internal sealed class PreparedStatementTemplate
                 CollectParameterNames(inExpression.Operand, names, seen);
                 for (int i = 0; i < inExpression.Values.Count; i++)
                     CollectParameterNames(inExpression.Values[i], names, seen);
+                return;
+            case InSubqueryExpression inSubquery:
+                CollectParameterNames(inSubquery.Operand, names, seen);
+                CollectParameterNames(inSubquery.Query, names, seen);
+                return;
+            case ScalarSubqueryExpression scalarSubquery:
+                CollectParameterNames(scalarSubquery.Query, names, seen);
+                return;
+            case ExistsExpression exists:
+                CollectParameterNames(exists.Query, names, seen);
                 return;
             case BetweenExpression between:
                 CollectParameterNames(between.Operand, names, seen);

@@ -12,6 +12,9 @@
         <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
             <i class="bi bi-play-fill"></i> Run
         </button>
+        <button class="toolbar-btn" @onclick="RunAnalyzeAsync" disabled="@_loading" title="Refresh persisted table and column statistics">
+            <i class="bi bi-bar-chart-line"></i> Analyze
+        </button>
         <button class="toolbar-btn" @onclick="ClearEditor">
             <i class="bi bi-eraser"></i> Clear
         </button>
@@ -31,6 +34,24 @@
                 <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
             </div>
         }
+    </div>
+
+    <div class="query-shortcuts-bar">
+        <span class="query-saved-label">
+            <i class="bi bi-bar-chart-line"></i> Stats
+        </span>
+        <button class="toolbar-btn"
+                @onclick="LoadTableStatsQuery"
+                disabled="@_loading"
+                title="Open sys.table_stats in this tab">
+            <i class="bi bi-table"></i> Table Stats
+        </button>
+        <button class="toolbar-btn"
+                @onclick="LoadColumnStatsQuery"
+                disabled="@_loading"
+                title="Open sys.column_stats in this tab">
+            <i class="bi bi-list-columns"></i> Column Stats
+        </button>
     </div>
 
     <div class="query-saved-bar">
@@ -145,6 +166,10 @@
         @"^\s*EXEC(?:UTE)?\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<rest>[\s\S]*)$",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
+    private const string AnalyzeSql = "ANALYZE;";
+    private const string TableStatsSql = "SELECT * FROM sys.table_stats ORDER BY table_name;";
+    private const string ColumnStatsSql = "SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;";
+
     [Parameter] public TabDescriptor? Tab { get; set; }
 
     private SqlEditor? _editor;
@@ -246,6 +271,16 @@
     {
         _sqlText = SqlFormatter.Format(_sqlText);
     }
+
+    private async Task RunAnalyzeAsync()
+    {
+        LoadSql(AnalyzeSql);
+        await RunQuery();
+    }
+
+    private void LoadTableStatsQuery() => LoadSql(TableStatsSql);
+
+    private void LoadColumnStatsQuery() => LoadSql(ColumnStatsSql);
 
     private async Task SaveQueryAsync()
     {
@@ -381,6 +416,19 @@
         _nonQueryMessage = $"Procedure '{procedureName}' executed. {affected} row(s) affected.";
         Toast.Success(_nonQueryMessage);
         Changes.NotifyChanged();
+    }
+
+    private void LoadSql(string sql)
+    {
+        _sqlText = sql;
+        _error = null;
+        _resultColumns = null;
+        _resultRows = null;
+        _nonQueryMessage = null;
+        _elapsed = null;
+
+        if (Tab is not null)
+            Tab.SqlText = _sqlText;
     }
 
     private static bool TryParseExecuteCommand(

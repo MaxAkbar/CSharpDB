@@ -1,0 +1,30 @@
+[
+  {
+    "name": "RefreshProcurementStats",
+    "bodySql": "ANALYZE;\nSELECT table_name, row_count, has_stale_columns\nFROM sys.table_stats\nORDER BY table_name;",
+    "parameters": [],
+    "description": "Refreshes exact table and column statistics, then returns the current table row counts.",
+    "isEnabled": true
+  },
+  {
+    "name": "GetSupplierActionQueue",
+    "bodySql": "SELECT *\nFROM supplier_scorecard\nWHERE open_po_count > 0 OR open_incident_count > 0\nORDER BY open_incident_count DESC, open_po_count DESC, supplier_name;",
+    "parameters": [],
+    "description": "Returns suppliers that still have open purchase-order or quality-incident work.",
+    "isEnabled": true
+  },
+  {
+    "name": "GetWarehouseReorderWatch",
+    "bodySql": "SELECT w.code AS warehouse_code, p.sku, p.name, sl.on_hand_qty, sl.reorder_point,\n       (SELECT s.name FROM suppliers s WHERE s.id = p.preferred_supplier_id) AS preferred_supplier\nFROM stock_levels sl\nINNER JOIN warehouses w ON w.id = sl.warehouse_id\nINNER JOIN products p ON p.id = sl.product_id\nWHERE sl.warehouse_id = @warehouseId\n  AND p.preferred_supplier_id IN (\n      SELECT supplier_id\n      FROM quality_incidents\n      WHERE status <> 'closed'\n  )\n  AND sl.on_hand_qty < sl.reorder_point\nORDER BY sl.on_hand_qty, p.name;",
+    "parameters": [
+      {
+        "name": "warehouseId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Warehouse identifier."
+      }
+    ],
+    "description": "Shows low-stock items in one warehouse when the preferred supplier is already carrying an open incident.",
+    "isEnabled": true
+  }
+]

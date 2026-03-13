@@ -1,6 +1,7 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
 using CSharpDB.Client;
+using CSharpDB.Client.Models;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -15,21 +16,25 @@ public static class SqlEndpoints
     private static async Task<IResult> ExecuteSql(ExecuteSqlRequest req, ICSharpDbClient db)
     {
         var result = await db.ExecuteSqlAsync(req.Sql);
+        var response = ToResponse(result);
 
+        return result.Error is not null
+            ? Results.BadRequest(response)
+            : Results.Ok(response);
+    }
+
+    internal static SqlResultResponse ToResponse(SqlExecutionResult result)
+    {
         List<Dictionary<string, object?>>? namedRows = null;
         if (result.IsQuery && result.ColumnNames is not null && result.Rows is not null)
             namedRows = JsonHelper.RowsToNamedDictionaries(result.ColumnNames, result.Rows);
 
-        var response = new SqlResultResponse(
+        return new SqlResultResponse(
             result.IsQuery,
             result.ColumnNames,
             namedRows,
             result.RowsAffected,
             result.Error,
             result.Elapsed.TotalMilliseconds);
-
-        return result.Error is not null
-            ? Results.BadRequest(response)
-            : Results.Ok(response);
     }
 }

@@ -192,7 +192,7 @@ public sealed class Database : IAsyncDisposable
 
     private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        if (stmt is SelectStatement)
+        if (stmt is QueryStatement or WithStatement)
             return _planner.ExecuteAsync(stmt, ct);
 
         return ExecuteWriteStatementAsync(stmt, ct);
@@ -226,7 +226,10 @@ public sealed class Database : IAsyncDisposable
         catch
         {
             if (!_inTransaction)
+            {
                 await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+            }
             throw;
         }
     }
@@ -252,7 +255,10 @@ public sealed class Database : IAsyncDisposable
         catch
         {
             if (!_inTransaction)
+            {
                 await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+            }
             throw;
         }
     }
@@ -287,6 +293,7 @@ public sealed class Database : IAsyncDisposable
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
         await _pager.RollbackAsync(ct);
+        await _catalog.ReloadAsync(ct);
         _inTransaction = false;
     }
 
@@ -562,7 +569,7 @@ public sealed class Database : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            if (stmt is not SelectStatement && stmt is not WithStatement)
+            if (stmt is not QueryStatement && stmt is not WithStatement)
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support SELECT statements.");
 
@@ -717,9 +724,9 @@ public sealed class Database : IAsyncDisposable
                     _map[sql] = parsed;
                     _insertionOrder.Enqueue(sql);
                 }
-                else if (parsed is SelectStatement && ShouldPromoteSelectAtCapacity(sql))
+                else if ((parsed is QueryStatement or WithStatement) && ShouldPromoteQueryAtCapacity(sql))
                 {
-                    // Only promote SELECT statements that show short-term reuse.
+                    // Only promote read-only query statements that show short-term reuse.
                     // This avoids steady eviction churn on one-off/high-cardinality SQL.
                     EvictOldestEntry();
                     _map[sql] = parsed;
@@ -732,7 +739,7 @@ public sealed class Database : IAsyncDisposable
             }
         }
 
-        private bool ShouldPromoteSelectAtCapacity(string sql)
+        private bool ShouldPromoteQueryAtCapacity(string sql)
         {
             if (_recentMissHashes.Length == 0)
                 return true;

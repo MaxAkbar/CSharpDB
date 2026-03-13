@@ -31,7 +31,7 @@ The MCP server resolves `CSharpDbClientOptions` in this order:
 | Connection string | `ConnectionStrings:CSharpDB` from `appsettings.json` | `Data Source=csharpdb.db` |
 | Default | `csharpdb.db` when no other target is supplied | `Data Source=csharpdb.db` |
 
-`Direct` remains the default transport. If you pass an HTTP endpoint without `--transport`, the client infers `Http`. `Grpc`, `Tcp`, and named pipes can be selected in options but are not implemented yet.
+`Direct` remains the default transport. If you pass an HTTP endpoint without `--transport`, the client infers `Http`. `Http` and `Grpc` are implemented; named pipes remain the only additional transport option and are not implemented yet.
 
 ---
 
