@@ -116,6 +116,17 @@ public sealed class TableStatistics
     public bool HasStaleColumns { get; init; }
 }
 
+public sealed class ColumnStatistics
+{
+    public required string TableName { get; init; }
+    public required string ColumnName { get; init; }
+    public long DistinctCount { get; init; }
+    public long NonNullCount { get; init; }
+    public DbValue MinValue { get; init; } = DbValue.Null;
+    public DbValue MaxValue { get; init; } = DbValue.Null;
+    public bool IsStale { get; init; }
+}
+
 public enum TriggerTiming { Before, After }
 public enum TriggerEvent { Insert, Update, Delete }
 

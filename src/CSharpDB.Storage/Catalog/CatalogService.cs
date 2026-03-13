@@ -14,6 +14,7 @@ internal sealed class CatalogService
     private const long ViewCatalogSentinel = long.MaxValue - 1;
     private const long TriggerCatalogSentinel = long.MaxValue - 2;
     private const long TableStatsCatalogSentinel = long.MaxValue - 3;
+    private const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
 
     private readonly Pager _pager;
     private readonly ISchemaSerializer _schemaSerializer;
@@ -26,19 +27,24 @@ internal sealed class CatalogService
     private string[] _viewNamesSnapshot = Array.Empty<string>();
     private TriggerSchema[] _triggersSnapshot = Array.Empty<TriggerSchema>();
     private TableStatistics[] _tableStatisticsSnapshot = Array.Empty<TableStatistics>();
+    private ColumnStatistics[] _columnStatisticsSnapshot = Array.Empty<ColumnStatistics>();
     private bool _indexesSnapshotDirty = true;
     private bool _viewNamesSnapshotDirty = true;
     private bool _triggersSnapshotDirty = true;
     private bool _tableStatisticsSnapshotDirty = true;
+    private bool _columnStatisticsSnapshotDirty = true;
     private Dictionary<string, TableSchema> _cache => _cacheState.Tables;
     private Dictionary<string, uint> _tableRootPages => _cacheState.TableRootPages;
     private Dictionary<string, BTree> _tableTrees => _cacheState.TableTrees;
     private readonly Dictionary<string, long> _persistedTableNextRowIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableStatistics> _tableStatsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ColumnStatistics> _columnStatsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ColumnStatistics[]> _columnStatsByTableSnapshot = new(StringComparer.OrdinalIgnoreCase);
     private uint _persistedIndexCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedViewCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTableStatsCatalogRootPage = PageConstants.NullPageId;
+    private uint _persistedColumnStatsCatalogRootPage = PageConstants.NullPageId;
 
     // Index catalog
     private BTree? _indexCatalogTree;
@@ -58,6 +64,9 @@ internal sealed class CatalogService
 
     // Table statistics catalog
     private BTree? _tableStatsCatalogTree;
+
+    // Column statistics catalog
+    private BTree? _columnStatsCatalogTree;
 
     private CatalogService(
         Pager pager,
@@ -122,10 +131,12 @@ internal sealed class CatalogService
         _viewCatalogTree = null;
         _triggerCatalogTree = null;
         _tableStatsCatalogTree = null;
+        _columnStatsCatalogTree = null;
         _persistedIndexCatalogRootPage = PageConstants.NullPageId;
         _persistedViewCatalogRootPage = PageConstants.NullPageId;
         _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
         _persistedTableStatsCatalogRootPage = PageConstants.NullPageId;
+        _persistedColumnStatsCatalogRootPage = PageConstants.NullPageId;
 
         _cache.Clear();
         _tableRootPages.Clear();
@@ -139,15 +150,19 @@ internal sealed class CatalogService
         _triggerCache.Clear();
         _triggersByTable.Clear();
         _tableStatsCache.Clear();
+        _columnStatsCache.Clear();
+        _columnStatsByTableSnapshot.Clear();
 
         _indexesSnapshot = Array.Empty<IndexSchema>();
         _viewNamesSnapshot = Array.Empty<string>();
         _triggersSnapshot = Array.Empty<TriggerSchema>();
         _tableStatisticsSnapshot = Array.Empty<TableStatistics>();
+        _columnStatisticsSnapshot = Array.Empty<ColumnStatistics>();
         _indexesSnapshotDirty = true;
         _viewNamesSnapshotDirty = true;
         _triggersSnapshotDirty = true;
         _tableStatisticsSnapshotDirty = true;
+        _columnStatisticsSnapshotDirty = true;
 
         if (_pager.SchemaRootPage != PageConstants.NullPageId)
         {
@@ -234,6 +249,22 @@ internal sealed class CatalogService
         _pager.SchemaRootPage = _catalogTree.RootPageId;
     }
 
+    private async ValueTask EnsureColumnStatsCatalogTreeAsync(CancellationToken ct = default)
+    {
+        if (_columnStatsCatalogTree != null) return;
+
+        await EnsureCatalogTreeAsync(ct);
+        uint rootPage = await BTree.CreateNewAsync(_pager, ct);
+        _columnStatsCatalogTree = new BTree(_pager, rootPage);
+
+        var payload = new byte[4];
+        BitConverter.TryWriteBytes(payload, rootPage);
+        try { await _catalogTree!.DeleteAsync(ColumnStatsCatalogSentinel, ct); } catch { }
+        await _catalogTree!.InsertAsync(ColumnStatsCatalogSentinel, payload, ct);
+        _persistedColumnStatsCatalogRootPage = rootPage;
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
+    }
+
     private async ValueTask LoadAllAsync(CancellationToken ct = default)
     {
         var cursor = _catalogTree!.CreateCursor();
@@ -268,6 +299,14 @@ internal sealed class CatalogService
                 uint tableStatsRootPage = _catalogStore.ReadRootPage(cursor.CurrentValue.Span);
                 _tableStatsCatalogTree = new BTree(_pager, tableStatsRootPage);
                 _persistedTableStatsCatalogRootPage = tableStatsRootPage;
+                continue;
+            }
+
+            if (cursor.CurrentKey == ColumnStatsCatalogSentinel)
+            {
+                uint columnStatsRootPage = _catalogStore.ReadRootPage(cursor.CurrentValue.Span);
+                _columnStatsCatalogTree = new BTree(_pager, columnStatsRootPage);
+                _persistedColumnStatsCatalogRootPage = columnStatsRootPage;
                 continue;
             }
 
@@ -330,6 +369,15 @@ internal sealed class CatalogService
                 _tableStatsCache[stats.TableName] = stats;
             }
         }
+
+        if (_columnStatsCatalogTree != null)
+        {
+            var columnStatsCursor = _columnStatsCatalogTree.CreateCursor();
+            while (await columnStatsCursor.MoveNextAsync(ct))
+            {
+                CacheColumnStatistics(DeserializeColumnStatistics(columnStatsCursor.CurrentValue.Span));
+            }
+        }
     }
 
     // ============ TABLE operations ============
@@ -355,6 +403,43 @@ internal sealed class CatalogService
         }
 
         return _tableStatisticsSnapshot;
+    }
+
+    public ColumnStatistics? GetColumnStatistics(string tableName, string columnName)
+    {
+        _columnStatsCache.TryGetValue(GetColumnStatisticsCacheKey(tableName, columnName), out var stats);
+        return stats;
+    }
+
+    public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics(string tableName)
+    {
+        if (_columnStatsByTableSnapshot.TryGetValue(tableName, out var stats))
+            return stats;
+
+        return Array.Empty<ColumnStatistics>();
+    }
+
+    public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics()
+    {
+        if (_columnStatisticsSnapshotDirty)
+        {
+            _columnStatisticsSnapshot = _columnStatsCache.Values.ToArray();
+            _columnStatisticsSnapshotDirty = false;
+        }
+
+        return _columnStatisticsSnapshot;
+    }
+
+    public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats)
+    {
+        if (_columnStatsCache.TryGetValue(GetColumnStatisticsCacheKey(tableName, columnName), out stats!) &&
+            !stats.IsStale)
+        {
+            return true;
+        }
+
+        stats = null!;
+        return false;
     }
 
     public bool TryGetTableRowCount(string tableName, out long rowCount)
@@ -469,6 +554,7 @@ internal sealed class CatalogService
         await _catalogTree!.DeleteAsync(key, ct);
         await new BTree(_pager, tableRootPage).ReclaimAsync(ct);
         await DeleteTableStatisticsAsync(tableName, ct);
+        await DeleteColumnStatisticsAsync(tableName, ct);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
 
         _cache.Remove(tableName);
@@ -514,8 +600,17 @@ internal sealed class CatalogService
         if (_tableTrees.Remove(oldTableName, out var existingTree))
             _tableTrees[storedSchema.TableName] = existingTree;
 
+        bool isPureTableRename =
+            !string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase) &&
+            HaveMatchingColumnNames(oldSchema, storedSchema);
+
         if (!string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase))
             await RenameTableStatisticsAsync(oldTableName, storedSchema.TableName, ct);
+
+        if (isPureTableRename)
+            await RenameColumnStatisticsAsync(oldTableName, storedSchema.TableName, ct);
+        else
+            await DeleteColumnStatisticsAsync(storedSchema.TableName, ct);
 
         IncrementSchemaVersion();
     }
@@ -528,7 +623,7 @@ internal sealed class CatalogService
             {
                 TableName = tableName,
                 RowCount = rowCount,
-                HasStaleColumns = false,
+                HasStaleColumns = _tableStatsCache.TryGetValue(tableName, out var existing) && existing.HasStaleColumns,
             },
             ct);
     }
@@ -548,6 +643,65 @@ internal sealed class CatalogService
         }
 
         await SetTableRowCountAsync(tableName, rowCount, ct);
+    }
+
+    public async ValueTask ReplaceColumnStatisticsAsync(
+        string tableName,
+        IReadOnlyList<ColumnStatistics> columnStatistics,
+        CancellationToken ct = default)
+    {
+        await DeleteColumnStatisticsAsync(tableName, ct);
+
+        bool hasStaleColumns = false;
+        for (int i = 0; i < columnStatistics.Count; i++)
+        {
+            var stats = columnStatistics[i];
+            var normalized = new ColumnStatistics
+            {
+                TableName = tableName,
+                ColumnName = stats.ColumnName,
+                DistinctCount = stats.DistinctCount,
+                NonNullCount = stats.NonNullCount,
+                MinValue = stats.MinValue,
+                MaxValue = stats.MaxValue,
+                IsStale = stats.IsStale,
+            };
+
+            await UpsertColumnStatisticsAsync(normalized, ct);
+            hasStaleColumns |= normalized.IsStale;
+        }
+
+        await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns, ct);
+    }
+
+    public async ValueTask MarkTableColumnStatisticsStaleAsync(string tableName, CancellationToken ct = default)
+    {
+        if (!_columnStatsByTableSnapshot.TryGetValue(tableName, out var stats) || stats.Length == 0)
+            return;
+
+        bool changed = false;
+        for (int i = 0; i < stats.Length; i++)
+        {
+            if (stats[i].IsStale)
+                continue;
+
+            await UpsertColumnStatisticsAsync(
+                new ColumnStatistics
+                {
+                    TableName = stats[i].TableName,
+                    ColumnName = stats[i].ColumnName,
+                    DistinctCount = stats[i].DistinctCount,
+                    NonNullCount = stats[i].NonNullCount,
+                    MinValue = stats[i].MinValue,
+                    MaxValue = stats[i].MaxValue,
+                    IsStale = true,
+                },
+                ct);
+            changed = true;
+        }
+
+        if (changed)
+            await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns: true, ct);
     }
 
     /// <summary>
@@ -856,6 +1010,20 @@ internal sealed class CatalogService
         };
     }
 
+    private static bool HaveMatchingColumnNames(TableSchema left, TableSchema right)
+    {
+        if (left.Columns.Count != right.Columns.Count)
+            return false;
+
+        for (int i = 0; i < left.Columns.Count; i++)
+        {
+            if (!string.Equals(left.Columns[i].Name, right.Columns[i].Name, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
+
     private async ValueTask UpsertTableStatisticsAsync(TableStatistics stats, CancellationToken ct)
     {
         await EnsureTableStatsCatalogTreeAsync(ct);
@@ -903,6 +1071,140 @@ internal sealed class CatalogService
             ct);
     }
 
+    private async ValueTask SetTableHasStaleColumnsAsync(string tableName, bool hasStaleColumns, CancellationToken ct)
+    {
+        if (_tableStatsCache.TryGetValue(tableName, out var stats))
+        {
+            if (stats.HasStaleColumns == hasStaleColumns)
+                return;
+
+            await UpsertTableStatisticsAsync(
+                new TableStatistics
+                {
+                    TableName = tableName,
+                    RowCount = stats.RowCount,
+                    HasStaleColumns = hasStaleColumns,
+                },
+                ct);
+            return;
+        }
+
+        long rowCount = await GetTableTree(tableName).CountEntriesAsync(ct);
+        await UpsertTableStatisticsAsync(
+            new TableStatistics
+            {
+                TableName = tableName,
+                RowCount = rowCount,
+                HasStaleColumns = hasStaleColumns,
+            },
+            ct);
+    }
+
+    private async ValueTask UpsertColumnStatisticsAsync(ColumnStatistics stats, CancellationToken ct)
+    {
+        await EnsureColumnStatsCatalogTreeAsync(ct);
+
+        byte[] payload = SerializeColumnStatistics(stats);
+        long key = GetColumnStatisticsStorageKey(stats.TableName, stats.ColumnName);
+
+        try { await _columnStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
+        await _columnStatsCatalogTree!.InsertAsync(key, payload, ct);
+
+        CacheColumnStatistics(stats);
+    }
+
+    private async ValueTask DeleteColumnStatisticsAsync(string tableName, CancellationToken ct)
+    {
+        if (!_columnStatsByTableSnapshot.TryGetValue(tableName, out var stats) || stats.Length == 0)
+            return;
+
+        if (_columnStatsCatalogTree != null)
+        {
+            for (int i = 0; i < stats.Length; i++)
+            {
+                long key = GetColumnStatisticsStorageKey(stats[i].TableName, stats[i].ColumnName);
+                try { await _columnStatsCatalogTree.DeleteAsync(key, ct); } catch { }
+            }
+        }
+
+        for (int i = 0; i < stats.Length; i++)
+            RemoveColumnStatisticsFromCache(stats[i].TableName, stats[i].ColumnName);
+
+        if (_tableStatsCache.ContainsKey(tableName))
+            await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns: false, ct);
+    }
+
+    private async ValueTask RenameColumnStatisticsAsync(string oldTableName, string newTableName, CancellationToken ct)
+    {
+        if (!_columnStatsByTableSnapshot.TryGetValue(oldTableName, out var stats) || stats.Length == 0)
+            return;
+
+        await DeleteColumnStatisticsAsync(oldTableName, ct);
+        for (int i = 0; i < stats.Length; i++)
+        {
+            await UpsertColumnStatisticsAsync(
+                new ColumnStatistics
+                {
+                    TableName = newTableName,
+                    ColumnName = stats[i].ColumnName,
+                    DistinctCount = stats[i].DistinctCount,
+                    NonNullCount = stats[i].NonNullCount,
+                    MinValue = stats[i].MinValue,
+                    MaxValue = stats[i].MaxValue,
+                    IsStale = stats[i].IsStale,
+                },
+                ct);
+        }
+
+        await SetTableHasStaleColumnsAsync(newTableName, stats.Any(item => item.IsStale), ct);
+    }
+
+    private void CacheColumnStatistics(ColumnStatistics stats)
+    {
+        string cacheKey = GetColumnStatisticsCacheKey(stats.TableName, stats.ColumnName);
+        _columnStatsCache[cacheKey] = stats;
+
+        if (_columnStatsByTableSnapshot.TryGetValue(stats.TableName, out var existing))
+        {
+            var updated = existing
+                .Where(item => !string.Equals(item.ColumnName, stats.ColumnName, StringComparison.OrdinalIgnoreCase))
+                .Concat([stats])
+                .ToArray();
+            _columnStatsByTableSnapshot[stats.TableName] = updated;
+        }
+        else
+        {
+            _columnStatsByTableSnapshot[stats.TableName] = [stats];
+        }
+
+        _columnStatisticsSnapshotDirty = true;
+    }
+
+    private void RemoveColumnStatisticsFromCache(string tableName, string columnName)
+    {
+        _columnStatsCache.Remove(GetColumnStatisticsCacheKey(tableName, columnName));
+
+        if (_columnStatsByTableSnapshot.TryGetValue(tableName, out var existing))
+        {
+            var updated = existing
+                .Where(item => !string.Equals(item.ColumnName, columnName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (updated.Length == 0)
+                _columnStatsByTableSnapshot.Remove(tableName);
+            else
+                _columnStatsByTableSnapshot[tableName] = updated;
+        }
+
+        _columnStatisticsSnapshotDirty = true;
+    }
+
+    private static string GetColumnStatisticsCacheKey(string tableName, string columnName)
+        => $"{tableName}\u001F{columnName}";
+
+    private long GetColumnStatisticsStorageKey(string tableName, string columnName)
+        => _schemaSerializer.TableNameToKey($"{tableName}\u001F{columnName}");
+
     private static byte[] SerializeTableStatistics(TableStatistics stats)
     {
         byte[] tableNameBytes = Encoding.UTF8.GetBytes(stats.TableName);
@@ -928,6 +1230,147 @@ internal sealed class CatalogService
         };
     }
 
+    private static byte[] SerializeColumnStatistics(ColumnStatistics stats)
+    {
+        byte[] tableNameBytes = Encoding.UTF8.GetBytes(stats.TableName);
+        byte[] columnNameBytes = Encoding.UTF8.GetBytes(stats.ColumnName);
+        byte[] minBytes = SerializeStatisticsValue(stats.MinValue);
+        byte[] maxBytes = SerializeStatisticsValue(stats.MaxValue);
+
+        byte[] payload = new byte[
+            4 + tableNameBytes.Length +
+            4 + columnNameBytes.Length +
+            8 +
+            8 +
+            1 +
+            4 + minBytes.Length +
+            4 + maxBytes.Length];
+
+        int offset = 0;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), tableNameBytes.Length);
+        offset += 4;
+        tableNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += tableNameBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), columnNameBytes.Length);
+        offset += 4;
+        columnNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += columnNameBytes.Length;
+
+        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, 8), stats.DistinctCount);
+        offset += 8;
+        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, 8), stats.NonNullCount);
+        offset += 8;
+        payload[offset++] = stats.IsStale ? (byte)1 : (byte)0;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), minBytes.Length);
+        offset += 4;
+        minBytes.CopyTo(payload.AsSpan(offset));
+        offset += minBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), maxBytes.Length);
+        offset += 4;
+        maxBytes.CopyTo(payload.AsSpan(offset));
+
+        return payload;
+    }
+
+    private static ColumnStatistics DeserializeColumnStatistics(ReadOnlySpan<byte> payload)
+    {
+        int offset = 0;
+        int tableNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string tableName = Encoding.UTF8.GetString(payload.Slice(offset, tableNameLength));
+        offset += tableNameLength;
+
+        int columnNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string columnName = Encoding.UTF8.GetString(payload.Slice(offset, columnNameLength));
+        offset += columnNameLength;
+
+        long distinctCount = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(offset, 8));
+        offset += 8;
+        long nonNullCount = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(offset, 8));
+        offset += 8;
+        bool isStale = payload[offset++] != 0;
+
+        int minLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        DbValue minValue = DeserializeStatisticsValue(payload.Slice(offset, minLength));
+        offset += minLength;
+
+        int maxLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        DbValue maxValue = DeserializeStatisticsValue(payload.Slice(offset, maxLength));
+
+        return new ColumnStatistics
+        {
+            TableName = tableName,
+            ColumnName = columnName,
+            DistinctCount = distinctCount,
+            NonNullCount = nonNullCount,
+            MinValue = minValue,
+            MaxValue = maxValue,
+            IsStale = isStale,
+        };
+    }
+
+    private static byte[] SerializeStatisticsValue(DbValue value)
+    {
+        return value.Type switch
+        {
+            DbType.Null => [(byte)DbType.Null],
+            DbType.Integer => SerializeStatisticsFixedValue(value.Type, value.AsInteger),
+            DbType.Real => SerializeStatisticsFixedValue(value.Type, BitConverter.DoubleToInt64Bits(value.AsReal)),
+            DbType.Text => SerializeStatisticsVariableValue(value.Type, Encoding.UTF8.GetBytes(value.AsText)),
+            DbType.Blob => SerializeStatisticsVariableValue(value.Type, value.AsBlob),
+            _ => throw new InvalidOperationException($"Unsupported statistics value type '{value.Type}'."),
+        };
+    }
+
+    private static byte[] SerializeStatisticsFixedValue(DbType type, long bits)
+    {
+        byte[] payload = new byte[1 + 8];
+        payload[0] = (byte)type;
+        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(1, 8), bits);
+        return payload;
+    }
+
+    private static byte[] SerializeStatisticsVariableValue(DbType type, byte[] data)
+    {
+        byte[] payload = new byte[1 + 4 + data.Length];
+        payload[0] = (byte)type;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(1, 4), data.Length);
+        data.CopyTo(payload.AsSpan(5));
+        return payload;
+    }
+
+    private static DbValue DeserializeStatisticsValue(ReadOnlySpan<byte> payload)
+    {
+        DbType type = (DbType)payload[0];
+        return type switch
+        {
+            DbType.Null => DbValue.Null,
+            DbType.Integer => DbValue.FromInteger(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8))),
+            DbType.Real => DbValue.FromReal(BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8)))),
+            DbType.Text => DbValue.FromText(ReadStatisticsString(payload)),
+            DbType.Blob => DbValue.FromBlob(ReadStatisticsBytes(payload)),
+            _ => throw new InvalidOperationException($"Unsupported statistics value type '{type}'."),
+        };
+    }
+
+    private static string ReadStatisticsString(ReadOnlySpan<byte> payload)
+    {
+        int length = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(1, 4));
+        return Encoding.UTF8.GetString(payload.Slice(5, length));
+    }
+
+    private static byte[] ReadStatisticsBytes(ReadOnlySpan<byte> payload)
+    {
+        int length = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(1, 4));
+        return payload.Slice(5, length).ToArray();
+    }
+
     private void IncrementSchemaVersion()
     {
         Interlocked.Increment(ref _schemaVersion);
@@ -939,6 +1382,7 @@ internal sealed class CatalogService
         await PersistViewCatalogRootPageChangeAsync(ct);
         await PersistTriggerCatalogRootPageChangeAsync(ct);
         await PersistTableStatsCatalogRootPageChangeAsync(ct);
+        await PersistColumnStatsCatalogRootPageChangeAsync(ct);
     }
 
     private ValueTask PersistIndexCatalogRootPageChangeAsync(CancellationToken ct) =>
@@ -952,6 +1396,9 @@ internal sealed class CatalogService
 
     private ValueTask PersistTableStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_tableStatsCatalogTree, TableStatsCatalogSentinel, _persistedTableStatsCatalogRootPage, ct, rootPage => _persistedTableStatsCatalogRootPage = rootPage);
+
+    private ValueTask PersistColumnStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+        PersistAuxiliaryCatalogRootPageChangeAsync(_columnStatsCatalogTree, ColumnStatsCatalogSentinel, _persistedColumnStatsCatalogRootPage, ct, rootPage => _persistedColumnStatsCatalogRootPage = rootPage);
 
     private async ValueTask PersistAuxiliaryCatalogRootPageChangeAsync(
         BTree? tree,

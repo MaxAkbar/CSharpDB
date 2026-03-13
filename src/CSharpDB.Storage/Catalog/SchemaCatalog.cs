@@ -50,6 +50,18 @@ public sealed class SchemaCatalog
 
     public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
 
+    public ColumnStatistics? GetColumnStatistics(string tableName, string columnName) =>
+        _service.GetColumnStatistics(tableName, columnName);
+
+    public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics(string tableName) =>
+        _service.GetColumnStatistics(tableName);
+
+    public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics() =>
+        _service.GetColumnStatistics();
+
+    public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats) =>
+        _service.TryGetFreshColumnStatistics(tableName, columnName, out stats);
+
     public bool TryGetTableRowCount(string tableName, out long rowCount) =>
         _service.TryGetTableRowCount(tableName, out rowCount);
 
@@ -83,6 +95,15 @@ public sealed class SchemaCatalog
 
     public ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default) =>
         _service.AdjustTableRowCountAsync(tableName, delta, ct);
+
+    public ValueTask ReplaceColumnStatisticsAsync(
+        string tableName,
+        IReadOnlyList<ColumnStatistics> columnStatistics,
+        CancellationToken ct = default) =>
+        _service.ReplaceColumnStatisticsAsync(tableName, columnStatistics, ct);
+
+    public ValueTask MarkTableColumnStatisticsStaleAsync(string tableName, CancellationToken ct = default) =>
+        _service.MarkTableColumnStatisticsStaleAsync(tableName, ct);
 
     public BTree GetTableTree(string tableName) => _service.GetTableTree(tableName);
 

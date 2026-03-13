@@ -28,7 +28,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, GROUP BY, HAVING, CTEs, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries |
+| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries including `sys.table_stats` and `sys.column_stats` |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC; Named Pipes planned), with gRPC hosted by `CSharpDB.Daemon` |
@@ -368,12 +368,20 @@ CSharpDB.slnx
 | **Triggers** | `CREATE TRIGGER ... BEFORE/AFTER INSERT/UPDATE/DELETE ... BEGIN ... END` |
 | **CTEs** | `WITH name AS (select) SELECT ...` |
 | **JOINs** | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` |
+| **Set Operations** | `UNION`, `INTERSECT`, `EXCEPT` |
 | **Aggregates** | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX` |
 | **Scalar Functions** | `TEXT(expr)` |
 | **Modifiers** | `SELECT DISTINCT` |
 | **Clauses** | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET` |
+| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` |
+| **Statistics** | `ANALYZE`, `sys.table_stats`, `sys.column_stats` |
 | **Expressions** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `LIKE`, `IN`, `BETWEEN`, `IS NULL` |
 | **Types** | `INTEGER` (i64), `REAL` (f64), `TEXT` (UTF-8), `BLOB` (byte[]) |
+
+Current boundary:
+- Correlated subqueries are supported in `WHERE`, non-aggregate projection expressions, and `UPDATE` / `DELETE` expressions.
+- Correlated subqueries in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections remain unsupported.
+- `UNION ALL` remains planned.
 
 ### System Catalog Queries
 
@@ -386,9 +394,11 @@ SELECT * FROM sys.indexes WHERE table_name = 'users';
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
+SELECT * FROM sys.table_stats ORDER BY table_name;
+SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;
 ```
 
-Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`.
+Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_table_stats`, `sys_column_stats`.
 
 ## Building and Testing
 
@@ -446,9 +456,12 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Service layer refactor to facade over `CSharpDB.Client`
 - CI pipeline for cross-platform native library builds
 - `SELECT DISTINCT`, composite indexes, prepared statement caching
+- `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
+- `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
 
 **In progress**
 - Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
+- Broader statistics-driven planning for ranges, joins, and richer cost-based access-path choices
 - Service daemon expansion for persistent background hosting and same-machine local transport support
 - Named Pipes transport work for `CSharpDB.Client`
 
@@ -458,8 +471,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 
 **Mid-term**
 - Visual query designer for Admin UI ([plan](docs/query-designer/README.md))
-- Subqueries and `EXISTS`
-- `UNION` / `INTERSECT` / `EXCEPT`
+- Wider correlated subquery coverage and `UNION ALL`
 - Window functions (`ROW_NUMBER`, `RANK`)
 
 **Long-term**

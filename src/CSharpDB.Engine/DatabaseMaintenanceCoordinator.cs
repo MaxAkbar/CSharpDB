@@ -260,6 +260,9 @@ public static class DatabaseMaintenanceCoordinator
                 copiedRowCount = await CopyTableRowsAsync(source, destination, tableName, ct);
 
             await destination.Catalog.SetTableRowCountAsync(tableName, copiedRowCount, ct);
+            var columnStats = source.Catalog.GetColumnStatistics(tableName);
+            if (columnStats.Count > 0)
+                await destination.Catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.ToArray(), ct);
             await destination.Catalog.PersistRootPageChangesAsync(tableName, ct);
         }
 

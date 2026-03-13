@@ -69,6 +69,18 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "has_stale_columns", Type = DbType.Integer, Nullable = false },
     ];
 
+    private static readonly ColumnDefinition[] SystemColumnStatsColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "distinct_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "non_null_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "min_value", Type = DbType.Null, Nullable = true },
+        new ColumnDefinition { Name = "max_value", Type = DbType.Null, Nullable = true },
+        new ColumnDefinition { Name = "is_stale", Type = DbType.Integer, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] SystemSavedQueriesColumns =
     [
         new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
@@ -1567,10 +1579,76 @@ public sealed class QueryPlanner
         if (_catalog.IsView(tableName) || IsSystemCatalogTable(tableName))
             throw new CSharpDbException(ErrorCode.SyntaxError, $"ANALYZE does not support '{tableName}'.");
 
-        GetSchema(tableName);
+        var schema = GetSchema(tableName);
         var tree = _catalog.GetTableTree(tableName, _pager);
-        long rowCount = await tree.CountEntriesAsync(ct);
+        var columnStats = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
+        long rowCount = columnStats.RowCount;
         await _catalog.SetTableRowCountAsync(tableName, rowCount, ct);
+        await _catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.Columns, ct);
+    }
+
+    private async ValueTask<(long RowCount, ColumnStatistics[] Columns)> CollectColumnStatisticsAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        CancellationToken ct)
+    {
+        int columnCount = schema.Columns.Count;
+        var distinctSets = new HashSet<DbValue>[columnCount];
+        var nonNullCounts = new long[columnCount];
+        var minValues = new DbValue[columnCount];
+        var maxValues = new DbValue[columnCount];
+        var hasValues = new bool[columnCount];
+
+        int? scanCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
+        await scan.OpenAsync(ct);
+
+        long rowCount = 0;
+        while (await scan.MoveNextAsync(ct))
+        {
+            rowCount++;
+            var row = scan.Current;
+            for (int i = 0; i < columnCount; i++)
+            {
+                DbValue value = row[i];
+                if (value.IsNull)
+                    continue;
+
+                nonNullCounts[i]++;
+                (distinctSets[i] ??= new HashSet<DbValue>()).Add(value);
+
+                if (!hasValues[i])
+                {
+                    minValues[i] = value;
+                    maxValues[i] = value;
+                    hasValues[i] = true;
+                    continue;
+                }
+
+                if (DbValue.Compare(value, minValues[i]) < 0)
+                    minValues[i] = value;
+                if (DbValue.Compare(value, maxValues[i]) > 0)
+                    maxValues[i] = value;
+            }
+        }
+
+        var result = new ColumnStatistics[columnCount];
+        for (int i = 0; i < columnCount; i++)
+        {
+            result[i] = new ColumnStatistics
+            {
+                TableName = tableName,
+                ColumnName = schema.Columns[i].Name,
+                DistinctCount = distinctSets[i]?.Count ?? 0,
+                NonNullCount = nonNullCounts[i],
+                MinValue = hasValues[i] ? minValues[i] : DbValue.Null,
+                MaxValue = hasValues[i] ? maxValues[i] : DbValue.Null,
+                IsStale = false,
+            };
+        }
+
+        return (rowCount, result);
     }
 
     /// <summary>
@@ -1970,6 +2048,9 @@ public sealed class QueryPlanner
             await ExecuteResolvedInsertRowAsync(stmt.TableName, schema, tree, indexes, row, ct);
             inserted++;
         }
+
+        if (inserted > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
 
         if (persistRootChanges)
             await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
@@ -2983,6 +3064,9 @@ public sealed class QueryPlanner
             inserted++;
         }
 
+        if (inserted > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(insert.TableName, ct);
+
         if (persistRootChanges)
             await _catalog.PersistRootPageChangesAsync(insert.TableName, ct);
         return QueryResult.FromRowsAffected(inserted);
@@ -3304,6 +3388,7 @@ public sealed class QueryPlanner
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
+            "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             _ => 0,
         };
 
@@ -3629,6 +3714,9 @@ public sealed class QueryPlanner
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null, schema, ct);
         }
 
+        if (rowsToDelete.Count > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
         return new QueryResult(rowsToDelete.Count);
@@ -3716,6 +3804,9 @@ public sealed class QueryPlanner
             // AFTER UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
         }
+
+        if (updates.Count > 0)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -4525,48 +4616,27 @@ public sealed class QueryPlanner
             schema.Columns[pkIdx].Type == DbType.Integer;
         var indexes = _catalog.GetIndexesForTable(tableName);
 
-        // Fast path: single equality lookup term.
-        if (TryPickLookupCandidate(where, schema, indexes, hasIntegerPk, pkIdx, out var singleCandidate))
-        {
-            remaining = singleCandidate.RequiresResidualPredicate ? where : null;
-            return BuildLookupOperator(tableName, schema, singleCandidate.IsPrimaryKey, singleCandidate.Index, singleCandidate.LookupValue);
-        }
-
-        // Fast path: two-term AND where one side can be consumed as the lookup and the other stays as residual.
-        if (where is BinaryExpression { Op: BinaryOp.And } andExpr)
-        {
-            bool hasLeft = TryPickLookupCandidate(andExpr.Left, schema, indexes, hasIntegerPk, pkIdx, out var leftCandidate);
-            bool hasRight = TryPickLookupCandidate(andExpr.Right, schema, indexes, hasIntegerPk, pkIdx, out var rightCandidate);
-
-            if (hasLeft || hasRight)
-            {
-                bool useLeft = hasLeft && (!hasRight || leftCandidate.Rank <= rightCandidate.Rank);
-                var selected = useLeft ? leftCandidate : rightCandidate;
-                remaining = selected.RequiresResidualPredicate
-                    ? where
-                    : (useLeft ? andExpr.Right : andExpr.Left);
-                return BuildLookupOperator(tableName, schema, selected.IsPrimaryKey, selected.Index, selected.LookupValue);
-            }
-        }
-
         remaining = where;
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(where, conjuncts);
 
         int selectedConjunctIndex = -1;
-        int selectedRank = int.MaxValue;
         LookupCandidate selectedCandidate = default;
+        bool hasSelectedCandidate = false;
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (!TryPickLookupCandidate(conjuncts[i], schema, indexes, hasIntegerPk, pkIdx, out var candidate))
+            if (!TryPickLookupCandidate(tableName, conjuncts[i], schema, indexes, hasIntegerPk, pkIdx, out var candidate))
                 continue;
 
-            if (candidate.Rank < selectedRank)
+            if (!ShouldUseLookupCandidate(candidate))
+                continue;
+
+            if (!hasSelectedCandidate || IsBetterLookupCandidate(candidate, selectedCandidate))
             {
-                selectedRank = candidate.Rank;
                 selectedConjunctIndex = i;
                 selectedCandidate = candidate;
+                hasSelectedCandidate = true;
 
                 if (candidate.Rank == 0)
                     break;
@@ -4581,7 +4651,7 @@ public sealed class QueryPlanner
             out long compositeLookupKey);
 
         if (hasCompositeCandidate &&
-            (selectedConjunctIndex < 0 || (compositeIndex!.IsUnique ? 1 : 2) < selectedRank))
+            (!hasSelectedCandidate || (compositeIndex!.IsUnique ? 1 : 2) < selectedCandidate.Rank))
         {
             // Composite index keys are hashed; keep the full predicate as residual
             // so hash collisions are filtered out by expression evaluation.
@@ -4594,7 +4664,7 @@ public sealed class QueryPlanner
                 compositeLookupKey);
         }
 
-        if (selectedConjunctIndex < 0)
+        if (!hasSelectedCandidate || selectedConjunctIndex < 0)
             return null;
         IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
 
@@ -4628,9 +4698,12 @@ public sealed class QueryPlanner
         bool IsPrimaryKey,
         IndexSchema? Index,
         int Rank,
-        bool RequiresResidualPredicate);
+        bool RequiresResidualPredicate,
+        long? EstimatedRows,
+        long? TableRowCount);
 
-    private static bool TryPickLookupCandidate(
+    private bool TryPickLookupCandidate(
+        string tableName,
         Expression expression,
         TableSchema schema,
         IReadOnlyList<IndexSchema> indexes,
@@ -4652,7 +4725,9 @@ public sealed class QueryPlanner
                 IsPrimaryKey: true,
                 Index: null,
                 Rank: 0,
-                RequiresResidualPredicate: false);
+                RequiresResidualPredicate: false,
+                EstimatedRows: 1,
+                TableRowCount: 1);
             return true;
         }
 
@@ -4667,14 +4742,95 @@ public sealed class QueryPlanner
         long lookupValue = usesDirectIntegerKey
             ? lookupLiteral.AsInteger
             : ComputeIndexKey(new[] { lookupLiteral });
+        long estimatedRows = 0;
+        long tableRowCount = 0;
+        bool hasEstimatedRows = !matchedIndex.IsUnique &&
+            TryEstimateLookupRowCount(tableName, columnName, out estimatedRows, out tableRowCount);
 
         candidate = new LookupCandidate(
             lookupValue,
             IsPrimaryKey: false,
             Index: matchedIndex,
             Rank: matchedIndex.IsUnique ? 1 : 2,
-            RequiresResidualPredicate: !usesDirectIntegerKey);
+            RequiresResidualPredicate: !usesDirectIntegerKey,
+            EstimatedRows: matchedIndex.IsUnique
+                ? 1
+                : hasEstimatedRows ? estimatedRows : null,
+            TableRowCount: matchedIndex.IsUnique
+                ? 1
+                : hasEstimatedRows ? tableRowCount : null);
         return true;
+    }
+
+    private bool TryEstimateLookupRowCount(string tableName, string columnName, out long estimatedRows, out long tableRowCount)
+    {
+        estimatedRows = 0;
+        tableRowCount = 0;
+
+        if (!_catalog.TryGetTableRowCount(tableName, out tableRowCount) ||
+            tableRowCount <= 0 ||
+            !_catalog.TryGetFreshColumnStatistics(tableName, columnName, out var stats) ||
+            stats.DistinctCount <= 0)
+        {
+            return false;
+        }
+
+        estimatedRows = Math.Max(1, DivideRoundUp(tableRowCount, stats.DistinctCount));
+        return true;
+    }
+
+    private static bool ShouldUseLookupCandidate(LookupCandidate candidate)
+    {
+        if (candidate.IsPrimaryKey || candidate.Index?.IsUnique == true)
+            return true;
+
+        if (!candidate.EstimatedRows.HasValue)
+            return true;
+
+        if (!candidate.TableRowCount.HasValue)
+            return true;
+
+        return ShouldPreferNonUniqueLookup(candidate.TableRowCount.Value, candidate.EstimatedRows.Value, candidate.RequiresResidualPredicate);
+    }
+
+    private static bool ShouldPreferNonUniqueLookup(long tableRowCount, long estimatedRows, bool requiresResidualPredicate)
+    {
+        tableRowCount = Math.Max(tableRowCount, 1);
+        estimatedRows = Math.Clamp(estimatedRows, 1, tableRowCount);
+
+        if (tableRowCount <= 64)
+            return true;
+
+        long divisor = requiresResidualPredicate ? 8 : 4;
+        return estimatedRows <= Math.Max(1, tableRowCount / divisor);
+    }
+
+    private static bool IsBetterLookupCandidate(LookupCandidate candidate, LookupCandidate currentBest)
+    {
+        if (candidate.Rank != currentBest.Rank)
+            return candidate.Rank < currentBest.Rank;
+
+        if (candidate.EstimatedRows.HasValue && currentBest.EstimatedRows.HasValue &&
+            candidate.EstimatedRows.Value != currentBest.EstimatedRows.Value)
+        {
+            return candidate.EstimatedRows.Value < currentBest.EstimatedRows.Value;
+        }
+
+        if (candidate.EstimatedRows.HasValue != currentBest.EstimatedRows.HasValue)
+            return candidate.EstimatedRows.HasValue;
+
+        if (candidate.RequiresResidualPredicate != currentBest.RequiresResidualPredicate)
+            return !candidate.RequiresResidualPredicate;
+
+        return false;
+    }
+
+    private static long DivideRoundUp(long dividend, long divisor)
+    {
+        if (divisor <= 0)
+            throw new ArgumentOutOfRangeException(nameof(divisor));
+
+        return dividend / divisor + (dividend % divisor == 0 ? 0 : 1);
     }
 
     private static bool TryPickCompositeLookupCandidate(
@@ -6662,6 +6818,13 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.column_stats";
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
@@ -6732,6 +6895,11 @@ public sealed class QueryPlanner
             case "sys.table_stats":
                 columns = SystemTableStatsColumns;
                 rows = BuildSystemTableStatsRows();
+                break;
+
+            case "sys.column_stats":
+                columns = SystemColumnStatsColumns;
+                rows = BuildSystemColumnStatsRows();
                 break;
 
             default:
@@ -6977,6 +7145,41 @@ public sealed class QueryPlanner
         }
 
         return rows;
+    }
+
+    private List<DbValue[]> BuildSystemColumnStatsRows()
+    {
+        var columnStats = _catalog.GetColumnStatistics();
+        var rows = new List<DbValue[]>(columnStats.Count);
+        foreach (var stats in columnStats
+                     .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(item => GetColumnOrdinal(item.TableName, item.ColumnName))
+                     .ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(stats.TableName),
+                DbValue.FromText(stats.ColumnName),
+                DbValue.FromInteger(GetColumnOrdinal(stats.TableName, stats.ColumnName)),
+                DbValue.FromInteger(stats.DistinctCount),
+                DbValue.FromInteger(stats.NonNullCount),
+                stats.MinValue,
+                stats.MaxValue,
+                DbValue.FromInteger(stats.IsStale ? 1 : 0),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private int GetColumnOrdinal(string tableName, string columnName)
+    {
+        var schema = _catalog.GetTable(tableName);
+        if (schema == null)
+            return 0;
+
+        int columnIndex = schema.GetColumnIndex(columnName);
+        return columnIndex >= 0 ? columnIndex + 1 : 0;
     }
 
     private ColumnDefinition[] BuildAggregateOutputSchema(List<SelectColumn> columns, TableSchema schema)

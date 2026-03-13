@@ -8,6 +8,12 @@
 - Added correlated subquery evaluation for `WHERE`, non-aggregate projection expressions, and `UPDATE`/`DELETE` expressions.
 - Correlated subqueries are still rejected in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections, and `UNION ALL` is not implemented yet.
 
+### Statistics And Planning
+- Added `sys.column_stats` alongside `sys.table_stats`.
+- Added exact `distinct_count`, `non_null_count`, `min_value`, and `max_value` refresh during `ANALYZE`.
+- Added stale tracking for persisted column stats after writes, with rollback/reopen and VACUUM copy preserving catalog correctness.
+- Added initial planner use of fresh column stats to avoid obviously low-selectivity non-unique equality lookups and prefer more selective lookup terms.
+
 ### Client Transport Completion
 - Added the REST-backed `Http` transport implementation for `CSharpDB.Client`, so the unified client now has working Direct, HTTP, and gRPC paths.
 - Completed the API coverage needed by the HTTP client for collections, saved queries, procedures, transaction sessions, checkpointing, maintenance, and storage inspection flows.

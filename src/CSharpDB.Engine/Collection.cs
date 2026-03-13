@@ -60,6 +60,7 @@ public sealed class Collection<
         ArgumentNullException.ThrowIfNull(document);
 
         RefreshIndexesIfSchemaChanged();
+        bool mutated = false;
 
         await AutoCommitAsync(async () =>
         {
@@ -76,6 +77,7 @@ public sealed class Collection<
                     await _tree.InsertAsync(probeHash, newPayload, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
                     await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
+                    mutated = true;
                     return;
                 }
 
@@ -87,6 +89,7 @@ public sealed class Collection<
                     await _tree.DeleteAsync(probeHash, ct);
                     await _tree.InsertAsync(probeHash, newPayload, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
+                    mutated = true;
                     return;
                 }
             }
@@ -95,6 +98,9 @@ public sealed class Collection<
                 ErrorCode.Unknown,
                 $"Hash collision probe limit exceeded for key '{key}'.");
         }, ct);
+
+        if (mutated)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
     }
 
     /// <summary>
@@ -155,6 +161,9 @@ public sealed class Collection<
                 }
             }
         }, ct);
+
+        if (deleted)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
 
         return deleted;
     }

@@ -25,7 +25,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
 | **Background WAL checkpointing** | Incremental/sliced auto-checkpointing to move work off the triggering commit | Done |
-| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV, min/max; cost-based index selection in query planner | Planned |
+| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | In progress |
 
 ---
 
@@ -93,7 +93,7 @@ These are known simplifications in the current implementation:
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | No mmap read path |
-| **Query** | No ANALYZE — query planner uses rule-based heuristics instead of statistics-driven cost estimation |
+| **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` exist, but range and join costing still lean on heuristics rather than broader statistics-driven estimation |
 
 ---
 
@@ -113,6 +113,8 @@ Major features already implemented:
 - Scalar `TEXT(expr)` for filter-friendly text coercion
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
+- `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
+- Initial statistics-guided non-unique equality lookup selection
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata

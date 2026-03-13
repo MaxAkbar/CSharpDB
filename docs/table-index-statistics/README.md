@@ -1,8 +1,30 @@
 # CSharpDB Table/Index Statistics — Roadmap & Design
 
-> **Status (March 2026):** Planned. This document captures the recommended v1 direction for table and index statistics in CSharpDB. The current planner is still rule-based and does not support `ANALYZE`.
+> **Status (March 2026):** Partially implemented. CSharpDB now supports `ANALYZE`, exact persisted table `row_count`, `sys.table_stats`, `sys.column_stats`, exact `NDV` / `min` / `max` refresh on `ANALYZE`, stale tracking after writes, and initial fresh-stat-guided non-unique index selection. Broader range/join costing and derived `sys.index_stats` remain planned.
 
-CSharpDB already has strong fast paths for primary-key lookups, equality index lookups, integer range scans, and several join cases. What it does not have yet is persisted statistics that let the planner decide when an index is actually selective enough to beat a scan, or when a join strategy is likely to fan out badly.
+CSharpDB already has strong fast paths for primary-key lookups, equality index lookups, integer range scans, and several join cases. It now also has persisted exact table row counts, but it still does not have full column-level statistics that let the planner decide when an index is actually selective enough to beat a scan, or when a join strategy is likely to fan out badly.
+
+## Current State
+
+Shipped in the current slice:
+
+- `ANALYZE;` and `ANALYZE table_name;`
+- exact persisted table `row_count`
+- `sys.table_stats`
+- `sys.column_stats`
+- exact persisted column `NDV`, `min`, and `max` after `ANALYZE`
+- stale column-stat tracking after writes
+- exact `row_count` maintenance across insert, delete, rollback, reopen, and maintenance-copy flows
+- `COUNT(*)` shortcut backed by persisted table counts
+- planner reuse of persisted table row counts for cardinality estimation
+- planner reuse of fresh column stats for conservative non-unique equality lookup choice
+
+Still pending in the larger statistics plan:
+
+- `sys.index_stats`
+- broader cost-based scan-vs-index decisions using column statistics
+- NDV-informed join fanout estimation
+- range selectivity from persisted `min` / `max`
 
 ---
 
@@ -17,7 +39,6 @@ Today the planner makes access-path decisions with fixed heuristics:
 
 That leaves several known gaps:
 
-- table row counts are not persisted, so some planner decisions may pay a first-use leaf walk
 - low-NDV non-unique indexes can be chosen even when they touch a large fraction of the table
 - range predicates do not yet benefit from persisted `min` / `max` boundaries
 - duplicate-heavy join keys can push the planner toward poor build-side or index-nested-loop choices
@@ -106,10 +127,11 @@ Recommended catalog shape:
 |--------|---------|
 | `table_name` | Table name |
 | `column_name` | Column name |
-| `data_type` | Declared column type |
-| `ndv` | Distinct value count when fresh |
-| `min_value_text` | Display-friendly min value |
-| `max_value_text` | Display-friendly max value |
+| `ordinal_position` | 1-based ordinal within the table |
+| `distinct_count` | Distinct non-null values when fresh |
+| `non_null_count` | Non-null row count when fresh |
+| `min_value` | Typed minimum non-null value |
+| `max_value` | Typed maximum non-null value |
 | `is_stale` | Whether the column stat can no longer be trusted |
 
 ### `sys.index_stats`
@@ -320,13 +342,11 @@ Those are good next steps, but they should not block a focused v1.
 
 ## Conclusion
 
-The recommended first milestone is:
+The recommended next milestone from here is:
 
-- exact persisted table `row_count`
 - persisted column `NDV`, `min`, and `max`
 - stale-aware auto-maintenance
-- `ANALYZE` as the exact refresh command
 - cost-based single-table index selection
 - better join build and fanout decisions
 
-That is a meaningful improvement to planner quality, answers the performance question positively, and stays within a scope that can be implemented without rewriting the entire optimizer.
+The exact table-row-count slice is already in place. The remaining work is what turns that metadata foundation into a broader planner-quality upgrade.

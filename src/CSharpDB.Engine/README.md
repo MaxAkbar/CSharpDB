@@ -13,7 +13,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 
 ## Features
 
-- **SQL engine**: DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, views, triggers, indexes
+- **SQL engine**: DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, views, triggers, indexes, `ANALYZE`, and `sys.*` catalogs including `sys.table_stats` and `sys.column_stats`
 - **NoSQL Collection API**: Typed `Collection<T>` with `Put`/`Get`/`Delete`/`Scan`/`Find`
 - **Single-file storage**: All data in one `.db` file with 4 KB B+tree pages
 - **In-memory mode**: Open empty in memory, load an existing `.db` + `.wal` into memory, then save back to disk
@@ -21,7 +21,13 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 - **Concurrent readers**: Snapshot-isolated readers alongside a single writer
 - **Statement + plan caching**: bounded caches for parsed SQL statements and SELECT plan reuse
 - **Fast-path lookups**: Direct B+tree access for `SELECT ... WHERE pk = value`
+- **Persisted statistics**: Exact row counts maintained on write, `ANALYZE`-refreshed column distinct/min/max stats, stale tracking after writes, and reuse of fresh stats for `COUNT(*)` and selective lookup planning
 - **Async-first**: All APIs are `async`/`await` from top to bottom
+
+Current boundary:
+- Correlated subqueries are supported in `WHERE`, non-aggregate projection expressions, and `UPDATE` / `DELETE` expressions.
+- Correlated subqueries in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections remain unsupported.
+- `UNION ALL` remains planned.
 
 ## Usage
 
