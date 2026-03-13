@@ -258,6 +258,48 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_SelectWithSubquery_BindsParametersInsideSubquery()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "CREATE TABLE featured_users (user_id INTEGER);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO users VALUES (1, 'Ada');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO users VALUES (2, 'Grace');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO users VALUES (3, 'Linus');";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO featured_users VALUES (2);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO featured_users VALUES (3);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT name FROM users WHERE id IN (SELECT user_id FROM featured_users WHERE user_id >= @minId) ORDER BY id;";
+        var minId = cmd.Parameters.AddWithValue("@minId", 2);
+        cmd.Prepare();
+
+        await using (var reader = await cmd.ExecuteReaderAsync(Ct))
+        {
+            Assert.True(await reader.ReadAsync(Ct));
+            Assert.Equal("Grace", reader.GetString(0));
+            Assert.True(await reader.ReadAsync(Ct));
+            Assert.Equal("Linus", reader.GetString(0));
+            Assert.False(await reader.ReadAsync(Ct));
+        }
+
+        minId.Value = 3;
+
+        await using var narrowedReader = await cmd.ExecuteReaderAsync(Ct);
+        Assert.True(await narrowedReader.ReadAsync(Ct));
+        Assert.Equal("Linus", narrowedReader.GetString(0));
+        Assert.False(await narrowedReader.ReadAsync(Ct));
+    }
+
+    [Fact]
     public async Task ExecuteReaderAsync_ParameterizedLimit_FallsBackToSqlBindingPath()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

@@ -4,6 +4,8 @@ namespace CSharpDB.Sql;
 
 public abstract class Statement { }
 
+public abstract class QueryStatement : Statement { }
+
 public sealed class CreateTableStatement : Statement
 {
     public required string TableName { get; init; }
@@ -33,7 +35,7 @@ public sealed class InsertStatement : Statement
     public required List<List<Expression>> ValueRows { get; init; }
 }
 
-public sealed class SelectStatement : Statement
+public sealed class SelectStatement : QueryStatement
 {
     public bool IsDistinct { get; init; }
     public required List<SelectColumn> Columns { get; init; }
@@ -41,6 +43,23 @@ public sealed class SelectStatement : Statement
     public Expression? Where { get; init; }
     public List<Expression>? GroupBy { get; init; }
     public Expression? Having { get; init; }
+    public List<OrderByClause>? OrderBy { get; init; }
+    public int? Limit { get; init; }
+    public int? Offset { get; init; }
+}
+
+public enum SetOperationKind
+{
+    Union,
+    Intersect,
+    Except,
+}
+
+public sealed class CompoundSelectStatement : QueryStatement
+{
+    public required QueryStatement Left { get; init; }
+    public required QueryStatement Right { get; init; }
+    public required SetOperationKind Operation { get; init; }
     public List<OrderByClause>? OrderBy { get; init; }
     public int? Limit { get; init; }
     public int? Offset { get; init; }
@@ -157,7 +176,7 @@ public sealed class DropIndexStatement : Statement
 public sealed class CreateViewStatement : Statement
 {
     public required string ViewName { get; init; }
-    public required SelectStatement Query { get; init; }
+    public required QueryStatement Query { get; init; }
     public bool IfNotExists { get; init; }
 }
 
@@ -186,19 +205,24 @@ public sealed class DropTriggerStatement : Statement
     public bool IfExists { get; init; }
 }
 
+public sealed class AnalyzeStatement : Statement
+{
+    public string? TableName { get; init; }
+}
+
 // ============ Common Table Expressions (CTEs) ============
 
 public sealed class CteDefinition
 {
     public required string Name { get; init; }
     public List<string>? ColumnNames { get; init; }
-    public required SelectStatement Query { get; init; }
+    public required QueryStatement Query { get; init; }
 }
 
 public sealed class WithStatement : Statement
 {
     public required List<CteDefinition> Ctes { get; init; }
-    public required SelectStatement MainQuery { get; init; }
+    public required QueryStatement MainQuery { get; init; }
 }
 
 // ============ Expressions ============
@@ -255,6 +279,23 @@ public sealed class InExpression : Expression
     public required Expression Operand { get; init; }
     public required List<Expression> Values { get; init; }
     public bool Negated { get; init; }
+}
+
+public sealed class InSubqueryExpression : Expression
+{
+    public required Expression Operand { get; init; }
+    public required QueryStatement Query { get; init; }
+    public bool Negated { get; init; }
+}
+
+public sealed class ScalarSubqueryExpression : Expression
+{
+    public required QueryStatement Query { get; init; }
+}
+
+public sealed class ExistsExpression : Expression
+{
+    public required QueryStatement Query { get; init; }
 }
 
 public sealed class BetweenExpression : Expression

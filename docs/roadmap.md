@@ -36,8 +36,8 @@ SQL feature parity and ecosystem expansion.
 | Feature | Description | Status |
 |---------|-------------|--------|
 | **User-defined functions** | Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
-| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)` | Planned |
-| **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results | Planned |
+| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, including correlated evaluation in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions | Done |
+| **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies | Done |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
@@ -80,7 +80,8 @@ These are known simplifications in the current implementation:
 | Area | Limitation |
 |------|-----------|
 | **Functions** | Very limited scalar function surface today: built-in `TEXT(expr)` plus aggregate functions; no broader built-in function library or user-defined functions yet |
-| **Query** | No scalar/`IN`/`EXISTS` subqueries, and no `UNION`/`INTERSECT`/`EXCEPT` |
+| **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
+| **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
 | **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
@@ -106,7 +107,9 @@ Major features already implemented:
 - Concurrent snapshot-isolated readers via WAL-based MVCC
 - Full SQL pipeline: tokenizer, parser, query planner, operator tree
 - JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs
+- Set operations: `UNION`, `INTERSECT`, `EXCEPT`
 - `SELECT DISTINCT` and DISTINCT aggregates
+- Scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`, including correlated evaluation in filters, non-aggregate projections, and `UPDATE`/`DELETE` expressions
 - Scalar `TEXT(expr)` for filter-friendly text coercion
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path

@@ -75,6 +75,7 @@ public sealed class Collection<
                 {
                     await _tree.InsertAsync(probeHash, newPayload, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
+                    await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
                     return;
                 }
 
@@ -148,6 +149,7 @@ public sealed class Collection<
                         await DeleteFromIndexesAsync(probeHash, payloadMemory, ct);
 
                     await _tree.DeleteAsync(probeHash, ct);
+                    await _catalog.AdjustTableRowCountAsync(_catalogTableName, -1, ct);
                     deleted = true;
                     return;
                 }
@@ -161,7 +163,9 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => await _tree.CountEntriesAsync(ct);
+        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount)
+            ? rowCount
+            : await _tree.CountEntriesAsync(ct);
 
     /// <summary>
     /// Iterate all documents in the collection.
@@ -583,6 +587,7 @@ public sealed class Collection<
         catch
         {
             await _pager.RollbackAsync(ct);
+            await _catalog.ReloadAsync(ct);
             throw;
         }
     }

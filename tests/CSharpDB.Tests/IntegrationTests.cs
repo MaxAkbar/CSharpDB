@@ -1170,6 +1170,335 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Union_RemovesDuplicates_AndAppliesOuterOrderBy()
+    {
+        await _db.ExecuteAsync("CREATE TABLE set_left (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE set_right (val INTEGER)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("INSERT INTO set_left VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO set_left VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO set_left VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO set_right VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO set_right VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO set_right VALUES (4)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM set_left UNION SELECT val FROM set_right ORDER BY val",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(2, rows[1][0].AsInteger);
+        Assert.Equal(3, rows[2][0].AsInteger);
+        Assert.Equal(4, rows[3][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Intersect_ReturnsDistinctSharedRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE intersect_left (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE intersect_right (val INTEGER)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("INSERT INTO intersect_left VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_left VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_left VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_left VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_right VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_right VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO intersect_right VALUES (4)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM intersect_left INTERSECT SELECT val FROM intersect_right",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal(2, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Except_ReturnsDistinctRowsOnlyFromLeft()
+    {
+        await _db.ExecuteAsync("CREATE TABLE except_left (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE except_right (val INTEGER)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync("INSERT INTO except_left VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO except_left VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO except_left VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO except_left VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO except_right VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO except_right VALUES (4)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM except_left EXCEPT SELECT val FROM except_right ORDER BY val",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task CompoundSelect_CanBackViewDefinition()
+    {
+        await _db.ExecuteAsync("CREATE TABLE view_left (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE view_right (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO view_left VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO view_right VALUES (2)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync(
+            "CREATE VIEW combined_vals AS SELECT val FROM view_left UNION SELECT val FROM view_right",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val FROM combined_vals ORDER BY val",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(2, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task ScalarSubquery_CanFilterRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE scalar_users (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE scalar_cfg (selected_id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_users VALUES (1, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_users VALUES (2, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_cfg VALUES (2)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM scalar_users WHERE id = (SELECT selected_id FROM scalar_cfg)",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal("Grace", rows[0][0].AsText);
+    }
+
+    [Fact]
+    public async Task InSubquery_FiltersRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE in_users (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE featured_users (user_id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO in_users VALUES (1, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO in_users VALUES (2, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO in_users VALUES (3, 'Linus')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO featured_users VALUES (3)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO featured_users VALUES (2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO featured_users VALUES (2)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM in_users WHERE id IN (SELECT user_id FROM featured_users) ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Grace", rows[0][0].AsText);
+        Assert.Equal("Linus", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task ExistsSubquery_CanGateResultSet()
+    {
+        await _db.ExecuteAsync("CREATE TABLE exists_users (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE feature_flags (enabled INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO exists_users VALUES (1, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO exists_users VALUES (2, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO exists_users VALUES (3, 'Linus')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO feature_flags VALUES (1)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM exists_users WHERE id > 1 AND EXISTS (SELECT enabled FROM feature_flags WHERE enabled = 1) ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Grace", rows[0][0].AsText);
+        Assert.Equal("Linus", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task ScalarSubquery_CanDriveUpdateExpressions()
+    {
+        await _db.ExecuteAsync("CREATE TABLE subquery_products (id INTEGER PRIMARY KEY, discount INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE subquery_rules (discount INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_products VALUES (1, 0)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_products VALUES (2, 0)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_rules VALUES (15)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync(
+            "UPDATE subquery_products SET discount = (SELECT discount FROM subquery_rules) WHERE id = 2",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT discount FROM subquery_products WHERE id = 2",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal(15L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task View_CanContainScalarSubquery()
+    {
+        await _db.ExecuteAsync("CREATE TABLE subquery_view_items (id INTEGER PRIMARY KEY, label TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE subquery_view_cfg (mode TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_view_items VALUES (1, 'A')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_view_items VALUES (2, 'B')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO subquery_view_cfg VALUES ('live')", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync(
+            "CREATE VIEW item_modes AS SELECT id, (SELECT mode FROM subquery_view_cfg) AS mode FROM subquery_view_items",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT mode FROM item_modes ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("live", rows[0][0].AsText);
+        Assert.Equal("live", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task ScalarSubquery_ThrowsWhenMultipleRowsReturned()
+    {
+        await _db.ExecuteAsync("CREATE TABLE scalar_outer (id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE scalar_many (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_outer VALUES (1)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_many VALUES (10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO scalar_many VALUES (20)", TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<CSharpDbException>(async () =>
+        {
+            await using var result = await _db.ExecuteAsync(
+                "SELECT (SELECT val FROM scalar_many) AS picked FROM scalar_outer",
+                TestContext.Current.CancellationToken);
+            _ = await result.ToListAsync(TestContext.Current.CancellationToken);
+        });
+
+        Assert.Equal(ErrorCode.SyntaxError, ex.Code);
+        Assert.Contains("more than one row", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CorrelatedScalarSubquery_CanFilterRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_scalar_users (id INTEGER PRIMARY KEY, dept_id INTEGER, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_scalar_cfg (dept_id INTEGER, selected_id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_scalar_users VALUES (1, 10, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_scalar_users VALUES (2, 10, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_scalar_users VALUES (3, 20, 'Linus')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_scalar_cfg VALUES (10, 2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_scalar_cfg VALUES (20, 3)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM corr_scalar_users u WHERE id = (SELECT selected_id FROM corr_scalar_cfg c WHERE c.dept_id = u.dept_id) ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Grace", rows[0][0].AsText);
+        Assert.Equal("Linus", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task CorrelatedInSubquery_FiltersRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_in_users (id INTEGER PRIMARY KEY, region_id INTEGER, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_in_featured (region_id INTEGER, user_id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_in_users VALUES (1, 10, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_in_users VALUES (2, 10, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_in_users VALUES (3, 20, 'Linus')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_in_featured VALUES (10, 2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_in_featured VALUES (20, 3)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM corr_in_users u WHERE id IN (SELECT user_id FROM corr_in_featured f WHERE f.region_id = u.region_id) ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Grace", rows[0][0].AsText);
+        Assert.Equal("Linus", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task CorrelatedExistsSubquery_FiltersRows()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_exists_projects (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_exists_members (project_id INTEGER, role TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_projects VALUES (1, 'Apollo')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_projects VALUES (2, 'Gemini')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_projects VALUES (3, 'Mercury')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_members VALUES (1, 'lead')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_members VALUES (1, 'reviewer')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_exists_members VALUES (3, 'lead')", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM corr_exists_projects p WHERE EXISTS (SELECT project_id FROM corr_exists_members m WHERE m.project_id = p.id AND m.role = 'lead') ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Apollo", rows[0][0].AsText);
+        Assert.Equal("Mercury", rows[1][0].AsText);
+    }
+
+    [Fact]
+    public async Task CorrelatedScalarSubquery_CanDriveUpdateExpressions()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_update_staff (id INTEGER PRIMARY KEY, dept_code INTEGER, bonus INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_update_rules (target_code INTEGER, bonus INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_update_staff VALUES (1, 10, 0)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_update_staff VALUES (2, 20, 0)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_update_rules VALUES (10, 5)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_update_rules VALUES (20, 9)", TestContext.Current.CancellationToken);
+
+        await _db.ExecuteAsync(
+            "UPDATE corr_update_staff SET bonus = (SELECT bonus FROM corr_update_rules WHERE target_code = dept_code)",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT bonus FROM corr_update_staff ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(5L, rows[0][0].AsInteger);
+        Assert.Equal(9L, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task CorrelatedOrderBySubquery_IsRejected()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_order_items (id INTEGER PRIMARY KEY, score INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_order_weights (item_id INTEGER, weight INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_order_items VALUES (1, 10)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_order_items VALUES (2, 20)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_order_weights VALUES (1, 5)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_order_weights VALUES (2, 1)", TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<CSharpDbException>(async () =>
+        {
+            await using var result = await _db.ExecuteAsync(
+                "SELECT id FROM corr_order_items o ORDER BY (SELECT weight FROM corr_order_weights w WHERE w.item_id = o.id)",
+                TestContext.Current.CancellationToken);
+            _ = await result.ToListAsync(TestContext.Current.CancellationToken);
+        });
+
+        Assert.Equal(ErrorCode.SyntaxError, ex.Code);
+        Assert.Contains("ORDER BY", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Aggregate_WithAlias()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER, val INTEGER)", TestContext.Current.CancellationToken);

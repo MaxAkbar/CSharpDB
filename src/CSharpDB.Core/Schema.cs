@@ -109,6 +109,13 @@ public sealed class IndexSchema
     public bool IsUnique { get; init; }
 }
 
+public sealed class TableStatistics
+{
+    public required string TableName { get; init; }
+    public long RowCount { get; init; }
+    public bool HasStaleColumns { get; init; }
+}
+
 public enum TriggerTiming { Before, After }
 public enum TriggerEvent { Insert, Update, Delete }
 

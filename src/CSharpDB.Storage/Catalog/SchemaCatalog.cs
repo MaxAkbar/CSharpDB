@@ -46,6 +46,13 @@ public sealed class SchemaCatalog
 
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
 
+    public TableStatistics? GetTableStatistics(string tableName) => _service.GetTableStatistics(tableName);
+
+    public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
+
+    public bool TryGetTableRowCount(string tableName, out long rowCount) =>
+        _service.TryGetTableRowCount(tableName, out rowCount);
+
     public uint GetTableRootPage(string tableName) => _service.GetTableRootPage(tableName);
 
     public IReadOnlyCollection<string> GetTableNames() => _service.GetTableNames();
@@ -55,6 +62,9 @@ public sealed class SchemaCatalog
 
     public ValueTask PersistAllRootPageChangesAsync(CancellationToken ct = default) =>
         _service.PersistAllRootPageChangesAsync(ct);
+
+    public ValueTask ReloadAsync(CancellationToken ct = default) =>
+        _service.ReloadAsync(ct);
 
     public ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default) =>
         _service.CreateTableAsync(schema, ct);
@@ -67,6 +77,12 @@ public sealed class SchemaCatalog
 
     public ValueTask UpdateTableSchemaAsync(string oldTableName, TableSchema newSchema, CancellationToken ct = default) =>
         _service.UpdateTableSchemaAsync(oldTableName, newSchema, ct);
+
+    public ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default) =>
+        _service.SetTableRowCountAsync(tableName, rowCount, ct);
+
+    public ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default) =>
+        _service.AdjustTableRowCountAsync(tableName, delta, ct);
 
     public BTree GetTableTree(string tableName) => _service.GetTableTree(tableName);
 
