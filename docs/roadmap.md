@@ -150,6 +150,9 @@ Major features already implemented:
 - [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
 - [Query Designer Plan](query-designer/README.md) — Classic visual `SELECT` builder for the Admin UI with SQL round-trip and saved layouts
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
+- [Advanced Collection Storage Plan](advanced-collection-storage/README.md) — `v3` binary collection payloads, direct hydration, path indexes, and migration tooling
+- [SQL Performance Plan](sql-performance/README.md) — SQL-specific performance priorities centered on index coverage, predicate pushdown, and lower row materialization overhead
+- [Performance Phasing Plan](performance-phasing/README.md) — Shared phases across SQL and collection performance work, from common foundations to separate implementation tracks
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
