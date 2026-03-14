@@ -16,6 +16,21 @@ internal static class RowIdPayloadCodec
         return payload;
     }
 
+    public static byte[] CreateFromSorted(IReadOnlyList<long> rowIds)
+    {
+        ArgumentNullException.ThrowIfNull(rowIds);
+        if (rowIds.Count == 0)
+            return Array.Empty<byte>();
+        if (rowIds.Count == 1)
+            return CreateSingle(rowIds[0]);
+
+        byte[] payload = GC.AllocateUninitializedArray<byte>(rowIds.Count * RowIdSize);
+        for (int i = 0; i < rowIds.Count; i++)
+            BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(i * RowIdSize, RowIdSize), rowIds[i]);
+
+        return payload;
+    }
+
     public static int GetCount(ReadOnlySpan<byte> payload) => payload.Length / RowIdSize;
 
     public static long ReadAt(ReadOnlySpan<byte> payload, int index)
@@ -42,6 +57,27 @@ internal static class RowIdPayloadCodec
         return true;
     }
 
+    public static bool TryInsert(ReadOnlySpan<byte> payload, long rowId, out byte[] newPayload)
+    {
+        if (IsSortedAscending(payload))
+            return TryInsertSorted(payload, rowId, out newPayload);
+
+        int count = GetCount(payload);
+        for (int i = 0; i < count; i++)
+        {
+            if (ReadAt(payload, i) == rowId)
+            {
+                newPayload = Array.Empty<byte>();
+                return false;
+            }
+        }
+
+        newPayload = GC.AllocateUninitializedArray<byte>((count + 1) * RowIdSize);
+        payload.CopyTo(newPayload);
+        BinaryPrimitives.WriteInt64LittleEndian(newPayload.AsSpan(count * RowIdSize, RowIdSize), rowId);
+        return true;
+    }
+
     public static bool TryRemoveSorted(ReadOnlySpan<byte> payload, long rowId, out byte[]? newPayload)
     {
         int count = GetCount(payload);
@@ -60,6 +96,41 @@ internal static class RowIdPayloadCodec
 
         newPayload = GC.AllocateUninitializedArray<byte>((count - 1) * RowIdSize);
         int removeOffset = index * RowIdSize;
+        payload[..removeOffset].CopyTo(newPayload);
+        payload[(removeOffset + RowIdSize)..].CopyTo(newPayload.AsSpan(removeOffset));
+        return true;
+    }
+
+    public static bool TryRemove(ReadOnlySpan<byte> payload, long rowId, out byte[]? newPayload)
+    {
+        if (IsSortedAscending(payload))
+            return TryRemoveSorted(payload, rowId, out newPayload);
+
+        int count = GetCount(payload);
+        int removeIndex = -1;
+        for (int i = 0; i < count; i++)
+        {
+            if (ReadAt(payload, i) == rowId)
+            {
+                removeIndex = i;
+                break;
+            }
+        }
+
+        if (removeIndex < 0)
+        {
+            newPayload = null;
+            return false;
+        }
+
+        if (count == 1)
+        {
+            newPayload = null;
+            return true;
+        }
+
+        newPayload = GC.AllocateUninitializedArray<byte>((count - 1) * RowIdSize);
+        int removeOffset = removeIndex * RowIdSize;
         payload[..removeOffset].CopyTo(newPayload);
         payload[(removeOffset + RowIdSize)..].CopyTo(newPayload.AsSpan(removeOffset));
         return true;
@@ -107,5 +178,17 @@ internal static class RowIdPayloadCodec
 
         exists = false;
         return low;
+    }
+
+    private static bool IsSortedAscending(ReadOnlySpan<byte> payload)
+    {
+        int count = GetCount(payload);
+        for (int i = 1; i < count; i++)
+        {
+            if (ReadAt(payload, i - 1) > ReadAt(payload, i))
+                return false;
+        }
+
+        return true;
     }
 }

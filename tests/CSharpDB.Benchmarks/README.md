@@ -2,16 +2,23 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current snapshot in this README mixes the latest March 12, 2026 macro captures and focused query-engine reruns with the supporting artifacts below:
+The current snapshot in this README mixes the latest March 12, 2026 macro captures, the March 12, 2026 focused query-engine reruns, and the March 14, 2026 read-path and aggregate reruns with the supporting artifacts below:
 
 - `Macro reruns on March 12, 2026: SustainedWriteBenchmark, ReaderScalingBenchmark, CollectionBenchmark, InMemoryBatchBenchmark`
 - `Focused query-engine reruns on March 12, 2026: ParserBenchmarks, QueryPlanCacheBenchmarks, PointLookupBenchmarks, SubqueryBenchmarks`
+- `Read-path and aggregate rerun on March 14, 2026: CoveringIndexBenchmarks, IndexProjectionBenchmarks, OrderByIndexBenchmarks, IndexAggregateBenchmarks, PrimaryKeyAggregateBenchmarks, DistinctAggregateBenchmarks`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260312-004755.csv`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260312-024701.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ParserBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.SubqueryBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CoveringIndexBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.IndexProjectionBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.IndexAggregateBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PrimaryKeyAggregateBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.DistinctAggregateBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryCollectionBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryAdoNetBenchmarks-report.csv`
@@ -28,7 +35,7 @@ The current snapshot in this README mixes the latest March 12, 2026 macro captur
 |-----------|---------|
 | CPU | Intel Core i9-11900K @ 3.50GHz, 8 cores / 16 threads |
 | OS | Windows 11 (10.0.26300) |
-| Runtime | .NET 10.0.3, X64 RyuJIT AVX-512F |
+| Runtime | .NET 10.0.4, X64 RyuJIT AVX-512F |
 | Disk | NVMe SSD |
 | Page Size | 4,096 bytes |
 | WAL Mode | Enabled (redo-log with auto-checkpoint at 1,000 frames) |
@@ -45,6 +52,19 @@ dotnet run -c Release -- --micro
 # Filter to a specific micro suite
 dotnet run -c Release -- --micro --filter *InsertBenchmarks*
 dotnet run -c Release -- --micro --filter *InMemory*
+dotnet run -c Release -- --micro --filter *SqlMaterializationBenchmarks*
+dotnet run -c Release -- --micro --filter *CollectionAccessBenchmarks*
+dotnet run -c Release -- --micro --filter *CoveringIndexBenchmarks*
+dotnet run -c Release -- --micro --filter *CollectionFieldExtractionBenchmarks*
+dotnet run -c Release -- --micro --filter *IndexProjectionBenchmarks*
+dotnet run -c Release -- --micro --filter *OrderByIndexBenchmarks*
+dotnet run -c Release -- --micro --filter *IndexAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *PrimaryKeyAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
+
+# Run the focused phase-1 baseline set
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Phase1-Baselines.ps1
 
 # Stable macro snapshot (median-of-3, reproducible mode)
 dotnet run -c Release -- --macro --repeat 3 --repro
@@ -76,6 +96,19 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
 - `SharedMemoryAdoNetBenchmark`: named shared-memory reader/writer contention through the provider host layer
 - `InMemoryPersistenceBenchmark`: macro load/save latency and output-size reporting
+
+### Phase 1 Baseline Suites
+
+- `SqlMaterializationBenchmarks`: isolates full-row decode, selected-column decode, single-column access, and payload-level text/numeric checks
+- `CollectionAccessBenchmarks`: isolates full document hydration, key-only access, key matching, and indexed-field reads over collection payloads
+- `CoveringIndexBenchmarks`: isolates unique-index lookup shapes that could become index-only from shapes that still need the wide base-row payload
+- `IndexProjectionBenchmarks`: isolates non-unique secondary-index lookups where `SELECT id` or `SELECT indexed_col` can now avoid base-row fetches
+- `OrderByIndexBenchmarks`: isolates indexed `ORDER BY` and integer range scan shapes where `SELECT id, value` can now stay on index data instead of fetching base rows
+- `IndexAggregateBenchmarks`: isolates scalar `SUM` / `COUNT` / `MIN` / `MAX` queries and range aggregates that can now execute directly from integer index keys
+- `PrimaryKeyAggregateBenchmarks`: isolates scalar and ranged aggregates that can now execute directly from the `INTEGER PRIMARY KEY` table B-tree key stream
+- `CollectionFieldExtractionBenchmarks`: isolates early/middle/late extraction cost, nested-path access, miss cost, and full document hydration comparison for collection payload scans
+- `CollectionLookupFallbackBenchmarks`: isolates collection equality lookups on unindexed fields to measure the direct-payload compare fallback before full document hydration
+- `Run-Phase1-Baselines.ps1`: runs the focused phase-1 benchmark set without the larger macro, stress, or scaling suites
 
 ### Baselines and Guardrails
 
@@ -143,6 +176,61 @@ Defaults:
 | SQL PK lookup (100K rows) | 910 ns | 704 B |
 | SQL indexed lookup (100K rows) | 749 ns | 467 B |
 | SQL point miss (100K rows) | 246 ns | 192 B |
+
+### SQL Covered Read-Path Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Unique index lookup `SELECT *` (100K rows) | 6.88 us | 2.95 KB | Baseline unique secondary-index lookup |
+| Unique index lookup `SELECT id` (100K rows) | 5.78 us | 1.08 KB | Covered projection from index payload |
+| Unique index lookup `SELECT lookup_key` (100K rows) | 5.78 us | 1.11 KB | Covered projection from index payload |
+| Non-unique index lookup `SELECT *` (100K rows) | 388.88 us | 71.04 KB | Baseline duplicate-key secondary-index lookup |
+| Non-unique index lookup `SELECT id` (100K rows) | 378.87 us | 33.59 KB | Covered projection drops most row materialization cost |
+| `ORDER BY value` no index (100K rows) | 89.15 ms | 28.13 MB | Full sort baseline |
+| `ORDER BY value` covered index-order scan (100K rows) | 19.74 ms | 10.65 MB | `SELECT id, value` stays on index data |
+| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 25.27 us | 29.55 KB | Index order avoids sort, still fetches base rows |
+| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 10.33 us | 11.35 KB | Index-only top-N path |
+| `WHERE value BETWEEN ...` row fetch (100K rows) | 42.07 ms | 14.69 MB | Integer range scan with base-row fetch |
+| `WHERE value BETWEEN ...` covered projection (100K rows) | 12.16 ms | 5.32 MB | Integer range scan that stays on index data |
+
+### SQL Indexed Aggregate Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `SUM(value)` no index (100K rows) | 5.75 ms | 482 B | Full table aggregate over decoded rows |
+| `SUM(value)` direct index aggregate (100K rows) | 3.57 ms | 553 B | Walks integer index keys without base-row fetch |
+| `COUNT(value)` no index (100K rows) | 4.02 ms | 490 B | Full table aggregate |
+| `COUNT(value)` direct index aggregate (100K rows) | 2.87 ms | 561 B | Counts row-id payloads per integer key |
+| `MIN(value)` no index (100K rows) | 5.09 ms | 482 B | Full scan baseline |
+| `MIN(value)` direct index aggregate (100K rows) | 387 ns | 552 B | First-key fast path on ordered integer index |
+| `MAX(value)` no index (100K rows) | 5.50 ms | 482 B | Full scan baseline |
+| `MAX(value)` direct index aggregate (100K rows) | 404 ns | 552 B | Rightmost-key fast path on ordered integer index |
+| `COUNT(*) WHERE value BETWEEN ...` no index (100K rows) | 9.74 ms | 2.45 KB | Scan + predicate baseline |
+| `COUNT(*) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 1.80 ms | 1.05 KB | Range aggregate from integer index keys |
+| `SUM(value) WHERE value BETWEEN ...` no index (100K rows) | 12.53 ms | 2.74 KB | Scan + predicate baseline |
+| `SUM(value) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 1.84 ms | 984 B | Range aggregate stays on index data |
+
+### SQL Primary-Key Aggregate Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `MIN(id)` via table key aggregate (100K rows) | 330 ns | 504 B | First-row fast path on the table B-tree key |
+| `MAX(id)` via table key aggregate (100K rows) | 341 ns | 552 B | Rightmost-key fast path on the table B-tree key |
+| `COUNT(id)` via table key aggregate (100K rows) | 200 ns | 344 B | Reuses cached table row count; same semantics as `COUNT(*)` on integer PK |
+| `SUM(id)` via table key aggregate (100K rows) | 3.47 ms | 505 B | Sums row keys without row payload decode |
+| `COUNT(*) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 1.42 ms | 744 B | Range aggregate stays on the table key stream |
+| `SUM(id) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 1.42 ms | 800 B | PK range aggregate without row fetch |
+
+### SQL DISTINCT Aggregate Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `COUNT(DISTINCT value)` no index (100K rows) | 3.39 ms | 200.01 KB | Duplicate-heavy integer column with 1,024 distinct keys |
+| `COUNT(DISTINCT value)` direct index aggregate (100K rows) | 41.07 us | 576 B | Counts unique integer index keys without row decode |
+| `SUM(DISTINCT value)` no index (100K rows) | 3.47 ms | 200.01 KB | Full table distinct-set baseline |
+| `SUM(DISTINCT value)` direct index aggregate (100K rows) | 38.69 us | 576 B | Sums unique integer index keys directly |
+| `AVG(DISTINCT value)` no index (100K rows) | 4.11 ms | 200.01 KB | Full table distinct-set baseline |
+| `AVG(DISTINCT value)` direct index aggregate (100K rows) | 38.85 us | 576 B | Computes distinct sum/count from index keys only |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 
@@ -222,6 +310,9 @@ The master table below now separates CSharpDB file-backed runs from in-memory ru
 - In-memory batched-write numbers were refreshed on March 12, 2026 from isolated `InMemoryBatchBenchmark` runs and use a rotating reset-after-100K-rows harness to keep the working set bounded.
 - Point-lookup numbers in the master table are cold/cache-pressured lookups from `ColdLookupBenchmarks-report.csv`.
 - Hot-cache lookup numbers are still useful, but they are reported in the micro sections above instead of the master table because they collapse the storage difference once pages are warmed.
+- Ordered/range covered-scan numbers were refreshed on March 14, 2026 from `OrderByIndexBenchmarks`, but they stay in the micro sections because the master table tracks durable writes, cold point lookups, and concurrent-read throughput rather than scan-shape throughput.
+- Indexed aggregate numbers were refreshed on March 14, 2026 from `IndexAggregateBenchmarks`, but they stay in the micro sections because the master table does not currently have an aggregate column.
+- Primary-key aggregate numbers were refreshed on March 14, 2026 from `PrimaryKeyAggregateBenchmarks`, and they also stay in the micro sections for the same reason.
 - In-memory single-write and point-lookup numbers were refreshed on March 10, 2026 from the `InMemory*Benchmarks` micro suites.
 - In-memory concurrent-reader cells are left as `N/A` where an apples-to-apples dedicated benchmark has not been added yet.
 - Competitor figures are still approximate ranges from published third-party sources on comparable hardware.

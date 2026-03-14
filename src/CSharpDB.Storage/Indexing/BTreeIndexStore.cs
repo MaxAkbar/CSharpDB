@@ -17,6 +17,9 @@ public sealed class BTreeIndexStore : IIndexStore, IReclaimableIndexStore
     public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default) =>
         _tree.FindAsync(key, ct);
 
+    public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default) =>
+        _tree.FindMaxKeyAsync(range, ct);
+
     public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
         _tree.InsertAsync(key, payload, ct);
 

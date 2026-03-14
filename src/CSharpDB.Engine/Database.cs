@@ -144,19 +144,16 @@ public sealed class Database : IAsyncDisposable
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
         InvalidateCachesIfSchemaChanged();
-        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
+        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
             return ExecuteStatementAsync(cachedStmt, ct);
 
         if (LooksLikeInsert(sql) && Parser.TryParseSimpleInsert(sql, out var simpleInsert))
             return ExecuteSimpleInsertAsync(simpleInsert, ct);
 
-        if (bypassParse)
+        if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
         {
-            if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
-            {
-                if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
-                    return ValueTask.FromResult(fastResult);
-            }
+            if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+                return ValueTask.FromResult(fastResult);
         }
 
         var stmt = ParseCached(sql);

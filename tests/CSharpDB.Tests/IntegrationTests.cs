@@ -1,5 +1,8 @@
+using System.Reflection;
 using CSharpDB.Core;
 using CSharpDB.Engine;
+using CSharpDB.Execution;
+using CSharpDB.Sql;
 
 namespace CSharpDB.Tests;
 
@@ -631,6 +634,55 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(3L, rows[1][0].AsInteger);
     }
 
+    [Fact]
+    public async Task SelectProjection_UsesCoveredIndexOrder_WithoutLimit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE ordered_cover (id INTEGER PRIMARY KEY, sort_key INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_ordered_cover_sort_key ON ordered_cover(sort_key)", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover VALUES (1, 30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover VALUES (2, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover VALUES (3, 20, 'b')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, sort_key FROM ordered_cover ORDER BY sort_key") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexOrderedProjectionScanOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var pairs = rows.Select(row => (Id: row[0].AsInteger, SortKey: row[1].AsInteger)).ToArray();
+        Assert.Equal([(2L, 10L), (3L, 20L), (1L, 30L)], pairs);
+    }
+
+    [Fact]
+    public async Task SelectProjection_UsesCoveredIntegerRangeScan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE range_cover (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_range_cover_score ON range_cover(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_cover VALUES (1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO range_cover VALUES (2, 20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO range_cover VALUES (3, 30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO range_cover VALUES (4, 40, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO range_cover VALUES (5, 50, 'e')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, score FROM range_cover WHERE score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexOrderedProjectionScanOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var pairs = rows
+            .Select(row => (Id: row[0].AsInteger, Score: row[1].AsInteger))
+            .OrderBy(pair => pair.Score)
+            .ToArray();
+        Assert.Equal([(2L, 20L), (3L, 30L), (4L, 40L)], pairs);
+    }
+
     #region LIKE / IN / BETWEEN / IS NULL
 
     [Fact]
@@ -985,6 +1037,333 @@ public class IntegrationTests : IAsyncLifetime
         await using var maxResult = await _db.ExecuteAsync("SELECT MAX(temp) FROM temps", TestContext.Current.CancellationToken);
         var maxRows = await maxResult.ToListAsync(TestContext.Current.CancellationToken);
         Assert.True(Math.Abs(maxRows[0][0].AsReal - 31.2) < 0.001);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerMin_UsesIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE temps_idx (id INTEGER PRIMARY KEY, temp INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO temps_idx VALUES (1, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO temps_idx VALUES (2, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO temps_idx VALUES (3, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO temps_idx VALUES (4, 20)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_temps_idx_temp ON temps_idx(temp)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT MIN(temp) FROM temps_idx") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerMaxRange_UsesIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE scores_idx (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO scores_idx VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO scores_idx VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO scores_idx VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO scores_idx VALUES (4, 40)", ct);
+        await _db.ExecuteAsync("INSERT INTO scores_idx VALUES (5, 50)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_scores_idx_score ON scores_idx(score)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT MAX(score) FROM scores_idx WHERE score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(40L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerMaxExclusiveUpperBound_UsesIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE scores_idx_exclusive (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        for (int i = 1; i <= 2000; i++)
+            await _db.ExecuteAsync($"INSERT INTO scores_idx_exclusive VALUES ({i}, {i})", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_scores_idx_exclusive_score ON scores_idx_exclusive(score)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT MAX(score) FROM scores_idx_exclusive WHERE score < 1501") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(1500L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerCountColumn_UsesIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE counts_idx (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO counts_idx VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO counts_idx VALUES (2, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO counts_idx VALUES (3, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO counts_idx VALUES (4, NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_counts_idx_score ON counts_idx(score)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(score) FROM counts_idx") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerCountStarRange_UsesIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE count_range_idx (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_idx VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_idx VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_idx VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_idx VALUES (4, 40)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_idx VALUES (5, 50)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_count_range_idx_score ON count_range_idx(score)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(*) FROM count_range_idx WHERE score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(3L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyMin_UsesTableKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_min (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_min VALUES (30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_min VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_min VALUES (20, 'b')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT MIN(id) FROM pk_min") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeySumRange_UsesTableKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_sum_range (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_sum_range VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_sum_range VALUES (20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_sum_range VALUES (30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_sum_range VALUES (40, 'd')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT SUM(id) FROM pk_sum_range WHERE id BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(90L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyCountStarRange_UsesTableKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_count_range (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_range VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_range VALUES (20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_range VALUES (30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_range VALUES (40, 'd')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(*) FROM pk_count_range WHERE id >= 20 AND id < 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyMaxExclusiveUpperBound_UsesTableKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_max_exclusive (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        for (int i = 1; i <= 2000; i++)
+            await _db.ExecuteAsync($"INSERT INTO pk_max_exclusive VALUES ({i}, 'v{i}')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT MAX(id) FROM pk_max_exclusive WHERE id < 1501") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(1500L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyCount_UsesCachedRowCountFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_count_fast (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_fast VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_fast VALUES (20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_fast VALUES (30, 'c')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(id) FROM pk_count_fast") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesSyncLookupResult(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(3L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyCountDistinct_UsesCachedRowCountFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_count_distinct_fast (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_distinct_fast VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_distinct_fast VALUES (20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_count_distinct_fast VALUES (30, 'c')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(DISTINCT id) FROM pk_count_distinct_fast") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesSyncLookupResult(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(3L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IndexedIntegerDistinctAggregates_UseIndexKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE distinct_idx_aggs (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (2, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (3, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (4, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (5, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO distinct_idx_aggs VALUES (6, 30)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_distinct_idx_aggs_score ON distinct_idx_aggs(score)", ct);
+
+        var planner = GetPlanner();
+
+        var countStatement = Parser.Parse("SELECT COUNT(DISTINCT score) FROM distinct_idx_aggs") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var countResult = await planner.ExecuteAsync(countStatement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(countResult));
+        var countRows = await countResult.ToListAsync(ct);
+        Assert.Single(countRows);
+        Assert.Equal(3L, countRows[0][0].AsInteger);
+
+        var sumStatement = Parser.Parse("SELECT SUM(DISTINCT score) FROM distinct_idx_aggs") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var sumResult = await planner.ExecuteAsync(sumStatement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(sumResult));
+        var sumRows = await sumResult.ToListAsync(ct);
+        Assert.Single(sumRows);
+        Assert.Equal(60L, sumRows[0][0].AsInteger);
+
+        var avgStatement = Parser.Parse("SELECT AVG(DISTINCT score) FROM distinct_idx_aggs") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var avgResult = await planner.ExecuteAsync(avgStatement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(avgResult));
+        var avgRows = await avgResult.ToListAsync(ct);
+        Assert.Single(avgRows);
+        Assert.Equal(20d, avgRows[0][0].AsReal);
+
+        var maxStatement = Parser.Parse("SELECT MAX(DISTINCT score) FROM distinct_idx_aggs WHERE score < 30") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var maxResult = await planner.ExecuteAsync(maxStatement, ct);
+        Assert.IsType<IndexKeyAggregateOperator>(GetRootOperator(maxResult));
+        var maxRows = await maxResult.ToListAsync(ct);
+        Assert.Single(maxRows);
+        Assert.Equal(20L, maxRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task IntegerPrimaryKeyDistinctAggregates_UseTableKeyAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE pk_distinct_aggs (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_distinct_aggs VALUES (10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_distinct_aggs VALUES (20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_distinct_aggs VALUES (30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO pk_distinct_aggs VALUES (40, 'd')", ct);
+
+        var planner = GetPlanner();
+
+        var sumStatement = Parser.Parse("SELECT SUM(DISTINCT id) FROM pk_distinct_aggs") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var sumResult = await planner.ExecuteAsync(sumStatement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(sumResult));
+        var sumRows = await sumResult.ToListAsync(ct);
+        Assert.Single(sumRows);
+        Assert.Equal(100L, sumRows[0][0].AsInteger);
+
+        var avgStatement = Parser.Parse("SELECT AVG(DISTINCT id) FROM pk_distinct_aggs WHERE id >= 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var avgResult = await planner.ExecuteAsync(avgStatement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(avgResult));
+        var avgRows = await avgResult.ToListAsync(ct);
+        Assert.Single(avgRows);
+        Assert.Equal(30d, avgRows[0][0].AsReal);
+
+        var maxStatement = Parser.Parse("SELECT MAX(DISTINCT id) FROM pk_distinct_aggs WHERE id < 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+        await using var maxResult = await planner.ExecuteAsync(maxStatement, ct);
+        Assert.IsType<TableKeyAggregateOperator>(GetRootOperator(maxResult));
+        var maxRows = await maxResult.ToListAsync(ct);
+        Assert.Single(maxRows);
+        Assert.Equal(30L, maxRows[0][0].AsInteger);
     }
 
     [Fact]
@@ -2155,6 +2534,42 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateIndex_NonUniqueIntegerBackfill_WithManyDuplicates()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, payload TEXT)", ct);
+
+        const int rowCount = 100_000;
+        const int batchSize = 500;
+        for (int start = 0; start < rowCount; start += batchSize)
+        {
+            await _db.BeginTransactionAsync(ct);
+            try
+            {
+                int end = Math.Min(start + batchSize, rowCount);
+                for (int i = start; i < end; i++)
+                    await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, {i % 256}, 'payload_{i}')", ct);
+
+                await _db.CommitAsync(ct);
+            }
+            catch
+            {
+                await _db.RollbackAsync(ct);
+                throw;
+            }
+        }
+
+        await _db.ExecuteAsync("CREATE INDEX idx_val ON t (val)", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id FROM t WHERE val = 5 ORDER BY id",
+            ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.NotEmpty(rows);
+        Assert.All(rows, row => Assert.Equal(5, row[0].AsInteger % 256));
+    }
+
+    [Fact]
     public async Task CreateIndex_IfNotExists()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);
@@ -2243,6 +2658,41 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Index_MaintainedOnInsert_WithManyDuplicateKeys()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_val ON t (val)", ct);
+
+        const int rowCount = 100_000;
+        const int batchSize = 500;
+        for (int start = 0; start < rowCount; start += batchSize)
+        {
+            await _db.BeginTransactionAsync(ct);
+            try
+            {
+                int end = Math.Min(start + batchSize, rowCount);
+                for (int i = start; i < end; i++)
+                    await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, {i % 256}, 'payload_{i}')", ct);
+
+                await _db.CommitAsync(ct);
+            }
+            catch
+            {
+                await _db.RollbackAsync(ct);
+                throw;
+            }
+        }
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id FROM t WHERE val = 5 ORDER BY id",
+            ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.NotEmpty(rows);
+        Assert.All(rows, row => Assert.Equal(5, row[0].AsInteger % 256));
+    }
+
+    [Fact]
     public async Task Index_MaintainedOnDelete()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);
@@ -2282,6 +2732,59 @@ public class IntegrationTests : IAsyncLifetime
             Assert.Single(rows);
             Assert.Equal(1, rows[0][0].AsInteger);
         }
+    }
+
+    [Fact]
+    public async Task Index_MaintainedOnUpdate_WithManyDuplicateKeys()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_val ON t (val)", ct);
+
+        const int rowCount = 20_000;
+        const int batchSize = 500;
+        for (int start = 0; start < rowCount; start += batchSize)
+        {
+            await _db.BeginTransactionAsync(ct);
+            try
+            {
+                int end = Math.Min(start + batchSize, rowCount);
+                for (int i = start; i < end; i++)
+                    await _db.ExecuteAsync($"INSERT INTO t VALUES ({i}, {i % 256}, 'payload_{i}')", ct);
+
+                await _db.CommitAsync(ct);
+            }
+            catch
+            {
+                await _db.RollbackAsync(ct);
+                throw;
+            }
+        }
+
+        await _db.ExecuteAsync("UPDATE t SET val = 6 WHERE val = 5", ct);
+
+        static long CountMatches(int totalRows, int moduloValue)
+        {
+            if (totalRows <= moduloValue)
+                return 0;
+
+            return ((totalRows - 1 - moduloValue) / 256) + 1;
+        }
+
+        await using var missingResult = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM t WHERE val = 5",
+            ct);
+        var missingRows = await missingResult.ToListAsync(ct);
+        Assert.Single(missingRows);
+        Assert.Equal(0, missingRows[0][0].AsInteger);
+
+        await using var expandedResult = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM t WHERE val = 6",
+            ct);
+        var expandedRows = await expandedResult.ToListAsync(ct);
+        Assert.Single(expandedRows);
+        long expectedSixCount = CountMatches(rowCount, 6) + CountMatches(rowCount, 5);
+        Assert.Equal(expectedSixCount, expandedRows[0][0].AsInteger);
     }
 
     [Fact]
@@ -2376,6 +2879,167 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(2, rows.Count);
         Assert.Equal(1, rows[0][0].AsInteger);
         Assert.Equal(3, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SimpleLookupPlanner_TextIndexLookup_SelectsPrimaryKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice', 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob', 'p2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'Alice', 'p3')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", ct);
+
+        Assert.True(Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT id FROM t WHERE name = 'Alice'",
+            out var lookup));
+
+        var planner = GetPlanner();
+        Assert.True(planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult));
+
+        await using var result = fastResult;
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal([1L, 3L], rows.Select(row => row[0].AsInteger).OrderBy(id => id).ToArray());
+    }
+
+    [Fact]
+    public async Task SimpleLookupPlanner_TextIndexLookup_SelectsIndexedTextColumn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice', 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob', 'p2')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_name ON t (name)", ct);
+
+        Assert.True(Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT name FROM t WHERE name = 'Alice'",
+            out var lookup));
+
+        var planner = GetPlanner();
+        Assert.True(planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult));
+
+        await using var result = fastResult;
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal("Alice", rows[0][0].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleLookupPlanner_PrimaryKeyLookup_SelectsMultipleColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice', 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob', 31)", ct);
+
+        Assert.True(Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT id, name FROM t WHERE id = 1",
+            out var lookup));
+
+        var planner = GetPlanner();
+        Assert.True(planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult));
+
+        await using var result = fastResult;
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal("Alice", rows[0][1].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleLookupPlanner_IntegerIndexLookup_SelectsCoveredColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, group_id INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 5, 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 7, 'p2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 5, 'p3')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_group_id ON t (group_id)", ct);
+
+        Assert.True(Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT id, group_id FROM t WHERE group_id = 5",
+            out var lookup));
+
+        var planner = GetPlanner();
+        Assert.True(planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult));
+
+        await using var result = fastResult;
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        var pairs = rows
+            .Select(row => (Id: row[0].AsInteger, GroupId: row[1].AsInteger))
+            .OrderBy(pair => pair.Id)
+            .ToArray();
+        Assert.Equal([(1L, 5L), (3L, 5L)], pairs);
+    }
+
+    [Fact]
+    public async Task SimpleLookupPlanner_TextIndexLookup_SelectsMultipleColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice', 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob', 'p2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'Alice', 'p3')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", ct);
+
+        Assert.True(Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT id, name FROM t WHERE name = 'Alice'",
+            out var lookup));
+
+        var planner = GetPlanner();
+        Assert.True(planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult));
+
+        await using var result = fastResult;
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        var pairs = rows
+            .Select(row => (Id: row[0].AsInteger, Name: row[1].AsText))
+            .OrderBy(pair => pair.Id)
+            .ToArray();
+        Assert.Equal([(1L, "Alice"), (3L, "Alice")], pairs);
+    }
+
+    [Fact]
+    public async Task DatabaseApi_SimpleLookup_IntegerIndexLookup_SelectsCoveredColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, group_id INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 5, 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 7, 'p2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 5, 'p3')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_group_id ON t (group_id)", ct);
+
+        await using var result = await _db.ExecuteAsync("SELECT id, group_id FROM t WHERE group_id = 5", ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        var pairs = rows
+            .Select(row => (Id: row[0].AsInteger, GroupId: row[1].AsInteger))
+            .OrderBy(pair => pair.Id)
+            .ToArray();
+        Assert.Equal([(1L, 5L), (3L, 5L)], pairs);
+    }
+
+    [Fact]
+    public async Task DatabaseApi_SimpleLookup_TextIndexLookup_SelectsMultipleColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'Alice', 'p1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'Bob', 'p2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'Alice', 'p3')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_name ON t (name)", ct);
+
+        await using var result = await _db.ExecuteAsync("SELECT id, name FROM t WHERE name = 'Alice'", ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        var pairs = rows
+            .Select(row => (Id: row[0].AsInteger, Name: row[1].AsText))
+            .OrderBy(pair => pair.Id)
+            .ToArray();
+        Assert.Equal([(1L, "Alice"), (3L, "Alice")], pairs);
     }
 
     [Fact]
@@ -3136,6 +3800,29 @@ public class IntegrationTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<CSharpDbException>(async () =>
             await _db.ExecuteAsync("DROP TRIGGER nonexistent", TestContext.Current.CancellationToken));
         Assert.Equal(ErrorCode.TriggerNotFound, ex.Code);
+    }
+
+    private QueryPlanner GetPlanner()
+    {
+        var plannerField = typeof(Database).GetField("_planner", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Database planner field not found.");
+        return (QueryPlanner?)plannerField.GetValue(_db)
+            ?? throw new InvalidOperationException("Database planner was not initialized.");
+    }
+
+    private static IOperator GetRootOperator(QueryResult result)
+    {
+        var operatorField = typeof(QueryResult).GetField("_operator", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult operator field not found.");
+        return (IOperator?)operatorField.GetValue(result)
+            ?? throw new InvalidOperationException("QueryResult did not contain an operator.");
+    }
+
+    private static bool UsesSyncLookupResult(QueryResult result)
+    {
+        var hasSyncLookupField = typeof(QueryResult).GetField("_hasSyncLookupResult", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult sync lookup field not found.");
+        return (bool)hasSyncLookupField.GetValue(result)!;
     }
 
     #endregion

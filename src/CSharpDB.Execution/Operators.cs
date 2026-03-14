@@ -7,6 +7,123 @@ using CSharpDB.Sql;
 
 namespace CSharpDB.Execution;
 
+internal static class BoundColumnAccessHelper
+{
+    public static int[] NormalizeColumnIndices(ReadOnlySpan<int> columnIndices, int columnCount, out int maxColumnIndex)
+    {
+        if (columnIndices.Length == 0)
+        {
+            maxColumnIndex = -1;
+            return Array.Empty<int>();
+        }
+
+        var sorted = columnIndices.ToArray();
+        Array.Sort(sorted);
+
+        int uniqueCount = 0;
+        int last = int.MinValue;
+        for (int i = 0; i < sorted.Length; i++)
+        {
+            int current = sorted[i];
+            if (current < 0 || current >= columnCount)
+                continue;
+            if (uniqueCount > 0 && current == last)
+                continue;
+
+            sorted[uniqueCount++] = current;
+            last = current;
+        }
+
+        if (uniqueCount == 0)
+        {
+            maxColumnIndex = -1;
+            return Array.Empty<int>();
+        }
+
+        if (uniqueCount != sorted.Length)
+            Array.Resize(ref sorted, uniqueCount);
+
+        maxColumnIndex = sorted[uniqueCount - 1];
+        return sorted;
+    }
+
+    public static RecordColumnAccessor? TryCreate(IRecordSerializer serializer, int columnIndex)
+        => serializer is DefaultRecordSerializer ? new RecordColumnAccessor(columnIndex) : null;
+
+    public static bool EvaluateValueFilter(DbValue value, BinaryOp op, DbValue literal)
+    {
+        int cmp = DbValue.Compare(value, literal);
+        return op switch
+        {
+            BinaryOp.Equals => cmp == 0,
+            BinaryOp.NotEquals => cmp != 0,
+            BinaryOp.LessThan => cmp < 0,
+            BinaryOp.GreaterThan => cmp > 0,
+            BinaryOp.LessOrEqual => cmp <= 0,
+            BinaryOp.GreaterOrEqual => cmp >= 0,
+            _ => true,
+        };
+    }
+
+    public static bool EvaluatePreDecodeFilter(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        RecordColumnAccessor? accessor,
+        int columnIndex,
+        byte[]? textBytes,
+        BinaryOp op,
+        DbValue literal)
+    {
+        if (textBytes != null)
+        {
+            bool supported;
+            bool textEquals;
+            if (accessor is { } boundAccessor)
+                supported = boundAccessor.TryTextEquals(payload, textBytes, out textEquals);
+            else
+                supported = serializer.TryColumnTextEquals(payload, columnIndex, textBytes, out textEquals);
+
+            if (supported)
+                return op == BinaryOp.Equals ? textEquals : !textEquals;
+        }
+
+        DbValue filterValue = accessor is { } decodeAccessor
+            ? decodeAccessor.Decode(payload)
+            : serializer.DecodeColumn(payload, columnIndex);
+        return EvaluateValueFilter(filterValue, op, literal);
+    }
+
+    public static bool IsNull(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        RecordColumnAccessor? accessor,
+        int columnIndex)
+        => accessor is { } boundAccessor
+            ? boundAccessor.IsNull(payload)
+            : serializer.IsColumnNull(payload, columnIndex);
+
+    public static bool TryDecodeNumeric(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        RecordColumnAccessor? accessor,
+        int columnIndex,
+        out long intValue,
+        out double realValue,
+        out bool isReal)
+        => accessor is { } boundAccessor
+            ? boundAccessor.TryDecodeNumeric(payload, out intValue, out realValue, out isReal)
+            : serializer.TryDecodeNumericColumn(payload, columnIndex, out intValue, out realValue, out isReal);
+
+    public static DbValue Decode(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        RecordColumnAccessor? accessor,
+        int columnIndex)
+        => accessor is { } boundAccessor
+            ? boundAccessor.Decode(payload)
+            : serializer.DecodeColumn(payload, columnIndex);
+}
+
 /// <summary>
 /// Full table scan operator — reads all rows from a B+tree via cursor.
 /// </summary>
@@ -25,6 +142,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
 
@@ -112,6 +230,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
             (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
             ? Encoding.UTF8.GetBytes(literal.AsText)
@@ -216,32 +335,17 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     }
 
     private bool EvaluatePreDecodeFilter(DbValue value)
-    {
-        int cmp = DbValue.Compare(value, _preDecodeFilterLiteral);
-        return _preDecodeFilterOp switch
-        {
-            BinaryOp.Equals => cmp == 0,
-            BinaryOp.NotEquals => cmp != 0,
-            BinaryOp.LessThan => cmp < 0,
-            BinaryOp.GreaterThan => cmp > 0,
-            BinaryOp.LessOrEqual => cmp <= 0,
-            BinaryOp.GreaterOrEqual => cmp >= 0,
-            _ => true,
-        };
-    }
+        => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-    {
-        var textBytes = _preDecodeFilterTextBytes;
-        if (textBytes != null &&
-            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
-        {
-            return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
-        }
-
-        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
-        return EvaluatePreDecodeFilter(filterValue);
-    }
+        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+            payload,
+            _recordSerializer,
+            _preDecodeFilterAccessor,
+            _preDecodeFilterColumnIndex,
+            _preDecodeFilterTextBytes,
+            _preDecodeFilterOp,
+            _preDecodeFilterLiteral);
 
     internal DbValue[] DecodeFullRow(ReadOnlySpan<byte> payload)
     {
@@ -4816,9 +4920,11 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     private bool _reuseCurrentRowBuffer = true;
     private int? _estimatedRowCount;
     private int? _maxDecodedColumnIndex;
+    private int[]? _decodedColumnIndices;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
 
@@ -4851,6 +4957,16 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     /// </summary>
     public void SetDecodedColumnUpperBound(int maxColumnIndex)
     {
+        _decodedColumnIndices = null;
+        _maxDecodedColumnIndex = maxColumnIndex;
+    }
+
+    public void SetDecodedColumnIndices(ReadOnlySpan<int> columnIndices)
+    {
+        _decodedColumnIndices = BoundColumnAccessHelper.NormalizeColumnIndices(
+            columnIndices,
+            _schema.Columns.Count,
+            out int maxColumnIndex);
         _maxDecodedColumnIndex = maxColumnIndex;
     }
 
@@ -4859,6 +4975,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
             (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
             ? Encoding.UTF8.GetBytes(literal.AsText)
@@ -4978,6 +5095,30 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         int targetColumnCount = _maxDecodedColumnIndex.HasValue
             ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
             : _schema.Columns.Count;
+        var decodedColumnIndices = _decodedColumnIndices;
+
+        if (decodedColumnIndices is { Length: > 0 })
+        {
+            if (_reuseCurrentRowBuffer)
+            {
+                EnsureRowBuffer(targetColumnCount);
+                if (targetColumnCount > 0)
+                    Array.Fill(_rowBuffer!, DbValue.Null, 0, targetColumnCount);
+                _recordSerializer.DecodeSelectedInto(payload, _rowBuffer!, decodedColumnIndices);
+                Current = _rowBuffer!;
+                return;
+            }
+
+            var sparseRow = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+            if (targetColumnCount > 0)
+            {
+                Array.Fill(sparseRow, DbValue.Null);
+                _recordSerializer.DecodeSelectedInto(payload, sparseRow, decodedColumnIndices);
+            }
+
+            Current = sparseRow;
+            return;
+        }
 
         if (_reuseCurrentRowBuffer)
         {
@@ -5000,32 +5141,17 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     }
 
     private bool EvaluatePreDecodeFilter(DbValue value)
-    {
-        int cmp = DbValue.Compare(value, _preDecodeFilterLiteral);
-        return _preDecodeFilterOp switch
-        {
-            BinaryOp.Equals => cmp == 0,
-            BinaryOp.NotEquals => cmp != 0,
-            BinaryOp.LessThan => cmp < 0,
-            BinaryOp.GreaterThan => cmp > 0,
-            BinaryOp.LessOrEqual => cmp <= 0,
-            BinaryOp.GreaterOrEqual => cmp >= 0,
-            _ => true,
-        };
-    }
+        => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-    {
-        var textBytes = _preDecodeFilterTextBytes;
-        if (textBytes != null &&
-            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
-        {
-            return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
-        }
-
-        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
-        return EvaluatePreDecodeFilter(filterValue);
-    }
+        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+            payload,
+            _recordSerializer,
+            _preDecodeFilterAccessor,
+            _preDecodeFilterColumnIndex,
+            _preDecodeFilterTextBytes,
+            _preDecodeFilterOp,
+            _preDecodeFilterLiteral);
 }
 
 /// <summary>
@@ -5041,9 +5167,11 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     private readonly IRecordSerializer _recordSerializer;
     private bool _consumed;
     private int? _maxDecodedColumnIndex;
+    private int[]? _decodedColumnIndices;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
 
@@ -5076,6 +5204,16 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     /// </summary>
     public void SetDecodedColumnUpperBound(int maxColumnIndex)
     {
+        _decodedColumnIndices = null;
+        _maxDecodedColumnIndex = maxColumnIndex;
+    }
+
+    public void SetDecodedColumnIndices(ReadOnlySpan<int> columnIndices)
+    {
+        _decodedColumnIndices = BoundColumnAccessHelper.NormalizeColumnIndices(
+            columnIndices,
+            _schema.Columns.Count,
+            out int maxColumnIndex);
         _maxDecodedColumnIndex = maxColumnIndex;
     }
 
@@ -5084,6 +5222,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
             (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
             ? Encoding.UTF8.GetBytes(literal.AsText)
@@ -5137,21 +5276,39 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         }
 
         CurrentRowId = rowId;
-        var decoded = _maxDecodedColumnIndex.HasValue
-            ? _recordSerializer.DecodeUpTo(rowPayloadMemory.Span, _maxDecodedColumnIndex.Value)
-            : _recordSerializer.Decode(rowPayloadMemory.Span);
-
-        if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
+        int targetColumnCount = _maxDecodedColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
+            : _schema.Columns.Count;
+        var decodedColumnIndices = _decodedColumnIndices;
+        if (decodedColumnIndices is { Length: > 0 })
         {
-            var padded = new DbValue[_schema.Columns.Count];
-            decoded.CopyTo(padded, 0);
-            for (int i = decoded.Length; i < padded.Length; i++)
-                padded[i] = DbValue.Null;
-            Current = padded;
+            var row = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+            if (targetColumnCount > 0)
+            {
+                Array.Fill(row, DbValue.Null);
+                _recordSerializer.DecodeSelectedInto(rowPayloadMemory.Span, row, decodedColumnIndices);
+            }
+
+            Current = row;
         }
         else
         {
-            Current = decoded;
+            var decoded = _maxDecodedColumnIndex.HasValue
+                ? _recordSerializer.DecodeUpTo(rowPayloadMemory.Span, _maxDecodedColumnIndex.Value)
+                : _recordSerializer.Decode(rowPayloadMemory.Span);
+
+            if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
+            {
+                var padded = new DbValue[_schema.Columns.Count];
+                decoded.CopyTo(padded, 0);
+                for (int i = decoded.Length; i < padded.Length; i++)
+                    padded[i] = DbValue.Null;
+                Current = padded;
+            }
+            else
+            {
+                Current = decoded;
+            }
         }
 
         return true;
@@ -5160,32 +5317,17 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private bool EvaluatePreDecodeFilter(DbValue value)
-    {
-        int cmp = DbValue.Compare(value, _preDecodeFilterLiteral);
-        return _preDecodeFilterOp switch
-        {
-            BinaryOp.Equals => cmp == 0,
-            BinaryOp.NotEquals => cmp != 0,
-            BinaryOp.LessThan => cmp < 0,
-            BinaryOp.GreaterThan => cmp > 0,
-            BinaryOp.LessOrEqual => cmp <= 0,
-            BinaryOp.GreaterOrEqual => cmp >= 0,
-            _ => true,
-        };
-    }
+        => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-    {
-        var textBytes = _preDecodeFilterTextBytes;
-        if (textBytes != null &&
-            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
-        {
-            return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
-        }
-
-        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
-        return EvaluatePreDecodeFilter(filterValue);
-    }
+        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+            payload,
+            _recordSerializer,
+            _preDecodeFilterAccessor,
+            _preDecodeFilterColumnIndex,
+            _preDecodeFilterTextBytes,
+            _preDecodeFilterOp,
+            _preDecodeFilterLiteral);
 }
 
 /// <summary>
@@ -5197,6 +5339,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
+    private readonly int _keyColumnIndex;
     private readonly IndexScanRange _scanRange;
     private readonly IRecordSerializer _recordSerializer;
     private IIndexCursor? _cursor;
@@ -5205,9 +5348,11 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private int? _maxDecodedColumnIndex;
+    private int[]? _decodedColumnIndices;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
 
@@ -5218,17 +5363,21 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
 
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
+    internal int KeyColumnIndex => _keyColumnIndex;
+    internal IndexScanRange ScanRange => _scanRange;
 
     public IndexOrderedScanOperator(
         IIndexStore indexStore,
         BTree tableTree,
         TableSchema schema,
+        int keyColumnIndex,
         IndexScanRange scanRange,
         IRecordSerializer? recordSerializer = null)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
+        _keyColumnIndex = keyColumnIndex;
         _scanRange = scanRange;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
@@ -5239,6 +5388,16 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     /// </summary>
     public void SetDecodedColumnUpperBound(int maxColumnIndex)
     {
+        _decodedColumnIndices = null;
+        _maxDecodedColumnIndex = maxColumnIndex;
+    }
+
+    public void SetDecodedColumnIndices(ReadOnlySpan<int> columnIndices)
+    {
+        _decodedColumnIndices = BoundColumnAccessHelper.NormalizeColumnIndices(
+            columnIndices,
+            _schema.Columns.Count,
+            out int maxColumnIndex);
         _maxDecodedColumnIndex = maxColumnIndex;
     }
 
@@ -5247,6 +5406,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
             (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
             ? Encoding.UTF8.GetBytes(literal.AsText)
@@ -5328,6 +5488,30 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
         int targetColumnCount = _maxDecodedColumnIndex.HasValue
             ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
             : _schema.Columns.Count;
+        var decodedColumnIndices = _decodedColumnIndices;
+
+        if (decodedColumnIndices is { Length: > 0 })
+        {
+            if (_reuseCurrentRowBuffer)
+            {
+                EnsureRowBuffer(targetColumnCount);
+                if (targetColumnCount > 0)
+                    Array.Fill(_rowBuffer!, DbValue.Null, 0, targetColumnCount);
+                _recordSerializer.DecodeSelectedInto(payload, _rowBuffer!, decodedColumnIndices);
+                Current = _rowBuffer!;
+                return;
+            }
+
+            var sparseRow = targetColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetColumnCount];
+            if (targetColumnCount > 0)
+            {
+                Array.Fill(sparseRow, DbValue.Null);
+                _recordSerializer.DecodeSelectedInto(payload, sparseRow, decodedColumnIndices);
+            }
+
+            Current = sparseRow;
+            return;
+        }
 
         if (_reuseCurrentRowBuffer)
         {
@@ -5347,32 +5531,17 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     }
 
     private bool EvaluatePreDecodeFilter(DbValue value)
-    {
-        int cmp = DbValue.Compare(value, _preDecodeFilterLiteral);
-        return _preDecodeFilterOp switch
-        {
-            BinaryOp.Equals => cmp == 0,
-            BinaryOp.NotEquals => cmp != 0,
-            BinaryOp.LessThan => cmp < 0,
-            BinaryOp.GreaterThan => cmp > 0,
-            BinaryOp.LessOrEqual => cmp <= 0,
-            BinaryOp.GreaterOrEqual => cmp >= 0,
-            _ => true,
-        };
-    }
+        => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-    {
-        var textBytes = _preDecodeFilterTextBytes;
-        if (textBytes != null &&
-            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
-        {
-            return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
-        }
-
-        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
-        return EvaluatePreDecodeFilter(filterValue);
-    }
+        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+            payload,
+            _recordSerializer,
+            _preDecodeFilterAccessor,
+            _preDecodeFilterColumnIndex,
+            _preDecodeFilterTextBytes,
+            _preDecodeFilterOp,
+            _preDecodeFilterLiteral);
 }
 
 /// <summary>
@@ -5386,9 +5555,11 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     private readonly IRecordSerializer _recordSerializer;
     private bool _consumed;
     private int? _maxDecodedColumnIndex;
+    private int[]? _decodedColumnIndices;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
     private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
     private DbValue[]? _rowBuffer;
@@ -5425,6 +5596,16 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     /// </summary>
     public void SetDecodedColumnUpperBound(int maxColumnIndex)
     {
+        _decodedColumnIndices = null;
+        _maxDecodedColumnIndex = maxColumnIndex;
+    }
+
+    public void SetDecodedColumnIndices(ReadOnlySpan<int> columnIndices)
+    {
+        _decodedColumnIndices = BoundColumnAccessHelper.NormalizeColumnIndices(
+            columnIndices,
+            _schema.Columns.Count,
+            out int maxColumnIndex);
         _maxDecodedColumnIndex = maxColumnIndex;
     }
 
@@ -5433,6 +5614,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
             (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
             ? Encoding.UTF8.GetBytes(literal.AsText)
@@ -5481,28 +5663,56 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
                 : _schema.Columns.Count;
             if (_rowBuffer == null || _rowBuffer.Length < targetCount)
                 _rowBuffer = new DbValue[targetCount];
-            int decoded = _recordSerializer.DecodeInto(payloadSpan, _rowBuffer.AsSpan(0, targetCount));
-            for (int i = decoded; i < targetCount; i++)
-                _rowBuffer[i] = DbValue.Null;
+            var decodedColumnIndices = _decodedColumnIndices;
+            if (decodedColumnIndices is { Length: > 0 })
+            {
+                if (targetCount > 0)
+                    Array.Fill(_rowBuffer, DbValue.Null, 0, targetCount);
+                _recordSerializer.DecodeSelectedInto(payloadSpan, _rowBuffer.AsSpan(0, targetCount), decodedColumnIndices);
+            }
+            else
+            {
+                int decoded = _recordSerializer.DecodeInto(payloadSpan, _rowBuffer.AsSpan(0, targetCount));
+                for (int i = decoded; i < targetCount; i++)
+                    _rowBuffer[i] = DbValue.Null;
+            }
             Current = _rowBuffer;
         }
         else
         {
-            var decoded = _maxDecodedColumnIndex.HasValue
-                ? _recordSerializer.DecodeUpTo(payloadSpan, _maxDecodedColumnIndex.Value)
-                : _recordSerializer.Decode(payloadSpan);
-
-            if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
+            var decodedColumnIndices = _decodedColumnIndices;
+            if (decodedColumnIndices is { Length: > 0 })
             {
-                var padded = new DbValue[_schema.Columns.Count];
-                decoded.CopyTo(padded, 0);
-                for (int i = decoded.Length; i < padded.Length; i++)
-                    padded[i] = DbValue.Null;
-                Current = padded;
+                int targetCount = _maxDecodedColumnIndex.HasValue
+                    ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
+                    : _schema.Columns.Count;
+                var row = targetCount == 0 ? Array.Empty<DbValue>() : new DbValue[targetCount];
+                if (targetCount > 0)
+                {
+                    Array.Fill(row, DbValue.Null);
+                    _recordSerializer.DecodeSelectedInto(payloadSpan, row, decodedColumnIndices);
+                }
+
+                Current = row;
             }
             else
             {
-                Current = decoded;
+                var decoded = _maxDecodedColumnIndex.HasValue
+                    ? _recordSerializer.DecodeUpTo(payloadSpan, _maxDecodedColumnIndex.Value)
+                    : _recordSerializer.Decode(payloadSpan);
+
+                if (!_maxDecodedColumnIndex.HasValue && decoded.Length < _schema.Columns.Count)
+                {
+                    var padded = new DbValue[_schema.Columns.Count];
+                    decoded.CopyTo(padded, 0);
+                    for (int i = decoded.Length; i < padded.Length; i++)
+                        padded[i] = DbValue.Null;
+                    Current = padded;
+                }
+                else
+                {
+                    Current = decoded;
+                }
             }
         }
 
@@ -5512,32 +5722,17 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private bool EvaluatePreDecodeFilter(DbValue value)
-    {
-        int cmp = DbValue.Compare(value, _preDecodeFilterLiteral);
-        return _preDecodeFilterOp switch
-        {
-            BinaryOp.Equals => cmp == 0,
-            BinaryOp.NotEquals => cmp != 0,
-            BinaryOp.LessThan => cmp < 0,
-            BinaryOp.GreaterThan => cmp > 0,
-            BinaryOp.LessOrEqual => cmp <= 0,
-            BinaryOp.GreaterOrEqual => cmp >= 0,
-            _ => true,
-        };
-    }
+        => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-    {
-        var textBytes = _preDecodeFilterTextBytes;
-        if (textBytes != null &&
-            _recordSerializer.TryColumnTextEquals(payload, _preDecodeFilterColumnIndex, textBytes, out bool textEquals))
-        {
-            return _preDecodeFilterOp == BinaryOp.Equals ? textEquals : !textEquals;
-        }
-
-        var filterValue = _recordSerializer.DecodeColumn(payload, _preDecodeFilterColumnIndex);
-        return EvaluatePreDecodeFilter(filterValue);
-    }
+        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+            payload,
+            _recordSerializer,
+            _preDecodeFilterAccessor,
+            _preDecodeFilterColumnIndex,
+            _preDecodeFilterTextBytes,
+            _preDecodeFilterOp,
+            _preDecodeFilterLiteral);
 }
 
 /// <summary>
@@ -5614,6 +5809,709 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRo
 }
 
 /// <summary>
+/// Unique secondary-index lookup projection fast path.
+/// Returns any projection composed only of the rowid (integer primary key)
+/// and the indexed integer lookup literal
+/// without fetching the base table row.
+/// </summary>
+internal enum LookupProjectionValueKind
+{
+    RowId,
+    LookupValue,
+}
+
+public sealed class UniqueIndexProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly IIndexStore _indexStore;
+    private readonly long _seekValue;
+    private readonly LookupProjectionValueKind[] _projectionKinds;
+    private readonly DbValue[] _projectedRow;
+    private readonly bool _requiresRowId;
+    private bool _consumed;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
+
+    public UniqueIndexProjectionLookupOperator(
+        IIndexStore indexStore,
+        long seekValue,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        _indexStore = indexStore;
+        _seekValue = seekValue;
+        OutputSchema = outputSchema;
+        _projectionKinds = BuildProjectionKinds(projectionColumnIndices, primaryKeyColumnIndex, predicateColumnIndex);
+        _requiresRowId = ProjectionRequiresRowId(_projectionKinds);
+
+        if (outputSchema.Length == 0)
+        {
+            _projectedRow = Array.Empty<DbValue>();
+        }
+        else
+        {
+            _projectedRow = new DbValue[outputSchema.Length];
+            DbValue lookupValue = DbValue.FromInteger(seekValue);
+            for (int i = 0; i < _projectedRow.Length; i++)
+            {
+                _projectedRow[i] = _projectionKinds[i] == LookupProjectionValueKind.LookupValue
+                    ? lookupValue
+                    : DbValue.Null;
+            }
+        }
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _consumed = false;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_consumed)
+            return ValueTask.FromResult(false);
+
+        _consumed = true;
+
+        if (_indexStore is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(_seekValue, out var cachedPayload))
+        {
+            return ValueTask.FromResult(EmitFromIndexPayload(cachedPayload));
+        }
+
+        return MoveNextUncachedAsync(ct);
+    }
+
+    private async ValueTask<bool> MoveNextUncachedAsync(CancellationToken ct)
+    {
+        byte[]? payload = await _indexStore.FindAsync(_seekValue, ct);
+        return EmitFromIndexPayload(payload);
+    }
+
+    private bool EmitFromIndexPayload(byte[]? payload)
+    {
+        if (payload == null || payload.Length < sizeof(long))
+            return false;
+
+        if (_requiresRowId && _projectedRow.Length > 0)
+        {
+            long rowId = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(0, sizeof(long)));
+            DbValue rowIdValue = DbValue.FromInteger(rowId);
+            for (int i = 0; i < _projectedRow.Length; i++)
+            {
+                if (_projectionKinds[i] == LookupProjectionValueKind.RowId)
+                    _projectedRow[i] = rowIdValue;
+            }
+        }
+
+        Current = _projectedRow;
+        return true;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private static LookupProjectionValueKind[] BuildProjectionKinds(
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        var projectionKinds = new LookupProjectionValueKind[projectionColumnIndices.Length];
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.RowId;
+                continue;
+            }
+
+            if (columnIndex == predicateColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.LookupValue;
+                continue;
+            }
+
+            throw new InvalidOperationException("Covered index projection can only emit the primary key or predicate column.");
+        }
+
+        return projectionKinds;
+    }
+
+    private static bool ProjectionRequiresRowId(ReadOnlySpan<LookupProjectionValueKind> projectionKinds)
+    {
+        for (int i = 0; i < projectionKinds.Length; i++)
+        {
+            if (projectionKinds[i] == LookupProjectionValueKind.RowId)
+                return true;
+        }
+
+        return false;
+    }
+}
+
+/// <summary>
+/// Secondary-index equality lookup projection fast path for non-unique indexes.
+/// Returns any projection composed only of the rowid (integer primary key)
+/// and the indexed integer lookup literal
+/// for each matching rowid without fetching base table rows.
+/// </summary>
+public sealed class IndexScanProjectionOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly IIndexStore _indexStore;
+    private readonly long _seekValue;
+    private readonly LookupProjectionValueKind[] _projectionKinds;
+    private readonly DbValue[] _templateRow;
+    private readonly bool _requiresRowId;
+    private ReadOnlyMemory<byte> _rowIdPayload;
+    private int _rowIdPayloadOffset;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => true;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount { get; private set; }
+
+    public IndexScanProjectionOperator(
+        IIndexStore indexStore,
+        long seekValue,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        _indexStore = indexStore;
+        _seekValue = seekValue;
+        OutputSchema = outputSchema;
+        _projectionKinds = BuildProjectionKinds(projectionColumnIndices, primaryKeyColumnIndex, predicateColumnIndex);
+        _requiresRowId = ProjectionRequiresRowId(_projectionKinds);
+
+        if (outputSchema.Length == 0)
+        {
+            _templateRow = Array.Empty<DbValue>();
+        }
+        else
+        {
+            _templateRow = new DbValue[outputSchema.Length];
+            DbValue lookupValue = DbValue.FromInteger(seekValue);
+            for (int i = 0; i < _templateRow.Length; i++)
+            {
+                _templateRow[i] = _projectionKinds[i] == LookupProjectionValueKind.LookupValue
+                    ? lookupValue
+                    : DbValue.Null;
+            }
+        }
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_indexStore is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(_seekValue, out var cachedPayload))
+        {
+            _rowIdPayload = cachedPayload ?? ReadOnlyMemory<byte>.Empty;
+            _rowIdPayloadOffset = 0;
+            EstimatedRowCount = _rowIdPayload.Length / sizeof(long);
+            Current = Array.Empty<DbValue>();
+            return ValueTask.CompletedTask;
+        }
+
+        return OpenUncachedAsync(ct);
+    }
+
+    private async ValueTask OpenUncachedAsync(CancellationToken ct)
+    {
+        byte[]? payload = await _indexStore.FindAsync(_seekValue, ct);
+        _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
+        _rowIdPayloadOffset = 0;
+        EstimatedRowCount = _rowIdPayload.Length / sizeof(long);
+        Current = Array.Empty<DbValue>();
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_rowIdPayloadOffset + sizeof(long) > _rowIdPayload.Length)
+            return ValueTask.FromResult(false);
+
+        if (!_requiresRowId)
+        {
+            Current = _templateRow;
+        }
+        else
+        {
+            long rowId = BinaryPrimitives.ReadInt64LittleEndian(
+                _rowIdPayload.Span.Slice(_rowIdPayloadOffset, sizeof(long)));
+            DbValue rowIdValue = DbValue.FromInteger(rowId);
+            for (int i = 0; i < _templateRow.Length; i++)
+            {
+                if (_projectionKinds[i] == LookupProjectionValueKind.RowId)
+                    _templateRow[i] = rowIdValue;
+            }
+
+            Current = _templateRow;
+        }
+
+        _rowIdPayloadOffset += sizeof(long);
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private static LookupProjectionValueKind[] BuildProjectionKinds(
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        var projectionKinds = new LookupProjectionValueKind[projectionColumnIndices.Length];
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.RowId;
+                continue;
+            }
+
+            if (columnIndex == predicateColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.LookupValue;
+                continue;
+            }
+
+            throw new InvalidOperationException("Covered index projection can only emit the primary key or predicate column.");
+        }
+
+        return projectionKinds;
+    }
+
+    private static bool ProjectionRequiresRowId(ReadOnlySpan<LookupProjectionValueKind> projectionKinds)
+    {
+        for (int i = 0; i < projectionKinds.Length; i++)
+        {
+            if (projectionKinds[i] == LookupProjectionValueKind.RowId)
+                return true;
+        }
+
+        return false;
+    }
+}
+
+/// <summary>
+/// Ordered/range index projection fast path for integer indexes.
+/// Emits projections composed only of the rowid (integer primary key)
+/// and the current integer index key without fetching base table rows.
+/// </summary>
+public sealed class IndexOrderedProjectionScanOperator : IOperator
+{
+    private readonly IIndexStore _indexStore;
+    private readonly IndexScanRange _scanRange;
+    private readonly LookupProjectionValueKind[] _projectionKinds;
+    private readonly DbValue[] _rowBuffer;
+    private readonly bool _requiresRowId;
+    private IIndexCursor? _cursor;
+    private ReadOnlyMemory<byte> _rowIdPayload;
+    private int _rowIdPayloadOffset;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => true;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public IndexOrderedProjectionScanOperator(
+        IIndexStore indexStore,
+        IndexScanRange scanRange,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        _indexStore = indexStore;
+        _scanRange = scanRange;
+        OutputSchema = outputSchema;
+        _projectionKinds = BuildProjectionKinds(projectionColumnIndices, primaryKeyColumnIndex, predicateColumnIndex);
+        _requiresRowId = ProjectionRequiresRowId(_projectionKinds);
+        _rowBuffer = outputSchema.Length == 0 ? Array.Empty<DbValue>() : new DbValue[outputSchema.Length];
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _cursor = _indexStore.CreateCursor(_scanRange);
+        _rowIdPayload = ReadOnlyMemory<byte>.Empty;
+        _rowIdPayloadOffset = 0;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_cursor == null)
+            return false;
+
+        while (true)
+        {
+            if (_rowIdPayloadOffset + sizeof(long) <= _rowIdPayload.Length)
+            {
+                long rowId = BinaryPrimitives.ReadInt64LittleEndian(
+                    _rowIdPayload.Span.Slice(_rowIdPayloadOffset, sizeof(long)));
+                _rowIdPayloadOffset += sizeof(long);
+                PopulateCurrent(_cursor.CurrentKey, rowId);
+                Current = _rowBuffer;
+                return true;
+            }
+
+            if (!await _cursor.MoveNextAsync(ct))
+                return false;
+
+            _rowIdPayload = _cursor.CurrentValue;
+            _rowIdPayloadOffset = 0;
+        }
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private void PopulateCurrent(long keyValue, long rowId)
+    {
+        DbValue key = DbValue.FromInteger(keyValue);
+        DbValue rowIdValue = _requiresRowId ? DbValue.FromInteger(rowId) : DbValue.Null;
+        for (int i = 0; i < _projectionKinds.Length; i++)
+        {
+            _rowBuffer[i] = _projectionKinds[i] == LookupProjectionValueKind.RowId
+                ? rowIdValue
+                : key;
+        }
+    }
+
+    private static LookupProjectionValueKind[] BuildProjectionKinds(
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        int predicateColumnIndex)
+    {
+        var projectionKinds = new LookupProjectionValueKind[projectionColumnIndices.Length];
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.RowId;
+                continue;
+            }
+
+            if (columnIndex == predicateColumnIndex)
+            {
+                projectionKinds[i] = LookupProjectionValueKind.LookupValue;
+                continue;
+            }
+
+            throw new InvalidOperationException("Covered ordered index projection can only emit the primary key or indexed key column.");
+        }
+
+        return projectionKinds;
+    }
+
+    private static bool ProjectionRequiresRowId(ReadOnlySpan<LookupProjectionValueKind> projectionKinds)
+    {
+        for (int i = 0; i < projectionKinds.Length; i++)
+        {
+            if (projectionKinds[i] == LookupProjectionValueKind.RowId)
+                return true;
+        }
+
+        return false;
+    }
+}
+
+/// <summary>
+/// Scalar aggregate fast path over a direct INTEGER index.
+/// Uses only index keys and row-id payload counts, avoiding base-row fetches.
+/// </summary>
+public sealed class IndexKeyAggregateOperator : IOperator, IEstimatedRowCountProvider
+{
+    private enum AggregateKind
+    {
+        Count,
+        Sum,
+        Avg,
+        Min,
+        Max,
+    }
+
+    private readonly IIndexStore _indexStore;
+    private readonly IndexScanRange _scanRange;
+    private readonly AggregateKind _kind;
+    private readonly bool _isDistinct;
+    private bool _emitted;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
+
+    public IndexKeyAggregateOperator(
+        IIndexStore indexStore,
+        IndexScanRange scanRange,
+        string functionName,
+        ColumnDefinition[] outputSchema,
+        bool isDistinct = false)
+    {
+        _indexStore = indexStore;
+        _scanRange = scanRange;
+        _isDistinct = isDistinct;
+        _kind = functionName switch
+        {
+            "COUNT" => AggregateKind.Count,
+            "SUM" => AggregateKind.Sum,
+            "AVG" => AggregateKind.Avg,
+            "MIN" => AggregateKind.Min,
+            "MAX" => AggregateKind.Max,
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported index aggregate fast path: {functionName}"),
+        };
+        OutputSchema = outputSchema;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _emitted = false;
+        Current = Array.Empty<DbValue>();
+
+        if (_kind == AggregateKind.Max)
+        {
+            long? maxKey = await _indexStore.FindMaxKeyAsync(_scanRange, ct);
+            Current = new[] { maxKey.HasValue ? DbValue.FromInteger(maxKey.Value) : DbValue.Null };
+            return;
+        }
+
+        var cursor = _indexStore.CreateCursor(_scanRange);
+        long count = 0;
+        double sum = 0;
+        bool hasAny = false;
+
+        while (await cursor.MoveNextAsync(ct))
+        {
+            int entryCount = RowIdPayloadCodec.GetCount(cursor.CurrentValue.Span);
+            if (entryCount <= 0)
+                continue;
+
+            long key = cursor.CurrentKey;
+            int aggregateCount = _isDistinct ? 1 : entryCount;
+            switch (_kind)
+            {
+                case AggregateKind.Count:
+                    count += aggregateCount;
+                    hasAny = true;
+                    break;
+                case AggregateKind.Sum:
+                    sum += _isDistinct ? key : (double)key * entryCount;
+                    count += aggregateCount;
+                    hasAny = true;
+                    break;
+                case AggregateKind.Avg:
+                    sum += _isDistinct ? key : (double)key * entryCount;
+                    count += aggregateCount;
+                    hasAny = true;
+                    break;
+                case AggregateKind.Min:
+                    Current = new[] { DbValue.FromInteger(key) };
+                    return;
+            }
+        }
+
+        DbValue aggregate = _kind switch
+        {
+            AggregateKind.Count => DbValue.FromInteger(count),
+            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : DbValue.FromInteger((long)sum),
+            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Min => DbValue.Null,
+            AggregateKind.Max => DbValue.Null,
+            _ => DbValue.Null,
+        };
+
+        Current = new[] { aggregate };
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_emitted)
+            return ValueTask.FromResult(false);
+
+        _emitted = true;
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+/// <summary>
+/// Scalar aggregate fast path over the table row key for INTEGER PRIMARY KEY tables.
+/// Uses only the B-tree key stream and avoids row payload materialization.
+/// </summary>
+public sealed class TableKeyAggregateOperator : IOperator, IEstimatedRowCountProvider
+{
+    private enum AggregateKind
+    {
+        Count,
+        Sum,
+        Avg,
+        Min,
+        Max,
+    }
+
+    private readonly BTree _tableTree;
+    private readonly IndexScanRange _scanRange;
+    private readonly AggregateKind _kind;
+    private bool _emitted;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
+
+    public TableKeyAggregateOperator(
+        BTree tableTree,
+        IndexScanRange scanRange,
+        string functionName,
+        ColumnDefinition[] outputSchema)
+    {
+        _tableTree = tableTree;
+        _scanRange = scanRange;
+        _kind = functionName switch
+        {
+            "COUNT" => AggregateKind.Count,
+            "SUM" => AggregateKind.Sum,
+            "AVG" => AggregateKind.Avg,
+            "MIN" => AggregateKind.Min,
+            "MAX" => AggregateKind.Max,
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported table-key aggregate fast path: {functionName}"),
+        };
+        OutputSchema = outputSchema;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _emitted = false;
+        Current = Array.Empty<DbValue>();
+
+        if (_kind == AggregateKind.Max)
+        {
+            long? maxKey = await _tableTree.FindMaxKeyAsync(_scanRange, ct);
+            Current = new[] { maxKey.HasValue ? DbValue.FromInteger(maxKey.Value) : DbValue.Null };
+            return;
+        }
+
+        var cursor = _tableTree.CreateCursor();
+        if (!await MoveToFirstInRangeAsync(cursor, ct))
+        {
+            Current = new[] { CreateEmptyAggregate() };
+            return;
+        }
+
+        if (_kind == AggregateKind.Min)
+        {
+            Current = new[] { DbValue.FromInteger(cursor.CurrentKey) };
+            return;
+        }
+
+        long count = 0;
+        double sum = 0;
+        bool hasAny = false;
+
+        do
+        {
+            long key = cursor.CurrentKey;
+            if (IsPastUpperBound(key))
+                break;
+
+            switch (_kind)
+            {
+                case AggregateKind.Count:
+                    count++;
+                    hasAny = true;
+                    break;
+                case AggregateKind.Sum:
+                    sum += key;
+                    count++;
+                    hasAny = true;
+                    break;
+                case AggregateKind.Avg:
+                    sum += key;
+                    count++;
+                    hasAny = true;
+                    break;
+            }
+        }
+        while (await cursor.MoveNextAsync(ct));
+
+        DbValue aggregate = _kind switch
+        {
+            AggregateKind.Count => DbValue.FromInteger(count),
+            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : DbValue.FromInteger((long)sum),
+            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Min => DbValue.Null,
+            AggregateKind.Max => DbValue.Null,
+            _ => DbValue.Null,
+        };
+
+        Current = new[] { aggregate };
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_emitted)
+            return ValueTask.FromResult(false);
+
+        _emitted = true;
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private DbValue CreateEmptyAggregate()
+    {
+        return _kind switch
+        {
+            AggregateKind.Count => DbValue.FromInteger(0),
+            AggregateKind.Sum => DbValue.FromInteger(0),
+            AggregateKind.Avg => DbValue.Null,
+            AggregateKind.Min => DbValue.Null,
+            AggregateKind.Max => DbValue.Null,
+            _ => DbValue.Null,
+        };
+    }
+
+    private async ValueTask<bool> MoveToFirstInRangeAsync(BTreeCursor cursor, CancellationToken ct)
+    {
+        if (_scanRange.LowerBound.HasValue)
+        {
+            if (!await cursor.SeekAsync(_scanRange.LowerBound.Value, ct))
+                return false;
+
+            if (!_scanRange.LowerInclusive && cursor.CurrentKey == _scanRange.LowerBound.Value)
+            {
+                if (!await cursor.MoveNextAsync(ct))
+                    return false;
+            }
+        }
+        else if (!await cursor.MoveNextAsync(ct))
+        {
+            return false;
+        }
+
+        return !IsPastUpperBound(cursor.CurrentKey);
+    }
+
+    private bool IsPastUpperBound(long key)
+    {
+        if (!_scanRange.UpperBound.HasValue)
+            return false;
+
+        return _scanRange.UpperInclusive
+            ? key > _scanRange.UpperBound.Value
+            : key >= _scanRange.UpperBound.Value;
+    }
+}
+
+/// <summary>
 /// Scalar SUM/AVG/COUNT/MIN/MAX fast path for point/range lookups from PK or a single-column index equality lookup.
 /// Avoids generic operator-pipeline overhead by aggregating directly on payloads.
 /// </summary>
@@ -5642,6 +6540,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
     private readonly AggregateKind _kind;
     private readonly bool _isDistinct;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly RecordColumnAccessor? _columnAccessor;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -5665,6 +6564,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
         _columnIndex = columnIndex;
         _isDistinct = isDistinct;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
@@ -5686,6 +6586,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
         _columnIndex = columnIndex;
         _isDistinct = isDistinct;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
@@ -5706,15 +6607,24 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
         {
             if (_kind == AggregateKind.Count && distinctValues == null)
             {
-                if (!_recordSerializer.IsColumnNull(payload, _columnIndex))
+                if (!BoundColumnAccessHelper.IsNull(payload, _recordSerializer, _columnAccessor, _columnIndex))
                     count++;
                 return;
             }
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!_recordSerializer.TryDecodeNumericColumn(payload, _columnIndex, out long intVal, out double realVal, out bool isReal))
+                if (!BoundColumnAccessHelper.TryDecodeNumeric(
+                        payload,
+                        _recordSerializer,
+                        _columnAccessor,
+                        _columnIndex,
+                        out long intVal,
+                        out double realVal,
+                        out bool isReal))
+                {
                     return;
+                }
 
                 hasAny = true;
                 if (isReal)
@@ -5730,7 +6640,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
                 return;
             }
 
-            var val = _recordSerializer.DecodeColumn(payload, _columnIndex);
+            var val = BoundColumnAccessHelper.Decode(payload, _recordSerializer, _columnAccessor, _columnIndex);
             if (val.IsNull) return;
             if (distinctValues != null && !distinctValues.Add(val)) return;
 
@@ -5845,6 +6755,7 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
     private readonly bool _isDistinct;
     private readonly bool _emitOnEmptyInput;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly RecordColumnAccessor? _columnAccessor;
     private bool _emitted;
     private bool _hasResult;
 
@@ -5867,6 +6778,7 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
         _isDistinct = isDistinct;
         _emitOnEmptyInput = emitOnEmptyInput;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
         _kind = functionName switch
         {
             "COUNT" => AggregateKind.Count,
@@ -5900,15 +6812,23 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
 
             if (_kind == AggregateKind.Count && distinctValues == null)
             {
-                if (!_recordSerializer.IsColumnNull(cursor.CurrentValue.Span, _columnIndex))
+                if (!BoundColumnAccessHelper.IsNull(
+                        cursor.CurrentValue.Span,
+                        _recordSerializer,
+                        _columnAccessor,
+                        _columnIndex))
+                {
                     count++;
+                }
                 continue;
             }
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!_recordSerializer.TryDecodeNumericColumn(
+                if (!BoundColumnAccessHelper.TryDecodeNumeric(
                         cursor.CurrentValue.Span,
+                        _recordSerializer,
+                        _columnAccessor,
                         _columnIndex,
                         out long intVal,
                         out double realVal,
@@ -5931,7 +6851,11 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
                 continue;
             }
 
-            var val = _recordSerializer.DecodeColumn(cursor.CurrentValue.Span, _columnIndex);
+            var val = BoundColumnAccessHelper.Decode(
+                cursor.CurrentValue.Span,
+                _recordSerializer,
+                _columnAccessor,
+                _columnIndex);
             if (val.IsNull) continue;
             if (distinctValues != null && !distinctValues.Add(val)) continue;
 

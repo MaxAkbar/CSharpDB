@@ -41,6 +41,9 @@ public sealed class CachingIndexStore : IIndexStore, ICacheAwareIndexStore, IRec
         return value;
     }
 
+    public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default) =>
+        _inner.FindMaxKeyAsync(range, ct);
+
     public async ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         await _inner.InsertAsync(key, payload, ct);

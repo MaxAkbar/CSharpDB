@@ -23,6 +23,30 @@ internal static class IndexMaintenanceHelper
         var scan = new TableScanOperator(tableTree, tableSchema, readSerializer);
         await scan.OpenAsync(ct);
 
+        if (!indexSchema.IsUnique)
+        {
+            var groupedRowIds = new SortedDictionary<long, List<long>>();
+
+            while (await scan.MoveNextAsync(ct))
+            {
+                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                    continue;
+
+                if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+                {
+                    rowIds = new List<long>();
+                    groupedRowIds[indexKey] = rowIds;
+                }
+
+                rowIds.Add(scan.CurrentRowId);
+            }
+
+            foreach (var entry in groupedRowIds)
+                await indexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+
+            return;
+        }
+
         while (await scan.MoveNextAsync(ct))
         {
             if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
@@ -80,7 +104,7 @@ internal static class IndexMaintenanceHelper
             return;
         }
 
-        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
+        if (!RowIdPayloadCodec.TryInsert(existing, rowId, out byte[] newPayload))
             return;
 
         await indexStore.DeleteAsync(indexKey, ct);
@@ -97,7 +121,7 @@ internal static class IndexMaintenanceHelper
         if (existing == null)
             return;
 
-        if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
+        if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
             return;
 
         await indexStore.DeleteAsync(indexKey, ct);

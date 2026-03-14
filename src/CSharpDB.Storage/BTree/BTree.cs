@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using CSharpDB.Core;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Storage.BTrees;
 
@@ -288,6 +289,41 @@ public sealed class BTree
 
         _cachedEntryCount = count;
         return count;
+    }
+
+    /// <summary>
+    /// Finds the greatest key within the provided range without scanning forward from the start.
+    /// Returns null when the range contains no keys.
+    /// </summary>
+    public async ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+    {
+        if (!IsRangeSatisfiable(range))
+            return null;
+
+        var ancestors = new List<InteriorFrame>(8);
+        uint leafPageId = range.UpperBound.HasValue
+            ? await FindLeafForKeyAsync(range.UpperBound.Value, ancestors, ct)
+            : await FindRightmostLeafAsync(ancestors, ct);
+
+        while (leafPageId != PageConstants.NullPageId)
+        {
+            var page = await _pager.GetPageAsync(leafPageId, ct);
+            var sp = new SlottedPage(page, leafPageId);
+
+            int candidateIndex = FindMaxCandidateIndex(sp, range);
+            if (candidateIndex >= 0)
+            {
+                long candidateKey = ReadLeafKey(sp, candidateIndex);
+                if (SatisfiesLowerBound(candidateKey, range))
+                    return candidateKey;
+
+                return null;
+            }
+
+            leafPageId = await FindPredecessorLeafAsync(ancestors, ct);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1117,6 +1153,21 @@ public sealed class BTree
         return lo;
     }
 
+    private static int UpperBoundLeaf(SlottedPage sp, long key)
+    {
+        int lo = 0;
+        int hi = sp.CellCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (ReadLeafKey(sp, mid) <= key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+
     private static int UpperBoundInterior(SlottedPage sp, long key)
     {
         int lo = 0;
@@ -1155,6 +1206,116 @@ public sealed class BTree
                 return sp.RightChildOrNextLeaf;
             pageId = ReadInteriorLeftChild(sp, 0);
         }
+    }
+
+    private readonly record struct InteriorFrame(uint PageId, int ChildIndex);
+
+    private async ValueTask<uint> FindLeafForKeyAsync(long key, List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        ancestors.Clear();
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            var page = await _pager.GetPageAsync(pageId, ct);
+            var sp = new SlottedPage(page, pageId);
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+                return pageId;
+
+            uint childPageId = FindChildPageWithIndex(sp, key, out int childIndex);
+            ancestors.Add(new InteriorFrame(pageId, childIndex));
+            pageId = childPageId;
+        }
+    }
+
+    private async ValueTask<uint> FindRightmostLeafAsync(List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        ancestors.Clear();
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            var page = await _pager.GetPageAsync(pageId, ct);
+            var sp = new SlottedPage(page, pageId);
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+                return pageId;
+
+            int childIndex = sp.CellCount;
+            ancestors.Add(new InteriorFrame(pageId, childIndex));
+            pageId = sp.RightChildOrNextLeaf;
+        }
+    }
+
+    private async ValueTask<uint> FindPredecessorLeafAsync(List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        while (ancestors.Count > 0)
+        {
+            var frame = ancestors[^1];
+            ancestors.RemoveAt(ancestors.Count - 1);
+            if (frame.ChildIndex <= 0)
+                continue;
+
+            var parentPage = await _pager.GetPageAsync(frame.PageId, ct);
+            var parentSp = new SlottedPage(parentPage, frame.PageId);
+            uint predecessorSubtreePageId = FindChildAtIndex(parentSp, frame.ChildIndex - 1);
+
+            ancestors.Add(new InteriorFrame(frame.PageId, frame.ChildIndex - 1));
+            return await DescendToRightmostLeafAsync(predecessorSubtreePageId, ancestors, ct);
+        }
+
+        return PageConstants.NullPageId;
+    }
+
+    private async ValueTask<uint> DescendToRightmostLeafAsync(uint pageId, List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        while (true)
+        {
+            var page = await _pager.GetPageAsync(pageId, ct);
+            var sp = new SlottedPage(page, pageId);
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+                return pageId;
+
+            int childIndex = sp.CellCount;
+            ancestors.Add(new InteriorFrame(pageId, childIndex));
+            pageId = sp.RightChildOrNextLeaf;
+        }
+    }
+
+    private static int FindMaxCandidateIndex(SlottedPage sp, IndexScanRange range)
+    {
+        if (sp.CellCount == 0)
+            return -1;
+
+        if (!range.UpperBound.HasValue)
+            return sp.CellCount - 1;
+
+        return range.UpperInclusive
+            ? UpperBoundLeaf(sp, range.UpperBound.Value) - 1
+            : LowerBoundLeaf(sp, range.UpperBound.Value) - 1;
+    }
+
+    private static bool SatisfiesLowerBound(long key, IndexScanRange range)
+    {
+        if (!range.LowerBound.HasValue)
+            return true;
+
+        return range.LowerInclusive
+            ? key >= range.LowerBound.Value
+            : key > range.LowerBound.Value;
+    }
+
+    private static bool IsRangeSatisfiable(IndexScanRange range)
+    {
+        if (!range.LowerBound.HasValue || !range.UpperBound.HasValue)
+            return true;
+
+        if (range.LowerBound.Value < range.UpperBound.Value)
+            return true;
+
+        if (range.LowerBound.Value > range.UpperBound.Value)
+            return false;
+
+        return range.LowerInclusive && range.UpperInclusive;
     }
 
     private async ValueTask ReclaimPageAsync(uint pageId, HashSet<uint> visited, CancellationToken ct)

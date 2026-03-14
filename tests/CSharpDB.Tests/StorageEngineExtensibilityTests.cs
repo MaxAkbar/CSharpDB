@@ -444,6 +444,21 @@ public sealed class StorageEngineExtensibilityTests
             return ValueTask.FromResult<byte[]?>(payload);
         }
 
+        public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+        {
+            long? maxKey = null;
+            foreach (long key in _data.Keys)
+            {
+                if (!InMemoryIndexStore.IsInRange(key, range))
+                    continue;
+
+                if (!maxKey.HasValue || key > maxKey.Value)
+                    maxKey = key;
+            }
+
+            return ValueTask.FromResult(maxKey);
+        }
+
         public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
         {
             _data[key] = payload.ToArray();
@@ -505,6 +520,24 @@ public sealed class StorageEngineExtensibilityTests
             }
         }
 
+        public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+        {
+            lock (_data.Gate)
+            {
+                long? maxKey = null;
+                foreach (long key in _data.Entries.Keys)
+                {
+                    if (!IsInRange(key, range))
+                        continue;
+
+                    if (!maxKey.HasValue || key > maxKey.Value)
+                        maxKey = key;
+                }
+
+                return ValueTask.FromResult(maxKey);
+            }
+        }
+
         public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
         {
             lock (_data.Gate)
@@ -542,7 +575,7 @@ public sealed class StorageEngineExtensibilityTests
             return new InMemoryIndexCursor(entries);
         }
 
-        private static bool IsInRange(long key, IndexScanRange range)
+        internal static bool IsInRange(long key, IndexScanRange range)
         {
             if (range.LowerBound.HasValue)
             {

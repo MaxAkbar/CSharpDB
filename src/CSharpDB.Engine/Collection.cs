@@ -209,7 +209,7 @@ public sealed class Collection<
     }
 
     /// <summary>
-    /// Ensure a secondary index exists for a direct field/property selector such as x => x.Age.
+    /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
     /// </summary>
     public async ValueTask EnsureIndexAsync<TField>(
         Expression<Func<T, TField>> fieldSelector,
@@ -304,17 +304,31 @@ public sealed class Collection<
         RefreshIndexesIfSchemaChanged();
 
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         var comparer = EqualityComparer<TField>.Default;
         
         if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
             !binding.TryBuildKeyFromValue(value, out long indexKey))
         {
             var fieldAccessor = fieldSelector.Compile();
-
-            await foreach (var kvp in ScanAsync(ct))
+            bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
+            var cursor = _tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
             {
-                if (comparer.Equals(fieldAccessor(kvp.Value), value))
-                    yield return kvp;
+                ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
+                if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
+                {
+                    if (!payloadAccessor.TryValueEquals(fallbackPayload, expectedValue))
+                        continue;
+
+                    var (matchedKey, matchedDocument) = _codec.Decode(fallbackPayload);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (fallbackKey, fallbackDocument) = _codec.Decode(fallbackPayload);
+                if (comparer.Equals(fieldAccessor(fallbackDocument), value))
+                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
             }
 
             yield break;
@@ -454,19 +468,27 @@ public sealed class Collection<
     private async ValueTask BackfillIndexAsync(CollectionIndexBinding<T> binding, CancellationToken ct)
     {
         var cursor = _tree.CreateCursor();
+        var groupedRowIds = new SortedDictionary<long, List<long>>();
+
         while (await cursor.MoveNextAsync(ct))
         {
+            long rowId = cursor.CurrentKey;
+
             if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
             {
                 if (binding.TryBuildKeyFromDirectPayload(cursor.CurrentValue.Span, out long directIndexKey))
-                    await InsertRowIdAsync(binding.IndexStore, directIndexKey, cursor.CurrentKey, ct);
+                    AddGroupedRowId(groupedRowIds, directIndexKey, rowId);
 
                 continue;
             }
 
             T document = _codec.DecodeDocument(cursor.CurrentValue.Span);
-            await InsertIntoIndexAsync(binding, cursor.CurrentKey, document, ct);
+            if (binding.TryBuildKeyFromDocument(document, out long indexKey))
+                AddGroupedRowId(groupedRowIds, indexKey, rowId);
         }
+
+        foreach (var entry in groupedRowIds)
+            await binding.IndexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
     }
 
     private async ValueTask InsertIntoIndexesAsync(long rowId, T document, CancellationToken ct)
@@ -544,7 +566,7 @@ public sealed class Collection<
             return;
         }
 
-        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
+        if (!RowIdPayloadCodec.TryInsert(existing, rowId, out byte[] newPayload))
             return;
 
         await indexStore.DeleteAsync(indexKey, ct);
@@ -561,7 +583,7 @@ public sealed class Collection<
         if (existing == null)
             return;
 
-        if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
+        if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
             return;
 
         await indexStore.DeleteAsync(indexKey, ct);
@@ -569,6 +591,20 @@ public sealed class Collection<
             return;
 
         await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private static void AddGroupedRowId(
+        SortedDictionary<long, List<long>> groupedRowIds,
+        long indexKey,
+        long rowId)
+    {
+        if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+        {
+            rowIds = new List<long>();
+            groupedRowIds[indexKey] = rowIds;
+        }
+
+        rowIds.Add(rowId);
     }
 
     /// <summary>

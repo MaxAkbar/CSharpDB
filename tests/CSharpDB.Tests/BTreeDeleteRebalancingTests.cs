@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Device;
@@ -8,6 +9,65 @@ namespace CSharpDB.Tests;
 
 public sealed class BTreeDeleteRebalancingTests
 {
+    [Fact]
+    public async Task DeleteAndReinsert_HotKeysWithGrowingPayload_RemainSearchable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_btree_hot_reinsert_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+        };
+
+        try
+        {
+            await using var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct);
+            await pager.BeginTransactionAsync(ct);
+
+            uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+            var tree = new BTree(pager, rootPageId);
+
+            const int hotKeyCount = 256;
+            const int rounds = 400;
+
+            for (int round = 0; round < rounds; round++)
+            {
+                int payloadLength = (round + 1) * sizeof(long);
+                var payload = new byte[payloadLength];
+                for (int key = 0; key < hotKeyCount; key++)
+                {
+                    BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(payloadLength - sizeof(long)), round);
+
+                    var existing = await tree.FindAsync(key, ct);
+                    if (existing == null)
+                    {
+                        await tree.InsertAsync(key, payload, ct);
+                        continue;
+                    }
+
+                    Assert.True(await tree.DeleteAsync(key, ct));
+                    await tree.InsertAsync(key, payload, ct);
+                }
+            }
+
+            await pager.CommitAsync(ct);
+
+            Assert.Equal(hotKeyCount, await tree.CountEntriesAsync(ct));
+            for (int key = 0; key < hotKeyCount; key++)
+            {
+                var payload = await tree.FindAsync(key, ct);
+                Assert.NotNull(payload);
+                Assert.Equal(rounds * sizeof(long), payload!.Length);
+            }
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(walPath);
+        }
+    }
+
     [Fact]
     public async Task Delete_MassPrune_ReclaimsPagesAndCollapsesRoot()
     {

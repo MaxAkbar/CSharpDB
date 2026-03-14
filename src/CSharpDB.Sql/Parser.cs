@@ -3,15 +3,42 @@ using CSharpDB.Core;
 
 namespace CSharpDB.Sql;
 
-public readonly record struct SimplePrimaryKeyLookupSql(
-    string TableName,
-    bool SelectStar,
-    string ProjectionColumn,
-    string PredicateColumn,
-    long LookupValue,
-    bool HasResidualPredicate = false,
-    string ResidualPredicateColumn = "",
-    DbValue ResidualPredicateLiteral = default);
+public readonly record struct SimplePrimaryKeyLookupSql
+{
+    public string TableName { get; }
+    public bool SelectStar { get; }
+    public string[] ProjectionColumns { get; }
+    public string PredicateColumn { get; }
+    public long LookupValue { get; }
+    public bool HasResidualPredicate { get; }
+    public string ResidualPredicateColumn { get; }
+    public DbValue ResidualPredicateLiteral { get; }
+    public DbValue PredicateLiteral { get; }
+
+    public string ProjectionColumn => ProjectionColumns.Length == 1 ? ProjectionColumns[0] : string.Empty;
+
+    public SimplePrimaryKeyLookupSql(
+        string tableName,
+        bool selectStar,
+        string[]? projectionColumns,
+        string predicateColumn,
+        long lookupValue,
+        bool hasResidualPredicate = false,
+        string residualPredicateColumn = "",
+        DbValue residualPredicateLiteral = default,
+        DbValue predicateLiteral = default)
+    {
+        TableName = tableName;
+        SelectStar = selectStar;
+        ProjectionColumns = projectionColumns ?? Array.Empty<string>();
+        PredicateColumn = predicateColumn;
+        LookupValue = lookupValue;
+        HasResidualPredicate = hasResidualPredicate;
+        ResidualPredicateColumn = residualPredicateColumn;
+        ResidualPredicateLiteral = residualPredicateLiteral;
+        PredicateLiteral = predicateLiteral;
+    }
+}
 
 public readonly record struct SimpleInsertSql
 {
@@ -111,7 +138,7 @@ public sealed class Parser
 
     /// <summary>
     /// Fast-path parser for a narrow point-lookup shape:
-    /// SELECT *|column FROM table WHERE column = integer-literal [AND column = literal] [;]
+    /// SELECT *|column FROM table WHERE column = literal [AND column = literal] [;]
     /// Produces lightweight metadata for direct planner execution.
     /// </summary>
     public static bool TryParseSimplePrimaryKeyLookup(string sql, out SimplePrimaryKeyLookupSql lookup)
@@ -515,15 +542,15 @@ public sealed class Parser
 
             SkipWhitespace();
             bool selectStar;
-            string projectionColumn;
+            string[] projectionColumns;
             if (TryConsumeChar('*'))
             {
                 selectStar = true;
-                projectionColumn = string.Empty;
+                projectionColumns = Array.Empty<string>();
             }
             else
             {
-                if (!TryReadIdentifier(out projectionColumn))
+                if (!TryReadProjectionColumns(out projectionColumns))
                     return false;
                 selectStar = false;
             }
@@ -544,7 +571,7 @@ public sealed class Parser
             if (!TryConsumeChar('='))
                 return false;
 
-            if (!TryReadIntegerLiteral(out long lookupValue))
+            if (!TryReadSimpleLiteral(out DbValue predicateLiteral))
                 return false;
 
             bool hasResidual = false;
@@ -568,16 +595,41 @@ public sealed class Parser
             if (!TryConsumeOptionalSemicolonAndRequireEnd())
                 return false;
 
+            long lookupValue = predicateLiteral.Type == DbType.Integer
+                ? predicateLiteral.AsInteger
+                : 0;
+
             lookup = new SimplePrimaryKeyLookupSql(
                 tableName,
                 selectStar,
-                projectionColumn,
+                projectionColumns,
                 predicateColumn,
                 lookupValue,
                 hasResidual,
                 residualColumn,
-                residualLiteral);
+                residualLiteral,
+                predicateLiteral);
             return true;
+        }
+
+        private bool TryReadProjectionColumns(out string[] projectionColumns)
+        {
+            var columns = new List<string>();
+            do
+            {
+                if (!TryReadIdentifier(out string projectionColumn))
+                {
+                    projectionColumns = Array.Empty<string>();
+                    return false;
+                }
+
+                columns.Add(projectionColumn);
+                SkipWhitespace();
+            }
+            while (TryConsumeChar(','));
+
+            projectionColumns = columns.ToArray();
+            return projectionColumns.Length > 0;
         }
 
         private bool TryReadSimpleLiteral(out DbValue literal)

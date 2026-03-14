@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
 using CSharpDB.Core;
 using CSharpDB.Storage.Indexing;
 
@@ -14,7 +13,7 @@ internal sealed class CollectionIndexBinding<
     T>
 {
     private readonly Func<T, object?> _fieldAccessor;
-    private readonly string _jsonPropertyName;
+    private readonly CollectionFieldAccessor _payloadAccessor;
     private readonly CollectionIndexValueKind _valueKind;
 
     private enum CollectionIndexValueKind
@@ -28,14 +27,14 @@ internal sealed class CollectionIndexBinding<
         string indexName,
         IIndexStore indexStore,
         Func<T, object?> fieldAccessor,
-        string jsonPropertyName,
+        CollectionFieldAccessor payloadAccessor,
         CollectionIndexValueKind valueKind)
     {
         FieldPath = fieldPath;
         IndexName = indexName;
         IndexStore = indexStore;
         _fieldAccessor = fieldAccessor;
-        _jsonPropertyName = jsonPropertyName;
+        _payloadAccessor = payloadAccessor;
         _valueKind = valueKind;
     }
 
@@ -44,8 +43,6 @@ internal sealed class CollectionIndexBinding<
     internal string IndexName { get; }
 
     internal IIndexStore IndexStore { get; }
-
-    internal string JsonPropertyName => _jsonPropertyName;
 
     internal bool UsesIntegerKey => _valueKind == CollectionIndexValueKind.Integer;
 
@@ -67,15 +64,22 @@ internal sealed class CollectionIndexBinding<
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
 
-        Expression body = StripConvert(fieldSelector.Body);
-        if (body is not MemberExpression memberExpression ||
-            memberExpression.Expression != fieldSelector.Parameters[0])
+        var pathSegments = new List<string>();
+        Expression current = StripConvert(fieldSelector.Body);
+        while (current is MemberExpression memberExpression)
         {
-            throw new NotSupportedException(
-                "Collection indexes currently support only direct field/property selectors like x => x.Age.");
+            pathSegments.Add(memberExpression.Member.Name);
+            current = StripConvert(memberExpression.Expression!);
         }
 
-        return memberExpression.Member.Name;
+        if (current != fieldSelector.Parameters[0] || pathSegments.Count == 0)
+        {
+            throw new NotSupportedException(
+                "Collection indexes currently support only field/property selector paths like x => x.Age or x => x.Address.City.");
+        }
+
+        pathSegments.Reverse();
+        return string.Join(".", pathSegments);
     }
 
     internal static CollectionIndexBinding<T> Create(
@@ -87,24 +91,24 @@ internal sealed class CollectionIndexBinding<
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
         ArgumentNullException.ThrowIfNull(indexStore);
 
-        MemberInfo member = ResolveMember(fieldPath);
-        var accessor = BuildAccessor(member);
-        var valueKind = ResolveValueKind(GetMemberType(member), fieldPath);
-        string jsonPropertyName = JsonNamingPolicy.CamelCase.ConvertName(fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(fieldPath);
+        var accessor = BuildAccessor(memberPath);
+        var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
+        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         return new CollectionIndexBinding<T>(
             fieldPath,
             indexName,
             indexStore,
             accessor,
-            jsonPropertyName,
+            payloadAccessor,
             valueKind);
     }
 
     internal static void ValidateFieldPath(string fieldPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
-        MemberInfo member = ResolveMember(fieldPath);
-        _ = ResolveValueKind(GetMemberType(member), fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(fieldPath);
+        _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
     }
 
     internal bool TryBuildKeyFromDocument(T document, out long indexKey)
@@ -113,17 +117,20 @@ internal sealed class CollectionIndexBinding<
     internal bool TryBuildKeyFromValue(object? value, out long indexKey)
         => TryBuildKey(value, out indexKey);
 
+    internal static bool TryConvertComparableValue(object? value, out DbValue dbValue)
+        => TryConvertToDbValue(value, out dbValue);
+
     internal bool TryBuildKeyFromDirectPayload(ReadOnlySpan<byte> payload, out long indexKey)
     {
         indexKey = 0;
-        if (!CollectionIndexedFieldReader.TryReadValue(payload, _jsonPropertyName, out var value))
+        if (!_payloadAccessor.TryReadValue(payload, out var value))
             return false;
 
         return TryBuildKey(value, out indexKey);
     }
 
     internal bool TryDirectPayloadTextEquals(ReadOnlySpan<byte> payload, string value)
-        => UsesTextKey && CollectionIndexedFieldReader.TryTextEquals(payload, _jsonPropertyName, value);
+        => UsesTextKey && _payloadAccessor.TryTextEquals(payload, value);
 
     private bool TryBuildKey(object? value, out long indexKey)
     {
@@ -148,23 +155,46 @@ internal sealed class CollectionIndexBinding<
         return true;
     }
 
-    private static MemberInfo ResolveMember(string fieldPath)
+    private static MemberInfo[] ResolveMemberPath(string fieldPath)
     {
-        foreach (PropertyInfo property in typeof(T).GetProperties())
+        string[] segments = fieldPath.Split('.');
+        var memberPath = new MemberInfo[segments.Length];
+        Type currentType = typeof(T);
+
+        for (int i = 0; i < segments.Length; i++)
+        {
+            string segment = segments[i].Trim();
+            if (segment.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot bind collection index field '{fieldPath}' for document type '{typeof(T).Name}'.");
+            }
+
+            MemberInfo member = ResolveMember(currentType, segment, fieldPath);
+            memberPath[i] = member;
+            currentType = Nullable.GetUnderlyingType(GetMemberType(member)) ?? GetMemberType(member);
+        }
+
+        return memberPath;
+    }
+
+    private static MemberInfo ResolveMember(Type sourceType, string segment, string fieldPath)
+    {
+        foreach (PropertyInfo property in sourceType.GetProperties())
         {
             if (property.GetMethod?.IsStatic == true)
                 continue;
 
-            if (string.Equals(property.Name, fieldPath, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(property.Name, segment, StringComparison.OrdinalIgnoreCase))
                 return property;
         }
 
-        foreach (FieldInfo field in typeof(T).GetFields())
+        foreach (FieldInfo field in sourceType.GetFields())
         {
             if (field.IsStatic)
                 continue;
 
-            if (string.Equals(field.Name, fieldPath, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(field.Name, segment, StringComparison.OrdinalIgnoreCase))
                 return field;
         }
 
@@ -172,19 +202,10 @@ internal sealed class CollectionIndexBinding<
             $"Cannot bind collection index field '{fieldPath}' for document type '{typeof(T).Name}'.");
     }
 
-    private static Func<T, object?> BuildAccessor(MemberInfo member)
+    private static Func<T, object?> BuildAccessor(IReadOnlyList<MemberInfo> memberPath)
     {
-        var document = Expression.Parameter(typeof(T), "document");
-        Expression memberAccess = member switch
-        {
-            PropertyInfo property => Expression.Property(document, property),
-            FieldInfo field => Expression.Field(document, field),
-            _ => throw new InvalidOperationException(
-                $"Member '{member.Name}' cannot be used for collection indexing."),
-        };
-
-        var boxed = Expression.Convert(memberAccess, typeof(object));
-        return Expression.Lambda<Func<T, object?>>(boxed, document).Compile();
+        MemberInfo[] capturedPath = memberPath.ToArray();
+        return document => ReadMemberPathValue(document, capturedPath);
     }
 
     private static Type GetMemberType(MemberInfo member)
@@ -231,6 +252,29 @@ internal sealed class CollectionIndexBinding<
 
         return expression;
     }
+
+    private static object? ReadMemberPathValue(object? current, IReadOnlyList<MemberInfo> memberPath)
+    {
+        object? value = current;
+        for (int i = 0; i < memberPath.Count; i++)
+        {
+            if (value is null)
+                return null;
+
+            value = ReadMemberValue(value, memberPath[i]);
+        }
+
+        return value;
+    }
+
+    private static object? ReadMemberValue(object source, MemberInfo member)
+        => member switch
+        {
+            PropertyInfo property => property.GetValue(source),
+            FieldInfo field => field.GetValue(source),
+            _ => throw new InvalidOperationException(
+                $"Member '{member.Name}' cannot be used for collection indexing."),
+        };
 
     private static bool TryConvertToDbValue(object? value, out DbValue dbValue)
     {

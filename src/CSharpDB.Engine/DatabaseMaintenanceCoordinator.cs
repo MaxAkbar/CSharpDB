@@ -346,14 +346,14 @@ public static class DatabaseMaintenanceCoordinator
         CancellationToken ct)
     {
         string fieldPath = indexSchema.Columns[0];
-        string jsonPropertyName = JsonNamingPolicy.CamelCase.ConvertName(fieldPath);
+        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         var tableTree = context.Catalog.GetTableTree(indexSchema.TableName);
         var indexStore = context.Catalog.GetIndexStore(indexSchema.IndexName);
         var cursor = tableTree.CreateCursor();
 
         while (await cursor.MoveNextAsync(ct))
         {
-            if (!TryBuildCollectionIndexKey(cursor.CurrentValue.Span, jsonPropertyName, context.RecordSerializer, out long indexKey))
+            if (!TryBuildCollectionIndexKey(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, out long indexKey))
                 continue;
 
             await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, ct);
@@ -362,18 +362,18 @@ public static class DatabaseMaintenanceCoordinator
 
     private static bool TryBuildCollectionIndexKey(
         ReadOnlySpan<byte> payload,
-        string jsonPropertyName,
+        CollectionFieldAccessor payloadAccessor,
         IRecordSerializer recordSerializer,
         out long indexKey)
     {
-        if (TryBuildCollectionIndexKeyFromDirectPayload(payload, jsonPropertyName, out indexKey))
+        if (TryBuildCollectionIndexKeyFromDirectPayload(payload, payloadAccessor, out indexKey))
             return true;
 
         try
         {
             string json = recordSerializer.DecodeColumn(payload, 1).AsText;
             using var document = JsonDocument.Parse(json);
-            return TryBuildCollectionIndexKeyFromJson(document.RootElement, jsonPropertyName, out indexKey);
+            return TryBuildCollectionIndexKeyFromJson(document.RootElement, payloadAccessor, out indexKey);
         }
         catch
         {
@@ -384,10 +384,10 @@ public static class DatabaseMaintenanceCoordinator
 
     private static bool TryBuildCollectionIndexKeyFromDirectPayload(
         ReadOnlySpan<byte> payload,
-        string jsonPropertyName,
+        CollectionFieldAccessor payloadAccessor,
         out long indexKey)
     {
-        if (!CollectionIndexedFieldReader.TryReadValue(payload, jsonPropertyName, out var value))
+        if (!payloadAccessor.TryReadValue(payload, out var value))
         {
             indexKey = 0;
             return false;
@@ -398,14 +398,14 @@ public static class DatabaseMaintenanceCoordinator
 
     private static bool TryBuildCollectionIndexKeyFromJson(
         JsonElement document,
-        string jsonPropertyName,
+        CollectionFieldAccessor payloadAccessor,
         out long indexKey)
     {
         indexKey = 0;
         if (document.ValueKind != JsonValueKind.Object)
             return false;
 
-        if (!TryGetJsonProperty(document, jsonPropertyName, out JsonElement property))
+        if (!TryGetJsonProperty(document, payloadAccessor.JsonPathSegments, out JsonElement property))
             return false;
 
         return property.ValueKind switch
@@ -428,22 +428,44 @@ public static class DatabaseMaintenanceCoordinator
         return true;
     }
 
-    private static bool TryGetJsonProperty(JsonElement document, string propertyName, out JsonElement property)
+    private static bool TryGetJsonProperty(JsonElement document, IReadOnlyList<string> propertyPath, out JsonElement property)
     {
-        if (document.TryGetProperty(propertyName, out property))
-            return true;
-
-        foreach (JsonProperty candidate in document.EnumerateObject())
+        JsonElement current = document;
+        for (int i = 0; i < propertyPath.Count; i++)
         {
-            if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            if (current.ValueKind != JsonValueKind.Object)
             {
-                property = candidate.Value;
-                return true;
+                property = default;
+                return false;
+            }
+
+            string propertyName = propertyPath[i];
+            if (current.TryGetProperty(propertyName, out JsonElement directProperty))
+            {
+                current = directProperty;
+                continue;
+            }
+
+            bool found = false;
+            foreach (JsonProperty candidate in current.EnumerateObject())
+            {
+                if (!string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                current = candidate.Value;
+                found = true;
+                break;
+            }
+
+            if (!found)
+            {
+                property = default;
+                return false;
             }
         }
 
-        property = default;
-        return false;
+        property = current;
+        return true;
     }
 
     private static bool IsCollectionIndexSchema(IndexSchema schema)
