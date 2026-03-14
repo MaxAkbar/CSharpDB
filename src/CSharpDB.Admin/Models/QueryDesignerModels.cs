@@ -33,7 +33,30 @@ public class DesignerJoin
     public DesignerJoinType JoinType { get; set; } = DesignerJoinType.Inner;
 }
 
-public enum DesignerJoinType { Inner, Left, Right, Full }
+public enum DesignerJoinType
+{
+    Inner,
+    Left,
+    Right,
+    Full, // Legacy saved-state value; the designer no longer exposes FULL OUTER JOIN.
+}
+
+public static class DesignerJoinTypeExtensions
+{
+    public static DesignerJoinType NormalizeSupported(this DesignerJoinType joinType) => joinType switch
+    {
+        DesignerJoinType.Left => DesignerJoinType.Left,
+        DesignerJoinType.Right => DesignerJoinType.Right,
+        _ => DesignerJoinType.Inner,
+    };
+
+    public static DesignerJoinType ReverseForConnectedChain(this DesignerJoinType joinType) => joinType.NormalizeSupported() switch
+    {
+        DesignerJoinType.Left => DesignerJoinType.Right,
+        DesignerJoinType.Right => DesignerJoinType.Left,
+        _ => DesignerJoinType.Inner,
+    };
+}
 
 public class DesignerGridRow
 {

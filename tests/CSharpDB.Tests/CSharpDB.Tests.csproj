@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Admin\CSharpDB.Admin.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />

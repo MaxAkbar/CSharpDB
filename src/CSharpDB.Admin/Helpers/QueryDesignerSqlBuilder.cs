@@ -7,7 +7,13 @@ public static class QueryDesignerSqlBuilder
 {
     public static string Build(QueryDesignerState state)
     {
-        if (state.Tables.Count == 0)
+        var tableNames = state.Tables
+            .Select(t => t.TableName)
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (tableNames.Count == 0)
             return "-- Add tables to begin";
 
         var sb = new StringBuilder();
@@ -32,23 +38,13 @@ public static class QueryDesignerSqlBuilder
         }
 
         // FROM ... JOIN
-        sb.Append($"\nFROM {state.Tables[0].TableName}");
-        foreach (var join in state.Joins)
-        {
-            string joinKeyword = join.JoinType switch
-            {
-                DesignerJoinType.Left  => "LEFT JOIN",
-                DesignerJoinType.Right => "RIGHT JOIN",
-                DesignerJoinType.Full  => "FULL OUTER JOIN",
-                _                      => "INNER JOIN"
-            };
-            sb.Append($"\n    {joinKeyword} {join.RightTable}" +
-                      $" ON {join.LeftTable}.{join.LeftColumn} = {join.RightTable}.{join.RightColumn}");
-        }
+        var deferredJoinConditions = AppendFromClause(sb, tableNames, state.Joins);
 
         // WHERE (filter clauses AND-combined)
-        var filters = state.GridRows
+        var filters = deferredJoinConditions
+            .Concat(state.GridRows
             .Where(r => !string.IsNullOrWhiteSpace(r.Filter))
+            .Select(r => $"{r.TableName}.{r.ColumnExpr} {r.Filter}"))
             .ToList();
         if (filters.Count > 0)
         {
@@ -56,8 +52,7 @@ public static class QueryDesignerSqlBuilder
             for (int i = 0; i < filters.Count; i++)
             {
                 if (i > 0) sb.Append("\n  AND ");
-                var row = filters[i];
-                sb.Append($"{row.TableName}.{row.ColumnExpr} {row.Filter}");
+                sb.Append(filters[i]);
             }
         }
 
@@ -80,4 +75,94 @@ public static class QueryDesignerSqlBuilder
 
         return sb.ToString();
     }
+
+    private static List<string> AppendFromClause(
+        StringBuilder sb,
+        IReadOnlyList<string> tableNames,
+        IReadOnlyList<DesignerJoin> joins)
+    {
+        sb.Append($"\nFROM {tableNames[0]}");
+
+        var tableSet = new HashSet<string>(tableNames, StringComparer.OrdinalIgnoreCase);
+        var includedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { tableNames[0] };
+        var pendingJoins = joins
+            .Where(join =>
+                !string.IsNullOrWhiteSpace(join.LeftTable) &&
+                !string.IsNullOrWhiteSpace(join.RightTable) &&
+                !string.IsNullOrWhiteSpace(join.LeftColumn) &&
+                !string.IsNullOrWhiteSpace(join.RightColumn) &&
+                tableSet.Contains(join.LeftTable) &&
+                tableSet.Contains(join.RightTable) &&
+                !string.Equals(join.LeftTable, join.RightTable, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var deferredJoinConditions = new List<string>();
+
+        while (true)
+        {
+            bool progressed = false;
+            for (int i = 0; i < pendingJoins.Count; i++)
+            {
+                var join = pendingJoins[i];
+                bool hasLeft = includedTables.Contains(join.LeftTable);
+                bool hasRight = includedTables.Contains(join.RightTable);
+
+                if (hasLeft && hasRight)
+                {
+                    if (join.JoinType.NormalizeSupported() == DesignerJoinType.Inner)
+                    {
+                        deferredJoinConditions.Add(BuildJoinCondition(join));
+                        pendingJoins.RemoveAt(i);
+                        i--;
+                        progressed = true;
+                    }
+
+                    continue;
+                }
+
+                if (hasLeft == hasRight)
+                    continue;
+
+                string nextTable;
+                string joinKeyword;
+                if (hasLeft)
+                {
+                    nextTable = join.RightTable;
+                    joinKeyword = ToSqlJoinKeyword(join.JoinType.NormalizeSupported());
+                }
+                else
+                {
+                    nextTable = join.LeftTable;
+                    joinKeyword = ToSqlJoinKeyword(join.JoinType.ReverseForConnectedChain());
+                }
+
+                sb.Append($"\n    {joinKeyword} {nextTable} ON {BuildJoinCondition(join)}");
+                includedTables.Add(nextTable);
+                pendingJoins.RemoveAt(i);
+                progressed = true;
+                break;
+            }
+
+            if (progressed)
+                continue;
+
+            string? nextDisconnectedTable = tableNames.FirstOrDefault(table => !includedTables.Contains(table));
+            if (nextDisconnectedTable is null)
+                break;
+
+            sb.Append($"\n    CROSS JOIN {nextDisconnectedTable}");
+            includedTables.Add(nextDisconnectedTable);
+        }
+
+        return deferredJoinConditions;
+    }
+
+    private static string BuildJoinCondition(DesignerJoin join) =>
+        $"{join.LeftTable}.{join.LeftColumn} = {join.RightTable}.{join.RightColumn}";
+
+    private static string ToSqlJoinKeyword(DesignerJoinType joinType) => joinType switch
+    {
+        DesignerJoinType.Left => "LEFT JOIN",
+        DesignerJoinType.Right => "RIGHT JOIN",
+        _ => "INNER JOIN",
+    };
 }
