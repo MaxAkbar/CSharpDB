@@ -98,6 +98,101 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public async Task PageOperationInterceptor_ReportsMemoryMappedMainFileReads_WhenEnabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+        var interceptor = new RecordingPageOperationInterceptor();
+
+        try
+        {
+            var options = new DatabaseOptions
+            {
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        Interceptors = new[] { interceptor },
+                        UseMemoryMappedReads = true,
+                        MaxCachedPages = 16,
+                    }
+                }
+            };
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+            }
+
+            interceptor.ResetCounts();
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await using var result = await db.ExecuteAsync("SELECT * FROM t WHERE id = 1", ct);
+                _ = await result.ToListAsync(ct);
+            }
+
+            Assert.True(interceptor.GetReadSourceCount(PageReadSource.MemoryMappedMainFile) > 0);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task PageOperationInterceptor_ReportsWalCacheReads_WhenEnabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+        var interceptor = new RecordingPageOperationInterceptor();
+
+        try
+        {
+            var options = new DatabaseOptions
+            {
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        Interceptors = new[] { interceptor },
+                        MaxCachedPages = 1,
+                        MaxCachedWalReadPages = 2,
+                        CheckpointPolicy = new FrameCountCheckpointPolicy(1_000_000),
+                    }
+                }
+            };
+
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)", ct);
+                await db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+
+                interceptor.ResetCounts();
+
+                await using (var first = await db.ExecuteAsync("SELECT v FROM t WHERE id = 1", ct))
+                    _ = await first.ToListAsync(ct);
+
+                await using (var filler = await db.ExecuteAsync("SELECT COUNT(*) FROM t", ct))
+                    _ = await filler.ToListAsync(ct);
+
+                await using (var second = await db.ExecuteAsync("SELECT v FROM t WHERE id = 1", ct))
+                    _ = await second.ToListAsync(ct);
+
+                Assert.True(interceptor.GetReadSourceCount(PageReadSource.WalLatest) > 0);
+                Assert.True(interceptor.GetReadSourceCount(PageReadSource.WalCache) > 0);
+            }
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public void WalSizeCheckpointPolicy_UsesEstimatedWalBytesThreshold()
     {
         var policy = new WalSizeCheckpointPolicy(8 * 1024);
@@ -168,6 +263,9 @@ public sealed class StorageEngineExtensibilityTests
             .ConfigureStorageEngine(builder => builder.UseLookupOptimizedPreset());
 
         Assert.Equal(2048, options.StorageEngineOptions.PagerOptions.MaxCachedPages);
+        Assert.Equal(256, options.StorageEngineOptions.PagerOptions.MaxCachedWalReadPages);
+        Assert.True(options.StorageEngineOptions.PagerOptions.UseMemoryMappedReads);
+        Assert.True(options.StorageEngineOptions.PagerOptions.EnableSequentialLeafReadAhead);
         Assert.IsType<BTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
     }
 
@@ -426,6 +524,9 @@ public sealed class StorageEngineExtensibilityTests
             RecoveryEndCount = 0;
             _readSources.Clear();
         }
+
+        public int GetReadSourceCount(PageReadSource source)
+            => _readSources.TryGetValue(source, out int count) ? count : 0;
     }
 
     private sealed class CountingIndexStore : IIndexStore

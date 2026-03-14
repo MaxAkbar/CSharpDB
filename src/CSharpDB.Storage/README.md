@@ -26,7 +26,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("app.cdb", options);
 ```
 
-`UseLookupOptimizedPreset()` is the current recommended opt-in preset for file-backed lookup-heavy workloads. It sets `MaxCachedPages = 2048` and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
+`UseLookupOptimizedPreset()` is the current recommended opt-in preset for file-backed lookup-heavy workloads. It sets `MaxCachedPages = 2048`, adds a small bounded WAL read cache (`MaxCachedWalReadPages = 256`), keeps sequential B-tree leaf read-ahead enabled, enables memory-mapped reads for clean main-file pages when the storage device supports them, and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
 
 For sustained durable writes, use the write-heavy preset instead:
 

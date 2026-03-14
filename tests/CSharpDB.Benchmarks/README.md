@@ -2,11 +2,11 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current snapshot in this README mixes the latest March 12, 2026 macro captures, the March 12, 2026 focused query-engine reruns, and the March 14, 2026 read-path, aggregate, predicate, and join reruns with the supporting artifacts below:
+The current snapshot in this README mixes the latest March 12, 2026 macro captures, the March 12, 2026 focused query-engine reruns, and the March 14, 2026 read-path, `mmap`, WAL-cache, B-tree cursor, aggregate, predicate, and join reruns with the supporting artifacts below:
 
 - `Macro reruns on March 12, 2026: SustainedWriteBenchmark, ReaderScalingBenchmark, CollectionBenchmark, InMemoryBatchBenchmark`
 - `Focused query-engine reruns on March 12, 2026: ParserBenchmarks, QueryPlanCacheBenchmarks, PointLookupBenchmarks, SubqueryBenchmarks`
-- `Read-path, aggregate, predicate, and join rerun on March 14, 2026: CoveringIndexBenchmarks, IndexProjectionBenchmarks, OrderByIndexBenchmarks, IndexAggregateBenchmarks, PrimaryKeyAggregateBenchmarks, DistinctAggregateBenchmarks, PredicatePushdownBenchmarks, JoinBenchmarks`
+- `Read-path, mmap, WAL-cache, B-tree cursor, aggregate, predicate, and join rerun on March 14, 2026: MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, CoveringIndexBenchmarks, IndexProjectionBenchmarks, OrderByIndexBenchmarks, IndexAggregateBenchmarks, PrimaryKeyAggregateBenchmarks, DistinctAggregateBenchmarks, PredicatePushdownBenchmarks, JoinBenchmarks`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260312-004755.csv`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260312-024701.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ParserBenchmarks-report.csv`
@@ -27,6 +27,9 @@ The current snapshot in this README mixes the latest March 12, 2026 macro captur
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryPersistenceBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionPayloadBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionSchemaBreadthBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.MemoryMappedReadBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalReadCacheBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.BTreeCursorBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ColdLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.StorageTuningBenchmarks-report.csv`
@@ -56,6 +59,9 @@ dotnet run -c Release -- --micro --filter *InsertBenchmarks*
 dotnet run -c Release -- --micro --filter *InMemory*
 dotnet run -c Release -- --micro --filter *SqlMaterializationBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionAccessBenchmarks*
+dotnet run -c Release -- --micro --filter *MemoryMappedReadBenchmarks*
+dotnet run -c Release -- --micro --filter *WalReadCacheBenchmarks*
+dotnet run -c Release -- --micro --filter *BTreeCursorBenchmarks*
 dotnet run -c Release -- --micro --filter *CoveringIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionFieldExtractionBenchmarks*
 dotnet run -c Release -- --micro --filter *IndexProjectionBenchmarks*
@@ -93,6 +99,9 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `InMemoryAdoNetBenchmarks`: ADO.NET private `:memory:` vs named shared `:memory:name`
 - `InMemoryPersistenceBenchmarks`: `LoadIntoMemoryAsync` and `SaveToFileAsync`
 - `ColdLookupBenchmarks`: file-backed vs in-memory point lookups under cache pressure
+- `MemoryMappedReadBenchmarks`: file-backed SQL and collection cold lookups with `UseMemoryMappedReads` toggled on and off
+- `WalReadCacheBenchmarks`: file-backed SQL cold lookups where the latest table pages stay in WAL and `MaxCachedWalReadPages` is toggled
+- `BTreeCursorBenchmarks`: raw storage-layer sequential B+tree cursor scans and seek+window traversals without SQL executor overhead
 - `CollectionIndexBenchmarks`: focused collection secondary-index lookup and indexed write-maintenance costs
 - `StorageTuningBenchmarks`: cache-size, index-provider, and reader-session matrix for file-backed indexed lookups
 - `DurableWriteDiagnosticsBenchmark`: file-backed single-row write diagnostics across frame-count and WAL-size checkpoint policies, including background sliced auto-checkpoint scheduling
@@ -105,6 +114,9 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 
 - `SqlMaterializationBenchmarks`: isolates full-row decode, selected-column decode, single-column access, and payload-level text/numeric checks
 - `CollectionAccessBenchmarks`: isolates full document hydration, key-only access, key matching, and indexed-field reads over collection payloads
+- `MemoryMappedReadBenchmarks`: isolates file-backed SQL and collection cold lookups so the opt-in `mmap` read path can be compared directly against copy-based reads
+- `WalReadCacheBenchmarks`: isolates file-backed SQL cold lookups where the latest table pages remain WAL-backed so the dedicated WAL read cache can be compared directly against fresh WAL stream reads
+- `BTreeCursorBenchmarks`: isolates raw forward cursor traversal and seek+window scans over a B+tree so sequential leaf-scan changes can be measured without the SQL executor on top
 - `CoveringIndexBenchmarks`: isolates unique-index lookup shapes that could become index-only from shapes that still need the wide base-row payload
 - `IndexProjectionBenchmarks`: isolates non-unique secondary-index lookups where `SELECT id` or `SELECT indexed_col` can now avoid base-row fetches
 - `OrderByIndexBenchmarks`: isolates indexed `ORDER BY` and integer range scan shapes where `SELECT id, value` can now stay on index data instead of fetching base rows
@@ -181,6 +193,35 @@ Defaults:
 | SQL indexed lookup (100K rows) | 749 ns | 467 B |
 | SQL point miss (100K rows) | 246 ns | 192 B |
 
+### Memory-Mapped Read Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| SQL cold lookup, copy-based read path | 28.04 us | 9.51 KB | File-backed cache-pressured lookup with `UseMemoryMappedReads = false` |
+| SQL cold lookup, mmap read path | 1.50 us | 648 B | Same workload with clean main-file pages served from mapped read views |
+| Collection cold get, copy-based read path | 29.09 us | 9.36 KB | File-backed cache-pressured collection lookup with `UseMemoryMappedReads = false` |
+| Collection cold get, mmap read path | 1.42 us | 418 B | Same workload with mapped main-file reads and copy-on-write only on mutable access |
+
+### WAL Read Cache Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| SQL cold lookup, WAL-backed, no WAL cache | 27.07 us | 8.68 KB | File-backed cache-pressured lookup where the latest table pages are still read from WAL frames |
+| SQL cold lookup, WAL-backed, 128-page WAL cache | 19.14 us | 6.09 KB | Same workload with `MaxCachedWalReadPages = 128` so immutable WAL frame images can be reused between reads |
+
+### B-Tree Cursor Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| B-tree cursor full scan (10K rows, read-ahead off) | 9.03 ms | 3.26 MB | File-backed raw forward scan with `EnableSequentialLeafReadAhead = false` |
+| B-tree cursor full scan (10K rows, read-ahead on) | 8.31 ms | 3.18 MB | Same scan with speculative next-leaf reads enabled |
+| B-tree cursor seek + 1024-row window (10K rows, read-ahead off) | 926.23 us | 350.66 KB | Mid-tree seek followed by sequential leaf traversal |
+| B-tree cursor seek + 1024-row window (10K rows, read-ahead on) | 811.89 us | 337.40 KB | Same seek-window path with speculative next-leaf reads |
+| B-tree cursor full scan (100K rows, read-ahead off) | 90.73 ms | 32.60 MB | File-backed forward scan across a deeper leaf chain |
+| B-tree cursor full scan (100K rows, read-ahead on) | 83.76 ms | 31.83 MB | Same scan with speculative next-leaf reads enabled |
+| B-tree cursor seek + 1024-row window (100K rows, read-ahead off) | 898.05 us | 350.68 KB | Mid-tree seek followed by a bounded sequential window |
+| B-tree cursor seek + 1024-row window (100K rows, read-ahead on) | 783.42 us | 337.41 KB | Seek-window path with speculative next-leaf reads; latency stays roughly flat as the tree grows |
+
 ### SQL Covered Read-Path Spot Checks (March 14, 2026)
 
 | Metric | Mean | Allocated | Notes |
@@ -190,12 +231,12 @@ Defaults:
 | Unique index lookup `SELECT lookup_key` (100K rows) | 5.78 us | 1.11 KB | Covered projection from index payload |
 | Non-unique index lookup `SELECT *` (100K rows) | 388.88 us | 71.04 KB | Baseline duplicate-key secondary-index lookup |
 | Non-unique index lookup `SELECT id` (100K rows) | 378.87 us | 33.59 KB | Covered projection drops most row materialization cost |
-| `ORDER BY value` no index (100K rows) | 89.15 ms | 28.13 MB | Full sort baseline |
-| `ORDER BY value` covered index-order scan (100K rows) | 19.74 ms | 10.65 MB | `SELECT id, value` stays on index data |
-| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 25.27 us | 29.55 KB | Index order avoids sort, still fetches base rows |
-| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 10.33 us | 11.35 KB | Index-only top-N path |
-| `WHERE value BETWEEN ...` row fetch (100K rows) | 42.07 ms | 14.69 MB | Integer range scan with base-row fetch |
-| `WHERE value BETWEEN ...` covered projection (100K rows) | 12.16 ms | 5.32 MB | Integer range scan that stays on index data |
+| `ORDER BY value` no index (100K rows) | 141.44 ms | 47.03 MB | Full sort baseline from the post-read-ahead rerun |
+| `ORDER BY value` covered index-order scan (100K rows) | 34.43 ms | 14.45 MB | `SELECT id, value` stays on index data |
+| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 41.58 us | 34.18 KB | Index order avoids sort, still fetches base rows |
+| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 19.25 us | 15.97 KB | Index-only top-N path |
+| `WHERE value BETWEEN ...` row fetch (100K rows) | 51.60 ms | 16.36 MB | Integer range scan with base-row fetch |
+| `WHERE value BETWEEN ...` covered projection (100K rows) | 15.19 ms | 7.23 MB | Integer range scan that stays on index data |
 
 ### SQL Indexed Aggregate Spot Checks (March 14, 2026)
 
@@ -308,7 +349,9 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - `MaxCachedPages = 2048` was the best collection setting in the current tuning matrix: indexed collection lookup fell from `66.65 us` at 16 pages to `24.58 us` at 2048 pages.
 - `UseCachingBTreeIndexes` was neutral-to-negative on these lookup workloads. The worst regressions showed up on SQL reader-session paths, so it is not the recommended default tuning knob.
 - Reusing a `ReaderSession` matters more than cache sizing for repeated SQL reads. At `MaxCachedPages = 2048`, per-query reader sessions measured `127.05 us`, while a reused session measured `43.70 us`.
-- Recommended file-backed read-heavy preset: `builder.UseLookupOptimizedPreset()` and reuse a `ReaderSession` for bursts of related SQL reads.
+- A small dedicated WAL read cache also helps once the hottest pages live in the WAL instead of the main file: the WAL-backed SQL cold-lookup micro dropped from `27.07 us` to `19.14 us` when `MaxCachedWalReadPages = 128`.
+- Raw storage traversal benefits from speculative next-leaf reads too: on the direct file-backed `BTreeCursor` micro, full scans improved from `9.03 ms` to `8.31 ms` at `10K` rows and from `90.73 ms` to `83.76 ms` at `100K`, while the `1024`-row seek window improved from about `926 us` to `812 us` at `10K` and from `898 us` to `783 us` at `100K`.
+- Recommended file-backed read-heavy preset: `builder.UseLookupOptimizedPreset()` now combines the `2048`-page cache setting with a bounded WAL read cache (`MaxCachedWalReadPages = 256`) and opt-in memory-mapped reads for clean main-file pages; still reuse a `ReaderSession` for bursts of related SQL reads.
 
 ### File-Backed Durable Write Tuning Takeaways
 

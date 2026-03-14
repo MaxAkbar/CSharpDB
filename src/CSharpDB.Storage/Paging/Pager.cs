@@ -11,6 +11,8 @@ namespace CSharpDB.Storage.Paging;
 public sealed class Pager : IAsyncDisposable, IDisposable
 {
     private readonly IStorageDevice _device;
+    private readonly IPageReadProvider _pageReads;
+    private readonly IPageReadProvider _speculativePageReads;
     private readonly IWriteAheadLog _wal;
     private readonly WalIndex _walIndex;
     private readonly IPageOperationInterceptor _interceptor;
@@ -52,10 +54,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private Pager(IStorageDevice device, IWriteAheadLog wal, WalIndex walIndex, PagerOptions? options = null)
     {
         _device = device;
-        _wal = wal;
-        _walIndex = walIndex;
         _options = options ?? new PagerOptions();
         ValidateOptions(_options);
+        _pageReads = CreatePageReadProvider(device, _options);
+        _speculativePageReads = CreateSpeculativePageReadProvider(device, _options, _pageReads);
+        _wal = wal;
+        _walIndex = walIndex;
         _interceptor = _options.CreateInterceptor();
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         var cache = _options.CreatePageCache();
@@ -63,6 +67,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             evictingCache.PageEvicted += _options.OnCachePageEvicted;
         _buffers = new PageBufferManager(
             cache,
+            _pageReads,
+            _speculativePageReads,
+            _options.MaxCachedWalReadPages,
             _wal,
             _walIndex,
             readerSnapshot: null,
@@ -87,9 +94,18 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>Constructor for read-only snapshot pager.</summary>
-    private Pager(IStorageDevice device, IWriteAheadLog wal, WalIndex walIndex, WalSnapshot snapshot, PagerOptions? options = null)
+    private Pager(
+        IStorageDevice device,
+        IPageReadProvider pageReads,
+        IPageReadProvider speculativePageReads,
+        IWriteAheadLog wal,
+        WalIndex walIndex,
+        WalSnapshot snapshot,
+        PagerOptions? options = null)
     {
         _device = device;
+        _pageReads = pageReads;
+        _speculativePageReads = speculativePageReads;
         _wal = wal;
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
@@ -103,6 +119,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             evictingCache.PageEvicted += _options.OnCachePageEvicted;
         _buffers = new PageBufferManager(
             cache,
+            _pageReads,
+            _speculativePageReads,
+            _options.MaxCachedWalReadPages,
             _wal,
             _walIndex,
             _readerSnapshot,
@@ -139,7 +158,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public Pager CreateSnapshotReader(WalSnapshot snapshot)
     {
-        var reader = new Pager(_device, _wal, _walIndex, snapshot, _options);
+        var pageReads = CreatePageReadProvider(_device, _options);
+        var reader = new Pager(
+            _device,
+            pageReads,
+            CreateSpeculativePageReadProvider(_device, _options, pageReads),
+            _wal,
+            _walIndex,
+            snapshot,
+            _options);
         // Copy header state so schema catalog can be loaded
         reader.PageCount = PageCount;
         reader.SchemaRootPage = SchemaRootPage;
@@ -165,6 +192,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         await _device.WriteAsync(0, page0, ct);
         await _device.FlushAsync(ct);
         _buffers.SetCached(0, page0);
+        RefreshPageReadProviderMapping();
     }
 
     private async ValueTask ReadFileHeaderAsync(CancellationToken ct = default)
@@ -211,10 +239,30 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return _buffers.TryGetCachedPage(pageId);
     }
 
+    internal bool TryGetCachedPageReadBuffer(uint pageId, out PageReadBuffer page)
+    {
+        return _buffers.TryGetCachedPageReadBuffer(pageId, out page);
+    }
+
     public ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
     {
-        return _buffers.GetPageAsync(_device, pageId, ct);
+        return _buffers.GetPageAsync(pageId, ct);
     }
+
+    internal ValueTask<PageReadBuffer> GetPageReadAsync(uint pageId, CancellationToken ct = default)
+    {
+        return _buffers.GetPageReadAsync(pageId, ct);
+    }
+
+    internal ValueTask<PageReadBuffer> ReadPageUncachedAsync(uint pageId, CancellationToken ct = default)
+    {
+        return _buffers.ReadPageUncachedAsync(pageId, ct);
+    }
+
+    internal bool CanSpeculativePageReads =>
+        _options.EnableSequentialLeafReadAhead &&
+        !_buffers.HasInterceptor &&
+        (_transactions?.InTransaction != true);
 
     public ValueTask MarkDirtyAsync(uint pageId, CancellationToken ct = default)
     {
@@ -623,6 +671,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private async ValueTask RefreshStateAfterCheckpointCompletionAsync(CancellationToken ct)
     {
         _buffers.ClearCache();
+        RefreshPageReadProviderMapping();
         if (_device.Length >= PageConstants.PageSize)
             await ReadFileHeaderAsync(ct);
     }
@@ -653,7 +702,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public async ValueTask DisposeAsync()
     {
         if (_isSnapshotReader)
+        {
+            await DisposePageReadProviderAsync();
             return; // Snapshot readers don't own resources
+        }
 
         if (_transactions?.InTransaction == true)
             await RollbackAsync();
@@ -668,6 +720,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         // Delete WAL file on clean close
         await _wal.CloseAndDeleteAsync();
+
+        await DisposePageReadProviderAsync();
 
         if (_device is IAsyncDisposable asyncDisposable)
             await asyncDisposable.DisposeAsync();
@@ -752,11 +806,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public void Dispose()
     {
         if (_isSnapshotReader)
+        {
+            DisposePageReadProvider();
             return;
+        }
 
         if (_transactions?.InTransaction == true)
             RollbackAsync().AsTask().GetAwaiter().GetResult();
         WaitForBackgroundCheckpointAsync().AsTask().GetAwaiter().GetResult();
+        DisposePageReadProvider();
         _device.Dispose();
         _checkpoints?.Dispose();
         _transactions?.Dispose();
@@ -832,6 +890,82 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 options.AutoCheckpointMaxPagesPerStep,
                 "AutoCheckpointMaxPagesPerStep must be greater than zero.");
         }
+
+        if (options.MaxCachedWalReadPages < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.MaxCachedWalReadPages),
+                options.MaxCachedWalReadPages,
+                "MaxCachedWalReadPages must be greater than or equal to zero.");
+        }
+    }
+
+    private static IPageReadProvider CreatePageReadProvider(IStorageDevice device, PagerOptions? options)
+    {
+        if (options?.UseMemoryMappedReads == true && device is FileStorageDevice fileDevice)
+            return new MemoryMappedPageReadProvider(fileDevice);
+
+        return new StorageDevicePageReadProvider(device);
+    }
+
+    private static IPageReadProvider CreateSpeculativePageReadProvider(
+        IStorageDevice device,
+        PagerOptions? options,
+        IPageReadProvider primaryPageReads)
+    {
+        if (options?.UseMemoryMappedReads == true && device is FileStorageDevice)
+            return primaryPageReads;
+
+        if (device is FileStorageDevice fileDevice)
+            return new StorageDevicePageReadProvider(fileDevice, useSequentialAccessHint: true);
+
+        return primaryPageReads;
+    }
+
+    private void RefreshPageReadProviderMapping()
+    {
+        if (_pageReads is MemoryMappedPageReadProvider mappedReads)
+            mappedReads.RefreshMapping();
+    }
+
+    private async ValueTask DisposePageReadProviderAsync()
+    {
+        if (ReferenceEquals(_pageReads, _device))
+            return;
+
+        await DisposePageReadProviderInstanceAsync(_speculativePageReads);
+        if (!ReferenceEquals(_speculativePageReads, _pageReads))
+            await DisposePageReadProviderInstanceAsync(_pageReads);
+    }
+
+    private void DisposePageReadProvider()
+    {
+        if (ReferenceEquals(_pageReads, _device))
+            return;
+
+        DisposePageReadProviderInstance(_speculativePageReads);
+        if (!ReferenceEquals(_speculativePageReads, _pageReads))
+            DisposePageReadProviderInstance(_pageReads);
+    }
+
+    private async ValueTask DisposePageReadProviderInstanceAsync(IPageReadProvider pageReads)
+    {
+        if (ReferenceEquals(pageReads, _device))
+            return;
+
+        if (pageReads is IAsyncDisposable asyncPageReads)
+            await asyncPageReads.DisposeAsync();
+        else if (pageReads is IDisposable disposablePageReads)
+            disposablePageReads.Dispose();
+    }
+
+    private void DisposePageReadProviderInstance(IPageReadProvider pageReads)
+    {
+        if (ReferenceEquals(pageReads, _device))
+            return;
+
+        if (pageReads is IDisposable disposablePageReads)
+            disposablePageReads.Dispose();
     }
 
     private void EnforceReaderWalBackpressure(int dirtyPageCount)

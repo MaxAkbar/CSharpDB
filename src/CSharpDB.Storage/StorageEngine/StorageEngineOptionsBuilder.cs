@@ -44,11 +44,15 @@ public sealed class StorageEngineOptionsBuilder
             WriterLockTimeout = _pagerOptions.WriterLockTimeout,
             CheckpointPolicy = _pagerOptions.CheckpointPolicy,
             MaxCachedPages = _pagerOptions.MaxCachedPages,
+            MaxCachedWalReadPages = _pagerOptions.MaxCachedWalReadPages,
             AutoCheckpointExecutionMode = _pagerOptions.AutoCheckpointExecutionMode,
             AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
             PageCacheFactory = _pagerOptions.PageCacheFactory,
             Interceptors = _pagerOptions.Interceptors,
             MaxWalBytesWhenReadersActive = maxWalBytes,
+            OnCachePageEvicted = _pagerOptions.OnCachePageEvicted,
+            UseMemoryMappedReads = _pagerOptions.UseMemoryMappedReads,
+            EnableSequentialLeafReadAhead = _pagerOptions.EnableSequentialLeafReadAhead,
         };
 
         return this;
@@ -90,7 +94,8 @@ public sealed class StorageEngineOptionsBuilder
 
     /// <summary>
     /// Applies the current recommended preset for file-backed lookup-heavy workloads.
-    /// Keeps the standard B-tree index provider and raises the pager cache size.
+    /// Keeps the standard B-tree index provider, raises the pager cache size,
+    /// and enables memory-mapped reads when the storage device supports them.
     /// </summary>
     public StorageEngineOptionsBuilder UseLookupOptimizedPreset(int maxCachedPages = 2048)
     {
@@ -102,11 +107,15 @@ public sealed class StorageEngineOptionsBuilder
             WriterLockTimeout = _pagerOptions.WriterLockTimeout,
             CheckpointPolicy = _pagerOptions.CheckpointPolicy,
             MaxCachedPages = maxCachedPages,
+            MaxCachedWalReadPages = 256,
             AutoCheckpointExecutionMode = _pagerOptions.AutoCheckpointExecutionMode,
             AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
             PageCacheFactory = _pagerOptions.PageCacheFactory,
             Interceptors = _pagerOptions.Interceptors,
             MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+            OnCachePageEvicted = _pagerOptions.OnCachePageEvicted,
+            UseMemoryMappedReads = true,
+            EnableSequentialLeafReadAhead = _pagerOptions.EnableSequentialLeafReadAhead,
         };
 
         _indexProvider = new BTreeIndexProvider();
@@ -130,9 +139,34 @@ public sealed class StorageEngineOptionsBuilder
             AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
             AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
             MaxCachedPages = _pagerOptions.MaxCachedPages,
+            MaxCachedWalReadPages = _pagerOptions.MaxCachedWalReadPages,
             PageCacheFactory = _pagerOptions.PageCacheFactory,
             Interceptors = _pagerOptions.Interceptors,
             MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+            OnCachePageEvicted = _pagerOptions.OnCachePageEvicted,
+            UseMemoryMappedReads = _pagerOptions.UseMemoryMappedReads,
+            EnableSequentialLeafReadAhead = _pagerOptions.EnableSequentialLeafReadAhead,
+        };
+
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UseMemoryMappedReads(bool enabled = true)
+    {
+        _pagerOptions = new PagerOptions
+        {
+            WriterLockTimeout = _pagerOptions.WriterLockTimeout,
+            CheckpointPolicy = _pagerOptions.CheckpointPolicy,
+            AutoCheckpointExecutionMode = _pagerOptions.AutoCheckpointExecutionMode,
+            AutoCheckpointMaxPagesPerStep = _pagerOptions.AutoCheckpointMaxPagesPerStep,
+            MaxCachedPages = _pagerOptions.MaxCachedPages,
+            MaxCachedWalReadPages = _pagerOptions.MaxCachedWalReadPages,
+            PageCacheFactory = _pagerOptions.PageCacheFactory,
+            Interceptors = _pagerOptions.Interceptors,
+            MaxWalBytesWhenReadersActive = _pagerOptions.MaxWalBytesWhenReadersActive,
+            OnCachePageEvicted = _pagerOptions.OnCachePageEvicted,
+            UseMemoryMappedReads = enabled,
+            EnableSequentialLeafReadAhead = _pagerOptions.EnableSequentialLeafReadAhead,
         };
 
         return this;
