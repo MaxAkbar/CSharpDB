@@ -44,7 +44,7 @@ public class ParserTests
     [Fact]
     public void Parse_CreateTable_IdentityOnNonInteger_Throws()
     {
-        Assert.Throws<CSharpDB.Core.CSharpDbException>(() => Parser.Parse("CREATE TABLE users (id TEXT PRIMARY KEY IDENTITY, name TEXT)"));
+        Assert.Throws<CSharpDB.Primitives.CSharpDbException>(() => Parser.Parse("CREATE TABLE users (id TEXT PRIMARY KEY IDENTITY, name TEXT)"));
     }
 
     [Fact]
@@ -886,8 +886,8 @@ public class ParserTests
         var trig = Assert.IsType<CreateTriggerStatement>(stmt);
         Assert.Equal("audit_insert", trig.TriggerName);
         Assert.Equal("users", trig.TableName);
-        Assert.Equal(CSharpDB.Core.TriggerTiming.Before, trig.Timing);
-        Assert.Equal(CSharpDB.Core.TriggerEvent.Insert, trig.Event);
+        Assert.Equal(CSharpDB.Primitives.TriggerTiming.Before, trig.Timing);
+        Assert.Equal(CSharpDB.Primitives.TriggerEvent.Insert, trig.Event);
         Assert.Single(trig.Body);
         Assert.False(trig.IfNotExists);
     }
@@ -898,8 +898,8 @@ public class ParserTests
         var stmt = Parser.Parse(
             "CREATE TRIGGER after_del AFTER DELETE ON items BEGIN DELETE FROM log; END");
         var trig = Assert.IsType<CreateTriggerStatement>(stmt);
-        Assert.Equal(CSharpDB.Core.TriggerTiming.After, trig.Timing);
-        Assert.Equal(CSharpDB.Core.TriggerEvent.Delete, trig.Event);
+        Assert.Equal(CSharpDB.Primitives.TriggerTiming.After, trig.Timing);
+        Assert.Equal(CSharpDB.Primitives.TriggerEvent.Delete, trig.Event);
     }
 
     [Fact]
@@ -908,8 +908,8 @@ public class ParserTests
         var stmt = Parser.Parse(
             "CREATE TRIGGER after_upd AFTER UPDATE ON items BEGIN UPDATE log SET val = 1; END");
         var trig = Assert.IsType<CreateTriggerStatement>(stmt);
-        Assert.Equal(CSharpDB.Core.TriggerTiming.After, trig.Timing);
-        Assert.Equal(CSharpDB.Core.TriggerEvent.Update, trig.Event);
+        Assert.Equal(CSharpDB.Primitives.TriggerTiming.After, trig.Timing);
+        Assert.Equal(CSharpDB.Primitives.TriggerEvent.Update, trig.Event);
     }
 
     [Fact]

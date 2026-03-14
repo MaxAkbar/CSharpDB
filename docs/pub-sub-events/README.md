@@ -62,7 +62,7 @@ CSharpDB currently has no way for consumers to react to data changes in real tim
 
 ## Event Model
 
-### Core Types (in `CSharpDB.Core`)
+### Primitives Types (in `CSharpDB.Primitives`)
 
 ```csharp
 public enum ChangeOperation { Insert, Update, Delete }
@@ -338,9 +338,9 @@ These can be added later as additional delivery mechanisms. A `BackgroundService
 
 | File | Project | Purpose |
 |------|---------|---------|
-| `src/CSharpDB.Core/ChangeEvent.cs` | Core | `ChangeEvent`, `ChangeEventBatch`, `ChangeOperation` enum |
-| `src/CSharpDB.Core/IChangeEventSink.cs` | Core | Sink interface for engine integration |
-| `src/CSharpDB.Core/ChangeSubscriptionOptions.cs` | Core | Subscription filter options |
+| `src/CSharpDB.Primitives/ChangeEvent.cs` | Primitives | `ChangeEvent`, `ChangeEventBatch`, `ChangeOperation` enum |
+| `src/CSharpDB.Primitives/IChangeEventSink.cs` | Primitives | Sink interface for engine integration |
+| `src/CSharpDB.Primitives/ChangeSubscriptionOptions.cs` | Primitives | Subscription filter options |
 | `src/CSharpDB.Engine/ChangeEventDispatcher.cs` | Engine | Channel-based fan-out dispatcher |
 | `src/CSharpDB.Api/Endpoints/EventEndpoints.cs` | Api | SSE streaming endpoint |
 | `tests/CSharpDB.Tests/ChangeEventTests.cs` | Tests | Unit + integration tests |
@@ -361,8 +361,8 @@ These can be added later as additional delivery mechanisms. A `BackgroundService
 
 ## Implementation Phases
 
-### Phase 1: Core Infrastructure
-1. Create `ChangeEvent`, `ChangeEventBatch`, `IChangeEventSink`, `ChangeSubscriptionOptions` in Core
+### Phase 1: Primitives Infrastructure
+1. Create `ChangeEvent`, `ChangeEventBatch`, `IChangeEventSink`, `ChangeSubscriptionOptions` in Primitives
 2. Create `ChangeEventDispatcher` in Engine
 3. Instrument `QueryPlanner` INSERT/UPDATE/DELETE paths (buffer after AFTER triggers)
 4. Wire `Database.CommitWithCatalogSyncAsync` (flush) and rollback paths (discard)

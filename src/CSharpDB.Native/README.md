@@ -372,7 +372,7 @@ Returns the last error message (UTF-8), or `NULL` if no error. Valid until the n
 int csharpdb_last_error_code(void);
 ```
 
-Returns the last error code. `0` = no error, `-1` = generic error. Positive values map to `CSharpDB.Core.ErrorCode`:
+Returns the last error code. `0` = no error, `-1` = generic error. Positive values map to `CSharpDB.Primitives.ErrorCode`:
 
 | Code | Name |
 |------|------|
@@ -1028,7 +1028,7 @@ Copy `CSharpDB.Native.dll` (or `.so` / `.dylib`) into your project directory.
 const koffi = require("koffi");
 const path = require("path");
 
-// Type codes matching CSharpDB.Core.DbType
+// Type codes matching CSharpDB.Primitives.DbType
 const DbType = { NULL: 0, INTEGER: 1, REAL: 2, TEXT: 3, BLOB: 4 };
 
 function loadLibrary(libPath) {

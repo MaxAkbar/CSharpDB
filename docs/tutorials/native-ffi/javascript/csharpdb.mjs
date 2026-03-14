@@ -13,7 +13,7 @@
 
 import koffi from "koffi";
 
-// Type codes matching CSharpDB.Core.DbType
+// Type codes matching CSharpDB.Primitives.DbType
 export const DbType = { NULL: 0, INTEGER: 1, REAL: 2, TEXT: 3, BLOB: 4 };
 
 export class CSharpDB {

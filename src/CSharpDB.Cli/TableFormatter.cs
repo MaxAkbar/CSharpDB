@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Cli;
 

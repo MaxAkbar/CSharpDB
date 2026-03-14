@@ -47,7 +47,8 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 
 - `v2.0` application code should target `CSharpDB.Client`.
 - `v2.0` low-level/shared-type usage should target `CSharpDB.Primitives`.
-- The legacy `CSharpDB.Service` and `CSharpDB.Core` compatibility packages are removed from the `v2.0` repo surface. Migrate to `CSharpDB.Client` and `CSharpDB.Primitives`.
+- The legacy `CSharpDB.Service` compatibility package is removed from the `v2.0` repo surface.
+- The permanent primitives rename migration guide is [docs/migrations/core-to-primitives.md](docs/migrations/core-to-primitives.md).
 
 ## Admin UI Preview
 
@@ -57,7 +58,7 @@ See the product first, then dive into the API and internals:
 |---|---|---|
 | ![Admin query tab showing system table query results](docs/images/QuerySytemTable.png) | ![Admin table details tab showing row data](docs/images/TableDetails.png) | ![Admin schema tab showing table structure](docs/images/TableSchema.png) |
 
-Planned next for the Admin query surface: a classic visual [Query Designer](docs/query-designer/README.md) with a source canvas, join lines, design grid, SQL preview, and saved layouts.
+The Admin query tab now includes a built-in visual [Query Designer](docs/query-designer/README.md): a classic source canvas with draggable table nodes, SVG join lines, a design grid for column/sort/filter configuration, a live SQL preview, and saved designer layouts.
 
 ## VS Code Extension
 
@@ -330,7 +331,7 @@ The SQL path goes through tokenizer → parser → planner → operators → B+t
 ```
 CSharpDB.slnx
 ├── src/
-│   ├── CSharpDB.Core/        Primitives (DbValue, Schema, ErrorCodes)
+│   ├── CSharpDB.Primitives/        Primitives (DbValue, Schema, ErrorCodes)
 │   ├── CSharpDB/             All-in-one NuGet package metadata
 │   ├── CSharpDB.Storage/     Pager, B+tree, WAL, file I/O
 │   ├── CSharpDB.Sql/         Tokenizer, parser, AST, script splitter
@@ -486,6 +487,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | Document | Description |
 |----------|-------------|
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
+| [Primitives Migration Guide](docs/migrations/core-to-primitives.md) | Permanent breaking rename guidance for the primitives surface |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |

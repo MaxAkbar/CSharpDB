@@ -27,7 +27,7 @@ public sealed class CSharpDbTransaction : DbTransaction
         {
             await _connection.GetSession().CommitAsync(cancellationToken);
         }
-        catch (CSharpDB.Core.CSharpDbException ex)
+        catch (CSharpDB.Primitives.CSharpDbException ex)
         {
             throw new CSharpDbDataException(ex);
         }
@@ -46,7 +46,7 @@ public sealed class CSharpDbTransaction : DbTransaction
         {
             await _connection.GetSession().RollbackAsync(cancellationToken);
         }
-        catch (CSharpDB.Core.CSharpDbException ex)
+        catch (CSharpDB.Primitives.CSharpDbException ex)
         {
             throw new CSharpDbDataException(ex);
         }

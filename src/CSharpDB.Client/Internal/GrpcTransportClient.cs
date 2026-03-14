@@ -4,8 +4,8 @@ using CSharpDB.Client.Models;
 using CSharpDB.Storage.Diagnostics;
 using Grpc.Core;
 using Grpc.Net.Client;
-using CoreDbException = CSharpDB.Core.CSharpDbException;
-using CoreErrorCode = CSharpDB.Core.ErrorCode;
+using CoreDbException = CSharpDB.Primitives.CSharpDbException;
+using CoreErrorCode = CSharpDB.Primitives.ErrorCode;
 using Empty = Google.Protobuf.WellKnownTypes.Empty;
 
 namespace CSharpDB.Client.Internal;

@@ -10,7 +10,7 @@
 // DELETE (unfollow, remove user with cascading edge cleanup).
 // ============================================================================
 
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using StorageStudyExamples.Core;
 
 namespace StorageStudyExamples.GraphStore;

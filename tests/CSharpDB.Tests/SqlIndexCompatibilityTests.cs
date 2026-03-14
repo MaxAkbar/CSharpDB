@@ -1,5 +1,5 @@
 using System.Reflection;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Execution;
 
 namespace CSharpDB.Tests;

@@ -1,7 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 
 namespace CSharpDB.Data;
@@ -55,7 +55,7 @@ public sealed class CSharpDbConnection : DbConnection
             _session = await OpenSessionAsync(target, builder, cancellationToken);
             _state = ConnectionState.Open;
         }
-        catch (Core.CSharpDbException ex)
+        catch (CSharpDbException ex)
         {
             _session = null;
             _state = ConnectionState.Closed;
@@ -120,7 +120,7 @@ public sealed class CSharpDbConnection : DbConnection
         {
             await GetSession().BeginTransactionAsync(cancellationToken);
         }
-        catch (Core.CSharpDbException ex)
+        catch (CSharpDbException ex)
         {
             throw new CSharpDbDataException(ex);
         }
@@ -172,7 +172,7 @@ public sealed class CSharpDbConnection : DbConnection
         {
             await GetSession().SaveToFileAsync(filePath, cancellationToken);
         }
-        catch (Core.CSharpDbException ex)
+        catch (CSharpDbException ex)
         {
             throw new CSharpDbDataException(ex);
         }

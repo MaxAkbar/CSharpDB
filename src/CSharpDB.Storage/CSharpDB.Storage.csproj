@@ -1,7 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\CSharpDB.Core\CSharpDB.Core.csproj" />
+    <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -49,7 +49,7 @@ public sealed class PagerOptions
 
     /// <summary>
     /// Optional WAL growth cap (in bytes) enforced only while snapshot readers are active.
-    /// When set, commits that would grow committed WAL bytes beyond this limit fail with <see cref="CSharpDB.Core.ErrorCode.Busy"/>.
+    /// When set, commits that would grow committed WAL bytes beyond this limit fail with <see cref="CSharpDB.Primitives.ErrorCode.Busy"/>.
     /// </summary>
     public long? MaxWalBytesWhenReadersActive { get; init; }
 

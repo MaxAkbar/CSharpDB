@@ -1,6 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using CSharpDB.Benchmarks.Infrastructure;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using System.Text;
 

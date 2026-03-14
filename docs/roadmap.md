@@ -49,7 +49,7 @@ SQL feature parity and ecosystem expansion.
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | In progress |
-| **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Planned |
+| **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
 
 ---
@@ -147,13 +147,9 @@ Major features already implemented:
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Backup/Export/Import Plan](backup-export-import/README.md) — Planned tooling for diagnostics, backups, import/export, and reclaim
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
-- [VS Code Extension Plan](vscode-extension/README.md) — IDE extension for schema exploration, SQL editing, and data browsing
-- [Query Designer Plan](query-designer/README.md) — Classic visual `SELECT` builder for the Admin UI with SQL round-trip and saved layouts
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
-- [Table/Index Statistics Plan](table-index-statistics/README.md) — Persisted row counts and column stats, `ANALYZE`, and cost-based access-path planning
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
-- [Service Daemon Plan](service-daemon/README.md) — Persistent background service with concurrent readers, cross-platform deployment, and multi-protocol access
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing
 - [Pub/Sub Change Events Plan](pub-sub-events/README.md) — Engine-level change events with channel-based delivery for real-time data subscriptions

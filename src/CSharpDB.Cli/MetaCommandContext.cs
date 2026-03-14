@@ -1,7 +1,7 @@
 using CSharpDB.Client;
 using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using System.Runtime.ExceptionServices;

@@ -5,13 +5,13 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
-using CoreColumnDefinition = CSharpDB.Core.ColumnDefinition;
-using CoreDbType = CSharpDB.Core.DbType;
-using CoreIndexSchema = CSharpDB.Core.IndexSchema;
-using CoreTableSchema = CSharpDB.Core.TableSchema;
-using CoreTriggerEvent = CSharpDB.Core.TriggerEvent;
-using CoreTriggerSchema = CSharpDB.Core.TriggerSchema;
-using CoreTriggerTiming = CSharpDB.Core.TriggerTiming;
+using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
+using CoreDbType = CSharpDB.Primitives.DbType;
+using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
+using CoreTableSchema = CSharpDB.Primitives.TableSchema;
+using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
+using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
+using CoreTriggerTiming = CSharpDB.Primitives.TriggerTiming;
 
 namespace CSharpDB.Client.Internal;
 
@@ -715,7 +715,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         };
     }
 
-    private static Dictionary<string, object?> ToRowDictionary(CoreColumnDefinition[] schema, CSharpDB.Core.DbValue[] row)
+    private static Dictionary<string, object?> ToRowDictionary(CoreColumnDefinition[] schema, CSharpDB.Primitives.DbValue[] row)
     {
         var values = new Dictionary<string, object?>(schema.Length, StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < schema.Length && i < row.Length; i++)
@@ -723,10 +723,10 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return values;
     }
 
-    private static List<object?[]> ToObjects(List<CSharpDB.Core.DbValue[]> rows)
+    private static List<object?[]> ToObjects(List<CSharpDB.Primitives.DbValue[]> rows)
         => rows.Select(ToObjects).ToList();
 
-    private static object?[] ToObjects(CSharpDB.Core.DbValue[] row)
+    private static object?[] ToObjects(CSharpDB.Primitives.DbValue[] row)
     {
         var values = new object?[row.Length];
         for (int i = 0; i < row.Length; i++)
@@ -734,7 +734,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return values;
     }
 
-    private static object? ToObject(CSharpDB.Core.DbValue value) => value.Type switch
+    private static object? ToObject(CSharpDB.Primitives.DbValue value) => value.Type switch
     {
         CoreDbType.Null => null,
         CoreDbType.Integer => value.AsInteger,
@@ -744,7 +744,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         _ => throw new CSharpDbClientException($"Unsupported DbValue type '{value.Type}'."),
     };
 
-    private static bool ValuesEqual(CSharpDB.Core.DbValue value, object candidate)
+    private static bool ValuesEqual(CSharpDB.Primitives.DbValue value, object candidate)
     {
         object? normalized = NormalizeValue(candidate);
         if (normalized is null)

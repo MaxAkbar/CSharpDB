@@ -53,6 +53,58 @@ if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var lookup))
 }
 ```
 
+## JOIN Detection and Multi-Table Queries
+
+The parser builds a recursive `TableRef` tree from the `FROM` clause. Each JOIN keyword produces a `JoinTableRef` node whose `Left` and `Right` children are themselves `TableRef` nodes, so chained joins form a left-deep binary tree:
+
+```
+SELECT o.id, c.name, p.title
+FROM orders o
+INNER JOIN customers c ON c.id = o.customer_id
+LEFT JOIN products p ON p.id = o.product_id
+```
+
+Parses into:
+
+```
+JoinTableRef (LEFT JOIN, ON p.id = o.product_id)
+├── Left:  JoinTableRef (INNER JOIN, ON c.id = o.customer_id)
+│   ├── Left:  SimpleTableRef("orders", alias: "o")
+│   └── Right: SimpleTableRef("customers", alias: "c")
+└── Right: SimpleTableRef("products", alias: "p")
+```
+
+Walking the tree to collect every table involved is a simple recursive visit:
+
+```csharp
+using CSharpDB.Sql;
+
+var stmt = Parser.Parse("""
+    SELECT o.id, c.name, p.title
+    FROM orders o
+    INNER JOIN customers c ON c.id = o.customer_id
+    LEFT JOIN products p ON p.id = o.product_id
+    """) as SelectStatement;
+
+// Recursively collect all tables from the FROM tree
+static IEnumerable<SimpleTableRef> CollectTables(TableRef tableRef) => tableRef switch
+{
+    SimpleTableRef simple => [simple],
+    JoinTableRef join     => CollectTables(join.Left).Concat(CollectTables(join.Right)),
+    _                     => [],
+};
+
+foreach (var table in CollectTables(stmt!.From))
+    Console.WriteLine($"Table: {table.TableName}, Alias: {table.Alias}");
+
+// Output:
+//   Table: orders, Alias: o
+//   Table: customers, Alias: c
+//   Table: products, Alias: p
+```
+
+The execution layer uses the same recursive pattern — `BuildFromOperator(TableRef)` walks the tree, creates a scan operator for each `SimpleTableRef`, and combines them with join operators (hash join, index nested-loop join, or nested-loop fallback) at each `JoinTableRef` node. Column references like `o.id` are resolved through `QualifiedMappings` on the composite schema.
+
 ## AST Hierarchy
 
 **Statements**: `CreateTableStatement`, `DropTableStatement`, `InsertStatement`, `SelectStatement`, `CompoundSelectStatement`, `UpdateStatement`, `DeleteStatement`, `AlterTableStatement`, `CreateIndexStatement`, `DropIndexStatement`, `CreateViewStatement`, `DropViewStatement`, `CreateTriggerStatement`, `DropTriggerStatement`, `AnalyzeStatement`, `WithStatement`

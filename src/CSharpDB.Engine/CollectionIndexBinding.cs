@@ -4,7 +4,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Engine;

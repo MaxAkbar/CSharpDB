@@ -1,5 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
 

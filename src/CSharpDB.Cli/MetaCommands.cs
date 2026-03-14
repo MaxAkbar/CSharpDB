@@ -1,5 +1,5 @@
 using CSharpDB.Client.Models;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
 using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
@@ -713,7 +713,7 @@ internal static class MetaCommandHelpers
         return localSchema is null ? null : MapTableSchema(localSchema);
     }
 
-    private static ClientTableSchema MapTableSchema(CSharpDB.Core.TableSchema schema)
+    private static ClientTableSchema MapTableSchema(CSharpDB.Primitives.TableSchema schema)
     {
         return new ClientTableSchema
         {
@@ -731,12 +731,12 @@ internal static class MetaCommandHelpers
         };
     }
 
-    private static CSharpDB.Client.Models.DbType MapDbType(CSharpDB.Core.DbType type) => type switch
+    private static CSharpDB.Client.Models.DbType MapDbType(CSharpDB.Primitives.DbType type) => type switch
     {
-        CSharpDB.Core.DbType.Integer => CSharpDB.Client.Models.DbType.Integer,
-        CSharpDB.Core.DbType.Real => CSharpDB.Client.Models.DbType.Real,
-        CSharpDB.Core.DbType.Text => CSharpDB.Client.Models.DbType.Text,
-        CSharpDB.Core.DbType.Blob => CSharpDB.Client.Models.DbType.Blob,
+        CSharpDB.Primitives.DbType.Integer => CSharpDB.Client.Models.DbType.Integer,
+        CSharpDB.Primitives.DbType.Real => CSharpDB.Client.Models.DbType.Real,
+        CSharpDB.Primitives.DbType.Text => CSharpDB.Client.Models.DbType.Text,
+        CSharpDB.Primitives.DbType.Blob => CSharpDB.Client.Models.DbType.Blob,
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),
     };
 }

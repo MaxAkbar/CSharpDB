@@ -9,159 +9,202 @@
 
 <div class="query-tab">
     <div class="toolbar">
-        <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
-            <i class="bi bi-play-fill"></i> Run
-        </button>
-        <button class="toolbar-btn" @onclick="RunAnalyzeAsync" disabled="@_loading" title="Refresh persisted table and column statistics">
-            <i class="bi bi-bar-chart-line"></i> Analyze
-        </button>
-        <button class="toolbar-btn" @onclick="ClearEditor">
-            <i class="bi bi-eraser"></i> Clear
-        </button>
-        <div class="toolbar-separator"></div>
-        <button class="toolbar-btn" @onclick="FormatSql">
-            <i class="bi bi-code-slash"></i> Format
-        </button>
-        <div class="toolbar-spacer"></div>
-        @if (_elapsed is not null)
+        @if (_mode == QueryMode.Sql)
         {
-            <div class="toolbar-info">
-                @if (_resultRows is not null)
-                {
-                    <span>@_resultRows.Count rows</span>
-                    <span class="toolbar-separator-text">|</span>
-                }
-                <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
-            </div>
+            <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
+                <i class="bi bi-play-fill"></i> Run
+            </button>
+            <button class="toolbar-btn" @onclick="RunAnalyzeAsync" disabled="@_loading" title="Refresh persisted table and column statistics">
+                <i class="bi bi-bar-chart-line"></i> Analyze
+            </button>
+            <button class="toolbar-btn" @onclick="ClearEditor">
+                <i class="bi bi-eraser"></i> Clear
+            </button>
+            <div class="toolbar-separator"></div>
+            <button class="toolbar-btn" @onclick="FormatSql">
+                <i class="bi bi-code-slash"></i> Format
+            </button>
+            <div class="toolbar-separator"></div>
         }
-    </div>
-
-    <div class="query-shortcuts-bar">
-        <span class="query-saved-label">
-            <i class="bi bi-bar-chart-line"></i> Stats
-        </span>
-        <button class="toolbar-btn"
-                @onclick="LoadTableStatsQuery"
-                disabled="@_loading"
-                title="Open sys.table_stats in this tab">
-            <i class="bi bi-table"></i> Table Stats
-        </button>
-        <button class="toolbar-btn"
-                @onclick="LoadColumnStatsQuery"
-                disabled="@_loading"
-                title="Open sys.column_stats in this tab">
-            <i class="bi bi-list-columns"></i> Column Stats
-        </button>
-    </div>
-
-    <div class="query-saved-bar">
-        <span class="query-saved-label">
-            <i class="bi bi-bookmark-star"></i> Saved
-        </span>
-        <input class="query-saved-input"
-               @bind="_savedQueryName"
-               placeholder="Query name..."
-               title="Name for save/update" />
-        <button class="toolbar-btn"
-                @onclick="SaveQueryAsync"
-                disabled="@(_loading || _loadingSavedQueries || string.IsNullOrWhiteSpace(_savedQueryName) || string.IsNullOrWhiteSpace(_sqlText))">
-            <i class="bi bi-save"></i> Save
-        </button>
-        <select class="query-saved-select" @bind="_selectedSavedQueryName" disabled="@_loadingSavedQueries">
-            <option value="">Load saved query...</option>
-            @foreach (var saved in _savedQueries)
+        <div class="query-mode-toggle">
+            <button class="query-mode-btn @(_mode == QueryMode.Sql ? "active" : "")"
+                    @onclick='() => SetMode(QueryMode.Sql)'
+                    title="SQL editor mode">
+                <i class="bi bi-terminal"></i> SQL
+            </button>
+            <button class="query-mode-btn @(_mode == QueryMode.Designer ? "active" : "")"
+                    @onclick='() => SetMode(QueryMode.Designer)'
+                    title="Visual query designer">
+                <i class="bi bi-diagram-3"></i> Designer
+            </button>
+        </div>
+        @if (_mode == QueryMode.Sql)
+        {
+            <div class="toolbar-spacer"></div>
+            @if (_elapsed is not null)
             {
-                <option value="@saved.Name">@saved.Name</option>
+                <div class="toolbar-info">
+                    @if (_resultRows is not null)
+                    {
+                        <span>@_resultRows.Count rows</span>
+                        <span class="toolbar-separator-text">|</span>
+                    }
+                    <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
+                </div>
             }
-        </select>
-        <button class="toolbar-btn"
-                @onclick="LoadSelectedQueryAsync"
-                disabled="@(_loadingSavedQueries || string.IsNullOrWhiteSpace(_selectedSavedQueryName))">
-            <i class="bi bi-download"></i> Load
-        </button>
-        <button class="toolbar-btn"
-                @onclick="RefreshSavedQueriesAsync"
-                disabled="@_loadingSavedQueries"
-                title="Refresh saved query list">
-            <i class="bi bi-arrow-clockwise"></i>
-        </button>
+        }
     </div>
 
-    <SqlEditor @ref="_editor"
-               @bind-Value="_sqlText"
-               OnExecute="RunQuery"
-               Height="200"
-               Placeholder="Enter SQL query..." />
+    @if (_mode == QueryMode.Sql)
+    {
+        <div class="query-shortcuts-bar">
+            <span class="query-saved-label">
+                <i class="bi bi-bar-chart-line"></i> Stats
+            </span>
+            <button class="toolbar-btn"
+                    @onclick="LoadTableStatsQuery"
+                    disabled="@_loading"
+                    title="Open sys.table_stats in this tab">
+                <i class="bi bi-table"></i> Table Stats
+            </button>
+            <button class="toolbar-btn"
+                    @onclick="LoadColumnStatsQuery"
+                    disabled="@_loading"
+                    title="Open sys.column_stats in this tab">
+                <i class="bi bi-list-columns"></i> Column Stats
+            </button>
+        </div>
 
-    <div class="grid-container">
-        @if (_loading)
-        {
-            <div class="loading-overlay">
-                <div class="spinner"></div>
-            </div>
-        }
-        else if (_error is not null)
-        {
-            <div class="query-error">
-                <i class="bi bi-exclamation-triangle"></i> @_error
-            </div>
-        }
-        else if (_resultColumns is not null && _resultRows is not null)
-        {
-            <table class="data-grid query-results">
-                <thead>
-                    <tr>
-                        <th class="row-num-header">#</th>
-                        @foreach (var col in _resultColumns)
-                        {
-                            <th>@col</th>
-                        }
-                    </tr>
-                </thead>
-                <tbody>
-                    @for (int r = 0; r < _resultRows.Count; r++)
-                    {
+        <div class="query-saved-bar">
+            <span class="query-saved-label">
+                <i class="bi bi-bookmark-star"></i> Saved
+            </span>
+            <input class="query-saved-input"
+                   @bind="_savedQueryName"
+                   placeholder="Query name..."
+                   title="Name for save/update" />
+            <button class="toolbar-btn"
+                    @onclick="SaveQueryAsync"
+                    disabled="@(_loading || _loadingSavedQueries || string.IsNullOrWhiteSpace(_savedQueryName) || string.IsNullOrWhiteSpace(_sqlText))">
+                <i class="bi bi-save"></i> Save
+            </button>
+            <select class="query-saved-select" @bind="_selectedSavedQueryName" disabled="@_loadingSavedQueries">
+                <option value="">Load saved query...</option>
+                @foreach (var saved in _savedQueries)
+                {
+                    <option value="@saved.Name">@saved.Name</option>
+                }
+            </select>
+            <button class="toolbar-btn"
+                    @onclick="LoadSelectedQueryAsync"
+                    disabled="@(_loadingSavedQueries || string.IsNullOrWhiteSpace(_selectedSavedQueryName))">
+                <i class="bi bi-download"></i> Load
+            </button>
+            <button class="toolbar-btn"
+                    @onclick="RefreshSavedQueriesAsync"
+                    disabled="@_loadingSavedQueries"
+                    title="Refresh saved query list">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+        </div>
+
+        <SqlEditor @ref="_editor"
+                   @bind-Value="_sqlText"
+                   OnExecute="RunQuery"
+                   Height="200"
+                   Placeholder="Enter SQL query..." />
+
+        <div class="grid-container">
+            @if (_loading)
+            {
+                <div class="loading-overlay">
+                    <div class="spinner"></div>
+                </div>
+            }
+            else if (_error is not null)
+            {
+                <div class="query-error">
+                    <i class="bi bi-exclamation-triangle"></i> @_error
+                </div>
+            }
+            else if (_resultColumns is not null && _resultRows is not null)
+            {
+                <table class="data-grid query-results">
+                    <thead>
                         <tr>
-                            <td class="row-num">@(r + 1)</td>
-                            @foreach (var val in _resultRows[r])
+                            <th class="row-num-header">#</th>
+                            @foreach (var col in _resultColumns)
                             {
-                                <td>
-                                    @if (val is null)
-                                    {
-                                        <span class="null-val">NULL</span>
-                                    }
-                                    else if (val is byte[] bytes)
-                                    {
-                                        <span class="blob-val">[@bytes.Length bytes]</span>
-                                    }
-                                    else
-                                    {
-                                        @val.ToString()
-                                    }
-                                </td>
+                                <th>@col</th>
                             }
                         </tr>
-                    }
-                </tbody>
-            </table>
-        }
-        else if (_nonQueryMessage is not null)
-        {
-            <div class="query-message">
-                <i class="bi bi-check-circle"></i> @_nonQueryMessage
-            </div>
-        }
-        else
-        {
-            <div class="empty-state">
-                <i class="bi bi-terminal"></i>
-                <p>Run a query to see results</p>
-            </div>
-        }
-    </div>
+                    </thead>
+                    <tbody>
+                        @for (int r = 0; r < _resultRows.Count; r++)
+                        {
+                            <tr>
+                                <td class="row-num">@(r + 1)</td>
+                                @foreach (var val in _resultRows[r])
+                                {
+                                    <td>
+                                        @if (val is null)
+                                        {
+                                            <span class="null-val">NULL</span>
+                                        }
+                                        else if (val is byte[] bytes)
+                                        {
+                                            <span class="blob-val">[@bytes.Length bytes]</span>
+                                        }
+                                        else
+                                        {
+                                            @val.ToString()
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else if (_nonQueryMessage is not null)
+            {
+                <div class="query-message">
+                    <i class="bi bi-check-circle"></i> @_nonQueryMessage
+                </div>
+            }
+            else
+            {
+                <div class="empty-state">
+                    <i class="bi bi-terminal"></i>
+                    <p>Run a query to see results</p>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <QueryDesignerPanel Tab="Tab" OnCopySql="OnDesignerCopySql" />
+    }
 </div>
 
 @code {
+    private enum QueryMode { Sql, Designer }
+
+    private QueryMode _mode = QueryMode.Sql;
+
+    private void SetMode(QueryMode mode)
+    {
+        _mode = mode;
+        if (Tab is not null) Tab.State["QueryMode"] = mode.ToString();
+    }
+
+    private void OnDesignerCopySql(string sql)
+    {
+        _sqlText = sql;
+        if (Tab is not null) Tab.SqlText = sql;
+        SetMode(QueryMode.Sql);
+    }
+
     private static readonly Regex s_execRegex = new(
         @"^\s*EXEC(?:UTE)?\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)(?<rest>[\s\S]*)$",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
@@ -194,6 +237,13 @@
     {
         if (Tab?.SqlText is not null && string.IsNullOrEmpty(_sqlText))
             _sqlText = Tab.SqlText;
+
+        if (Tab?.State.TryGetValue("QueryMode", out var modeVal) == true
+            && modeVal is string modeStr
+            && Enum.TryParse<QueryMode>(modeStr, out var savedMode))
+        {
+            _mode = savedMode;
+        }
     }
 
     public async Task RunQuery()
@@ -358,7 +408,9 @@
 
         try
         {
-            _savedQueries = await DbClient.GetSavedQueriesAsync();
+            _savedQueries = (await DbClient.GetSavedQueriesAsync())
+                .Where(q => !q.Name.StartsWith("__designer_layout:"))
+                .ToList();
             if (!string.IsNullOrWhiteSpace(keepSelection)
                 && _savedQueries.Any(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase)))
             {

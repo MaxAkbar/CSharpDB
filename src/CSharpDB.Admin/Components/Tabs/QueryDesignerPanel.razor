@@ -1,0 +1,885 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Models
+@using CSharpDB.Admin.Helpers
+@using CSharpDB.Client.Models
+@inject ICSharpDbClient DbClient
+@inject ToastService Toast
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="query-designer-panel">
+
+    @* Backdrop — closes open panels when clicking outside them *@
+    @if (_showAddTable || _showLoadPanel || _selectedJoinIndex.HasValue)
+    {
+        <div class="designer-backdrop" @onclick="OnDismissAll"></div>
+    }
+
+    @* ─── Sub-toolbar ─── *@
+    <div class="toolbar designer-toolbar">
+        <button class="toolbar-btn primary" @onclick="RunQueryAsync" disabled="@_running" title="Run generated SQL">
+            <i class="bi bi-play-fill"></i> Run
+        </button>
+        <div class="toolbar-separator"></div>
+
+        @* Add Table dropdown *@
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn" @onclick="ToggleAddTablePanel" title="Add a table to the canvas">
+                <i class="bi bi-plus-square"></i> Add Table <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showAddTable)
+            {
+                <div class="designer-dropdown-panel">
+                    @if (_tableNames is null)
+                    {
+                        <div class="designer-dropdown-empty">Loading...</div>
+                    }
+                    else if (_tableNames.Count == 0)
+                    {
+                        <div class="designer-dropdown-empty">No tables found</div>
+                    }
+                    else
+                    {
+                        @foreach (var name in _tableNames)
+                        {
+                            var n = name;
+                            bool alreadyAdded = _state.Tables.Any(t => t.TableName == n);
+                            <button class="designer-dropdown-item @(alreadyAdded ? "disabled" : "")"
+                                    disabled="@alreadyAdded"
+                                    @onclick="() => AddTableAsync(n)">
+                                <i class="bi bi-table"></i> @n
+                            </button>
+                        }
+                    }
+                </div>
+            }
+        </div>
+
+        <button class="toolbar-btn" @onclick="ShowAddJoinDialog"
+                disabled="@(_state.Tables.Count < 2)"
+                title="Add a join between tables">
+            <i class="bi bi-diagram-2"></i> Add Join
+        </button>
+
+        <button class="toolbar-btn" @onclick="ClearDesigner" title="Clear canvas">
+            <i class="bi bi-eraser"></i> Clear
+        </button>
+
+        <div class="toolbar-separator"></div>
+
+        @* Save layout *@
+        <input class="query-saved-input" style="width:120px"
+               @bind="_saveLayoutName" placeholder="Layout name..." />
+        <button class="toolbar-btn"
+                @onclick="SaveLayoutAsync"
+                disabled="@string.IsNullOrWhiteSpace(_saveLayoutName)"
+                title="Save designer layout">
+            <i class="bi bi-save"></i> Save
+        </button>
+
+        @* Load layout dropdown *@
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn" @onclick="ToggleLoadPanel" title="Load a saved layout">
+                <i class="bi bi-folder2-open"></i> Load <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showLoadPanel)
+            {
+                <div class="designer-dropdown-panel">
+                    @if (!_savedLayouts.Any())
+                    {
+                        <div class="designer-dropdown-empty">No saved layouts</div>
+                    }
+                    else
+                    {
+                        @foreach (var layout in _savedLayouts)
+                        {
+                            var l = layout;
+                            <button class="designer-dropdown-item" @onclick="() => LoadLayoutAsync(l.Name)">
+                                <i class="bi bi-diagram-3"></i> @l.Name[LayoutPrefix.Length..]
+                            </button>
+                        }
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="toolbar-separator"></div>
+
+        <button class="toolbar-btn" @onclick="CopySqlToEditor" title="Copy generated SQL to the SQL editor">
+            <i class="bi bi-box-arrow-up-right"></i> Copy SQL to Editor
+        </button>
+    </div>
+
+    @* ─── Add Join dialog ─── *@
+    @if (_showAddJoin)
+    {
+        <div class="designer-join-dialog">
+            <span class="designer-join-dialog-title">Add Join</span>
+            <select class="schema-input" @bind="_joinLeftTable" style="width:130px">
+                <option value="">Left table…</option>
+                @foreach (var t in _state.Tables) { <option value="@t.TableName">@t.TableName</option> }
+            </select>
+            <select class="schema-input" @bind="_joinLeftCol" style="width:130px">
+                <option value="">Left column…</option>
+                @foreach (var c in ColumnsFor(_joinLeftTable))
+                { <option value="@c">@c</option> }
+            </select>
+            <i class="bi bi-arrow-right" style="color:var(--text-muted)"></i>
+            <select class="schema-input" @bind="_joinRightTable" style="width:130px">
+                <option value="">Right table…</option>
+                @foreach (var t in _state.Tables) { <option value="@t.TableName">@t.TableName</option> }
+            </select>
+            <select class="schema-input" @bind="_joinRightCol" style="width:130px">
+                <option value="">Right column…</option>
+                @foreach (var c in ColumnsFor(_joinRightTable))
+                { <option value="@c">@c</option> }
+            </select>
+            <select class="schema-input" @bind="_joinType" style="width:110px">
+                <option value="@DesignerJoinType.Inner">INNER JOIN</option>
+                <option value="@DesignerJoinType.Left">LEFT JOIN</option>
+                <option value="@DesignerJoinType.Right">RIGHT JOIN</option>
+            </select>
+            <button class="toolbar-btn primary"
+                    disabled="@(!CanAddJoin)"
+                    @onclick="ConfirmAddJoin">
+                <i class="bi bi-plus"></i> Add
+            </button>
+            <button class="toolbar-btn" @onclick="() => _showAddJoin = false">Cancel</button>
+        </div>
+    }
+
+    @* ─── Canvas section ─── *@
+    <div class="designer-section-header" @onclick="() => _canvasCollapsed = !_canvasCollapsed">
+        <i class="bi @(_canvasCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
+        <span>Canvas</span>
+    </div>
+    @if (!_canvasCollapsed)
+    {
+    <div id="designer-canvas" class="designer-canvas"
+         style="height:@(_canvasHeightPx)px"
+         @ref="_canvasRef">
+
+        @* SVG overlay for join bezier lines *@
+        <svg class="designer-canvas-svg"
+             width="@SvgWidth" height="@SvgHeight"
+             xmlns="http://www.w3.org/2000/svg">
+            @for (int ji = 0; ji < _state.Joins.Count; ji++)
+            {
+                var join = _state.Joins[ji];
+                var idx = ji;
+                var (x1, y1, x2, y2) = JoinPoints(join);
+                double cx1 = x1 + 80, cy1 = y1, cx2 = x2 - 80, cy2 = y2;
+                double mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+                bool selected = _selectedJoinIndex == idx;
+                <g class="designer-join-line @(selected ? "selected" : "")">
+                    @* Hit area — wider invisible stroke *@
+                    <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
+                          stroke="transparent" stroke-width="10" fill="none"
+                          style="pointer-events:stroke;cursor:pointer"
+                          @onclick:stopPropagation="true"
+                          @onclick="() => SelectJoin(idx)" />
+                    @* Visible line *@
+                    <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
+                          stroke="@(selected ? "var(--accent-blue)" : "var(--text-muted)")"
+                          stroke-width="@(selected ? "2" : "1.5")"
+                          fill="none"
+                          style="pointer-events:none" />
+                    @* Join type label at midpoint *@
+                    <rect x="@Px(mx - 24)" y="@Px(my - 9)" width="48" height="16"
+                          rx="3" fill="var(--bg-elevated)" stroke="var(--border-color)" stroke-width="1"
+                          style="pointer-events:none" />
+                    <text x="@Px(mx)" y="@Px(my + 2)" text-anchor="middle"
+                          font-size="9" fill="var(--text-muted)" font-family="var(--font-ui)"
+                          style="pointer-events:none">
+                        @JoinLabel(join.JoinType)
+                    </text>
+                </g>
+            }
+        </svg>
+
+        @* Table nodes *@
+        @foreach (var table in _state.Tables)
+        {
+            var t = table;
+            <div class="designer-table-node"
+                 id="dtn-@t.TableName"
+                 style="left:@Px(t.X)px;top:@Px(t.Y)px"
+                 data-table="@t.TableName"
+                 @onclick:stopPropagation="true">
+                <div class="designer-table-node-header">
+                    <i class="bi bi-table"></i>
+                    <span>@t.TableName</span>
+                    <button class="designer-node-close" title="Remove table"
+                            @onclick:stopPropagation="true"
+                            @onclick="() => RemoveTable(t.TableName)">
+                        <i class="bi bi-x"></i>
+                    </button>
+                </div>
+                @foreach (var col in t.Columns)
+                {
+                    var c = col;
+                    <div class="designer-table-node-col">
+                        <input type="checkbox" checked="@c.IsSelected"
+                               @onchange="e => ToggleColumn(t.TableName, c.Name, (bool)(e.Value ?? false))" />
+                        <span class="designer-col-type">@c.TypeLabel</span>
+                        <span class="designer-col-name @(c.IsPrimaryKey ? "pk" : "")">@c.Name</span>
+                        @if (c.IsPrimaryKey)
+                        {
+                            <i class="bi bi-key" style="font-size:9px;color:var(--accent-yellow);margin-left:auto"></i>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @* Edit join popup (appears when a join line is selected) *@
+    @if (_selectedJoinIndex.HasValue && _selectedJoinIndex.Value < _state.Joins.Count)
+    {
+        var join = _state.Joins[_selectedJoinIndex.Value];
+        <div class="designer-join-popup">
+            <span style="font-size:11px;color:var(--text-muted)">
+                @join.LeftTable.@join.LeftColumn → @join.RightTable.@join.RightColumn
+            </span>
+            <select class="schema-input" style="width:130px"
+                    value="@join.JoinType"
+                    @onchange="e => ChangeJoinType(Enum.Parse<DesignerJoinType>(e.Value!.ToString()!))">
+                <option value="@DesignerJoinType.Inner">INNER JOIN</option>
+                <option value="@DesignerJoinType.Left">LEFT JOIN</option>
+                <option value="@DesignerJoinType.Right">RIGHT JOIN</option>
+            </select>
+            <button class="toolbar-btn danger" @onclick="DeleteSelectedJoin" title="Remove this join">
+                <i class="bi bi-trash"></i>
+            </button>
+            <button class="toolbar-btn" @onclick="() => _selectedJoinIndex = null">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+    }
+
+    @* Splitter only shown when canvas is expanded *@
+    @if (!_canvasCollapsed)
+    {
+        <div class="designer-splitter" @onmousedown="StartSplitterDrag" @onmousedown:preventDefault></div>
+    }
+    } @* end canvas @if *@
+
+    @* ─── Design Grid section ─── *@
+    <div class="designer-section-header" @onclick="() => _gridCollapsed = !_gridCollapsed">
+        <i class="bi @(_gridCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
+        <span>Design Grid</span>
+    </div>
+    @if (!_gridCollapsed)
+    {
+    <div class="designer-grid">
+        @if (_state.GridRows.Count == 0)
+        {
+            <div class="empty-state" style="padding:16px">
+                <i class="bi bi-grid-3x3"></i>
+                <p>Check columns on the canvas to add them here</p>
+            </div>
+        }
+        else
+        {
+            <table class="data-grid designer-grid-table">
+                <thead>
+                    <tr>
+                        <th>Column</th>
+                        <th>Alias</th>
+                        <th>Table</th>
+                        <th title="Include in SELECT">Out</th>
+                        <th>Sort</th>
+                        <th title="Sort order number">#</th>
+                        <th>Filter</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in _state.GridRows)
+                    {
+                        var r = row;
+                        <tr>
+                            <td class="mono-cell">@r.ColumnExpr</td>
+                            <td>
+                                <input class="schema-input" style="width:90px;padding:2px 6px"
+                                       value="@r.Alias"
+                                       @onchange="e => { r.Alias = e.Value as string; OnStateChanged(); }" />
+                            </td>
+                            <td style="color:var(--text-muted)">@r.TableName</td>
+                            <td style="text-align:center">
+                                <input type="checkbox" checked="@r.Output"
+                                       @onchange="e => { r.Output = (bool)(e.Value ?? true); OnStateChanged(); }" />
+                            </td>
+                            <td>
+                                <select class="schema-input" style="width:110px;padding:2px 4px"
+                                        value="@(r.SortType?.ToString() ?? "")"
+                                        @onchange="e => SetSortType(r, e.Value as string)">
+                                    <option value="">—</option>
+                                    <option value="Ascending">Ascending</option>
+                                    <option value="Descending">Descending</option>
+                                </select>
+                            </td>
+                            <td>
+                                <input type="number" class="schema-input" style="width:48px;padding:2px 4px"
+                                       value="@(r.SortOrder?.ToString() ?? "")"
+                                       @onchange="e => SetSortOrder(r, e.Value as string)" />
+                            </td>
+                            <td>
+                                <input class="schema-input" style="width:120px;padding:2px 6px"
+                                       placeholder="e.g. > 5"
+                                       value="@r.Filter"
+                                       @onchange="e => { r.Filter = e.Value as string; OnStateChanged(); }" />
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+    } @* end grid @if *@
+
+    @* ─── SQL Preview ─── *@
+    <div class="designer-sql-preview">
+        <pre>@GeneratedSql</pre>
+    </div>
+
+    @* ─── Results section ─── *@
+    @if (_running || _runError is not null || (_resultColumns is not null && _resultRows is not null))
+    {
+        <div class="designer-section-header" @onclick="() => _resultsCollapsed = !_resultsCollapsed">
+            <i class="bi @(_resultsCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
+            <span>Results</span>
+            @if (_resultRows is not null)
+            {
+                <span class="designer-section-badge">@_resultRows.Count rows</span>
+            }
+        </div>
+        @if (!_resultsCollapsed)
+        {
+            @if (_running)
+            {
+                <div class="loading-overlay"><div class="spinner"></div></div>
+            }
+            else if (_runError is not null)
+            {
+                <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_runError</div>
+            }
+            else if (_resultColumns is not null && _resultRows is not null)
+            {
+                <div class="grid-container" style="flex:none;max-height:240px">
+                    <table class="data-grid query-results">
+                        <thead>
+                            <tr>
+                                <th class="row-num-header">#</th>
+                                @foreach (var col in _resultColumns) { <th>@col</th> }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int r = 0; r < _resultRows.Count; r++)
+                            {
+                                var row = _resultRows[r];
+                                var rowNum = r + 1;
+                                <tr>
+                                    <td class="row-num">@rowNum</td>
+                                    @foreach (var val in row)
+                                    {
+                                        <td>
+                                            @if (val is null) { <span class="null-val">NULL</span> }
+                                            else if (val is byte[] bytes) { <span class="blob-val">[@bytes.Length bytes]</span> }
+                                            else { @val.ToString() }
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+    }
+</div>
+
+@code {
+    private const string LayoutPrefix = "__designer_layout:";
+    private const int NodeWidth = 200;
+    private const int NodeHeaderHeight = 36;
+    private const int ColRowHeight = 28;
+
+    [Parameter] public TabDescriptor? Tab { get; set; }
+    [Parameter] public EventCallback<string> OnCopySql { get; set; }
+
+    private QueryDesignerState _state = new();
+    private IReadOnlyList<string>? _tableNames;
+    private IReadOnlyList<SavedQueryDefinition> _savedLayouts = [];
+
+    // UI toggles
+    private bool _showAddTable;
+    private bool _showLoadPanel;
+    private bool _showAddJoin;
+
+    // Section collapse state
+    private bool _canvasCollapsed;
+    private bool _gridCollapsed;
+    private bool _resultsCollapsed;
+
+    // Add join dialog
+    private string _joinLeftTable = "";
+    private string _joinLeftCol = "";
+    private string _joinRightTable = "";
+    private string _joinRightCol = "";
+    private DesignerJoinType _joinType = DesignerJoinType.Inner;
+
+    // Save layout
+    private string _saveLayoutName = "";
+
+    // Join selection
+    private int? _selectedJoinIndex;
+
+    // Canvas splitter
+    private int _canvasHeightPx = 300;
+
+    // Run results
+    private bool _running;
+    private string? _runError;
+    private string[]? _resultColumns;
+    private List<object?[]>? _resultRows;
+
+    // JS interop
+    private DotNetObjectReference<QueryDesignerPanel>? _dotNetRef;
+    private ElementReference _canvasRef;
+
+    // ── Lifecycle ──────────────────────────────────────────────────
+
+    protected override void OnParametersSet()
+    {
+        if (Tab?.DesignerStateJson is string json)
+        {
+            try
+            {
+                var loaded = JsonSerializer.Deserialize<QueryDesignerState>(json);
+                if (loaded is not null) _state = NormalizeState(loaded);
+            }
+            catch { }
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshTableNamesAsync();
+        await RefreshSavedLayoutsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _dotNetRef = DotNetObjectReference.Create(this);
+        try { await JS.InvokeVoidAsync("designerInterop.initDrag", _dotNetRef); }
+        catch { }
+    }
+
+    public void Dispose()
+    {
+        try { _ = JS.InvokeVoidAsync("designerInterop.dispose"); } catch { }
+        _dotNetRef?.Dispose();
+    }
+
+    // ── JS callbacks ───────────────────────────────────────────────
+
+    [JSInvokable]
+    public void OnTableMoved(string tableName, double x, double y)
+    {
+        var node = _state.Tables.FirstOrDefault(t => t.TableName == tableName);
+        if (node is null) return;
+        node.X = x;
+        node.Y = y;
+        SaveState();
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Add Table ──────────────────────────────────────────────────
+
+    private void ToggleAddTablePanel()
+    {
+        _showAddTable = !_showAddTable;
+        _showLoadPanel = false;
+    }
+
+    private async Task AddTableAsync(string tableName)
+    {
+        _showAddTable = false;
+        if (_state.Tables.Any(t => t.TableName == tableName)) return;
+
+        try
+        {
+            var schema = await DbClient.GetTableSchemaAsync(tableName);
+            if (schema is null) return;
+
+            double x = 20 + _state.Tables.Count * 230;
+            double y = 20;
+
+            var node = new DesignerTableNode
+            {
+                TableName = tableName,
+                X = x,
+                Y = y,
+                Columns = schema.Columns.Select(c => new DesignerColumn
+                {
+                    Name = c.Name,
+                    TypeLabel = TypeLabel(c.Type),
+                    IsPrimaryKey = c.IsPrimaryKey,
+                    IsSelected = true
+                }).ToList()
+            };
+
+            _state.Tables.Add(node);
+
+            // Auto-add all columns to the grid
+            foreach (var col in node.Columns)
+            {
+                _state.GridRows.Add(new DesignerGridRow
+                {
+                    ColumnExpr = col.Name,
+                    TableName = tableName,
+                    Output = true
+                });
+            }
+
+            SaveState();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load table '{tableName}': {ex.Message}");
+        }
+    }
+
+    private void RemoveTable(string tableName)
+    {
+        _state.Tables.RemoveAll(t => t.TableName == tableName);
+        _state.Joins.RemoveAll(j => j.LeftTable == tableName || j.RightTable == tableName);
+        _state.GridRows.RemoveAll(r => r.TableName == tableName);
+        if (_selectedJoinIndex.HasValue) _selectedJoinIndex = null;
+        SaveState();
+    }
+
+// ── Joins ──────────────────────────────────────────────────────
+
+    private void ShowAddJoinDialog()
+    {
+        _joinLeftTable = "";
+        _joinLeftCol = "";
+        _joinRightTable = "";
+        _joinRightCol = "";
+        _joinType = DesignerJoinType.Inner;
+        _showAddJoin = true;
+        _showAddTable = false;
+        _showLoadPanel = false;
+    }
+
+    private bool CanAddJoin =>
+        !string.IsNullOrEmpty(_joinLeftTable)
+        && !string.IsNullOrEmpty(_joinLeftCol)
+        && !string.IsNullOrEmpty(_joinRightTable)
+        && !string.IsNullOrEmpty(_joinRightCol)
+        && _joinLeftTable != _joinRightTable;
+
+    private void ConfirmAddJoin()
+    {
+        if (!CanAddJoin) return;
+        _state.Joins.Add(new DesignerJoin
+        {
+            LeftTable = _joinLeftTable,
+            LeftColumn = _joinLeftCol,
+            RightTable = _joinRightTable,
+            RightColumn = _joinRightCol,
+            JoinType = _joinType.NormalizeSupported()
+        });
+        _showAddJoin = false;
+        SaveState();
+    }
+
+    private void SelectJoin(int index)
+    {
+        _selectedJoinIndex = _selectedJoinIndex == index ? null : index;
+    }
+
+    private void ChangeJoinType(DesignerJoinType joinType)
+    {
+        if (!_selectedJoinIndex.HasValue) return;
+        _state.Joins[_selectedJoinIndex.Value].JoinType = joinType.NormalizeSupported();
+        SaveState();
+    }
+
+    private void DeleteSelectedJoin()
+    {
+        if (!_selectedJoinIndex.HasValue) return;
+        _state.Joins.RemoveAt(_selectedJoinIndex.Value);
+        _selectedJoinIndex = null;
+        SaveState();
+    }
+
+    private void OnDismissAll()
+    {
+        _showAddTable = false;
+        _showLoadPanel = false;
+        _selectedJoinIndex = null;
+    }
+
+    // ── Column selection ───────────────────────────────────────────
+
+    private void ToggleColumn(string tableName, string colName, bool selected)
+    {
+        var node = _state.Tables.FirstOrDefault(t => t.TableName == tableName);
+        var col = node?.Columns.FirstOrDefault(c => c.Name == colName);
+        if (col is null) return;
+        col.IsSelected = selected;
+
+        if (selected)
+        {
+            if (!_state.GridRows.Any(r => r.TableName == tableName && r.ColumnExpr == colName))
+            {
+                _state.GridRows.Add(new DesignerGridRow
+                {
+                    ColumnExpr = colName,
+                    TableName = tableName,
+                    Output = true
+                });
+            }
+        }
+        else
+        {
+            _state.GridRows.RemoveAll(r => r.TableName == tableName && r.ColumnExpr == colName);
+        }
+
+        SaveState();
+    }
+
+    // ── Grid editing ───────────────────────────────────────────────
+
+    private void SetSortType(DesignerGridRow row, string? value)
+    {
+        row.SortType = string.IsNullOrEmpty(value)
+            ? null
+            : Enum.TryParse<DesignerSortDirection>(value, out var dir) ? dir : null;
+
+        if (row.SortType is null) row.SortOrder = null;
+        else if (row.SortOrder is null)
+        {
+            int maxOrder = _state.GridRows.Where(r => r.SortOrder.HasValue).Select(r => r.SortOrder!.Value).DefaultIfEmpty(0).Max();
+            row.SortOrder = maxOrder + 1;
+        }
+
+        OnStateChanged();
+    }
+
+    private void SetSortOrder(DesignerGridRow row, string? value)
+    {
+        row.SortOrder = int.TryParse(value, out var n) && n > 0 ? n : null;
+        OnStateChanged();
+    }
+
+    // ── Run ────────────────────────────────────────────────────────
+
+    private async Task RunQueryAsync()
+    {
+        string sql = GeneratedSql;
+        if (sql == "-- Add tables to begin") return;
+
+        _running = true;
+        _runError = null;
+        _resultColumns = null;
+        _resultRows = null;
+        StateHasChanged();
+
+        try
+        {
+            var result = await DbClient.ExecuteSqlAsync(sql);
+            if (result.Error is not null)
+            {
+                _runError = result.Error;
+            }
+            else if (result.IsQuery)
+            {
+                _resultColumns = result.ColumnNames;
+                _resultRows = result.Rows;
+            }
+        }
+        catch (Exception ex)
+        {
+            _runError = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    // ── Save / Load layouts ────────────────────────────────────────
+
+    private async Task SaveLayoutAsync()
+    {
+        string name = _saveLayoutName.Trim();
+        if (string.IsNullOrEmpty(name)) return;
+        try
+        {
+            string json = JsonSerializer.Serialize(_state);
+            await DbClient.UpsertSavedQueryAsync(LayoutPrefix + name, json);
+            _state.SavedLayoutName = name;
+            SaveState();
+            await RefreshSavedLayoutsAsync();
+            Toast.Success($"Layout '{name}' saved.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to save layout: {ex.Message}");
+        }
+    }
+
+    private void ToggleLoadPanel()
+    {
+        _showLoadPanel = !_showLoadPanel;
+        _showAddTable = false;
+    }
+
+    private async Task LoadLayoutAsync(string fullName)
+    {
+        _showLoadPanel = false;
+        try
+        {
+            var saved = await DbClient.GetSavedQueryAsync(fullName);
+            if (saved is null) return;
+            var loaded = JsonSerializer.Deserialize<QueryDesignerState>(saved.SqlText);
+            if (loaded is null) return;
+            _state = NormalizeState(loaded);
+            SaveState();
+            _selectedJoinIndex = null;
+            Toast.Info($"Layout '{fullName[LayoutPrefix.Length..]}' loaded.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load layout: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshSavedLayoutsAsync()
+    {
+        try
+        {
+            var all = await DbClient.GetSavedQueriesAsync();
+            _savedLayouts = all.Where(q => q.Name.StartsWith(LayoutPrefix)).ToList();
+        }
+        catch { _savedLayouts = []; }
+    }
+
+    // ── Clear ──────────────────────────────────────────────────────
+
+    private void ClearDesigner()
+    {
+        _state = new QueryDesignerState();
+        _selectedJoinIndex = null;
+        _resultColumns = null;
+        _resultRows = null;
+        _runError = null;
+        SaveState();
+    }
+
+    // ── Copy SQL to editor ─────────────────────────────────────────
+
+    private async Task CopySqlToEditor()
+    {
+        string sql = GeneratedSql;
+        if (sql == "-- Add tables to begin") return;
+        await OnCopySql.InvokeAsync(sql);
+    }
+
+    // ── Splitter drag ──────────────────────────────────────────────
+
+    private async Task StartSplitterDrag(MouseEventArgs e)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("designerInterop.startSplitterDrag",
+                new { clientY = e.ClientY }, _canvasRef, _dotNetRef);
+        }
+        catch { }
+    }
+
+    [JSInvokable]
+    public void OnSplitterMoved(int newHeight)
+    {
+        _canvasHeightPx = Math.Max(100, Math.Min(800, newHeight));
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────
+
+    private string GeneratedSql => QueryDesignerSqlBuilder.Build(_state);
+
+    private double SvgWidth => Math.Max(1200,
+        _state.Tables.Select(t => t.X + NodeWidth + 40).DefaultIfEmpty(1200).Max());
+
+    private double SvgHeight => Math.Max(500,
+        _state.Tables.Select(t => t.Y + NodeHeight(t) + 40).DefaultIfEmpty(500).Max());
+
+    private static int NodeHeight(DesignerTableNode t) => NodeHeaderHeight + t.Columns.Count * ColRowHeight;
+
+    private (double x1, double y1, double x2, double y2) JoinPoints(DesignerJoin join)
+    {
+        var left  = _state.Tables.FirstOrDefault(t => t.TableName == join.LeftTable);
+        var right = _state.Tables.FirstOrDefault(t => t.TableName == join.RightTable);
+        double x1 = (left?.X ?? 0) + NodeWidth;
+        double y1 = (left?.Y ?? 0) + NodeHeaderHeight / 2.0;
+        double x2 = right?.X ?? 200;
+        double y2 = (right?.Y ?? 0) + NodeHeaderHeight / 2.0;
+        return (x1, y1, x2, y2);
+    }
+
+    private static string Px(double value) =>
+        value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string JoinLabel(DesignerJoinType t) => t switch
+    {
+        DesignerJoinType.Left  => "LEFT",
+        DesignerJoinType.Right => "RIGHT",
+        _                      => "INNER"
+    };
+
+    private static string TypeLabel(CSharpDB.Client.Models.DbType type) => type switch
+    {
+        CSharpDB.Client.Models.DbType.Integer => "INT",
+        CSharpDB.Client.Models.DbType.Real    => "REAL",
+        CSharpDB.Client.Models.DbType.Blob    => "BLOB",
+        _                                      => "TEXT"
+    };
+
+    private IEnumerable<string> ColumnsFor(string tableName)
+    {
+        if (string.IsNullOrEmpty(tableName)) return [];
+        return _state.Tables.FirstOrDefault(t => t.TableName == tableName)
+            ?.Columns.Select(c => c.Name) ?? [];
+    }
+
+    private async Task RefreshTableNamesAsync()
+    {
+        try { _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList(); }
+        catch { _tableNames = []; }
+    }
+
+    private void SaveState()
+    {
+        if (Tab is not null)
+            Tab.DesignerStateJson = JsonSerializer.Serialize(_state);
+    }
+
+    private static QueryDesignerState NormalizeState(QueryDesignerState state)
+    {
+        foreach (var join in state.Joins)
+            join.JoinType = join.JoinType.NormalizeSupported();
+
+        return state;
+    }
+
+    private void OnStateChanged()
+    {
+        SaveState();
+        StateHasChanged();
+    }
+}

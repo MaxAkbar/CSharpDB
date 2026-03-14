@@ -88,7 +88,7 @@ internal sealed partial class EngineTransportClient
             {
                 statements = SqlScriptSplitter.SplitExecutableStatements(sql);
             }
-            catch (CSharpDB.Core.CSharpDbException ex)
+            catch (CSharpDB.Primitives.CSharpDbException ex)
             {
                 stopwatch.Stop();
                 return new SqlExecutionResult { Error = ex.Message, Elapsed = stopwatch.Elapsed };
