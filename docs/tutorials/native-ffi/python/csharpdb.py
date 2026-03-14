@@ -26,7 +26,7 @@ class CSharpDBError(Exception):
 class CSharpDB:
     """Thin Python wrapper around the CSharpDB NativeAOT shared library."""
 
-    # Type codes matching CSharpDB.Core.DbType
+    # Type codes matching CSharpDB.Primitives.DbType
     NULL, INTEGER, REAL, TEXT, BLOB = 0, 1, 2, 3, 4
 
     def __init__(self, lib_path: str | None = None):

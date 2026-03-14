@@ -1,6 +1,6 @@
 using System.Data;
-using CSharpDB.Core;
-using CoreDbType = CSharpDB.Core.DbType;
+using CSharpDB.Primitives;
+using CoreDbType = CSharpDB.Primitives.DbType;
 using SysDbType = System.Data.DbType;
 
 namespace CSharpDB.Data;

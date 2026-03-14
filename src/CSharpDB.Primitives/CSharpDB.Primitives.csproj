@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Primitives</AssemblyName>
+    <RootNamespace>CSharpDB.Primitives</RootNamespace>
     <PackageId>CSharpDB.Primitives</PackageId>
     <Description>Internal/shared primitives for the CSharpDB package family: value system, schema definitions, and error codes.</Description>
     <IsAotCompatible>true</IsAotCompatible>

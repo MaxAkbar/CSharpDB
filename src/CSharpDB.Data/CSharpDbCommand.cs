@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Execution;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Data;
 
@@ -113,7 +114,7 @@ public sealed class CSharpDbCommand : DbCommand
             var preparedStatement = preparedTemplate.Bind(_parameters);
             return await session.ExecuteAsync(preparedStatement, cancellationToken);
         }
-        catch (Core.CSharpDbException ex)
+        catch (CSharpDbException ex)
         {
             throw new CSharpDbDataException(ex);
         }
@@ -126,7 +127,7 @@ public sealed class CSharpDbCommand : DbCommand
         {
             _preparedTemplate = s_preparedCache.GetOrAdd(CommandText, static sql => PreparedStatementTemplate.Create(sql));
         }
-        catch (Core.CSharpDbException)
+        catch (CSharpDbException)
         {
             // Keep ADO.NET compatibility: unsupported templates can fall back
             // to the existing SQL-text execution path.
@@ -146,7 +147,7 @@ public sealed class CSharpDbCommand : DbCommand
             preparedTemplate = s_preparedCache.GetOrAdd(CommandText, static sql => PreparedStatementTemplate.Create(sql));
             return true;
         }
-        catch (Core.CSharpDbException)
+        catch (CSharpDbException)
         {
             // Fallback to SQL text binding/parsing for patterns not supported by template parsing.
             return false;

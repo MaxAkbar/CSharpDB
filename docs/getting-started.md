@@ -508,7 +508,7 @@ await db.ExecuteAsync("DROP TABLE IF EXISTS products");
 CSharpDB throws `CSharpDbException` with a typed `ErrorCode`:
 
 ```csharp
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 try
 {

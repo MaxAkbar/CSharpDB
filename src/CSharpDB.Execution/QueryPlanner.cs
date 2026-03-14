@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Execution;

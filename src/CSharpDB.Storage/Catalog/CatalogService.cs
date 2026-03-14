@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Storage.Catalog;
 

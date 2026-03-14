@@ -10,7 +10,7 @@
 // bulk DELETE (drop entire namespace).
 // ============================================================================
 
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using StorageStudyExamples.Core;
 

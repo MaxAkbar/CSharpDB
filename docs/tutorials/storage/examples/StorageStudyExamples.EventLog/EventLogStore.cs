@@ -9,7 +9,7 @@
 // ============================================================================
 
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using StorageStudyExamples.Core;
 
 namespace StorageStudyExamples.EventLog;

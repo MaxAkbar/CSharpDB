@@ -2,9 +2,9 @@ using System.Collections;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Execution;
-using CoreDbType = CSharpDB.Core.DbType;
+using CoreDbType = CSharpDB.Primitives.DbType;
 
 namespace CSharpDB.Data;
 

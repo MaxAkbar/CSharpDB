@@ -7,13 +7,13 @@ This guide is for developers who want to understand, extend, or contribute to CS
 ```
 CSharpDB.slnx
 ├── src/
-│   ├── CSharpDB.Core/               Shared types (no dependencies)
+│   ├── CSharpDB.Primitives/               Shared types (no dependencies)
 │   │   ├── DbType.cs                  Data type enum
 │   │   ├── DbValue.cs                 Discriminated union value type
 │   │   ├── Schema.cs                  ColumnDefinition, TableSchema, IndexSchema, TriggerSchema
 │   │   └── CSharpDbException.cs       Typed exception with ErrorCode
 │   │
-│   ├── CSharpDB.Storage/            On-disk storage (depends on Core)
+│   ├── CSharpDB.Storage/            On-disk storage (depends on Primitives)
 │   │   ├── PageConstants.cs            Page size, header offsets, page types, WAL constants
 │   │   ├── Varint.cs                   LEB128 variable-length integer codec
 │   │   ├── IStorageDevice.cs           Abstract async file I/O interface
@@ -28,7 +28,7 @@ CSharpDB.slnx
 │   │   ├── SchemaSerializer.cs         Encode/decode TableSchema ↔ byte[]
 │   │   └── SchemaCatalog.cs            In-memory schema cache (tables, indexes, views, triggers) backed by B+trees
 │   │
-│   ├── CSharpDB.Sql/                SQL frontend (depends on Core)
+│   ├── CSharpDB.Sql/                SQL frontend (depends on Primitives)
 │   │   ├── TokenType.cs                Token type enum
 │   │   ├── Token.cs                    Token struct
 │   │   ├── Tokenizer.cs               Hand-rolled lexical scanner
@@ -37,7 +37,7 @@ CSharpDB.slnx
 │   │   ├── SqlScriptSplitter.cs        Multi-statement script splitting (tracks BEGIN/END depth for triggers)
 │   │   └── SqlStatementClassifier.cs   Classifies statements as read-only or mutating
 │   │
-│   ├── CSharpDB.Execution/          Query execution (depends on Core, Sql, Storage)
+│   ├── CSharpDB.Execution/          Query execution (depends on Primitives, Sql, Storage)
 │   │   ├── IOperator.cs                Iterator interface
 │   │   ├── Operators.cs                TableScan, IndexScan, Filter, Projection, Sort, Limit, Aggregate, Join
 │   │   ├── ExpressionEvaluator.cs      Evaluates Expression AST against a row
@@ -65,7 +65,7 @@ CSharpDB.slnx
 │   │   ├── SqlParameterBinder.cs       @param placeholder binding
 │   │   └── TypeMapper.cs               CSharpDB ↔ CLR type mapping
 │   │
-│   ├── CSharpDB.Native/             NativeAOT C FFI library (depends on Engine, Execution, Core)
+│   ├── CSharpDB.Native/             NativeAOT C FFI library (depends on Engine, Execution, Primitives)
 │   │   ├── NativeExports.cs            20 exported C functions (open, close, execute, result iteration, transactions, errors)
 │   │   ├── HandleTable.cs              GCHandle-based opaque pointer management
 │   │   ├── StringCache.cs              Unmanaged UTF-8 string lifetime management

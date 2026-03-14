@@ -9,7 +9,7 @@
 // queues), DELETE (cancel pending, purge completed).
 // ============================================================================
 
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using StorageStudyExamples.Core;
 
 namespace StorageStudyExamples.TaskQueue;

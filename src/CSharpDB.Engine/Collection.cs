@@ -2,7 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 

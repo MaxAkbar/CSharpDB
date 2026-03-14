@@ -41,4 +41,11 @@ public sealed class TabDescriptor
         get => State.TryGetValue("SqlText", out var v) ? v as string : null;
         set => State["SqlText"] = value;
     }
+
+    /// <summary>Get/set the serialized QueryDesignerState JSON for designer mode.</summary>
+    public string? DesignerStateJson
+    {
+        get => State.TryGetValue("DesignerStateJson", out var v) ? v as string : null;
+        set => State["DesignerStateJson"] = value;
+    }
 }

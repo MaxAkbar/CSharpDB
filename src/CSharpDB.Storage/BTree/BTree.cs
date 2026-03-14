@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using CSharpDB.Core;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Storage.BTrees;

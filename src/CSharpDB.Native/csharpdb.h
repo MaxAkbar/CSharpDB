@@ -48,7 +48,7 @@ typedef void* csharpdb_t;
 typedef void* csharpdb_result_t;
 
 /* ------------------------------------------------------------------ */
-/*  Column / value type codes (matches CSharpDB.Core.DbType)           */
+/*  Column / value type codes (matches CSharpDB.Primitives.DbType)           */
 /* ------------------------------------------------------------------ */
 
 #define CSHARPDB_NULL    0
@@ -267,7 +267,7 @@ const char* csharpdb_last_error(void);
 
 /**
  * Returns the last error code. 0 = no error, -1 = generic error.
- * Positive values correspond to CSharpDB.Core.ErrorCode values.
+ * Positive values correspond to CSharpDB.Primitives.ErrorCode values.
  */
 int csharpdb_last_error_code(void);
 
