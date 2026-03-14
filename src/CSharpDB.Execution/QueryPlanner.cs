@@ -7638,7 +7638,7 @@ public sealed class QueryPlanner
             {
                 long explicitRowId = row[pkIdx].AsInteger;
                 if (explicitRowId >= 0 && explicitRowId < long.MaxValue)
-                    UpdateNextRowIdState(tableName, schema, checked(explicitRowId + 1));
+                    ObserveExplicitRowId(tableName, schema, checked(explicitRowId + 1));
                 return (explicitRowId, false);
             }
 
@@ -7714,6 +7714,26 @@ public sealed class QueryPlanner
 
         if (schema.NextRowId < nextRowId)
             schema.NextRowId = nextRowId;
+    }
+
+    private void ObserveExplicitRowId(string tableName, TableSchema schema, long nextRowId)
+    {
+        if (nextRowId <= 0)
+            return;
+
+        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
+            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        else if (schema.NextRowId > 0)
+            _nextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
+        else
+            _nextRowIdCache[tableName] = nextRowId;
+
+        // Explicit rowid inserts can push the durable high-water mark forward, but persisting
+        // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as
+        // unknown instead; the current session still uses the in-memory cache, and a future
+        // reopened session can recompute max(rowid)+1 once if needed.
+        if (schema.NextRowId > 0 && nextRowId > schema.NextRowId)
+            schema.NextRowId = 0;
     }
 
     #endregion

@@ -147,8 +147,6 @@ public sealed class Database : IAsyncDisposable
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
         InvalidateCachesIfSchemaChanged();
-        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
-            return ExecuteStatementAsync(cachedStmt, ct);
 
         if (LooksLikeInsert(sql) && Parser.TryParseSimpleInsert(sql, out var simpleInsert))
             return ExecuteSimpleInsertAsync(simpleInsert, ct);
@@ -158,6 +156,9 @@ public sealed class Database : IAsyncDisposable
             if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
                 return ValueTask.FromResult(fastResult);
         }
+
+        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
+            return ExecuteStatementAsync(cachedStmt, ct);
 
         var stmt = ParseCached(sql);
         return ExecuteStatementAsync(stmt, ct);
@@ -206,19 +207,25 @@ public sealed class Database : IAsyncDisposable
 
         try
         {
-            QueryResult result = stmt switch
+            string? insertedTableName = null;
+            QueryResult result;
+            if (stmt is InsertStatement insert)
             {
-                InsertStatement insert => await _planner.ExecuteInsertAsync(
+                insertedTableName = insert.TableName;
+                result = await _planner.ExecuteInsertAsync(
                     insert,
-                    persistRootChanges: !explicitTransaction,
-                    ct),
-                _ => await _planner.ExecuteAsync(stmt, ct),
-            };
+                    persistRootChanges: false,
+                    ct);
+            }
+            else
+            {
+                result = await _planner.ExecuteAsync(stmt, ct);
+            }
 
             if (!_inTransaction)
             {
-                if (stmt is InsertStatement)
-                    await _pager.CommitAsync(ct);
+                if (insertedTableName != null)
+                    await CommitInsertWithCatalogSyncAsync(insertedTableName, ct);
                 else
                     await CommitWithCatalogSyncAsync(ct);
             }
@@ -246,11 +253,11 @@ public sealed class Database : IAsyncDisposable
         {
             var result = await _planner.ExecuteSimpleInsertAsync(
                 insert,
-                persistRootChanges: !explicitTransaction,
+                persistRootChanges: false,
                 ct);
 
             if (!_inTransaction)
-                await _pager.CommitAsync(ct);
+                await CommitInsertWithCatalogSyncAsync(insert.TableName, ct);
 
             return result;
         }
@@ -513,7 +520,15 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
     {
+        await _catalog.PersistDirtyTableStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
+        await _pager.CommitAsync(ct);
+    }
+
+    private async ValueTask CommitInsertWithCatalogSyncAsync(string tableName, CancellationToken ct)
+    {
+        await _catalog.PersistDirtyTableStatisticsAsync(ct);
+        await _catalog.PersistRootPageChangesAsync(tableName, ct);
         await _pager.CommitAsync(ct);
     }
 

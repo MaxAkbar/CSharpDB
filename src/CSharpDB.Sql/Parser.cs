@@ -829,33 +829,32 @@ public sealed class Parser
             if (!TryReadKeyword("VALUES"))
                 return false;
 
-            var valueRows = new List<DbValue[]>();
-            int expectedValueCount = -1;
+            if (!TryReadValueRow(out DbValue[] firstRow))
+                return false;
+
+            int expectedValueCount = firstRow.Length;
+            if (expectedValueCount == 0)
+                return false;
+
+            if (!TryConsumeChar(','))
+            {
+                if (!TryConsumeOptionalSemicolonAndRequireEnd())
+                    return false;
+
+                insert = new SimpleInsertSql(tableName, firstRow);
+                return true;
+            }
+
+            var valueRows = new List<DbValue[]> { firstRow };
             do
             {
-                if (!TryConsumeChar('('))
+                if (!TryReadValueRow(out DbValue[] values))
                     return false;
 
-                var values = new List<DbValue>();
-                do
-                {
-                    if (!TryReadLiteral(out var value))
-                        return false;
-
-                    values.Add(value);
-                } while (TryConsumeChar(','));
-
-                if (!TryConsumeChar(')'))
+                if (values.Length != expectedValueCount)
                     return false;
 
-                if (values.Count == 0)
-                    return false;
-
-                if (expectedValueCount >= 0 && values.Count != expectedValueCount)
-                    return false;
-
-                expectedValueCount = values.Count;
-                valueRows.Add(values.ToArray());
+                valueRows.Add(values);
             } while (TryConsumeChar(','));
 
             if (!TryConsumeOptionalSemicolonAndRequireEnd())
@@ -863,6 +862,36 @@ public sealed class Parser
 
             insert = new SimpleInsertSql(tableName, valueRows.ToArray());
             return valueRows.Count > 0;
+        }
+
+        private bool TryReadValueRow(out DbValue[] values)
+        {
+            values = Array.Empty<DbValue>();
+            if (!TryConsumeChar('('))
+                return false;
+
+            DbValue[] buffer = new DbValue[8];
+            int count = 0;
+
+            do
+            {
+                if (!TryReadLiteral(out var value))
+                    return false;
+
+                if (count == buffer.Length)
+                    Array.Resize(ref buffer, checked(buffer.Length * 2));
+
+                buffer[count++] = value;
+            } while (TryConsumeChar(','));
+
+            if (!TryConsumeChar(')') || count == 0)
+                return false;
+
+            if (count != buffer.Length)
+                Array.Resize(ref buffer, count);
+
+            values = buffer;
+            return true;
         }
 
         private bool TryReadLiteral(out DbValue literal)

@@ -119,6 +119,26 @@ public sealed class IdentityIntegrationTests : IAsyncLifetime
         Assert.Equal(4L, row[0].AsInteger);
     }
 
+    [Fact]
+    public async Task ExplicitIntegerPrimaryKeyInserts_Reopen_StillAutoGenerateFromMaxKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t (id, name) VALUES (1, 'one')", ct);
+        await _db.ExecuteAsync("INSERT INTO t (id, name) VALUES (3, 'three')", ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await _db.ExecuteAsync("INSERT INTO t (name) VALUES ('four')", ct);
+
+        await using var result = await _db.ExecuteAsync("SELECT id FROM t WHERE name = 'four'", ct);
+        var rows = await result.ToListAsync(ct);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(4L, row[0].AsInteger);
+    }
+
     private static async ValueTask RewriteTableSchemaAsLegacyAsync(string dbPath, string tableName, CancellationToken ct)
     {
         var factory = new DefaultStorageEngineFactory();

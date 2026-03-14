@@ -385,6 +385,39 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TableRowCountMetadata_TracksTransactionStateAndPersistsOnCommit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'one')", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'two')", ct);
+
+        await using (var inTxn = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct))
+        {
+            var rows = await inTxn.ToListAsync(ct);
+            Assert.Equal(2L, rows[0][0].AsInteger);
+        }
+
+        await _db.RollbackAsync(ct);
+
+        await using (var afterRollback = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct))
+        {
+            var rows = await afterRollback.ToListAsync(ct);
+            Assert.Equal(1L, rows[0][0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'three')", ct);
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var afterReopen = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
+        var reopenedRows = await afterReopen.ToListAsync(ct);
+        Assert.Equal(2L, reopenedRows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task Checkpoint_CopiesDataToDbFile()
     {
         var ct = TestContext.Current.CancellationToken;
