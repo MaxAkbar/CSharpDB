@@ -22,13 +22,18 @@ internal sealed class StorageDevicePageReadProvider : IPageReadProvider
 
     public async ValueTask<PageReadBuffer> ReadPageAsync(uint pageId, CancellationToken ct = default)
     {
+        return PageReadBuffer.FromOwnedBuffer(await ReadOwnedPageAsync(pageId, ct));
+    }
+
+    public async ValueTask<byte[]> ReadOwnedPageAsync(uint pageId, CancellationToken ct = default)
+    {
         byte[] buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
         long offset = (long)pageId * PageConstants.PageSize;
         if (_useSequentialAccessHint && _fileDevice is not null)
             await ReadFromHandleAsync(_fileDevice.SequentialReadHandle, offset, buffer, ct);
         else
             await _device.ReadAsync(offset, buffer, ct);
-        return PageReadBuffer.FromOwnedBuffer(buffer);
+        return buffer;
     }
 
     private static async ValueTask<int> ReadFromHandleAsync(

@@ -39,6 +39,19 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
         return _fallback.ReadPageAsync(pageId, ct);
     }
 
+    public async ValueTask<byte[]> ReadOwnedPageAsync(uint pageId, CancellationToken ct = default)
+    {
+        long offset = (long)pageId * PageConstants.PageSize;
+        if (_mappedMemory is not null && offset >= 0 && offset + PageConstants.PageSize <= _mappedLength)
+        {
+            byte[] buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+            _mappedMemory.Memory.Span.Slice((int)offset, PageConstants.PageSize).CopyTo(buffer);
+            return buffer;
+        }
+
+        return await _fallback.ReadOwnedPageAsync(pageId, ct);
+    }
+
     internal void RefreshMapping()
     {
         long mappedLength = _device.Length;

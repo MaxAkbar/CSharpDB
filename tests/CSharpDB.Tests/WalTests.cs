@@ -2,6 +2,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Device;
 using CSharpDB.Engine;
+using CSharpDB.Sql;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
@@ -172,6 +173,199 @@ public class WalTests : IAsyncLifetime
         await using var main = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var mainRows = await main.ToListAsync(ct);
         Assert.Equal(2L, mainRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task ReaderSession_PreparedCountStarStatement_UsesSnapshotState()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        var countStatement = new SelectStatement
+        {
+            IsDistinct = false,
+            Columns =
+            [
+                new SelectColumn
+                {
+                    IsStar = false,
+                    Expression = new FunctionCallExpression
+                    {
+                        FunctionName = "COUNT",
+                        Arguments = [],
+                        IsStarArg = true,
+                    },
+                    Alias = null,
+                },
+            ],
+            From = new SimpleTableRef { TableName = "t" },
+            Where = null,
+            GroupBy = null,
+            Having = null,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
+        };
+
+        await using (var first = await reader.ExecuteReadAsync(countStatement, ct))
+        {
+            var firstRows = await first.ToListAsync(ct);
+            Assert.Equal(1L, firstRows[0][0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'new')", ct);
+
+        await using (var second = await reader.ExecuteReadAsync(countStatement, ct))
+        {
+            var secondRows = await second.ToListAsync(ct);
+            Assert.Equal(1L, secondRows[0][0].AsInteger);
+        }
+    }
+
+    [Fact]
+    public async Task ReaderSession_PreparedPrimaryKeyLookupStatement_ReturnsProjectedValue()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        var lookupStatement = new SelectStatement
+        {
+            IsDistinct = false,
+            Columns =
+            [
+                new SelectColumn
+                {
+                    IsStar = false,
+                    Expression = new ColumnRefExpression { ColumnName = "val" },
+                    Alias = null,
+                },
+            ],
+            From = new SimpleTableRef { TableName = "t" },
+            Where = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "id" },
+                Right = new LiteralExpression
+                {
+                    LiteralType = TokenType.IntegerLiteral,
+                    Value = 1L,
+                },
+            },
+            GroupBy = null,
+            Having = null,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
+        };
+
+        await using var result = await reader.ExecuteReadAsync(lookupStatement, ct);
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal("original", row[0].AsText);
+    }
+
+    [Fact]
+    public async Task ReaderSession_PreparedPrimaryKeyLookup_UsesSnapshotStateAfterCommittedUpdate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        var lookupStatement = new SelectStatement
+        {
+            IsDistinct = false,
+            Columns =
+            [
+                new SelectColumn
+                {
+                    IsStar = false,
+                    Expression = new ColumnRefExpression { ColumnName = "val" },
+                    Alias = null,
+                },
+            ],
+            From = new SimpleTableRef { TableName = "t" },
+            Where = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "id" },
+                Right = new LiteralExpression
+                {
+                    LiteralType = TokenType.IntegerLiteral,
+                    Value = 1L,
+                },
+            },
+            GroupBy = null,
+            Having = null,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
+        };
+
+        await _db.ExecuteAsync("UPDATE t SET val = 'updated' WHERE id = 1", ct);
+
+        await using var result = await reader.ExecuteReadAsync(lookupStatement, ct);
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal("original", row[0].AsText);
+    }
+
+    [Fact]
+    public async Task ReaderSession_PreparedPrimaryKeyLookup_IgnoresUncommittedDirtyPage()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        var lookupStatement = new SelectStatement
+        {
+            IsDistinct = false,
+            Columns =
+            [
+                new SelectColumn
+                {
+                    IsStar = false,
+                    Expression = new ColumnRefExpression { ColumnName = "val" },
+                    Alias = null,
+                },
+            ],
+            From = new SimpleTableRef { TableName = "t" },
+            Where = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "id" },
+                Right = new LiteralExpression
+                {
+                    LiteralType = TokenType.IntegerLiteral,
+                    Value = 1L,
+                },
+            },
+            GroupBy = null,
+            Having = null,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
+        };
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await _db.ExecuteAsync("UPDATE t SET val = 'dirty' WHERE id = 1", ct);
+
+            await using var result = await reader.ExecuteReadAsync(lookupStatement, ct);
+            var rows = await result.ToListAsync(ct);
+            var row = Assert.Single(rows);
+            Assert.Equal("original", row[0].AsText);
+        }
+        finally
+        {
+            await _db.RollbackAsync(ct);
+        }
     }
 
     [Fact]

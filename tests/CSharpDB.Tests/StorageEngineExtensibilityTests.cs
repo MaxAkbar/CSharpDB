@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Integrity;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
+using CSharpDB.Sql;
 
 namespace CSharpDB.Tests;
 
@@ -411,8 +413,125 @@ public sealed class StorageEngineExtensibilityTests
         }
     }
 
+    [Fact]
+    public async Task PageOperationInterceptor_ReportsStorageDeviceReads_ForCachePressuredFileBackedLookups()
+    {
+        const int rowCount = 20_000;
+        const int probeCount = 2_048;
+        const int maxCachedPages = 16;
+
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+        var interceptor = new RecordingPageOperationInterceptor();
+
+        try
+        {
+            var seedOptions = new DatabaseOptions();
+            var readOptions = new DatabaseOptions
+            {
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        MaxCachedPages = maxCachedPages,
+                        Interceptors = new[] { interceptor },
+                    }
+                }
+            };
+
+            await using (var db = await Database.OpenAsync(dbPath, seedOptions, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, category TEXT)", ct);
+
+                var batch = db.PrepareInsertBatch("bench", initialCapacity: 512);
+                await db.BeginTransactionAsync(ct);
+                for (int id = 1; id <= rowCount; id++)
+                {
+                    batch.AddRow(
+                        DbValue.FromInteger(id),
+                        DbValue.FromInteger(id * 10L),
+                        DbValue.FromText(id % 2 == 0 ? "Alpha" : "Beta"));
+
+                    if (id % 512 == 0)
+                        Assert.Equal(512, await batch.ExecuteAsync(ct));
+                }
+
+                int remainder = rowCount % 512;
+                if (remainder != 0)
+                    Assert.Equal(remainder, await batch.ExecuteAsync(ct));
+
+                await db.CommitAsync(ct);
+                await db.CheckpointAsync(ct);
+            }
+
+            var probes = new SelectStatement[probeCount];
+            for (int i = 0; i < probeCount; i++)
+            {
+                int probeId = ((i * 193) % rowCount) + 1;
+                probes[i] = CreatePrimaryKeyValueLookupStatement(probeId);
+            }
+
+            interceptor.ResetCounts();
+
+            await using (var db = await Database.OpenAsync(dbPath, readOptions, ct))
+            {
+                for (int i = 0; i < probeCount; i++)
+                {
+                    await using var result = await db.ExecuteAsync(probes[i], ct);
+                    Assert.True(await result.MoveNextAsync(ct));
+                }
+            }
+
+            int storageDeviceReads = interceptor.GetReadSourceCount(PageReadSource.StorageDevice);
+            int distinctStoragePages = interceptor.GetDistinctReadPageCount(PageReadSource.StorageDevice);
+
+            Assert.True(storageDeviceReads >= probeCount / 8,
+                $"Expected substantial storage-device churn under cache pressure, but observed only {storageDeviceReads} storage-device reads across {probeCount} probes.");
+            Assert.True(distinctStoragePages > maxCachedPages * 2,
+                $"Expected the cache-pressured lookup run to touch more than {maxCachedPages * 2} distinct main-file pages, but observed {distinctStoragePages}.");
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static string NewTempDbPath() =>
         Path.Combine(Path.GetTempPath(), $"csharpdb_ext_test_{Guid.NewGuid():N}.db");
+
+    private static SelectStatement CreatePrimaryKeyValueLookupStatement(int id)
+    {
+        return new SelectStatement
+        {
+            IsDistinct = false,
+            Columns =
+            [
+                new SelectColumn
+                {
+                    IsStar = false,
+                    Expression = new ColumnRefExpression { ColumnName = "value" },
+                    Alias = null,
+                },
+            ],
+            From = new SimpleTableRef { TableName = "bench" },
+            Where = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "id" },
+                Right = new LiteralExpression
+                {
+                    LiteralType = TokenType.IntegerLiteral,
+                    Value = (long)id,
+                },
+            },
+            GroupBy = null,
+            Having = null,
+            OrderBy = null,
+            Limit = null,
+            Offset = null,
+        };
+    }
 
     private static void DeleteIfExists(string path)
     {
@@ -437,6 +556,7 @@ public sealed class StorageEngineExtensibilityTests
     private sealed class RecordingPageOperationInterceptor : IPageOperationInterceptor
     {
         private readonly ConcurrentDictionary<PageReadSource, int> _readSources = new();
+        private readonly ConcurrentDictionary<PageReadSource, ConcurrentDictionary<uint, byte>> _distinctReadPages = new();
 
         public int BeforeReadCount;
         public int AfterReadCount;
@@ -459,6 +579,8 @@ public sealed class StorageEngineExtensibilityTests
         {
             Interlocked.Increment(ref AfterReadCount);
             _readSources.AddOrUpdate(source, 1, static (_, v) => v + 1);
+            var pages = _distinctReadPages.GetOrAdd(source, static _ => new ConcurrentDictionary<uint, byte>());
+            pages.TryAdd(pageId, 0);
             return ValueTask.CompletedTask;
         }
 
@@ -523,10 +645,14 @@ public sealed class StorageEngineExtensibilityTests
             RecoveryStartCount = 0;
             RecoveryEndCount = 0;
             _readSources.Clear();
+            _distinctReadPages.Clear();
         }
 
         public int GetReadSourceCount(PageReadSource source)
             => _readSources.TryGetValue(source, out int count) ? count : 0;
+
+        public int GetDistinctReadPageCount(PageReadSource source)
+            => _distinctReadPages.TryGetValue(source, out var pages) ? pages.Count : 0;
     }
 
     private sealed class CountingIndexStore : IIndexStore

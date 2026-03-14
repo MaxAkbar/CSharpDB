@@ -7,4 +7,6 @@ namespace CSharpDB.Storage.Paging;
 internal interface IPageReadProvider
 {
     ValueTask<PageReadBuffer> ReadPageAsync(uint pageId, CancellationToken ct = default);
+
+    ValueTask<byte[]> ReadOwnedPageAsync(uint pageId, CancellationToken ct = default);
 }

@@ -121,6 +121,42 @@ internal sealed class PageBufferManager
         return false;
     }
 
+    public bool TryGetSnapshotCachedPageReadBuffer(uint pageId, WalSnapshot snapshot, out PageReadBuffer page)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        if (snapshot.TryGet(pageId, out long walOffset))
+        {
+            if (_walReadCache is not null && _walReadCache.TryGet(walOffset, out page))
+                return true;
+
+            page = default;
+            return false;
+        }
+
+        if (!CanUseSnapshotSharedMainFileCache(snapshot, pageId))
+        {
+            page = default;
+            return false;
+        }
+
+        var cachedKind = TryGetCachedEntry(pageId, out var cached, out var readOnlyPage);
+        if (cachedKind == CachedPageKind.Owned)
+        {
+            page = PageReadBuffer.FromOwnedBuffer(cached);
+            return true;
+        }
+
+        if (cachedKind == CachedPageKind.ReadOnly)
+        {
+            page = readOnlyPage;
+            return true;
+        }
+
+        page = default;
+        return false;
+    }
+
     public bool TryGetDirtyPage(uint pageId, out byte[] page)
     {
         // Prefer the cache if present; it may contain a newer buffer than an older pinned/evicted entry.
@@ -176,6 +212,19 @@ internal sealed class PageBufferManager
         return GetPageReadCoreAsync(pageId, ct);
     }
 
+    public ValueTask<PageReadBuffer> GetSnapshotPageReadAsync(
+        uint pageId,
+        WalSnapshot snapshot,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        if (!_hasInterceptor && TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out var fastCached))
+            return new ValueTask<PageReadBuffer>(fastCached);
+
+        return GetSnapshotPageReadCoreAsync(pageId, snapshot, ct);
+    }
+
     public async ValueTask<PageReadBuffer> ReadPageUncachedAsync(uint pageId, CancellationToken ct = default)
     {
         if (TryResolveWalOffset(pageId, out long walOffset, out _))
@@ -224,11 +273,10 @@ internal sealed class PageBufferManager
         if (TryResolveWalOffset(pageId, out long walOffset, out PageReadSource walSource))
             return await ReadMutableWalPageAsync(pageId, walOffset, walSource, ct);
 
-        PageReadBuffer readBuffer = await _pageReads.ReadPageAsync(pageId, ct);
-        var buffer = readBuffer.MaterializeOwnedBuffer();
+        var buffer = await _pageReads.ReadOwnedPageAsync(pageId, ct);
         _cache.Set(pageId, buffer);
         if (_hasInterceptor)
-            await _interceptor.OnAfterReadAsync(pageId, GetReadSource(readBuffer), ct);
+            await _interceptor.OnAfterReadAsync(pageId, PageReadSource.StorageDevice, ct);
         return buffer;
     }
 
@@ -257,6 +305,65 @@ internal sealed class PageBufferManager
         {
             _readOnlyPages[pageId] = page;
             _cache.Set(pageId, ReadOnlyCacheSentinel);
+        }
+
+        if (_hasInterceptor)
+            await _interceptor.OnAfterReadAsync(pageId, GetReadSource(page), ct);
+
+        return page;
+    }
+
+    private async ValueTask<PageReadBuffer> GetSnapshotPageReadCoreAsync(
+        uint pageId,
+        WalSnapshot snapshot,
+        CancellationToken ct)
+    {
+        if (_hasInterceptor)
+            await _interceptor.OnBeforeReadAsync(pageId, ct);
+
+        if (snapshot.TryGet(pageId, out long walOffset))
+        {
+            if (_walReadCache is not null && _walReadCache.TryGet(walOffset, out var cachedWalPage))
+            {
+                if (_hasInterceptor)
+                    await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalCache, ct);
+                return cachedWalPage;
+            }
+
+            byte[] walPage = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+            await _wal.ReadPageIntoAsync(walOffset, walPage, ct);
+
+            if (_walReadCache is null)
+            {
+                if (_hasInterceptor)
+                    await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalSnapshot, ct);
+                return PageReadBuffer.FromOwnedBuffer(walPage);
+            }
+
+            var snapshotWalPage = PageReadBuffer.FromReadOnlyMemory(walPage);
+            _walReadCache.Set(walOffset, snapshotWalPage);
+            if (_hasInterceptor)
+                await _interceptor.OnAfterReadAsync(pageId, PageReadSource.WalSnapshot, ct);
+            return snapshotWalPage;
+        }
+
+        if (TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out var cached))
+        {
+            if (_hasInterceptor)
+                await _interceptor.OnAfterReadAsync(pageId, GetSnapshotCachedReadSource(pageId, snapshot), ct);
+            return cached;
+        }
+
+        var page = await _pageReads.ReadPageAsync(pageId, ct);
+        if (CanUseSnapshotSharedMainFileCache(snapshot, pageId))
+        {
+            if (page.TryGetOwnedBuffer(out var ownedPage) && ownedPage is not null)
+                _cache.Set(pageId, ownedPage);
+            else
+            {
+                _readOnlyPages[pageId] = page;
+                _cache.Set(pageId, ReadOnlyCacheSentinel);
+            }
         }
 
         if (_hasInterceptor)
@@ -489,6 +596,17 @@ internal sealed class PageBufferManager
            && _walReadCache.TryGet(walOffset, out _)
             ? PageReadSource.WalCache
             : PageReadSource.Cache;
+
+    private PageReadSource GetSnapshotCachedReadSource(uint pageId, WalSnapshot snapshot)
+        => snapshot.TryGet(pageId, out long walOffset)
+           && _walReadCache is not null
+           && _walReadCache.TryGet(walOffset, out _)
+            ? PageReadSource.WalCache
+            : PageReadSource.Cache;
+
+    private bool CanUseSnapshotSharedMainFileCache(WalSnapshot snapshot, uint pageId)
+        => snapshot.CommitCounter == _walIndex.CommitCounter &&
+           !_dirtyPages.Contains(pageId);
 
     private static PageReadSource GetReadSource(PageReadBuffer page)
         => page.TryGetOwnedBuffer(out _)

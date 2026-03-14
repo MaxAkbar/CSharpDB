@@ -13,6 +13,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly IStorageDevice _device;
     private readonly IPageReadProvider _pageReads;
     private readonly IPageReadProvider _speculativePageReads;
+    private readonly bool _ownsPageReadProviders;
     private readonly IWriteAheadLog _wal;
     private readonly WalIndex _walIndex;
     private readonly IPageOperationInterceptor _interceptor;
@@ -58,6 +59,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         ValidateOptions(_options);
         _pageReads = CreatePageReadProvider(device, _options);
         _speculativePageReads = CreateSpeculativePageReadProvider(device, _options, _pageReads);
+        _ownsPageReadProviders = true;
         _wal = wal;
         _walIndex = walIndex;
         _interceptor = _options.CreateInterceptor();
@@ -101,11 +103,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         IWriteAheadLog wal,
         WalIndex walIndex,
         WalSnapshot snapshot,
+        bool ownsPageReadProviders,
         PagerOptions? options = null)
     {
         _device = device;
         _pageReads = pageReads;
         _speculativePageReads = speculativePageReads;
+        _ownsPageReadProviders = ownsPageReadProviders;
         _wal = wal;
         _walIndex = walIndex;
         _options = options ?? new PagerOptions();
@@ -158,14 +162,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public Pager CreateSnapshotReader(WalSnapshot snapshot)
     {
-        var pageReads = CreatePageReadProvider(_device, _options);
+        bool needsDedicatedProviders =
+            _pageReads is MemoryMappedPageReadProvider ||
+            _speculativePageReads is MemoryMappedPageReadProvider;
+
+        var pageReads = needsDedicatedProviders
+            ? CreatePageReadProvider(_device, _options)
+            : _pageReads;
+
+        var speculativePageReads = needsDedicatedProviders
+            ? CreateSpeculativePageReadProvider(_device, _options, pageReads)
+            : _speculativePageReads;
+
         var reader = new Pager(
             _device,
             pageReads,
-            CreateSpeculativePageReadProvider(_device, _options, pageReads),
+            speculativePageReads,
             _wal,
             _walIndex,
             snapshot,
+            needsDedicatedProviders,
             _options);
         // Copy header state so schema catalog can be loaded
         reader.PageCount = PageCount;
@@ -254,15 +270,35 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return _buffers.GetPageReadAsync(pageId, ct);
     }
 
+    internal ValueTask<PageReadBuffer> GetSnapshotPageReadAsync(
+        uint pageId,
+        WalSnapshot snapshot,
+        CancellationToken ct = default)
+    {
+        return _buffers.GetSnapshotPageReadAsync(pageId, snapshot, ct);
+    }
+
     internal ValueTask<PageReadBuffer> ReadPageUncachedAsync(uint pageId, CancellationToken ct = default)
     {
         return _buffers.ReadPageUncachedAsync(pageId, ct);
+    }
+
+    internal bool TryGetSnapshotCachedPageReadBuffer(
+        uint pageId,
+        WalSnapshot snapshot,
+        out PageReadBuffer page)
+    {
+        return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out page);
     }
 
     internal bool CanSpeculativePageReads =>
         _options.EnableSequentialLeafReadAhead &&
         !_buffers.HasInterceptor &&
         (_transactions?.InTransaction != true);
+
+    internal bool UsesReadOnlyPageViews =>
+        _options.UseMemoryMappedReads ||
+        _options.MaxCachedWalReadPages > 0;
 
     public ValueTask MarkDirtyAsync(uint pageId, CancellationToken ct = default)
     {
@@ -703,7 +739,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
         {
-            await DisposePageReadProviderAsync();
+            if (_ownsPageReadProviders)
+                await DisposePageReadProviderAsync();
             return; // Snapshot readers don't own resources
         }
 
@@ -721,7 +758,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // Delete WAL file on clean close
         await _wal.CloseAndDeleteAsync();
 
-        await DisposePageReadProviderAsync();
+        if (_ownsPageReadProviders)
+            await DisposePageReadProviderAsync();
 
         if (_device is IAsyncDisposable asyncDisposable)
             await asyncDisposable.DisposeAsync();
@@ -807,14 +845,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
         {
-            DisposePageReadProvider();
+            if (_ownsPageReadProviders)
+                DisposePageReadProvider();
             return;
         }
 
         if (_transactions?.InTransaction == true)
             RollbackAsync().AsTask().GetAwaiter().GetResult();
         WaitForBackgroundCheckpointAsync().AsTask().GetAwaiter().GetResult();
-        DisposePageReadProvider();
+        if (_ownsPageReadProviders)
+            DisposePageReadProvider();
         _device.Dispose();
         _checkpoints?.Dispose();
         _transactions?.Dispose();

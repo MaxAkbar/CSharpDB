@@ -2,6 +2,9 @@ using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
+using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Serialization;
+using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Engine;
 
@@ -214,8 +217,10 @@ public sealed class Database : IAsyncDisposable
 
             if (!_inTransaction)
             {
-                // Auto-commit
-                await CommitWithCatalogSyncAsync(ct);
+                if (stmt is InsertStatement)
+                    await _pager.CommitAsync(ct);
+                else
+                    await CommitWithCatalogSyncAsync(ct);
             }
 
             return result;
@@ -245,7 +250,7 @@ public sealed class Database : IAsyncDisposable
                 ct);
 
             if (!_inTransaction)
-                await CommitWithCatalogSyncAsync(ct);
+                await _pager.CommitAsync(ct);
 
             return result;
         }
@@ -528,9 +533,15 @@ public sealed class Database : IAsyncDisposable
     public sealed class ReaderSession : IDisposable
     {
         private readonly Pager _pager;
+        private readonly SchemaCatalog _catalog;
+        private readonly IRecordSerializer _recordSerializer;
+        private readonly IRecordSerializer? _collectionReadSerializer;
         private readonly StatementCache _statementCache;
-        private readonly Pager _snapshotPager;
-        private readonly QueryPlanner _planner;
+        private readonly WalSnapshot _snapshot;
+        private Pager? _snapshotPager;
+        private QueryPlanner? _planner;
+        private string? _lastSql;
+        private Statement? _lastParsedStatement;
         private bool _disposed;
         private int _activeQuery;
 
@@ -542,9 +553,13 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache)
         {
             _pager = pager;
+            _catalog = catalog;
+            _recordSerializer = recordSerializer;
+            _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
+                ? new CollectionAwareRecordSerializer(recordSerializer)
+                : null;
             _statementCache = statementCache;
-            _snapshotPager = pager.CreateSnapshotReader(snapshot);
-            _planner = new QueryPlanner(_snapshotPager, catalog, recordSerializer);
+            _snapshot = snapshot;
         }
 
         /// <summary>
@@ -554,7 +569,20 @@ public sealed class Database : IAsyncDisposable
         public async ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
         {
-            var stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
+            Statement stmt;
+            if (_lastSql != null &&
+                string.Equals(_lastSql, sql, StringComparison.Ordinal) &&
+                _lastParsedStatement != null)
+            {
+                stmt = _lastParsedStatement;
+            }
+            else
+            {
+                stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
+                _lastSql = sql;
+                _lastParsedStatement = stmt;
+            }
+
             return await ExecuteReadAsync(stmt, ct);
         }
 
@@ -578,7 +606,17 @@ public sealed class Database : IAsyncDisposable
 
             try
             {
-                QueryResult result = await _planner.ExecuteAsync(stmt, ct);
+                QueryResult result;
+                if (stmt is SelectStatement select && await TryExecuteFastReadAsync(select, ct) is { } fastResult)
+                {
+                    result = fastResult;
+                }
+                else
+                {
+                    _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                    result = await _planner.ExecuteAsync(stmt, ct);
+                }
+
                 result.SetDisposeCallback(ReleaseActiveQueryAsync);
                 return result;
             }
@@ -593,7 +631,7 @@ public sealed class Database : IAsyncDisposable
         {
             if (!_disposed)
             {
-                _snapshotPager.Dispose();
+                _snapshotPager?.Dispose();
                 _pager.ReleaseReaderSnapshot();
                 _disposed = true;
             }
@@ -604,6 +642,282 @@ public sealed class Database : IAsyncDisposable
             Volatile.Write(ref _activeQuery, 0);
             return ValueTask.CompletedTask;
         }
+
+        private async ValueTask<QueryResult?> TryExecuteFastReadAsync(SelectStatement stmt, CancellationToken ct)
+        {
+            if (TryExecuteCountStarFastPath(stmt, out var countResult))
+                return countResult;
+
+            return await TryExecutePrimaryKeyLookupFastPathAsync(stmt, ct);
+        }
+
+        private bool TryExecuteCountStarFastPath(SelectStatement stmt, out QueryResult result)
+        {
+            result = null!;
+
+            if (stmt.From is not SimpleTableRef simpleRef)
+                return false;
+            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
+                return false;
+            if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
+                return false;
+            if (stmt.OrderBy is { Count: > 0 })
+                return false;
+            if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+                return false;
+            if (stmt.Columns.Count != 1 || stmt.Columns[0].IsStar)
+                return false;
+            if (stmt.Columns[0].Expression is not FunctionCallExpression func)
+                return false;
+            if (!func.IsStarArg || func.IsDistinct || func.Arguments.Count != 0)
+                return false;
+            if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (_catalog.GetTable(simpleRef.TableName) == null)
+                return false;
+
+            string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
+            ColumnDefinition[] outputSchema =
+            [
+                new ColumnDefinition
+                {
+                    Name = outputName,
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+            ];
+
+            if (_catalog.TryGetTableRowCount(simpleRef.TableName, out long rowCount))
+            {
+                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                return true;
+            }
+
+            var tableTree = _catalog.GetTableTree(simpleRef.TableName, GetOrCreateSnapshotPager());
+            result = new QueryResult(new CountStarTableOperator(tableTree, outputSchema));
+            return true;
+        }
+
+        private async ValueTask<QueryResult?> TryExecutePrimaryKeyLookupFastPathAsync(SelectStatement stmt, CancellationToken ct)
+        {
+            if (stmt.IsDistinct)
+                return null;
+            if (stmt.From is not SimpleTableRef simpleRef)
+                return null;
+            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
+                return null;
+            if (stmt.Where == null || stmt.GroupBy != null || stmt.Having != null)
+                return null;
+            if (stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
+                return null;
+
+            var schema = _catalog.GetTable(simpleRef.TableName);
+            if (schema == null)
+                return null;
+
+            int pkIndex = schema.PrimaryKeyColumnIndex;
+            if (pkIndex < 0 || pkIndex >= schema.Columns.Count || schema.Columns[pkIndex].Type != DbType.Integer)
+                return null;
+
+            if (!TryExtractPrimaryKeyEquality(stmt.Where, simpleRef, schema, pkIndex, out long lookupValue))
+                return null;
+
+            if (!TryBuildProjection(stmt.Columns, schema, out var projectionColumnIndices, out var outputColumns, out bool selectStar))
+                return null;
+
+            var tableTree = new BTree(_pager, _catalog.GetTableRootPage(simpleRef.TableName));
+            ReadOnlyMemory<byte>? payload = tableTree.TryFindSnapshotCachedMemory(
+                lookupValue,
+                _snapshot,
+                out var cachedPayload)
+                ? cachedPayload
+                : await tableTree.FindMemoryAsync(lookupValue, _snapshot, ct);
+            if (!payload.HasValue)
+                return QueryResult.FromSyncLookup(null, outputColumns);
+
+            if (selectStar)
+            {
+                var serializer = GetReadSerializer(schema);
+                return QueryResult.FromSyncLookup(serializer.Decode(payload.Value.Span), outputColumns);
+            }
+
+            if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIndex))
+            {
+                var keyValue = DbValue.FromInteger(lookupValue);
+                var row = new DbValue[outputColumns.Length];
+                Array.Fill(row, keyValue);
+                return QueryResult.FromSyncLookup(row, outputColumns);
+            }
+
+            var decoded = GetReadSerializer(schema).Decode(payload.Value.Span);
+            var projected = new DbValue[projectionColumnIndices.Length];
+            for (int i = 0; i < projectionColumnIndices.Length; i++)
+                projected[i] = decoded[projectionColumnIndices[i]];
+
+            return QueryResult.FromSyncLookup(projected, outputColumns);
+        }
+
+        private Pager GetOrCreateSnapshotPager()
+            => _snapshotPager ??= _pager.CreateSnapshotReader(_snapshot);
+
+        private IRecordSerializer GetReadSerializer(TableSchema schema)
+            => _collectionReadSerializer != null && schema.TableName.StartsWith("_col_", StringComparison.Ordinal)
+                ? _collectionReadSerializer
+                : _recordSerializer;
+
+        private static bool TryExtractPrimaryKeyEquality(
+            Expression expression,
+            SimpleTableRef tableRef,
+            TableSchema schema,
+            int primaryKeyIndex,
+            out long lookupValue)
+        {
+            lookupValue = 0;
+
+            if (expression is not BinaryExpression { Op: BinaryOp.Equals } equals)
+                return false;
+
+            if (TryMatchPrimaryKeyColumn(equals.Left, tableRef, schema, primaryKeyIndex) &&
+                TryReadIntegerLiteral(equals.Right, out lookupValue))
+            {
+                return true;
+            }
+
+            if (TryMatchPrimaryKeyColumn(equals.Right, tableRef, schema, primaryKeyIndex) &&
+                TryReadIntegerLiteral(equals.Left, out lookupValue))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryMatchPrimaryKeyColumn(
+            Expression expression,
+            SimpleTableRef tableRef,
+            TableSchema schema,
+            int primaryKeyIndex)
+        {
+            if (expression is not ColumnRefExpression column)
+                return false;
+
+            if (column.TableAlias != null)
+            {
+                string expectedAlias = tableRef.Alias ?? tableRef.TableName;
+                if (!string.Equals(column.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            int columnIndex = column.TableAlias != null
+                ? schema.GetQualifiedColumnIndex(column.TableAlias, column.ColumnName)
+                : schema.GetColumnIndex(column.ColumnName);
+
+            return columnIndex == primaryKeyIndex;
+        }
+
+        private static bool TryReadIntegerLiteral(Expression expression, out long value)
+        {
+            if (expression is LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: long int64 })
+            {
+                value = int64;
+                return true;
+            }
+
+            if (expression is LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: int int32 })
+            {
+                value = int32;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        private static bool TryBuildProjection(
+            IReadOnlyList<SelectColumn> columns,
+            TableSchema schema,
+            out int[] columnIndices,
+            out ColumnDefinition[] outputColumns,
+            out bool selectStar)
+        {
+            selectStar = columns.Any(static c => c.IsStar);
+            if (selectStar)
+            {
+                if (columns.Count != 1)
+                {
+                    columnIndices = Array.Empty<int>();
+                    outputColumns = Array.Empty<ColumnDefinition>();
+                    return false;
+                }
+
+                columnIndices = Array.Empty<int>();
+                outputColumns = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
+                return true;
+            }
+
+            columnIndices = new int[columns.Count];
+            outputColumns = new ColumnDefinition[columns.Count];
+
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var column = columns[i];
+                if (column.Expression is not ColumnRefExpression colRef)
+                    return false;
+
+                int sourceIndex = colRef.TableAlias != null
+                    ? schema.GetQualifiedColumnIndex(colRef.TableAlias, colRef.ColumnName)
+                    : schema.GetColumnIndex(colRef.ColumnName);
+                if (sourceIndex < 0 || sourceIndex >= schema.Columns.Count)
+                    return false;
+
+                columnIndices[i] = sourceIndex;
+                var sourceColumn = schema.Columns[sourceIndex];
+                outputColumns[i] = column.Alias != null
+                    ? new ColumnDefinition
+                    {
+                        Name = column.Alias,
+                        Type = sourceColumn.Type,
+                        Nullable = sourceColumn.Nullable,
+                        IsPrimaryKey = sourceColumn.IsPrimaryKey,
+                        IsIdentity = sourceColumn.IsIdentity,
+                    }
+                    : sourceColumn;
+            }
+
+            return true;
+        }
+
+        private static bool IsPrimaryKeyOnlyProjection(int[] columnIndices, int primaryKeyIndex)
+        {
+            if (primaryKeyIndex < 0)
+                return false;
+
+            for (int i = 0; i < columnIndices.Length; i++)
+            {
+                if (columnIndices[i] != primaryKeyIndex)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsSystemCatalogTable(string tableName) =>
+            string.Equals(tableName, "sys.tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_triggers", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.objects", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_objects", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
