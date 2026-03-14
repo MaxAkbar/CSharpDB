@@ -5985,9 +5985,14 @@ public sealed class QueryPlanner
         if (op is not IPreDecodeFilterSupport preDecodeFilterTarget)
             return false;
 
-        if (TryExtractPushdownPredicate(where, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal, out var residual))
+        if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
         {
-            preDecodeFilterTarget.SetPreDecodeFilter(columnIndex, opToApply, literal);
+            for (int i = 0; i < predicates.Count; i++)
+            {
+                var predicate = predicates[i];
+                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+
             remaining = residual;
             return true;
         }
@@ -5995,23 +6000,20 @@ public sealed class QueryPlanner
         return false;
     }
 
-    private static bool TryExtractPushdownPredicate(
+    private static bool TryExtractPushdownPredicates(
         Expression where,
         TableSchema schema,
-        out int columnIndex,
-        out BinaryOp opToApply,
-        out DbValue literal,
+        out List<PushdownPredicateSpec> predicates,
         out Expression? remaining)
     {
-        columnIndex = -1;
-        opToApply = BinaryOp.Equals;
-        literal = DbValue.Null;
+        predicates = [];
         remaining = where;
 
         if (where is BinaryExpression singleBin &&
             IsPushdownComparison(singleBin.Op) &&
-            TryGetPushdownOperands(singleBin, schema, out columnIndex, out opToApply, out literal))
+            TryGetPushdownOperands(singleBin, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal))
         {
+            predicates.Add(new PushdownPredicateSpec(columnIndex, opToApply, literal));
             remaining = null;
             return true;
         }
@@ -6022,51 +6024,43 @@ public sealed class QueryPlanner
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(where, conjuncts);
 
-        int selectedConjunctIndex = -1;
-        int selectedRank = int.MaxValue;
+        var residualTerms = new List<Expression>(conjuncts.Count);
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (conjuncts[i] is not BinaryExpression bin || !IsPushdownComparison(bin.Op))
-                continue;
-
-            if (!TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
-                continue;
-
-            int candidateRank = GetPushdownComparisonRank(candidateOp);
-            if (candidateRank >= selectedRank)
-                continue;
-
-            selectedConjunctIndex = i;
-            selectedRank = candidateRank;
-            columnIndex = candidateColumnIndex;
-            opToApply = candidateOp;
-            literal = candidateLiteral;
-
-            if (candidateRank == 0)
-                break;
+            if (conjuncts[i] is BinaryExpression bin &&
+                IsPushdownComparison(bin.Op) &&
+                TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
+            {
+                predicates.Add(new PushdownPredicateSpec(candidateColumnIndex, candidateOp, candidateLiteral));
+            }
+            else
+            {
+                residualTerms.Add(conjuncts[i]);
+            }
         }
 
-        if (selectedConjunctIndex < 0)
+        if (predicates.Count == 0)
             return false;
 
-        if (conjuncts.Count == 1)
-        {
-            remaining = null;
-            return true;
-        }
-
-        var residualTerms = new List<Expression>(conjuncts.Count - 1);
-        for (int i = 0; i < conjuncts.Count; i++)
-        {
-            if (i == selectedConjunctIndex)
-                continue;
-
-            residualTerms.Add(conjuncts[i]);
-        }
-
+        predicates.Sort(static (left, right) =>
+            GetPushdownComparisonRank(left.Op).CompareTo(GetPushdownComparisonRank(right.Op)));
         remaining = CombineConjuncts(residualTerms);
         return true;
+    }
+
+    private readonly struct PushdownPredicateSpec
+    {
+        public PushdownPredicateSpec(int columnIndex, BinaryOp op, DbValue literal)
+        {
+            ColumnIndex = columnIndex;
+            Op = op;
+            Literal = literal;
+        }
+
+        public int ColumnIndex { get; }
+        public BinaryOp Op { get; }
+        public DbValue Literal { get; }
     }
 
     private static int GetPushdownComparisonRank(BinaryOp op)

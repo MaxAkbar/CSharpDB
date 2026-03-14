@@ -2194,6 +2194,186 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Scan_WithCompoundSimpleWhere_UsesMultiplePreDecodeFilters()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE pushdown_scan (id INTEGER PRIMARY KEY, value INTEGER, category TEXT, note TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO pushdown_scan VALUES (1, 5, 'A', 'skip-low')", ct);
+        await _db.ExecuteAsync("INSERT INTO pushdown_scan VALUES (2, 12, 'A', 'match-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO pushdown_scan VALUES (3, 15, 'B', 'skip-category')", ct);
+        await _db.ExecuteAsync("INSERT INTO pushdown_scan VALUES (4, 19, 'A', 'match-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO pushdown_scan VALUES (5, 25, 'A', 'skip-high')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT id FROM pushdown_scan WHERE value >= 10 AND value < 20 AND category = 'A'") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        var scanOperator = rootOperator is ProjectionOperator projection
+            ? GetPrivateField<IOperator>(projection, "_source")
+            : rootOperator;
+        Assert.IsType<TableScanOperator>(scanOperator);
+
+        var extraFilters = GetPrivateField<Array>(scanOperator!, "_additionalPreDecodeFilters");
+        Assert.NotNull(extraFilters);
+        Assert.Equal(2, extraFilters!.Length);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal([2L, 4L], rows.Select(row => row[0].AsInteger).OrderBy(id => id).ToArray());
+    }
+
+    [Fact]
+    public async Task InnerJoin_OnRightUniqueIndex_UsesSparseRightProjectionTrim()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE left_trim (id INTEGER PRIMARY KEY, label TEXT, status TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO left_trim VALUES (1, 'L1', 'open')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_trim VALUES (2, 'L2', 'open')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_trim VALUES (3, 'L3', 'closed')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_trim (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)",
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_trim_code ON right_trim(code)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_trim VALUES (10, 1, 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'tail-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_trim VALUES (11, 2, 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'tail-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_trim VALUES (12, 3, 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'tail-3')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.label, r.tail FROM left_trim l JOIN right_trim r ON l.id = r.code") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<IndexNestedLoopJoinOperator>(rootOperator);
+
+        var decodedRightColumns = GetPrivateField<int[]>(rootOperator, "_decodedRightColumnIndices");
+        Assert.NotNull(decodedRightColumns);
+        Assert.Equal([8], decodedRightColumns!);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        var ordered = rows.OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal("L1", ordered[0][0].AsText);
+        Assert.Equal("tail-1", ordered[0][1].AsText);
+        Assert.Equal("L2", ordered[1][0].AsText);
+        Assert.Equal("tail-2", ordered[1][1].AsText);
+        Assert.Equal("L3", ordered[2][0].AsText);
+        Assert.Equal("tail-3", ordered[2][1].AsText);
+    }
+
+    [Fact]
+    public async Task InnerJoin_HashJoin_UsesSparseProjectionTrimOnBothSides()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE left_hash_trim (id INTEGER PRIMARY KEY, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO left_hash_trim VALUES (1, 'l11', 'l12', 'l13', 'l14', 'l15', 'l16', 'left-tail-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_hash_trim VALUES (2, 'l21', 'l22', 'l23', 'l24', 'l25', 'l26', 'left-tail-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_hash_trim VALUES (3, 'l31', 'l32', 'l33', 'l34', 'l35', 'l36', 'left-tail-3')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_hash_trim (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO right_hash_trim VALUES (10, 1, 'r11', 'r12', 'r13', 'r14', 'r15', 'r16', 'right-tail-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_hash_trim VALUES (11, 2, 'r21', 'r22', 'r23', 'r24', 'r25', 'r26', 'right-tail-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_hash_trim VALUES (12, 3, 'r31', 'r32', 'r33', 'r34', 'r35', 'r36', 'right-tail-3')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.tail, r.tail FROM left_hash_trim l JOIN right_hash_trim r ON l.id = r.code") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<HashJoinOperator>(rootOperator);
+
+        var leftSource = GetPrivateField<IOperator>(rootOperator, "_left");
+        var rightSource = GetPrivateField<IOperator>(rootOperator, "_right");
+        Assert.IsType<TableScanOperator>(leftSource);
+        Assert.IsType<TableScanOperator>(rightSource);
+
+        var leftDecodedColumns = GetPrivateField<int[]>(leftSource!, "_decodedColumnIndices");
+        var rightDecodedColumns = GetPrivateField<int[]>(rightSource!, "_decodedColumnIndices");
+
+        Assert.NotNull(leftDecodedColumns);
+        Assert.NotNull(rightDecodedColumns);
+        Assert.Equal([0, 7], leftDecodedColumns!);
+        Assert.Equal([1, 8], rightDecodedColumns!);
+
+        var rows = await result.ToListAsync(ct);
+        var buildRequiredColumns = GetPrivateField<int[]>(rootOperator, "_buildRequiredColumnIndices");
+        Assert.NotNull(buildRequiredColumns);
+        Assert.Equal([1, 8], buildRequiredColumns!);
+
+        Assert.Equal(3, rows.Count);
+        var ordered = rows.OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal("left-tail-1", ordered[0][0].AsText);
+        Assert.Equal("right-tail-1", ordered[0][1].AsText);
+        Assert.Equal("left-tail-2", ordered[1][0].AsText);
+        Assert.Equal("right-tail-2", ordered[1][1].AsText);
+        Assert.Equal("left-tail-3", ordered[2][0].AsText);
+        Assert.Equal("right-tail-3", ordered[2][1].AsText);
+    }
+
+    [Fact]
+    public async Task InnerJoin_NestedLoop_UsesSparseProjectionTrimOnBothSides()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE left_nested_trim (id INTEGER PRIMARY KEY, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO left_nested_trim VALUES (1, 'l11', 'l12', 'l13', 'l14', 'l15', 'l16', 'left-tail-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_nested_trim VALUES (2, 'l21', 'l22', 'l23', 'l24', 'l25', 'l26', 'left-tail-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_nested_trim VALUES (3, 'l31', 'l32', 'l33', 'l34', 'l35', 'l36', 'left-tail-3')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_nested_trim (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO right_nested_trim VALUES (10, 1, 'r11', 'r12', 'r13', 'r14', 'r15', 'r16', 'right-tail-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_nested_trim VALUES (11, 2, 'r21', 'r22', 'r23', 'r24', 'r25', 'r26', 'right-tail-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_nested_trim VALUES (12, 3, 'r31', 'r32', 'r33', 'r34', 'r35', 'r36', 'right-tail-3')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.tail, r.tail FROM left_nested_trim l JOIN right_nested_trim r ON l.id + 0 = r.code") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<NestedLoopJoinOperator>(rootOperator);
+
+        var leftSource = GetPrivateField<IOperator>(rootOperator, "_left");
+        var rightSource = GetPrivateField<IOperator>(rootOperator, "_right");
+        Assert.IsType<TableScanOperator>(leftSource);
+        Assert.IsType<TableScanOperator>(rightSource);
+
+        var leftDecodedColumns = GetPrivateField<int[]>(leftSource!, "_decodedColumnIndices");
+        var rightDecodedColumns = GetPrivateField<int[]>(rightSource!, "_decodedColumnIndices");
+        Assert.NotNull(leftDecodedColumns);
+        Assert.NotNull(rightDecodedColumns);
+        Assert.Equal([0, 7], leftDecodedColumns!);
+        Assert.Equal([1, 8], rightDecodedColumns!);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        var ordered = rows.OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal("left-tail-1", ordered[0][0].AsText);
+        Assert.Equal("right-tail-1", ordered[0][1].AsText);
+        Assert.Equal("left-tail-2", ordered[1][0].AsText);
+        Assert.Equal("right-tail-2", ordered[1][1].AsText);
+        Assert.Equal("left-tail-3", ordered[2][0].AsText);
+        Assert.Equal("right-tail-3", ordered[2][1].AsText);
+    }
+
+    [Fact]
     public async Task Join_OnRightNonUniqueIndex_ReturnsAllMatches()
     {
         await _db.ExecuteAsync("CREATE TABLE left_many (id INTEGER PRIMARY KEY)", TestContext.Current.CancellationToken);
@@ -3823,6 +4003,13 @@ public class IntegrationTests : IAsyncLifetime
         var hasSyncLookupField = typeof(QueryResult).GetField("_hasSyncLookupResult", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("QueryResult sync lookup field not found.");
         return (bool)hasSyncLookupField.GetValue(result)!;
+    }
+
+    private static T? GetPrivateField<T>(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}.");
+        return (T?)field.GetValue(target);
     }
 
     #endregion

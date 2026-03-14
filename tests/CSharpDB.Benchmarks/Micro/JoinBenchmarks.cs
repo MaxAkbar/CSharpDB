@@ -28,6 +28,12 @@ public class JoinBenchmarks
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE TABLE right_big_t (id INTEGER PRIMARY KEY, left_id INTEGER, amount INTEGER)")
             .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE left_wide_t (id INTEGER PRIMARY KEY, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE right_wide_t (id INTEGER PRIMARY KEY, left_id INTEGER, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)")
+            .AsTask().GetAwaiter().GetResult();
 
         // Small table for cross join
         db.ExecuteAsync("CREATE TABLE small_t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -44,6 +50,13 @@ public class JoinBenchmarks
             .GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE INDEX idx_right_t_left_id ON right_t(left_id)")
             .AsTask().GetAwaiter().GetResult();
+
+        _bench.SeedAsync("left_wide_t", 1000, i =>
+            $"INSERT INTO left_wide_t VALUES ({i}, 'l1_{i}', 'l2_{i}', 'l3_{i}', 'l4_{i}', 'l5_{i}', 'l6_{i}', 'ltail_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("right_wide_t", 1000, i =>
+            $"INSERT INTO right_wide_t VALUES ({i}, {i % 1000}, 'r1_{i}', 'r2_{i}', 'r3_{i}', 'r4_{i}', 'r5_{i}', 'r6_{i}', 'rtail_{i}')")
+            .GetAwaiter().GetResult();
 
         // Skewed table (20K rows) to stress hash build-side choice.
         _bench.SeedAsync("right_big_t", 20000, i =>
@@ -125,6 +138,22 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id = r.id AND l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection hash)")]
+    public async Task InnerJoin_WideLateProjection_HashJoin()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.tail, r.tail FROM left_wide_t l INNER JOIN right_wide_t r ON l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection forced nested-loop)")]
+    public async Task InnerJoin_WideLateProjection_ForcedNestedLoop()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.tail, r.tail FROM left_wide_t l INNER JOIN right_wide_t r ON l.id + 0 = r.left_id");
         await result.ToListAsync();
     }
 

@@ -7,6 +7,27 @@ using CSharpDB.Sql;
 
 namespace CSharpDB.Execution;
 
+internal readonly struct PreDecodeFilterSpec
+{
+    public int ColumnIndex { get; }
+    public BinaryOp Op { get; }
+    public DbValue Literal { get; }
+    public RecordColumnAccessor? Accessor { get; }
+    public byte[]? TextBytes { get; }
+
+    public PreDecodeFilterSpec(IRecordSerializer serializer, int columnIndex, BinaryOp op, DbValue literal)
+    {
+        ColumnIndex = columnIndex;
+        Op = op;
+        Literal = literal;
+        Accessor = BoundColumnAccessHelper.TryCreate(serializer, columnIndex);
+        TextBytes = literal.Type == DbType.Text &&
+            (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
+            ? Encoding.UTF8.GetBytes(literal.AsText)
+            : null;
+    }
+}
+
 internal static class BoundColumnAccessHelper
 {
     public static int[] NormalizeColumnIndices(ReadOnlySpan<int> columnIndices, int columnCount, out int maxColumnIndex)
@@ -93,6 +114,30 @@ internal static class BoundColumnAccessHelper
         return EvaluateValueFilter(filterValue, op, literal);
     }
 
+    public static bool EvaluatePreDecodeFilters(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        ReadOnlySpan<PreDecodeFilterSpec> filters)
+    {
+        for (int i = 0; i < filters.Length; i++)
+        {
+            var filter = filters[i];
+            if (!EvaluatePreDecodeFilter(
+                    payload,
+                    serializer,
+                    filter.Accessor,
+                    filter.ColumnIndex,
+                    filter.TextBytes,
+                    filter.Op,
+                    filter.Literal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public static bool IsNull(
         ReadOnlySpan<byte> payload,
         IRecordSerializer serializer,
@@ -145,6 +190,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -227,6 +273,12 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     /// </summary>
     public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
     {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
@@ -338,14 +390,36 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
         => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
-            payload,
-            _recordSerializer,
-            _preDecodeFilterAccessor,
-            _preDecodeFilterColumnIndex,
-            _preDecodeFilterTextBytes,
-            _preDecodeFilterOp,
-            _preDecodeFilterLiteral);
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
 
     internal DbValue[] DecodeFullRow(ReadOnlySpan<byte> payload)
     {
@@ -3356,40 +3430,101 @@ public sealed class HashJoinOperator : IOperator, IProjectionPushdownTarget, IEs
         if (_residualPredicate != null)
             return;
 
-        int maxLeftColumnIndex = -1;
-        int maxRightColumnIndex = -1;
+        var leftFlags = new bool[_leftColCount];
+        var rightFlags = new bool[_rightColCount];
+        int leftRequiredCount = 0;
+        int rightRequiredCount = 0;
+
+        void MarkLeftRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_leftColCount || leftFlags[columnIndex])
+                return;
+
+            leftFlags[columnIndex] = true;
+            leftRequiredCount++;
+        }
+
+        void MarkRightRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_rightColCount || rightFlags[columnIndex])
+                return;
+
+            rightFlags[columnIndex] = true;
+            rightRequiredCount++;
+        }
+
         for (int i = 0; i < _projectionColumnIndices.Length; i++)
         {
             int projectionIndex = _projectionColumnIndices[i];
             if (projectionIndex < _leftColCount)
             {
-                if (projectionIndex > maxLeftColumnIndex)
-                    maxLeftColumnIndex = projectionIndex;
+                MarkLeftRequired(projectionIndex);
             }
             else
             {
-                int rightIndex = projectionIndex - _leftColCount;
-                if (rightIndex > maxRightColumnIndex)
-                    maxRightColumnIndex = rightIndex;
+                MarkRightRequired(projectionIndex - _leftColCount);
             }
         }
 
         for (int i = 0; i < _leftKeyIndices.Length; i++)
-        {
-            int keyIndex = _leftKeyIndices[i];
-            if (keyIndex > maxLeftColumnIndex)
-                maxLeftColumnIndex = keyIndex;
-        }
+            MarkLeftRequired(_leftKeyIndices[i]);
 
         for (int i = 0; i < _rightKeyIndices.Length; i++)
+            MarkRightRequired(_rightKeyIndices[i]);
+
+        int[] leftRequiredColumns = BuildRequiredColumnIndices(leftFlags, leftRequiredCount);
+        int[] rightRequiredColumns = BuildRequiredColumnIndices(rightFlags, rightRequiredCount);
+
+        if (!TrySetDecodedColumnIndices(_left, leftRequiredColumns) && leftRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_left, leftRequiredColumns[^1]);
+
+        if (!TrySetDecodedColumnIndices(_right, rightRequiredColumns) && rightRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_right, rightRequiredColumns[^1]);
+    }
+
+    private static int[] BuildRequiredColumnIndices(bool[] flags, int count)
+    {
+        if (count <= 0)
+            return Array.Empty<int>();
+
+        var columns = new int[count];
+        int cursor = 0;
+        for (int i = 0; i < flags.Length; i++)
         {
-            int keyIndex = _rightKeyIndices[i];
-            if (keyIndex > maxRightColumnIndex)
-                maxRightColumnIndex = keyIndex;
+            if (!flags[i])
+                continue;
+
+            columns[cursor++] = i;
         }
 
-        TrySetDecodedColumnUpperBound(_left, maxLeftColumnIndex);
-        TrySetDecodedColumnUpperBound(_right, maxRightColumnIndex);
+        return columns;
+    }
+
+    private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
+    {
+        if (columnIndices.Length == 0)
+            return true;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
@@ -4072,6 +4207,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
     private DbValue[]? _rightRowBuffer;
     private DbValue[]? _residualRowBuffer;
     private int[]? _projectionColumnIndices;
+    private int[]? _decodedRightColumnIndices;
     private int? _maxDecodedRightColumnIndex;
 
     public ColumnDefinition[] OutputSchema { get; private set; }
@@ -4115,9 +4251,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 
         await _outer.OpenAsync(ct);
         Current = Array.Empty<DbValue>();
-        int decodedRightColumnCount = _maxDecodedRightColumnIndex.HasValue
-            ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
-            : _rightColCount;
+        int decodedRightColumnCount = GetDecodedRightColumnCount();
         _rightRowBuffer = decodedRightColumnCount == 0
             ? Array.Empty<DbValue>()
             : new DbValue[decodedRightColumnCount];
@@ -4238,26 +4372,96 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
         if (_residualPredicate != null)
             return;
 
-        int maxOuterColumnIndex = _outerKeyIndex;
-        int maxRightColumnIndex = -1;
+        var outerFlags = new bool[_leftColCount];
+        var rightFlags = new bool[_rightColCount];
+        int outerRequiredCount = 0;
+        int rightRequiredCount = 0;
+
+        void MarkOuterRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_leftColCount || outerFlags[columnIndex])
+                return;
+
+            outerFlags[columnIndex] = true;
+            outerRequiredCount++;
+        }
+
+        void MarkRightRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_rightColCount || rightFlags[columnIndex])
+                return;
+
+            rightFlags[columnIndex] = true;
+            rightRequiredCount++;
+        }
+
+        MarkOuterRequired(_outerKeyIndex);
         for (int i = 0; i < _projectionColumnIndices.Length; i++)
         {
             int projectionIndex = _projectionColumnIndices[i];
             if (projectionIndex < _leftColCount)
             {
-                if (projectionIndex > maxOuterColumnIndex)
-                    maxOuterColumnIndex = projectionIndex;
+                MarkOuterRequired(projectionIndex);
             }
             else
             {
-                int rightIndex = projectionIndex - _leftColCount;
-                if (rightIndex > maxRightColumnIndex)
-                    maxRightColumnIndex = rightIndex;
+                MarkRightRequired(projectionIndex - _leftColCount);
             }
         }
 
-        _maxDecodedRightColumnIndex = maxRightColumnIndex;
-        TrySetDecodedColumnUpperBound(_outer, maxOuterColumnIndex);
+        int[] outerRequiredColumns = BuildRequiredColumnIndices(outerFlags, outerRequiredCount);
+        _decodedRightColumnIndices = BuildRequiredColumnIndices(rightFlags, rightRequiredCount);
+        _maxDecodedRightColumnIndex = _decodedRightColumnIndices.Length == 0
+            ? -1
+            : _decodedRightColumnIndices[^1];
+
+        if (!TrySetDecodedColumnIndices(_outer, outerRequiredColumns) && outerRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_outer, outerRequiredColumns[^1]);
+    }
+
+    private static int[] BuildRequiredColumnIndices(bool[] flags, int count)
+    {
+        if (count <= 0)
+            return Array.Empty<int>();
+
+        var columns = new int[count];
+        int cursor = 0;
+        for (int i = 0; i < flags.Length; i++)
+        {
+            if (!flags[i])
+                continue;
+
+            columns[cursor++] = i;
+        }
+
+        return columns;
+    }
+
+    private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
+    {
+        if (columnIndices.Length == 0)
+            return true;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
@@ -4362,20 +4566,34 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
         var row = _rightRowBuffer;
         if (row == null)
         {
-            int decodedRightColumnCount = _maxDecodedRightColumnIndex.HasValue
-                ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
-                : _rightColCount;
+            int decodedRightColumnCount = GetDecodedRightColumnCount();
             row = decodedRightColumnCount == 0
                 ? Array.Empty<DbValue>()
                 : new DbValue[decodedRightColumnCount];
             _rightRowBuffer = row;
         }
 
+        var decodedRightColumnIndices = _decodedRightColumnIndices;
+        if (decodedRightColumnIndices is { Length: > 0 })
+        {
+            Array.Fill(row, DbValue.Null);
+            _recordSerializer.DecodeSelectedInto(payload, row, decodedRightColumnIndices);
+            return row;
+        }
+
+        if (row.Length == 0)
+            return row;
+
         int decoded = _recordSerializer.DecodeInto(payload, row);
         if (decoded < row.Length)
             Array.Fill(row, DbValue.Null, decoded, row.Length - decoded);
         return row;
     }
+
+    private int GetDecodedRightColumnCount()
+        => _maxDecodedRightColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
+            : _rightColCount;
 
     private DbValue[] CreateMatchedRow(DbValue[] leftRow, DbValue[] rightRow)
     {
@@ -4484,7 +4702,9 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
     private readonly IOperator _left;
     private readonly IOperator _right;
     private readonly JoinType _joinType;
+    private readonly Expression? _conditionExpression;
     private readonly Func<DbValue[], DbValue>? _conditionEvaluator;
+    private readonly TableSchema _compositeSchema;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly int? _estimatedRowCount;
@@ -4517,9 +4737,11 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
         _left = left;
         _right = right;
         _joinType = joinType;
+        _conditionExpression = condition;
         _conditionEvaluator = condition != null
             ? ExpressionCompiler.Compile(condition, compositeSchema)
             : null;
+        _compositeSchema = compositeSchema;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
@@ -4708,30 +4930,173 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
         if (_projectionColumnIndices == null)
             return;
 
-        // Join conditions can reference arbitrary columns; keep full decode when condition is present.
-        if (_conditionEvaluator != null)
-            return;
+        var leftFlags = new bool[_leftColCount];
+        var rightFlags = new bool[_rightColCount];
+        int leftRequiredCount = 0;
+        int rightRequiredCount = 0;
 
-        int maxLeftColumnIndex = -1;
-        int maxRightColumnIndex = -1;
+        void MarkLeftRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_leftColCount || leftFlags[columnIndex])
+                return;
+
+            leftFlags[columnIndex] = true;
+            leftRequiredCount++;
+        }
+
+        void MarkRightRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_rightColCount || rightFlags[columnIndex])
+                return;
+
+            rightFlags[columnIndex] = true;
+            rightRequiredCount++;
+        }
+
         for (int i = 0; i < _projectionColumnIndices.Length; i++)
         {
             int projectionIndex = _projectionColumnIndices[i];
             if (projectionIndex < _leftColCount)
             {
-                if (projectionIndex > maxLeftColumnIndex)
-                    maxLeftColumnIndex = projectionIndex;
+                MarkLeftRequired(projectionIndex);
             }
             else
             {
-                int rightIndex = projectionIndex - _leftColCount;
-                if (rightIndex > maxRightColumnIndex)
-                    maxRightColumnIndex = rightIndex;
+                MarkRightRequired(projectionIndex - _leftColCount);
             }
         }
 
-        TrySetDecodedColumnUpperBound(_left, maxLeftColumnIndex);
-        TrySetDecodedColumnUpperBound(_right, maxRightColumnIndex);
+        if (_conditionExpression != null &&
+            !TryMarkConditionColumnsForExpression(_conditionExpression, MarkLeftRequired, MarkRightRequired))
+        {
+            return;
+        }
+
+        int[] leftRequiredColumns = BuildRequiredColumnIndices(leftFlags, leftRequiredCount);
+        int[] rightRequiredColumns = BuildRequiredColumnIndices(rightFlags, rightRequiredCount);
+
+        if (!TrySetDecodedColumnIndices(_left, leftRequiredColumns) && leftRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_left, leftRequiredColumns[^1]);
+
+        if (!TrySetDecodedColumnIndices(_right, rightRequiredColumns) && rightRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_right, rightRequiredColumns[^1]);
+    }
+
+    private bool TryMarkConditionColumnsForExpression(
+        Expression expression,
+        Action<int> markLeftColumn,
+        Action<int> markRightColumn)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return true;
+            case ColumnRefExpression columnRef:
+            {
+                int compositeColumnIndex = columnRef.TableAlias != null
+                    ? _compositeSchema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
+                    : _compositeSchema.GetColumnIndex(columnRef.ColumnName);
+                if (compositeColumnIndex < 0)
+                    return false;
+
+                if (compositeColumnIndex < _leftColCount)
+                    markLeftColumn(compositeColumnIndex);
+                else
+                    markRightColumn(compositeColumnIndex - _leftColCount);
+
+                return true;
+            }
+            case BinaryExpression binaryExpression:
+                return TryMarkConditionColumnsForExpression(binaryExpression.Left, markLeftColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(binaryExpression.Right, markLeftColumn, markRightColumn);
+            case UnaryExpression unaryExpression:
+                return TryMarkConditionColumnsForExpression(unaryExpression.Operand, markLeftColumn, markRightColumn);
+            case LikeExpression likeExpression:
+                return TryMarkConditionColumnsForExpression(likeExpression.Operand, markLeftColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(likeExpression.Pattern, markLeftColumn, markRightColumn)
+                    && (likeExpression.EscapeChar == null
+                        || TryMarkConditionColumnsForExpression(likeExpression.EscapeChar, markLeftColumn, markRightColumn));
+            case InExpression inExpression:
+            {
+                if (!TryMarkConditionColumnsForExpression(inExpression.Operand, markLeftColumn, markRightColumn))
+                    return false;
+
+                for (int i = 0; i < inExpression.Values.Count; i++)
+                {
+                    if (!TryMarkConditionColumnsForExpression(inExpression.Values[i], markLeftColumn, markRightColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            case BetweenExpression betweenExpression:
+                return TryMarkConditionColumnsForExpression(betweenExpression.Operand, markLeftColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(betweenExpression.Low, markLeftColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(betweenExpression.High, markLeftColumn, markRightColumn);
+            case IsNullExpression isNullExpression:
+                return TryMarkConditionColumnsForExpression(isNullExpression.Operand, markLeftColumn, markRightColumn);
+            case FunctionCallExpression functionCall:
+            {
+                if (functionCall.IsStarArg)
+                    return true;
+
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryMarkConditionColumnsForExpression(functionCall.Arguments[i], markLeftColumn, markRightColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private static int[] BuildRequiredColumnIndices(bool[] flags, int count)
+    {
+        if (count <= 0)
+            return Array.Empty<int>();
+
+        var columns = new int[count];
+        int cursor = 0;
+        for (int i = 0; i < flags.Length; i++)
+        {
+            if (!flags[i])
+                continue;
+
+            columns[cursor++] = i;
+        }
+
+        return columns;
+    }
+
+    private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
+    {
+        if (columnIndices.Length == 0)
+            return true;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
@@ -4927,6 +5292,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -4972,6 +5338,12 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 
     public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
     {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
@@ -5144,14 +5516,36 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
-            payload,
-            _recordSerializer,
-            _preDecodeFilterAccessor,
-            _preDecodeFilterColumnIndex,
-            _preDecodeFilterTextBytes,
-            _preDecodeFilterOp,
-            _preDecodeFilterLiteral);
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
 }
 
 /// <summary>
@@ -5174,6 +5568,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
@@ -5219,6 +5614,12 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
 
     public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
     {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
@@ -5320,14 +5721,36 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
-            payload,
-            _recordSerializer,
-            _preDecodeFilterAccessor,
-            _preDecodeFilterColumnIndex,
-            _preDecodeFilterTextBytes,
-            _preDecodeFilterOp,
-            _preDecodeFilterLiteral);
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
 }
 
 /// <summary>
@@ -5355,6 +5778,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -5403,6 +5827,12 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
 
     public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
     {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
@@ -5534,14 +5964,36 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
         => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
-            payload,
-            _recordSerializer,
-            _preDecodeFilterAccessor,
-            _preDecodeFilterColumnIndex,
-            _preDecodeFilterTextBytes,
-            _preDecodeFilterOp,
-            _preDecodeFilterLiteral);
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
 }
 
 /// <summary>
@@ -5562,6 +6014,7 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     private RecordColumnAccessor? _preDecodeFilterAccessor;
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
     private DbValue[]? _rowBuffer;
     private bool _reuseBuffer = true;
 
@@ -5611,6 +6064,12 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
 
     public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
     {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
         _preDecodeFilterColumnIndex = columnIndex;
         _preDecodeFilterOp = op;
         _preDecodeFilterLiteral = literal;
@@ -5725,14 +6184,36 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
         => BoundColumnAccessHelper.EvaluateValueFilter(value, _preDecodeFilterOp, _preDecodeFilterLiteral);
 
     private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
-        => BoundColumnAccessHelper.EvaluatePreDecodeFilter(
-            payload,
-            _recordSerializer,
-            _preDecodeFilterAccessor,
-            _preDecodeFilterColumnIndex,
-            _preDecodeFilterTextBytes,
-            _preDecodeFilterOp,
-            _preDecodeFilterLiteral);
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
 }
 
 /// <summary>

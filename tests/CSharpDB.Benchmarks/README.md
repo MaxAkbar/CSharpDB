@@ -2,11 +2,11 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current snapshot in this README mixes the latest March 12, 2026 macro captures, the March 12, 2026 focused query-engine reruns, and the March 14, 2026 read-path and aggregate reruns with the supporting artifacts below:
+The current snapshot in this README mixes the latest March 12, 2026 macro captures, the March 12, 2026 focused query-engine reruns, and the March 14, 2026 read-path, aggregate, predicate, and join reruns with the supporting artifacts below:
 
 - `Macro reruns on March 12, 2026: SustainedWriteBenchmark, ReaderScalingBenchmark, CollectionBenchmark, InMemoryBatchBenchmark`
 - `Focused query-engine reruns on March 12, 2026: ParserBenchmarks, QueryPlanCacheBenchmarks, PointLookupBenchmarks, SubqueryBenchmarks`
-- `Read-path and aggregate rerun on March 14, 2026: CoveringIndexBenchmarks, IndexProjectionBenchmarks, OrderByIndexBenchmarks, IndexAggregateBenchmarks, PrimaryKeyAggregateBenchmarks, DistinctAggregateBenchmarks`
+- `Read-path, aggregate, predicate, and join rerun on March 14, 2026: CoveringIndexBenchmarks, IndexProjectionBenchmarks, OrderByIndexBenchmarks, IndexAggregateBenchmarks, PrimaryKeyAggregateBenchmarks, DistinctAggregateBenchmarks, PredicatePushdownBenchmarks, JoinBenchmarks`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260312-004755.csv`
 - `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260312-024701.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ParserBenchmarks-report.csv`
@@ -19,6 +19,8 @@ The current snapshot in this README mixes the latest March 12, 2026 macro captur
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.IndexAggregateBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PrimaryKeyAggregateBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.DistinctAggregateBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PredicatePushdownBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryCollectionBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryAdoNetBenchmarks-report.csv`
@@ -61,6 +63,8 @@ dotnet run -c Release -- --micro --filter *OrderByIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *IndexAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *PrimaryKeyAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *PredicatePushdownBenchmarks*
+dotnet run -c Release -- --micro --filter *JoinBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
 
 # Run the focused phase-1 baseline set
@@ -231,6 +235,21 @@ Defaults:
 | `SUM(DISTINCT value)` direct index aggregate (100K rows) | 38.69 us | 576 B | Sums unique integer index keys directly |
 | `AVG(DISTINCT value)` no index (100K rows) | 4.11 ms | 200.01 KB | Full table distinct-set baseline |
 | `AVG(DISTINCT value)` direct index aggregate (100K rows) | 38.85 us | 576 B | Computes distinct sum/count from index keys only |
+
+### SQL Predicate Pushdown Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `WHERE value < 200000` (100K rows) | 15.16 ms | 6.06 MB | Single simple pre-decode predicate with about 20% selectivity |
+| `WHERE value >= 10000 AND value < 20000` (100K rows) | 7.36 ms | 1.04 MB | Compound same-column range now pushes both bounds into pre-decode filtering |
+| `WHERE category = 'Alpha' AND value < 200000` (100K rows) | 7.57 ms | 1.81 MB | Compound mixed text + integer predicate now pushes both conjuncts before row decode |
+
+### SQL Join Projection Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Wide late-projection hash join (`1K x 1K`) | 372.8 us | 329.92 KB | Hash join trims both sides to join keys plus projected tail columns |
+| Wide late-projection forced nested-loop join (`1K x 1K`) | 45.70 ms | 492.52 KB | Nested-loop path now trims decode too, but still remains far slower than hash join |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 
