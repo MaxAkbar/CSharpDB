@@ -6593,67 +6593,111 @@ public sealed class QueryPlanner
 
         if (stmt.GroupBy != null || stmt.Having != null)
             return false;
+        if (stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression)))
+            return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
         if (stmt.Limit.HasValue || stmt.Offset.HasValue)
             return false;
 
-        var schema = _catalog.GetTable(simpleRef.TableName);
-        if (schema == null)
+        var baseSchema = _catalog.GetTable(simpleRef.TableName);
+        if (baseSchema == null)
             return false;
+        var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
-        var scanOp = new TableScanOperator(
-            tableTree,
-            schema,
-            GetReadSerializer(schema),
-            TryGetCachedTreeRowCountCapacityHint(tableTree));
-        IOperator op = scanOp;
+        var serializer = GetReadSerializer(baseSchema);
+        int? estimatedRowCount = TryGetCachedTreeRowCountCapacityHint(tableTree);
         var remainingWhere = stmt.Where;
-
-        if (remainingWhere != null &&
-            TryPushDownSimplePreDecodeFilter(scanOp, remainingWhere, schema, out var pushedWhere))
-        {
-            remainingWhere = pushedWhere;
-        }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
-            if (remainingWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
-
-            result = new QueryResult(op);
-            return true;
-        }
-
-        if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
-        {
-            var decodeColumns = new HashSet<int>();
-            for (int i = 0; i < columnIndices.Length; i++)
-                decodeColumns.Add(columnIndices[i]);
+            var scanOp = new TableScanOperator(
+                tableTree,
+                schema,
+                serializer,
+                estimatedRowCount);
+            IOperator op = scanOp;
 
             if (remainingWhere != null &&
-                !TryAccumulateReferencedColumns(remainingWhere, schema, decodeColumns))
+                TryPushDownSimplePreDecodeFilter(scanOp, remainingWhere, schema, out var pushedWhere))
             {
-                return false;
-            }
-
-            if (!TrySetDecodedColumnIndices(scanOp, ToSortedColumnIndices(decodeColumns)))
-            {
-                int maxCol = decodeColumns.Count == 0 ? -1 : decodeColumns.Max();
-                scanOp.SetDecodedColumnUpperBound(maxCol);
+                remainingWhere = pushedWhere;
             }
 
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
-            op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = new QueryResult(op);
             return true;
         }
 
-        // Expression projections fall back to the general path.
-        return false;
+        List<PushdownPredicateSpec>? pushedPredicates = null;
+        if (remainingWhere != null &&
+            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+        {
+            pushedPredicates = extractedPredicates;
+            remainingWhere = residualWhere;
+        }
+
+        if (!TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
+            return false;
+
+        var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
+
+        if (TryBuildColumnProjection(stmt.Columns, compactSchema, out var compactProjectionIndices, out var outputCols))
+        {
+            var compactOp = new CompactTableScanProjectionOperator(
+                tableTree,
+                decodeColumnIndices,
+                compactProjectionIndices,
+                outputCols,
+                serializer,
+                estimatedRowCount);
+
+            if (pushedPredicates is { Count: > 0 })
+            {
+                for (int i = 0; i < pushedPredicates.Count; i++)
+                {
+                    var predicate = pushedPredicates[i];
+                    compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+                }
+            }
+
+            if (remainingWhere != null)
+                compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+            result = new QueryResult(compactOp);
+            return true;
+        }
+
+        var expressions = stmt.Columns.Select(c => c.Expression!).ToArray();
+        var expressionOutputCols = new ColumnDefinition[expressions.Length];
+        for (int i = 0; i < expressions.Length; i++)
+            expressionOutputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, compactSchema, i);
+
+        var compactExpressionOp = new CompactTableScanProjectionOperator(
+            tableTree,
+            decodeColumnIndices,
+            expressionOutputCols,
+            GetOrCompileExpressions(expressions, compactSchema),
+            serializer,
+            estimatedRowCount);
+
+        if (pushedPredicates is { Count: > 0 })
+        {
+            for (int i = 0; i < pushedPredicates.Count; i++)
+            {
+                var predicate = pushedPredicates[i];
+                compactExpressionOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+        }
+
+        if (remainingWhere != null)
+            compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+        result = new QueryResult(compactExpressionOp);
+        return true;
     }
 
     private IOperator? TryBuildIntegerIndexRangeScan(
@@ -7416,6 +7460,74 @@ public sealed class QueryPlanner
         columnSet.CopyTo(columns);
         Array.Sort(columns);
         return columns;
+    }
+
+    private static TableSchema CreateSimpleTableQuerySchema(TableSchema schema, string? alias)
+    {
+        if (string.IsNullOrWhiteSpace(alias))
+            return schema;
+
+        var qualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (schema.QualifiedMappings != null)
+        {
+            foreach (var (key, index) in schema.QualifiedMappings)
+                qualifiedMappings[key] = index;
+        }
+
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            string columnName = schema.Columns[i].Name;
+            qualifiedMappings[$"{alias}.{columnName}"] = i;
+            qualifiedMappings[$"{schema.TableName}.{columnName}"] = i;
+        }
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            NextRowId = schema.NextRowId,
+            QualifiedMappings = qualifiedMappings,
+        };
+    }
+
+    private static TableSchema CreateCompactProjectionSchema(TableSchema schema, ReadOnlySpan<int> columnIndices)
+    {
+        if (columnIndices.Length == 0)
+        {
+            return new TableSchema
+            {
+                TableName = schema.TableName,
+                Columns = Array.Empty<ColumnDefinition>(),
+                NextRowId = schema.NextRowId,
+            };
+        }
+
+        var columns = new ColumnDefinition[columnIndices.Length];
+        var remappedIndices = new Dictionary<int, int>(columnIndices.Length);
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            columns[i] = schema.Columns[columnIndices[i]];
+            remappedIndices[columnIndices[i]] = i;
+        }
+
+        Dictionary<string, int>? qualifiedMappings = null;
+        if (schema.QualifiedMappings != null)
+        {
+            qualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, originalIndex) in schema.QualifiedMappings)
+            {
+                if (remappedIndices.TryGetValue(originalIndex, out int compactIndex))
+                    qualifiedMappings[key] = compactIndex;
+            }
+        }
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = columns,
+            NextRowId = schema.NextRowId,
+            QualifiedMappings = qualifiedMappings,
+        };
     }
 
     private static bool TryGetAggregateDecodeColumnIndices(

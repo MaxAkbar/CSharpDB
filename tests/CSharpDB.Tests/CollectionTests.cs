@@ -709,6 +709,9 @@ public class CollectionTests : IAsyncLifetime
         public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
             => _inner.DecodeSelectedInto(StripPrefix(buffer), destination, selectedColumnIndices);
 
+        public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
+            => _inner.DecodeSelectedCompactInto(StripPrefix(buffer), destination, selectedColumnIndices);
+
         public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
             => _inner.DecodeUpTo(StripPrefix(buffer), maxColumnIndexInclusive);
 

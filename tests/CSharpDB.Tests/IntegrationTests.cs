@@ -1178,6 +1178,54 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SimpleFilteredColumnProjection_UsesCompactScanProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_scan_cols (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, category TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_cols VALUES (1, 10, 'A')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_cols VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_cols VALUES (3, 30, 'C')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT s.id, s.category FROM compact_scan_cols s WHERE s.score >= 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal("B", rows[0][1].AsText);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal("C", rows[1][1].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleFilteredExpressionProjection_UsesCompactScanProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_scan_expr (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_expr VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_expr VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_scan_expr VALUES (3, 30)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT s.id, s.score + 5 FROM compact_scan_expr s WHERE s.score >= 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(25L, rows[0][1].AsInteger);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(35L, rows[1][1].AsInteger);
+    }
+
+    [Fact]
     public async Task IntegerPrimaryKeyMin_UsesTableKeyAggregateFastPath()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -2576,10 +2624,10 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         var rootOperator = GetRootOperator(result);
-        var scanOperator = rootOperator is ProjectionOperator projection
-            ? GetPrivateField<IOperator>(projection, "_source")
-            : rootOperator;
-        Assert.IsType<TableScanOperator>(scanOperator);
+        Assert.True(
+            rootOperator is TableScanOperator or CompactTableScanProjectionOperator,
+            $"Expected TableScanOperator or CompactTableScanProjectionOperator, got {rootOperator.GetType().Name}.");
+        var scanOperator = rootOperator;
 
         var extraFilters = GetPrivateField<Array>(scanOperator!, "_additionalPreDecodeFilters");
         Assert.NotNull(extraFilters);

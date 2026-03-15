@@ -78,6 +78,26 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         }
     }
 
+    public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
+    {
+        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        {
+            _inner.DecodeSelectedCompactInto(buffer, destination, selectedColumnIndices);
+            return;
+        }
+
+        int decodeCount = Math.Min(destination.Length, selectedColumnIndices.Length);
+        for (int i = 0; i < decodeCount; i++)
+        {
+            destination[i] = selectedColumnIndices[i] switch
+            {
+                0 => DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer)),
+                1 => DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer)),
+                _ => DbValue.Null,
+            };
+        }
+    }
+
     public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
     {
         if (!CollectionPayloadCodec.IsDirectPayload(buffer))

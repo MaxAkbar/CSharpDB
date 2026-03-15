@@ -815,6 +815,235 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
 }
 
 /// <summary>
+/// Direct table-scan filter/projection path that decodes only the referenced columns
+/// into a compact row layout for simple single-table scans.
+/// </summary>
+public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
+{
+    private readonly BTree _tree;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly int[] _decodedColumnIndices;
+    private readonly int[] _projectionColumnIndices;
+    private readonly Func<DbValue[], DbValue>[]? _expressionEvaluators;
+    private readonly int? _estimatedRowCount;
+    private bool _reuseCurrentRowBuffer = true;
+    private BTreeCursor? _cursor;
+    private DbValue[]? _decodedRowBuffer;
+    private DbValue[]? _projectedRowBuffer;
+    private Func<DbValue[], DbValue>? _predicateEvaluator;
+    private int _preDecodeFilterColumnIndex;
+    private BinaryOp _preDecodeFilterOp;
+    private DbValue _preDecodeFilterLiteral;
+    private RecordColumnAccessor? _preDecodeFilterAccessor;
+    private byte[]? _preDecodeFilterTextBytes;
+    private bool _hasPreDecodeFilter;
+    private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public int? EstimatedRowCount => _estimatedRowCount;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public CompactTableScanProjectionOperator(
+        BTree tree,
+        int[] decodedColumnIndices,
+        int[] projectionColumnIndices,
+        ColumnDefinition[] outputSchema,
+        IRecordSerializer? recordSerializer = null,
+        int? estimatedRowCount = null)
+    {
+        _tree = tree;
+        _decodedColumnIndices = decodedColumnIndices;
+        _projectionColumnIndices = projectionColumnIndices;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+        OutputSchema = outputSchema;
+    }
+
+    public CompactTableScanProjectionOperator(
+        BTree tree,
+        int[] decodedColumnIndices,
+        ColumnDefinition[] outputSchema,
+        Func<DbValue[], DbValue>[] expressionEvaluators,
+        IRecordSerializer? recordSerializer = null,
+        int? estimatedRowCount = null)
+    {
+        _tree = tree;
+        _decodedColumnIndices = decodedColumnIndices;
+        _projectionColumnIndices = Array.Empty<int>();
+        _expressionEvaluators = expressionEvaluators;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+        OutputSchema = outputSchema;
+    }
+
+    public void SetPredicateEvaluator(Func<DbValue[], DbValue>? predicateEvaluator)
+        => _predicateEvaluator = predicateEvaluator;
+
+    public void SetPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        if (_hasPreDecodeFilter)
+        {
+            AppendAdditionalPreDecodeFilter(columnIndex, op, literal);
+            return;
+        }
+
+        _preDecodeFilterColumnIndex = columnIndex;
+        _preDecodeFilterOp = op;
+        _preDecodeFilterLiteral = literal;
+        _preDecodeFilterAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
+        _preDecodeFilterTextBytes = literal.Type == DbType.Text &&
+            (op == BinaryOp.Equals || op == BinaryOp.NotEquals)
+            ? Encoding.UTF8.GetBytes(literal.AsText)
+            : null;
+        _hasPreDecodeFilter = true;
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _cursor = _tree.CreateCursor();
+        _decodedRowBuffer = null;
+        _projectedRowBuffer = null;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_cursor == null)
+            return false;
+
+        while (await _cursor.MoveNextAsync(ct))
+        {
+            ReadOnlySpan<byte> payload = _cursor.CurrentValue.Span;
+            if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
+                continue;
+
+            DbValue[] decodedRow = DecodeRow(payload);
+            if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
+                continue;
+
+            if (_expressionEvaluators != null)
+            {
+                DbValue[] projectedRow = GetProjectedRowBuffer(_expressionEvaluators.Length);
+                for (int i = 0; i < _expressionEvaluators.Length; i++)
+                    projectedRow[i] = _expressionEvaluators[i](decodedRow);
+
+                Current = projectedRow;
+                return true;
+            }
+
+            if (CanPassThroughDecodedRow())
+            {
+                Current = decodedRow;
+                return true;
+            }
+
+            DbValue[] outputRow = GetProjectedRowBuffer(_projectionColumnIndices.Length);
+            for (int i = 0; i < _projectionColumnIndices.Length; i++)
+                outputRow[i] = decodedRow[_projectionColumnIndices[i]];
+
+            Current = outputRow;
+            return true;
+        }
+
+        Current = Array.Empty<DbValue>();
+        return false;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        _reuseCurrentRowBuffer = reuse;
+        if (!reuse)
+        {
+            _decodedRowBuffer = null;
+            _projectedRowBuffer = null;
+            Current = Array.Empty<DbValue>();
+        }
+    }
+
+    private DbValue[] DecodeRow(ReadOnlySpan<byte> payload)
+    {
+        int decodeCount = _decodedColumnIndices.Length;
+        if (decodeCount == 0)
+            return Array.Empty<DbValue>();
+
+        DbValue[] row = _reuseCurrentRowBuffer
+            ? EnsureDecodedRowBuffer(decodeCount)
+            : new DbValue[decodeCount];
+        _recordSerializer.DecodeSelectedCompactInto(payload, row, _decodedColumnIndices);
+        return row;
+    }
+
+    private DbValue[] EnsureDecodedRowBuffer(int columnCount)
+    {
+        if (_decodedRowBuffer == null || _decodedRowBuffer.Length != columnCount)
+            _decodedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        return _decodedRowBuffer;
+    }
+
+    private DbValue[] GetProjectedRowBuffer(int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        if (_projectedRowBuffer == null || _projectedRowBuffer.Length != columnCount)
+            _projectedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        return _projectedRowBuffer;
+    }
+
+    private bool CanPassThroughDecodedRow()
+    {
+        if (_expressionEvaluators != null || _projectionColumnIndices.Length != _decodedColumnIndices.Length)
+            return false;
+
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            if (_projectionColumnIndices[i] != i)
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool EvaluatePreDecodeFilter(ReadOnlySpan<byte> payload)
+    {
+        if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                payload,
+                _recordSerializer,
+                _preDecodeFilterAccessor,
+                _preDecodeFilterColumnIndex,
+                _preDecodeFilterTextBytes,
+                _preDecodeFilterOp,
+                _preDecodeFilterLiteral))
+        {
+            return false;
+        }
+
+        return _additionalPreDecodeFilters is not { Length: > 0 }
+            || BoundColumnAccessHelper.EvaluatePreDecodeFilters(payload, _recordSerializer, _additionalPreDecodeFilters);
+    }
+
+    private void AppendAdditionalPreDecodeFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        var filter = new PreDecodeFilterSpec(_recordSerializer, columnIndex, op, literal);
+        if (_additionalPreDecodeFilters == null)
+        {
+            _additionalPreDecodeFilters = [filter];
+            return;
+        }
+
+        int length = _additionalPreDecodeFilters.Length;
+        Array.Resize(ref _additionalPreDecodeFilters, length + 1);
+        _additionalPreDecodeFilters[length] = filter;
+    }
+}
+
+/// <summary>
 /// DISTINCT operator — emits each unique row once.
 /// </summary>
 public sealed class DistinctOperator : IOperator
