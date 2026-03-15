@@ -684,6 +684,137 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
 }
 
 /// <summary>
+/// Fused filter + projection operator for common scan/lookup paths.
+/// Avoids an extra row-by-row iterator layer when a query needs both.
+/// </summary>
+public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseController, IEstimatedRowCountProvider
+{
+    private readonly IOperator _source;
+    private readonly Func<DbValue[], DbValue> _predicateEvaluator;
+    private readonly int[] _columnIndices;
+    private readonly Func<DbValue[], DbValue>[]? _expressionEvaluators;
+    private bool _reuseCurrentRowBuffer = true;
+    private DbValue[]? _rowBuffer;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _source is IEstimatedRowCountProvider estimated ? estimated.EstimatedRowCount : null;
+
+    public FilterProjectionOperator(
+        IOperator source,
+        Func<DbValue[], DbValue> predicateEvaluator,
+        int[] columnIndices,
+        ColumnDefinition[] outputSchema)
+    {
+        _source = source;
+        _predicateEvaluator = predicateEvaluator;
+        _columnIndices = columnIndices;
+        OutputSchema = outputSchema;
+    }
+
+    public FilterProjectionOperator(
+        IOperator source,
+        Func<DbValue[], DbValue> predicateEvaluator,
+        ColumnDefinition[] outputSchema,
+        Func<DbValue[], DbValue>[] expressionEvaluators)
+    {
+        _source = source;
+        _predicateEvaluator = predicateEvaluator;
+        _columnIndices = Array.Empty<int>();
+        _expressionEvaluators = expressionEvaluators;
+        OutputSchema = outputSchema;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _rowBuffer = null;
+        Current = Array.Empty<DbValue>();
+        await _source.OpenAsync(ct);
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        while (await _source.MoveNextAsync(ct))
+        {
+            if (!_predicateEvaluator(_source.Current).IsTruthy)
+                continue;
+
+            if (_expressionEvaluators != null)
+            {
+                int valueCount = _expressionEvaluators.Length;
+                var target = _reuseCurrentRowBuffer
+                    ? EnsureRowBuffer(valueCount)
+                    : valueCount == 0 ? Array.Empty<DbValue>() : new DbValue[valueCount];
+
+                for (int i = 0; i < valueCount; i++)
+                    target[i] = _expressionEvaluators[i](_source.Current);
+
+                Current = target;
+                return true;
+            }
+
+            int columnCount = _columnIndices.Length;
+            if (CanPassThroughSourceRow(columnCount))
+            {
+                Current = _source.Current;
+                return true;
+            }
+
+            var projectionTarget = _reuseCurrentRowBuffer
+                ? EnsureRowBuffer(columnCount)
+                : columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+            for (int i = 0; i < columnCount; i++)
+                projectionTarget[i] = _source.Current[_columnIndices[i]];
+
+            Current = projectionTarget;
+            return true;
+        }
+
+        return false;
+    }
+
+    public ValueTask DisposeAsync() => _source.DisposeAsync();
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        _reuseCurrentRowBuffer = reuse;
+        if (!reuse)
+        {
+            _rowBuffer = null;
+            Current = Array.Empty<DbValue>();
+        }
+    }
+
+    private DbValue[] EnsureRowBuffer(int columnCount)
+    {
+        if (_rowBuffer == null || _rowBuffer.Length != columnCount)
+            _rowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        return _rowBuffer;
+    }
+
+    private bool CanPassThroughSourceRow(int valueCount)
+    {
+        if (_source.ReusesCurrentRowBuffer)
+            return false;
+
+        var sourceRow = _source.Current;
+        if (sourceRow.Length != valueCount)
+            return false;
+
+        for (int i = 0; i < valueCount; i++)
+        {
+            if (_columnIndices[i] != i)
+                return false;
+        }
+
+        return true;
+    }
+}
+
+/// <summary>
 /// DISTINCT operator — emits each unique row once.
 /// </summary>
 public sealed class DistinctOperator : IOperator

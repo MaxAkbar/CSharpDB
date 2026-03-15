@@ -2889,7 +2889,13 @@ public sealed class QueryPlanner
             TrySetDecodedColumnUpperBound(op, maxColumnIndex);
         }
 
-        if (remainingWhere != null)
+        bool delayFilterUntilProjection = !hasAggregates && !stmt.Columns.Any(c => c.IsStar);
+        Func<DbValue[], DbValue>? remainingWhereEvaluator =
+            remainingWhere != null && delayFilterUntilProjection
+                ? GetOrCompileExpression(remainingWhere, schema)
+                : null;
+
+        if (remainingWhere != null && remainingWhereEvaluator == null)
             op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
         if (hasAggregates)
@@ -2962,12 +2968,16 @@ public sealed class QueryPlanner
                     {
                         op = coveredHashedProjection;
                     }
-                    else if (TryPushDownColumnProjection(op, columnIndices, outputCols))
+                    else if (remainingWhere == null &&
+                             TryPushDownColumnProjection(op, columnIndices, outputCols))
                     {
                         // Join operators can project directly, avoiding full composite row materialization.
                     }
                     else
                     {
+                        if (remainingWhereEvaluator != null)
+                            op = new FilterOperator(op, remainingWhereEvaluator);
+
                         op = new ProjectionOperator(op, columnIndices, outputCols, schema);
                     }
                 }
@@ -2979,11 +2989,14 @@ public sealed class QueryPlanner
                     {
                         outputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, schema, i);
                     }
-                    op = new ProjectionOperator(
-                        op,
-                        Array.Empty<int>(),
-                        outputCols,
-                        GetOrCompileExpressions(expressions, schema));
+                    var expressionEvaluators = GetOrCompileExpressions(expressions, schema);
+                    op = remainingWhereEvaluator != null
+                        ? new FilterProjectionOperator(op, remainingWhereEvaluator, outputCols, expressionEvaluators)
+                        : new ProjectionOperator(
+                            op,
+                            Array.Empty<int>(),
+                            outputCols,
+                            expressionEvaluators);
                 }
             }
 
@@ -3604,6 +3617,7 @@ public sealed class QueryPlanner
             IOperator projOp = pkOp;
             if (remainingResidual != null)
                 projOp = new FilterOperator(projOp, GetOrCompileExpression(remainingResidual, schema));
+
             projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
             return true;
