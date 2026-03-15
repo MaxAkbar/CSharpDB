@@ -4057,45 +4057,66 @@ public sealed class QueryPlanner
             return true;
         }
 
-        if (isCountStar)
-            return false;
-
-        var lookupOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
-        if (lookupOp == null || remainingWhere != null)
-            return false;
-
-        result = lookupOp switch
+        if (!isCountStar)
         {
-            PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
-                pk.TableTree,
-                pk.SeekKey,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
-                idx.IndexStore,
-                idx.TableTree,
-                idx.SeekValue,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
-                uniq.IndexStore,
-                uniq.TableTree,
-                uniq.SeekValue,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            _ => null!,
-        };
+            var lookupOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
+            if (lookupOp != null && remainingWhere == null)
+            {
+                result = lookupOp switch
+                {
+                    PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
+                        pk.TableTree,
+                        pk.SeekKey,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
+                        idx.IndexStore,
+                        idx.TableTree,
+                        idx.SeekValue,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
+                        uniq.IndexStore,
+                        uniq.TableTree,
+                        uniq.SeekValue,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    _ => null!,
+                };
 
-        return result != null;
+                if (result != null)
+                    return true;
+            }
+        }
+
+        var decodeColumns = new HashSet<int>();
+        if (!TryAccumulateReferencedColumns(stmt.Where, schema, decodeColumns))
+            return false;
+
+        if (!isCountStar)
+            decodeColumns.Add(columnIndex);
+
+        var filteredDecodeColumns = ToSortedColumnIndices(decodeColumns);
+        result = new QueryResult(new FilteredScalarAggregateTableOperator(
+            _catalog.GetTableTree(simpleRef.TableName, _pager),
+            columnIndex,
+            func.FunctionName,
+            outputSchema,
+            GetOrCompileExpression(stmt.Where, schema),
+            filteredDecodeColumns,
+            isDistinct: func.IsDistinct,
+            isCountStar,
+            recordSerializer: GetReadSerializer(schema)));
+        return true;
     }
 
     private bool TryBuildKeyAggregateQuery(

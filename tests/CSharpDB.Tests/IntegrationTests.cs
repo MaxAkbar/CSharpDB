@@ -1155,6 +1155,29 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FilteredScalarAggregateWithoutIndex_UsesFilteredTableAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE count_range_scan (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_scan VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_scan VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_scan VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_scan VALUES (4, 40)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_range_scan VALUES (5, 50)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT COUNT(*) FROM count_range_scan WHERE score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<FilteredScalarAggregateTableOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(3L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task IntegerPrimaryKeyMin_UsesTableKeyAggregateFastPath()
     {
         var ct = TestContext.Current.CancellationToken;

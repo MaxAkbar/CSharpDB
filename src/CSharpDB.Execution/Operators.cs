@@ -8861,6 +8861,166 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
 }
 
 /// <summary>
+/// Scalar aggregate fast path for a single table with a residual filter and no grouping.
+/// Decodes only the columns required by the predicate and aggregate argument.
+/// </summary>
+public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimatedRowCountProvider
+{
+    private enum AggregateKind
+    {
+        Count,
+        Sum,
+        Avg,
+        Min,
+        Max,
+    }
+
+    private readonly BTree _tableTree;
+    private readonly int _columnIndex;
+    private readonly AggregateKind _kind;
+    private readonly bool _isDistinct;
+    private readonly bool _isCountStar;
+    private readonly Func<DbValue[], DbValue> _predicateEvaluator;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly int[] _decodedColumnIndices;
+    private readonly int _targetColumnCount;
+    private bool _emitted;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
+
+    public FilteredScalarAggregateTableOperator(
+        BTree tableTree,
+        int columnIndex,
+        string functionName,
+        ColumnDefinition[] outputSchema,
+        Func<DbValue[], DbValue> predicateEvaluator,
+        int[] decodedColumnIndices,
+        bool isDistinct = false,
+        bool isCountStar = false,
+        IRecordSerializer? recordSerializer = null)
+    {
+        _tableTree = tableTree;
+        _columnIndex = columnIndex;
+        _isDistinct = isDistinct;
+        _isCountStar = isCountStar;
+        _predicateEvaluator = predicateEvaluator;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _decodedColumnIndices = decodedColumnIndices;
+        _targetColumnCount = decodedColumnIndices.Length == 0 ? 0 : decodedColumnIndices[^1] + 1;
+        _kind = functionName switch
+        {
+            "COUNT" => AggregateKind.Count,
+            "SUM" => AggregateKind.Sum,
+            "AVG" => AggregateKind.Avg,
+            "MIN" => AggregateKind.Min,
+            "MAX" => AggregateKind.Max,
+            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported aggregate fast path: {functionName}"),
+        };
+        OutputSchema = outputSchema;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _emitted = false;
+        Current = Array.Empty<DbValue>();
+
+        var cursor = _tableTree.CreateCursor();
+        var decodeBuffer = _targetColumnCount == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[_targetColumnCount];
+
+        long count = 0;
+        double sum = 0;
+        bool hasReal = false;
+        bool hasAny = false;
+        DbValue? best = null;
+        AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+
+        while (await cursor.MoveNextAsync(ct))
+        {
+            if (_targetColumnCount > 0)
+            {
+                Array.Fill(decodeBuffer, DbValue.Null);
+                _recordSerializer.DecodeSelectedInto(cursor.CurrentValue.Span, decodeBuffer, _decodedColumnIndices);
+            }
+
+            if (!_predicateEvaluator(decodeBuffer).IsTruthy)
+                continue;
+
+            if (_isCountStar)
+            {
+                count++;
+                continue;
+            }
+
+            var value = _columnIndex >= 0 && _columnIndex < decodeBuffer.Length
+                ? decodeBuffer[_columnIndex]
+                : DbValue.Null;
+            if (value.IsNull)
+                continue;
+            if (distinctValues != null && !distinctValues.Add(value))
+                continue;
+
+            switch (_kind)
+            {
+                case AggregateKind.Count:
+                    count++;
+                    break;
+                case AggregateKind.Sum:
+                case AggregateKind.Avg:
+                    hasAny = true;
+                    if (value.Type == DbType.Real)
+                    {
+                        hasReal = true;
+                        sum += value.AsReal;
+                    }
+                    else
+                    {
+                        sum += value.AsInteger;
+                    }
+                    count++;
+                    break;
+                case AggregateKind.Min:
+                    if (best == null || DbValue.Compare(value, best.Value) < 0)
+                        best = value;
+                    break;
+                case AggregateKind.Max:
+                    if (best == null || DbValue.Compare(value, best.Value) > 0)
+                        best = value;
+                    break;
+            }
+        }
+
+        DbValue aggregate = _kind switch
+        {
+            AggregateKind.Count => DbValue.FromInteger(count),
+            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
+                : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
+            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Min => best ?? DbValue.Null,
+            AggregateKind.Max => best ?? DbValue.Null,
+            _ => DbValue.Null,
+        };
+
+        Current = new[] { aggregate };
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_emitted)
+            return ValueTask.FromResult(false);
+
+        _emitted = true;
+        return ValueTask.FromResult(true);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+/// <summary>
 /// COUNT(*) fast path for a single table with no filters.
 /// Produces exactly one row with the table entry count.
 /// </summary>
