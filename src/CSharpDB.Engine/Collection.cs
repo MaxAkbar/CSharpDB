@@ -216,79 +216,19 @@ public sealed class Collection<
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
-        RefreshIndexesIfSchemaChanged();
-
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        if (_indexes.ContainsKey(fieldPath))
-            return;
+        await EnsureIndexCoreAsync(fieldPath, ct);
+    }
 
-        string indexName = BuildCollectionIndexName(fieldPath);
-        var existing = _catalog.GetIndex(indexName);
-        if (existing != null)
-        {
-            AttachIndexBinding(existing);
-            return;
-        }
-
-        if (_isInTransaction())
-        {
-            throw new InvalidOperationException(
-                "Collection indexes cannot be created while an explicit transaction is active.");
-        }
-
-        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
-
-        bool createdIndex = false;
-        try
-        {
-            await _pager.BeginTransactionAsync(ct);
-
-            var indexSchema = new IndexSchema
-            {
-                IndexName = indexName,
-                TableName = _catalogTableName,
-                Columns = [fieldPath],
-                IsUnique = false,
-            };
-
-            await _catalog.CreateIndexAsync(indexSchema, ct);
-            createdIndex = true;
-
-            var binding = AttachIndexBinding(indexSchema);
-            await BackfillIndexAsync(binding, ct);
-
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
-            _observedSchemaVersion = _catalog.SchemaVersion;
-        }
-        catch
-        {
-            if (createdIndex)
-            {
-                try
-                {
-                    await _catalog.DropIndexAsync(indexName, ct);
-                }
-                catch
-                {
-                    // Best-effort cache cleanup before rollback.
-                }
-            }
-
-            _indexes.Remove(fieldPath);
-
-            try
-            {
-                await _pager.RollbackAsync(ct);
-            }
-            catch
-            {
-                // Preserve the original failure.
-            }
-
-            RefreshIndexesIfSchemaChanged(force: true);
-            throw;
-        }
+    /// <summary>
+    /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
+    /// </summary>
+    public ValueTask EnsureIndexAsync(
+        string fieldPath,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+        return EnsureIndexCoreAsync(CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath), ct);
     }
 
     /// <summary>
@@ -301,72 +241,33 @@ public sealed class Collection<
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
-        RefreshIndexesIfSchemaChanged();
-
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
-        var comparer = EqualityComparer<TField>.Default;
-        
-        if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
-            !binding.TryBuildKeyFromValue(value, out long indexKey))
+        var fieldAccessor = fieldSelector.Compile();
+        await foreach (var match in FindByIndexCoreAsync(fieldPath, value, fieldAccessor, ct))
+            yield return match;
+    }
+
+    /// <summary>
+    /// Find all documents matching a path equality predicate, using a collection index when present.
+    /// Supports paths such as <c>Address.City</c> or <c>$.address.city</c>.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexAsync<TField>(
+        string fieldPath,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        var fieldAccessor = CollectionIndexBinding<T>.CreateFieldAccessor(canonicalFieldPath);
+
+        await foreach (var match in FindByIndexCoreAsync(
+            canonicalFieldPath,
+            value,
+            document => ConvertFieldValue<TField>(fieldAccessor(document)),
+            ct))
         {
-            var fieldAccessor = fieldSelector.Compile();
-            bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
-            var cursor = _tree.CreateCursor();
-            while (await cursor.MoveNextAsync(ct))
-            {
-                ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
-                if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
-                {
-                    if (!payloadAccessor.TryValueEquals(fallbackPayload, expectedValue))
-                        continue;
-
-                    var (matchedKey, matchedDocument) = _codec.Decode(fallbackPayload);
-                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
-                    continue;
-                }
-
-                var (fallbackKey, fallbackDocument) = _codec.Decode(fallbackPayload);
-                if (comparer.Equals(fieldAccessor(fallbackDocument), value))
-                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
-            }
-
-            yield break;
-        }
-
-        byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
-        if (payload == null || payload.Length < sizeof(long))
-            yield break;
-
-        int rowIdCount = payload.Length / sizeof(long);
-        for (int i = 0; i < rowIdCount; i++)
-        {
-            long rowId = RowIdPayloadCodec.ReadAt(payload, i);
-            var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
-            if (documentPayload is not { } documentMemory)
-                continue;
-
-            if (binding.UsesIntegerKey)
-            {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
-                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
-                continue;
-            }
-
-            if (binding.UsesTextKey &&
-                value is string textValue &&
-                binding.TryDirectPayloadTextEquals(documentMemory.Span, textValue))
-            {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
-                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
-                continue;
-            }
-
-            var (key, document) = _codec.Decode(documentMemory.Span);
-            if (binding.MatchesValue(document, value, comparer))
-                yield return new KeyValuePair<string, T>(key, document);
+            yield return match;
         }
     }
 
@@ -591,6 +492,166 @@ public sealed class Collection<
             return;
 
         await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private async ValueTask EnsureIndexCoreAsync(string fieldPath, CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        if (_indexes.ContainsKey(fieldPath))
+            return;
+
+        string indexName = BuildCollectionIndexName(fieldPath);
+        var existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            AttachIndexBinding(existing);
+            return;
+        }
+
+        if (_isInTransaction())
+        {
+            throw new InvalidOperationException(
+                "Collection indexes cannot be created while an explicit transaction is active.");
+        }
+
+        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
+
+        bool createdIndex = false;
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+
+            var indexSchema = new IndexSchema
+            {
+                IndexName = indexName,
+                TableName = _catalogTableName,
+                Columns = [fieldPath],
+                IsUnique = false,
+            };
+
+            await _catalog.CreateIndexAsync(indexSchema, ct);
+            createdIndex = true;
+
+            var binding = AttachIndexBinding(indexSchema);
+            await BackfillIndexAsync(binding, ct);
+
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            await _pager.CommitAsync(ct);
+            _observedSchemaVersion = _catalog.SchemaVersion;
+        }
+        catch
+        {
+            if (createdIndex)
+            {
+                try
+                {
+                    await _catalog.DropIndexAsync(indexName, ct);
+                }
+                catch
+                {
+                    // Best-effort cache cleanup before rollback.
+                }
+            }
+
+            _indexes.Remove(fieldPath);
+
+            try
+            {
+                await _pager.RollbackAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            RefreshIndexesIfSchemaChanged(force: true);
+            throw;
+        }
+    }
+
+    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexCoreAsync<TField>(
+        string fieldPath,
+        TField value,
+        Func<T, TField> fieldAccessor,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
+        var comparer = EqualityComparer<TField>.Default;
+
+        if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
+            !binding.TryBuildKeyFromValue(value, out long indexKey))
+        {
+            bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
+            var cursor = _tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
+            {
+                ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
+                if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
+                {
+                    if (!payloadAccessor.TryValueEquals(fallbackPayload, expectedValue))
+                        continue;
+
+                    var (matchedKey, matchedDocument) = _codec.Decode(fallbackPayload);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (fallbackKey, fallbackDocument) = _codec.Decode(fallbackPayload);
+                if (comparer.Equals(fieldAccessor(fallbackDocument), value))
+                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
+            }
+
+            yield break;
+        }
+
+        byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
+        if (payload == null || payload.Length < sizeof(long))
+            yield break;
+
+        int rowIdCount = payload.Length / sizeof(long);
+        for (int i = 0; i < rowIdCount; i++)
+        {
+            long rowId = RowIdPayloadCodec.ReadAt(payload, i);
+            var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+            if (documentPayload is not { } documentMemory)
+                continue;
+
+            if (binding.UsesIntegerKey)
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
+            if (binding.UsesTextKey &&
+                value is string textValue &&
+                binding.TryDirectPayloadTextEquals(documentMemory.Span, textValue))
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
+            var (key, document) = _codec.Decode(documentMemory.Span);
+            if (binding.MatchesValue(document, value, comparer))
+                yield return new KeyValuePair<string, T>(key, document);
+        }
+    }
+
+    private static TField ConvertFieldValue<TField>(object? value)
+    {
+        if (value is TField typed)
+            return typed;
+
+        if (value is null)
+            return default!;
+
+        return (TField)value;
     }
 
     private static void AddGroupedRowId(

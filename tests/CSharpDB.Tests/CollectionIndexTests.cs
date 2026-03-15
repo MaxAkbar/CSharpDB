@@ -36,6 +36,8 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     private record User(string Name, int Age, string Email);
+    private record Address(string City, int ZipCode);
+    private record UserWithAddress(string Name, Address Address);
 
     [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerField()
@@ -127,6 +129,72 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         Assert.Single(matches);
         Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForNestedPathString()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+        await users.PutAsync("u:3", new UserWithAddress("Cara", new Address("Seattle", 98109)), ct);
+
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByIndex_PathString_ReusesSelectorIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        await users.EnsureIndexAsync(x => x.Address.City, ct);
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+
+        var catalog = GetCollectionCatalog(users);
+        Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(users)));
+    }
+
+    [Fact]
+    public async Task FindByIndex_PathString_FallsBackToScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Portland", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_PathString_RejectsArraySegments()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await users.EnsureIndexAsync("$.address[0].city", ct));
+
+        Assert.Contains("array", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

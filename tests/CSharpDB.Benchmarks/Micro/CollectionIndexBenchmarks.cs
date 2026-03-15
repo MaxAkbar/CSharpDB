@@ -17,6 +17,7 @@ public class CollectionIndexBenchmarks
     private Database _lookupDb = null!;
     private Database _writeDb = null!;
     private Collection<BenchDoc> _lookupCollection = null!;
+    private Collection<NestedBenchDoc> _nestedLookupCollection = null!;
     private Collection<BenchDoc> _writeCollection = null!;
     private Random _lookupRandom = null!;
     private int _nextInsertId;
@@ -25,6 +26,8 @@ public class CollectionIndexBenchmarks
     private long _sink;
 
     private sealed record BenchDoc(string Name, int Value, string Category, string Tag);
+    private sealed record BenchAddress(string City, int ZipCode);
+    private sealed record NestedBenchDoc(string Name, BenchAddress Address, int Value);
 
     [GlobalSetup]
     public void GlobalSetup()
@@ -48,6 +51,15 @@ public class CollectionIndexBenchmarks
         int id = _lookupRandom.Next(0, SeedCount);
         string tag = $"tag:{id}";
         await foreach (var match in _lookupCollection.FindByIndexAsync(d => d.Tag, tag))
+            _sink ^= match.Value.Value;
+    }
+
+    [Benchmark(Description = "Collection FindByIndex nested path equality (string path, many matches)")]
+    public async Task FindByIndex_NestedPath_StringPath()
+    {
+        int id = _lookupRandom.Next(0, SeedCount);
+        string city = s_categories[id % s_categories.Length];
+        await foreach (var match in _nestedLookupCollection.FindByIndexAsync("$.address.city", city))
             _sink ^= match.Value.Value;
     }
 
@@ -95,13 +107,16 @@ public class CollectionIndexBenchmarks
         _writeDb = await Database.OpenInMemoryAsync(options);
 
         _lookupCollection = await _lookupDb.GetCollectionAsync<BenchDoc>("bench_docs");
+        _nestedLookupCollection = await _lookupDb.GetCollectionAsync<NestedBenchDoc>("nested_bench_docs");
         _writeCollection = await _writeDb.GetCollectionAsync<BenchDoc>("bench_docs");
 
         await SeedLookupCollectionAsync();
+        await SeedNestedLookupCollectionAsync();
         await SeedWriteCollectionAsync();
 
         await _lookupCollection.EnsureIndexAsync(d => d.Value);
         await _lookupCollection.EnsureIndexAsync(d => d.Tag);
+        await _nestedLookupCollection.EnsureIndexAsync("$.address.city");
         await _writeCollection.EnsureIndexAsync(d => d.Value);
         await _writeCollection.EnsureIndexAsync(d => d.Tag);
 
@@ -146,6 +161,30 @@ public class CollectionIndexBenchmarks
         catch
         {
             await _writeDb.RollbackAsync();
+            throw;
+        }
+    }
+
+    private async Task SeedNestedLookupCollectionAsync()
+    {
+        await _lookupDb.BeginTransactionAsync();
+        try
+        {
+            for (int i = 0; i < SeedCount; i++)
+            {
+                await _nestedLookupCollection.PutAsync(
+                    $"nested:{i}",
+                    new NestedBenchDoc(
+                        $"User_{i}",
+                        new BenchAddress(s_categories[i % s_categories.Length], 98000 + (i % 100)),
+                        i));
+            }
+
+            await _lookupDb.CommitAsync();
+        }
+        catch
+        {
+            await _lookupDb.RollbackAsync();
             throw;
         }
     }

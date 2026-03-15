@@ -83,16 +83,26 @@ internal sealed class CollectionIndexBinding<
         return string.Join(".", pathSegments);
     }
 
+    internal static string NormalizeFieldPath(string fieldPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string[] segments = ParseFieldPathSegments(fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(segments, fieldPath);
+        string[] canonicalSegments = Array.ConvertAll(memberPath, static member => member.Name);
+        return string.Join(".", canonicalSegments);
+    }
+
     internal static CollectionIndexBinding<T> Create(
         string fieldPath,
         string indexName,
         IIndexStore indexStore)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+        fieldPath = NormalizeFieldPath(fieldPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
         ArgumentNullException.ThrowIfNull(indexStore);
 
-        MemberInfo[] memberPath = ResolveMemberPath(fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
         var accessor = BuildAccessor(memberPath);
         var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
         var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
@@ -105,10 +115,17 @@ internal sealed class CollectionIndexBinding<
             valueKind);
     }
 
+    internal static Func<T, object?> CreateFieldAccessor(string fieldPath)
+    {
+        fieldPath = NormalizeFieldPath(fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
+        return BuildAccessor(memberPath);
+    }
+
     internal static void ValidateFieldPath(string fieldPath)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
-        MemberInfo[] memberPath = ResolveMemberPath(fieldPath);
+        fieldPath = NormalizeFieldPath(fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
         _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
     }
 
@@ -165,9 +182,8 @@ internal sealed class CollectionIndexBinding<
         return true;
     }
 
-    private static MemberInfo[] ResolveMemberPath(string fieldPath)
+    private static MemberInfo[] ResolveMemberPath(string[] segments, string fieldPath)
     {
-        string[] segments = fieldPath.Split('.');
         var memberPath = new MemberInfo[segments.Length];
         Type currentType = typeof(T);
 
@@ -186,6 +202,55 @@ internal sealed class CollectionIndexBinding<
         }
 
         return memberPath;
+    }
+
+    private static string[] ParseFieldPathSegments(string fieldPath)
+    {
+        string trimmed = fieldPath.Trim();
+        if (trimmed.Length == 0)
+        {
+            throw new ArgumentException(
+                $"Cannot bind collection index field '{fieldPath}' for document type '{typeof(T).Name}'.",
+                nameof(fieldPath));
+        }
+
+        if (trimmed[0] == '$')
+        {
+            if (trimmed.Length == 1)
+            {
+                throw new ArgumentException(
+                    $"Collection index field path '{fieldPath}' does not contain a path after '$'.",
+                    nameof(fieldPath));
+            }
+
+            if (!trimmed.StartsWith("$.", StringComparison.Ordinal))
+            {
+                throw new NotSupportedException(
+                    "Collection path indexes currently support only object-member paths like '$.address.city'.");
+            }
+
+            trimmed = trimmed[2..];
+        }
+
+        if (trimmed.IndexOf('[') >= 0 || trimmed.IndexOf(']') >= 0)
+        {
+            throw new NotSupportedException(
+                "Collection path indexes do not yet support array/index segments.");
+        }
+
+        string[] segments = trimmed.Split('.');
+        for (int i = 0; i < segments.Length; i++)
+        {
+            segments[i] = segments[i].Trim();
+            if (segments[i].Length == 0)
+            {
+                throw new ArgumentException(
+                    $"Collection index field path '{fieldPath}' contains an empty path segment.",
+                    nameof(fieldPath));
+            }
+        }
+
+        return segments;
     }
 
     private static MemberInfo ResolveMember(Type sourceType, string segment, string fieldPath)

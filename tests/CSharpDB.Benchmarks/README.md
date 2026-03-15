@@ -193,6 +193,12 @@ Defaults:
 | Collection put (minimal schema, in-memory) | 2.45 us | 702 B | Auto-commit write with only the target collection loaded |
 | Collection put (48 extra tables + 48 extra collections, in-memory) | 2.51 us | 693 B | Unrelated schema breadth no longer adds measurable write tax |
 
+### Collection Path Index Spot Checks (March 15, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Collection `FindByIndex` nested path equality (`$.address.city`) | 1.028 us | 2.37 KB | Public string-path index lookup over a nested scalar path with many matches |
+
 ### Collection Extraction Spot Checks (March 15, 2026)
 
 | Metric | Mean | Allocated | Notes |
