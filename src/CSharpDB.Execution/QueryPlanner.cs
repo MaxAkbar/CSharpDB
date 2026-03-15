@@ -2251,13 +2251,13 @@ public sealed class QueryPlanner
         {
             if (predicate != null)
             {
-                var predicateResult = await EvaluateExpressionWithSubqueriesAsync(
+                bool predicatePassed = await EvaluateWherePredicateWithSubqueriesAsync(
                     predicate,
                     source.Current,
                     schema,
                     outerScopes,
                     ct);
-                if (!predicateResult.IsTruthy)
+                if (!predicatePassed)
                     continue;
             }
 
@@ -2265,6 +2265,52 @@ public sealed class QueryPlanner
         }
 
         return rows;
+    }
+
+    private async ValueTask<bool> EvaluateWherePredicateWithSubqueriesAsync(
+        Expression predicate,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        switch (predicate)
+        {
+            case BinaryExpression { Op: BinaryOp.And } andExpression:
+                if (!await EvaluateWherePredicateWithSubqueriesAsync(andExpression.Left, row, schema, outerScopes, ct))
+                    return false;
+
+                return await EvaluateWherePredicateWithSubqueriesAsync(andExpression.Right, row, schema, outerScopes, ct);
+            case BinaryExpression { Op: BinaryOp.Or } orExpression:
+                if (await EvaluateWherePredicateWithSubqueriesAsync(orExpression.Left, row, schema, outerScopes, ct))
+                    return true;
+
+                return await EvaluateWherePredicateWithSubqueriesAsync(orExpression.Right, row, schema, outerScopes, ct);
+            case UnaryExpression { Op: TokenType.Not, Operand: ExistsExpression exists }:
+            {
+                bool? existsResult = await TryEvaluateExistsFilterFastAsync(exists, row, schema, outerScopes, ct);
+                if (existsResult.HasValue)
+                    return !existsResult.Value;
+                break;
+            }
+            case ExistsExpression exists:
+            {
+                bool? existsResult = await TryEvaluateExistsFilterFastAsync(exists, row, schema, outerScopes, ct);
+                if (existsResult.HasValue)
+                    return existsResult.Value;
+                break;
+            }
+            case InSubqueryExpression inSubquery when !inSubquery.Negated:
+            {
+                bool? inResult = await TryEvaluateInSubqueryFilterFastAsync(inSubquery, row, schema, outerScopes, ct);
+                if (inResult.HasValue)
+                    return inResult.Value;
+                break;
+            }
+        }
+
+        var predicateResult = await EvaluateExpressionWithSubqueriesAsync(predicate, row, schema, outerScopes, ct);
+        return predicateResult.IsTruthy;
     }
 
     private async ValueTask<List<DbValue[]>> MaterializeProjectedRowsAsync(
@@ -2317,6 +2363,189 @@ public sealed class QueryPlanner
         var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
         var rewritten = await RewriteCorrelatedExpressionAsync(expression, correlationScopes, ct);
         return ExpressionEvaluator.Evaluate(rewritten, row, schema);
+    }
+
+    private async ValueTask<bool?> TryEvaluateExistsFilterFastAsync(
+        ExistsExpression exists,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
+        var boundQuery = BindOuterScopesInQuery(exists.Query, correlationScopes);
+        return await TryExecuteSimpleExistsProbeAsync(boundQuery, ct);
+    }
+
+    private async ValueTask<bool?> TryEvaluateInSubqueryFilterFastAsync(
+        InSubqueryExpression inSubquery,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        var visibleScopes = new[] { schema };
+        var boundOperand = BindOuterScopesInExpression(inSubquery.Operand, visibleScopes, outerScopes);
+        if (ContainsSubqueries(boundOperand))
+            return null;
+
+        var operandValue = ExpressionEvaluator.Evaluate(boundOperand, row, schema);
+        if (operandValue.IsNull)
+            return false;
+
+        var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
+        var boundQuery = BindOuterScopesInQuery(inSubquery.Query, correlationScopes);
+        return await TryExecuteSimpleInFilterProbeAsync(boundQuery, operandValue, ct);
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleExistsProbeAsync(QueryStatement query, CancellationToken ct)
+    {
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex: null);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate == null ||
+                    ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleInFilterProbeAsync(
+        QueryStatement query,
+        DbValue operandValue,
+        CancellationToken ct)
+    {
+        if (query is not SelectStatement select)
+            return null;
+
+        if (select.Columns.Count != 1 ||
+            select.Columns[0].IsStar ||
+            select.Columns[0].Expression is not ColumnRefExpression projectedColumn)
+        {
+            return null;
+        }
+
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        int projectedColumnIndex = projectedColumn.TableAlias != null
+            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
+            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
+        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
+            return null;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate != null &&
+                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    continue;
+                }
+
+                var candidateValue = projectedColumnIndex < source.Current.Length
+                    ? source.Current[projectedColumnIndex]
+                    : DbValue.Null;
+                if (candidateValue.IsNull)
+                    continue;
+
+                if (DbValue.Compare(candidateValue, operandValue) == 0)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryCreateSimpleBoundSubquerySource(
+        QueryStatement query,
+        out IOperator source,
+        out TableSchema sourceSchema,
+        out Expression? residualPredicate)
+    {
+        source = null!;
+        sourceSchema = null!;
+        residualPredicate = null;
+
+        if (query is not SelectStatement select ||
+            select.IsDistinct ||
+            select.GroupBy is { Count: > 0 } ||
+            select.Having != null ||
+            select.OrderBy is { Count: > 0 } ||
+            select.Limit.HasValue ||
+            select.Offset.HasValue ||
+            select.From is not SimpleTableRef simpleRef)
+        {
+            return false;
+        }
+
+        if ((_cteData != null && _cteData.ContainsKey(simpleRef.TableName)) ||
+            TryBuildSystemCatalogSource(simpleRef, out _) ||
+            _catalog.GetViewSql(simpleRef.TableName) != null ||
+            _catalog.GetTable(simpleRef.TableName) == null)
+        {
+            return false;
+        }
+
+        sourceSchema = ResolveCorrelationSimpleTableSchema(simpleRef);
+        if (select.Where != null && ContainsSubqueries(select.Where))
+            return false;
+
+        source = select.Where != null
+            ? TryBuildIndexScan(simpleRef.TableName, select.Where, sourceSchema, out residualPredicate)
+                ?? new TableScanOperator(_catalog.GetTableTree(simpleRef.TableName, _pager), sourceSchema, GetReadSerializer(sourceSchema))
+            : new TableScanOperator(_catalog.GetTableTree(simpleRef.TableName, _pager), sourceSchema, GetReadSerializer(sourceSchema));
+
+        if (select.Where == null)
+            residualPredicate = null;
+        else if (source is TableScanOperator)
+            residualPredicate = select.Where;
+
+        return true;
+    }
+
+    private static void ApplySimpleSubqueryDecodeHints(
+        IOperator source,
+        TableSchema sourceSchema,
+        Expression? residualPredicate,
+        int? projectedColumnIndex)
+    {
+        if (residualPredicate == null && !projectedColumnIndex.HasValue)
+        {
+            TrySetDecodedColumnIndices(source, Array.Empty<int>());
+            return;
+        }
+
+        if (projectedColumnIndex.HasValue && residualPredicate == null)
+        {
+            TrySetDecodedColumnIndices(source, [projectedColumnIndex.Value]);
+            return;
+        }
+
+        int maxDecodedColumnIndex = projectedColumnIndex ?? -1;
+        if (residualPredicate != null &&
+            !TryAccumulateMaxReferencedColumn(residualPredicate, sourceSchema, ref maxDecodedColumnIndex))
+        {
+            return;
+        }
+
+        if (maxDecodedColumnIndex >= 0)
+            TrySetDecodedColumnUpperBound(source, maxDecodedColumnIndex);
     }
 
     private async ValueTask<Expression> RewriteCorrelatedExpressionAsync(
