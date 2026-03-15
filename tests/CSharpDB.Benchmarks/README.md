@@ -6,7 +6,7 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 
 - `Balanced macro capture on March 14, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260314-214358.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 14, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanProjectionBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
+- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -14,6 +14,8 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalReadCacheBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.BTreeCursorBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScanBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScanProjectionBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ColdLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
@@ -66,6 +68,7 @@ dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *GroupedIndexAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *CompositeGroupedIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *PredicatePushdownBenchmarks*
+dotnet run -c Release -- --micro --filter *ScanBenchmarks*
 dotnet run -c Release -- --micro --filter *ScanProjectionBenchmarks*
 dotnet run -c Release -- --micro --filter *JoinBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
@@ -330,16 +333,25 @@ Defaults:
 | `WHERE value >= 10000 AND value < 20000` (100K rows) | 7.36 ms | 1.04 MB | Compound same-column range now pushes both bounds into pre-decode filtering |
 | `WHERE category = 'Alpha' AND value < 200000` (100K rows) | 7.57 ms | 1.81 MB | Compound mixed text + integer predicate now pushes both conjuncts before row decode |
 
-### SQL Scan Projection Spot Checks (March 14, 2026)
+### SQL Scan Projection Spot Checks (March 15, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Filtered scan + column projection (10K rows, 20% selectivity) | 742.4 us | 252.56 KB | Compact scan projection path with the lean row-by-row column buffer |
-| Filtered scan + expression projection (10K rows, 20% selectivity) | 751.0 us | 426.74 KB | First batch/vectorized scan slice now batches expression-projection output rows internally |
-| Filtered scan + column projection (100K rows, 20% selectivity) | 59.73 ms | 24.23 MB | Large filtered scan with compact decode and column projection |
-| Filtered scan + expression projection (100K rows, 20% selectivity) | 60.35 ms | 24.95 MB | Same scan shape with the batched expression-projection path |
+| Filtered scan + column projection (10K rows, 20% selectivity) | 738.0 us | 252.56 KB | Generic projection batching now reaches the projection boundary too; small `10K` gain is modest, but the column path stays flat while the batch transport survives longer |
+| Filtered scan + expression projection (10K rows, 20% selectivity) | 711.5 us | 426.74 KB | `FilterProjectionOperator` now keeps generic expression projections batch-backed instead of dropping to row transport immediately |
+| Filtered scan + column projection (100K rows, 20% selectivity) | 57.09 ms | 24.24 MB | Large filtered scan improves once the generic `ProjectionOperator` preserves batch transport on the non-compact path |
+| Filtered scan + expression projection (100K rows, 20% selectivity) | 57.76 ms | 24.95 MB | Same scan shape with batch transport carried through `FilterProjectionOperator`, cutting broad expression-projection overhead |
 
-### SQL Join Projection Spot Checks (March 14, 2026)
+### SQL Batched Scan Root Spot Checks (March 15, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `SELECT *` full scan (100K rows) | 111.10 ms | 48.64 MB | First broader non-compact batch-backed root: plain `TableScanOperator` now feeds `QueryResult` through row batches instead of only row-by-row materialization |
+| `SELECT * WHERE value < 200000` (100K rows) | 77.50 ms | 27.36 MB | Plain filtered scan now stays batch-backed through `FilterOperator` on the simple scan path |
+| `SELECT * WHERE value < 10000` (100K rows) | 57.85 ms | 21.93 MB | Same batched scan root with a low-selectivity predicate |
+| `SELECT * LIMIT 100` (100K rows) | 119.36 us | 97.50 KB | `LimitOperator` now preserves the scan batch root instead of forcing row-by-row materialization at the result boundary |
+
+### SQL Join Projection Spot Checks (March 15, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
@@ -349,8 +361,8 @@ Defaults:
 | Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 478.9 us | 646.49 KB | Same join shape forced back to hash join; slightly faster here, but with materially higher allocation |
 | Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 432.6 us | 474.33 KB | Covered composite join now stays on index payloads for right PK and indexed key columns |
 | Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 533.8 us | 709.36 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the new covered lookup path |
-| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 327.6 us | 539.95 KB | New generic expression-projection batching now covers join output shaping too, not just compact scan/range paths |
-| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 313.4 us | 489.07 KB | Same generic batching path with a residual join filter, exercising `FilterProjectionOperator` rather than the scan-specific compact operators |
+| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 322.9 us | 568.09 KB | Generic expression-projection batching now reaches the join projection boundary too; latency improved slightly once `ProjectionOperator` became batch-capable |
+| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 302.7 us | 517.52 KB | Same generic batching path with a residual join filter, now flowing through batch-capable `FilterProjectionOperator` |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 

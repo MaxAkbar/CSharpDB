@@ -66,6 +66,9 @@ public sealed class QueryResult : IAsyncDisposable
     internal static QueryResult FromSyncLookup(DbValue[]? row, ColumnDefinition[] schema)
         => new(row, schema);
 
+    internal static QueryResult FromBatchOperator(IBatchOperator op)
+        => new(new BatchToRowOperatorAdapter(op));
+
     internal static QueryResult FromRowsAffected(int rowsAffected)
         => rowsAffected switch
         {
@@ -201,6 +204,9 @@ public sealed class QueryResult : IAsyncDisposable
             initialCapacity = rowCount;
         }
 
+        if (_operator is IBatchBackedRowOperator batchBacked)
+            return await MaterializeBatchBackedRowsAsync(batchBacked.BatchSource, initialCapacity, ct);
+
         var list = initialCapacity > 0
             ? new List<DbValue[]>(initialCapacity)
             : new List<DbValue[]>();
@@ -208,6 +214,27 @@ public sealed class QueryResult : IAsyncDisposable
         {
             var row = _operator.Current;
             list.Add(cloneRows ? (DbValue[])row.Clone() : row);
+        }
+
+        return list;
+    }
+
+    private static async ValueTask<List<DbValue[]>> MaterializeBatchBackedRowsAsync(IBatchOperator batchSource, int initialCapacity, CancellationToken ct = default)
+    {
+        var list = initialCapacity > 0
+            ? new List<DbValue[]>(initialCapacity)
+            : new List<DbValue[]>();
+
+        while (await batchSource.MoveNextBatchAsync(ct))
+        {
+            RowBatch batch = batchSource.CurrentBatch;
+            int columnCount = batch.ColumnCount;
+            for (int rowIndex = 0; rowIndex < batch.Count; rowIndex++)
+            {
+                var row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+                batch.CopyRowTo(rowIndex, row);
+                list.Add(row);
+            }
         }
 
         return list;

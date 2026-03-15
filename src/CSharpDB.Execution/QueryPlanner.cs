@@ -2091,7 +2091,7 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
 
     private async ValueTask<QueryResult> ExecuteCompoundSelectWithSubqueriesAsync(CompoundSelectStatement stmt, CancellationToken ct)
@@ -2185,7 +2185,7 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
 
     private void ValidateCorrelatedSelectSupport(SelectStatement stmt)
@@ -3068,8 +3068,13 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
+
+    private static QueryResult CreateQueryResult(IOperator op)
+        => op is IBatchOperator batchOperator
+            ? QueryResult.FromBatchOperator(batchOperator)
+            : new QueryResult(op);
 
     private static int? GetOrderByTopN(SelectStatement stmt)
         => GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset);
@@ -3589,7 +3594,7 @@ public sealed class QueryPlanner
                 residualWhere = pushedWhere;
             if (residualWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(residualWhere, schema));
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
@@ -6532,7 +6537,7 @@ public sealed class QueryPlanner
         {
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
@@ -6725,7 +6730,7 @@ public sealed class QueryPlanner
             if (remainingWhere != null)
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
 
-            result = new QueryResult(compactOp);
+            result = CreateQueryResult(compactOp);
             return true;
         }
 
@@ -6754,7 +6759,7 @@ public sealed class QueryPlanner
         if (remainingWhere != null)
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
 
-        result = new QueryResult(compactExpressionOp);
+        result = CreateQueryResult(compactExpressionOp);
         return true;
     }
 
