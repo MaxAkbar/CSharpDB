@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.0.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.2.0` state of the repo.
 
 ---
 
@@ -24,7 +24,9 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
+| **Memory-mapped main-file reads** | Opt-in mapped clean-page reads plus copy-on-write materialization for mutable access on file-backed databases | Done |
 | **Background WAL checkpointing** | Incremental/sliced auto-checkpointing to move work off the triggering commit | Done |
+| **SQL executor/read-path fast paths** | Compact scan and indexed-range projections, broader join lookup/covered paths, grouped/composite index aggregates, correlated subquery filter fast paths, and lower row materialization overhead | Done |
 | **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | In progress |
 
 ---
@@ -60,7 +62,6 @@ Advanced features and fundamental architecture enhancements.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **Memory-mapped I/O (mmap)** | Replace `byte[]` page materialization on cache misses with mapped read views where safe to reduce copy and GC pressure | Planned |
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Planned |
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
 | **Advanced collection storage path** | Extend document storage beyond UTF-8 JSON payloads with direct binary hydration and richer expression/path indexes | Planned |
@@ -96,7 +97,7 @@ These are known simplifications in the current implementation:
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
-| **Storage** | No mmap read path |
+| **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` exist, but range and join costing still lean on heuristics rather than broader statistics-driven estimation |
 
 ---
@@ -132,7 +133,8 @@ Major features already implemented:
 - Collection secondary field indexes via `EnsureIndexAsync` / `FindByIndexAsync`
 - Maintenance report, `REINDEX`, and `VACUUM` flows across client, CLI, API, and Admin UI
 - Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
-- Storage tuning presets and sliced background WAL auto-checkpointing
+- Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing
+- SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
