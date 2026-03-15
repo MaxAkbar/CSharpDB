@@ -178,6 +178,60 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.NotNull(sqlError.Error);
     }
 
+    [Fact]
+    public async Task HttpTransport_BackupAndRestore_WorkThroughApi()
+    {
+        string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_api_backup_{Guid.NewGuid():N}.db");
+        string manifestPath = backupPath + ".manifest.json";
+
+        try
+        {
+            var create = await _client.ExecuteSqlAsync(
+                "CREATE TABLE http_restore (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO http_restore VALUES (1, 'before');",
+                Ct);
+            Assert.Null(create.Error);
+
+            var backup = await _client.BackupAsync(new BackupRequest
+            {
+                DestinationPath = backupPath,
+                WithManifest = true,
+            }, Ct);
+
+            Assert.Equal(Path.GetFullPath(backupPath), backup.DestinationPath);
+            Assert.True(File.Exists(backupPath));
+            Assert.True(File.Exists(manifestPath));
+
+            var mutate = await _client.ExecuteSqlAsync("INSERT INTO http_restore VALUES (2, 'after');", Ct);
+            Assert.Null(mutate.Error);
+
+            var validate = await _client.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = backupPath,
+                ValidateOnly = true,
+            }, Ct);
+            Assert.True(validate.ValidateOnly);
+
+            var restore = await _client.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = backupPath,
+            }, Ct);
+            Assert.False(restore.ValidateOnly);
+
+            var rows = await _client.ExecuteSqlAsync("SELECT id, value FROM http_restore ORDER BY id;", Ct);
+            Assert.Null(rows.Error);
+            Assert.NotNull(rows.Rows);
+            var row = Assert.Single(rows.Rows);
+            Assert.Equal(1L, row[0]);
+            Assert.Equal("before", row[1]);
+        }
+        finally
+        {
+            TryDelete(backupPath);
+            TryDelete(backupPath + ".wal");
+            TryDelete(manifestPath);
+        }
+    }
+
     private sealed class TestApiFactory(string dbPath) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)

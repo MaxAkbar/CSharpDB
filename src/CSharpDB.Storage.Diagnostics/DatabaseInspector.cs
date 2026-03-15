@@ -294,6 +294,12 @@ public static class DatabaseInspector
                     continue;
                 }
 
+                if (cell.Key.Value == InspectorEngine.TableStatsCatalogSentinel ||
+                    cell.Key.Value == InspectorEngine.ColumnStatsCatalogSentinel)
+                {
+                    continue;
+                }
+
                 try
                 {
                     TableSchema tableSchema = SchemaSerializer.Deserialize(cell.Payload.AsSpan(4));

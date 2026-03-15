@@ -160,6 +160,64 @@ internal sealed class MetaCommandContext : IDisposable
         return result;
     }
 
+    public async ValueTask<BackupResult> BackupAsync(
+        string destinationPath,
+        bool withManifest,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+
+        DisableSnapshot();
+        return await Client.BackupAsync(
+            new BackupRequest
+            {
+                DestinationPath = destinationPath,
+                WithManifest = withManifest,
+            },
+            ct);
+    }
+
+    public async ValueTask<RestoreResult> RestoreAsync(
+        string sourcePath,
+        bool validateOnly,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+
+        DisableSnapshot();
+        ExceptionDispatchInfo? captured = null;
+        RestoreResult? result = null;
+
+        try
+        {
+            result = await Client.RestoreAsync(
+                new RestoreRequest
+                {
+                    SourcePath = sourcePath,
+                    ValidateOnly = validateOnly,
+                },
+                ct);
+        }
+        catch (Exception ex)
+        {
+            captured = ExceptionDispatchInfo.Capture(ex);
+        }
+        finally
+        {
+            if (!validateOnly && _engineBackedClient is not null)
+            {
+                string currentDatabasePath = Path.GetFullPath(Client.DataSource);
+                if (File.Exists(currentDatabasePath))
+                    await RefreshLocalDatabaseAsync(ct);
+                else
+                    _localDatabase = null;
+            }
+        }
+
+        captured?.Throw();
+        return result!;
+    }
+
     public async ValueTask RefreshLocalDatabaseAsync(CancellationToken ct = default)
     {
         if (_engineBackedClient is null)

@@ -73,6 +73,8 @@ service CSharpDbRpc {
   rpc DeleteDocument (DeleteDocumentRequest) returns (google.protobuf.BoolValue);
 
   rpc Checkpoint (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Backup (BackupRequestMessage) returns (BackupResultMessage);
+  rpc Restore (RestoreRequestMessage) returns (RestoreResultMessage);
   rpc GetMaintenanceReport (google.protobuf.Empty) returns (DatabaseMaintenanceReportMessage);
   rpc Reindex (ReindexRequestMessage) returns (ReindexResultMessage);
   rpc Vacuum (google.protobuf.Empty) returns (VacuumResultMessage);
@@ -338,6 +340,16 @@ message ReindexRequestMessage {
   google.protobuf.StringValue name = 2;
 }
 
+message BackupRequestMessage {
+  string destination_path = 1;
+  bool with_manifest = 2;
+}
+
+message RestoreRequestMessage {
+  string source_path = 1;
+  bool validate_only = 2;
+}
+
 message ColumnDefinitionMessage {
   string name = 1;
   DbTypeEnum type = 2;
@@ -556,6 +568,32 @@ message VacuumResultMessage {
   int64 database_file_bytes_after = 2;
   int32 physical_page_count_before = 3;
   int32 physical_page_count_after = 4;
+}
+
+message BackupResultMessage {
+  string source_path = 1;
+  string destination_path = 2;
+  google.protobuf.StringValue manifest_path = 3;
+  int64 database_file_bytes = 4;
+  int32 physical_page_count = 5;
+  uint32 declared_page_count = 6;
+  uint32 change_counter = 7;
+  int32 warning_count = 8;
+  int32 error_count = 9;
+  string sha256 = 10;
+}
+
+message RestoreResultMessage {
+  string source_path = 1;
+  google.protobuf.StringValue destination_path = 2;
+  bool validate_only = 3;
+  int64 database_file_bytes = 4;
+  int32 physical_page_count = 5;
+  uint32 declared_page_count = 6;
+  uint32 change_counter = 7;
+  bool source_wal_exists = 8;
+  int32 warning_count = 9;
+  int32 error_count = 10;
 }
 
 message FileHeaderReportMessage {

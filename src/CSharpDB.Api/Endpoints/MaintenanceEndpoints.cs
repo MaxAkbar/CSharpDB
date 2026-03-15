@@ -9,6 +9,8 @@ public static class MaintenanceEndpoints
     {
         var maintenance = group.MapGroup("/maintenance");
         maintenance.MapPost("/checkpoint", Checkpoint);
+        maintenance.MapPost("/backup", Backup);
+        maintenance.MapPost("/restore", Restore);
         maintenance.MapGet("/report", GetReport);
         maintenance.MapPost("/reindex", Reindex);
         maintenance.MapPost("/vacuum", Vacuum);
@@ -19,6 +21,18 @@ public static class MaintenanceEndpoints
     {
         await db.CheckpointAsync();
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> Backup(ICSharpDbClient db, BackupRequest request)
+    {
+        var result = await db.BackupAsync(request);
+        return Results.Ok(result);
+    }
+
+    private static async Task<IResult> Restore(ICSharpDbClient db, RestoreRequest request)
+    {
+        var result = await db.RestoreAsync(request);
+        return Results.Ok(result);
     }
 
     private static async Task<IResult> GetReport(ICSharpDbClient db)

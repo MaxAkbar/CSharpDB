@@ -13,6 +13,46 @@ public sealed class ReindexRequest
     public string? Name { get; init; }
 }
 
+public sealed class BackupRequest
+{
+    public required string DestinationPath { get; init; }
+    public bool WithManifest { get; init; }
+}
+
+public sealed class BackupResult
+{
+    public required string SourcePath { get; init; }
+    public required string DestinationPath { get; init; }
+    public string? ManifestPath { get; init; }
+    public long DatabaseFileBytes { get; init; }
+    public int PhysicalPageCount { get; init; }
+    public uint DeclaredPageCount { get; init; }
+    public uint ChangeCounter { get; init; }
+    public int WarningCount { get; init; }
+    public int ErrorCount { get; init; }
+    public required string Sha256 { get; init; }
+}
+
+public sealed class RestoreRequest
+{
+    public required string SourcePath { get; init; }
+    public bool ValidateOnly { get; init; }
+}
+
+public sealed class RestoreResult
+{
+    public required string SourcePath { get; init; }
+    public string? DestinationPath { get; init; }
+    public bool ValidateOnly { get; init; }
+    public long DatabaseFileBytes { get; init; }
+    public int PhysicalPageCount { get; init; }
+    public uint DeclaredPageCount { get; init; }
+    public uint ChangeCounter { get; init; }
+    public bool SourceWalExists { get; init; }
+    public int WarningCount { get; init; }
+    public int ErrorCount { get; init; }
+}
+
 public sealed class DatabaseMaintenanceReport
 {
     public string SchemaVersion { get; init; } = "1.0";

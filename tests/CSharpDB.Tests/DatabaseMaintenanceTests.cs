@@ -55,6 +55,66 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BackupAndRestoreAsync_RoundTripThroughClientContract()
+    {
+        string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_maintenance_backup_{Guid.NewGuid():N}.db");
+        string manifestPath = backupPath + ".manifest.json";
+
+        try
+        {
+            await _client.ExecuteSqlAsync("CREATE TABLE restore_test (id INTEGER PRIMARY KEY, value TEXT);", Ct);
+            await _client.ExecuteSqlAsync("INSERT INTO restore_test VALUES (1, 'before');", Ct);
+
+            var backup = await _client.BackupAsync(new ClientModels.BackupRequest
+            {
+                DestinationPath = backupPath,
+                WithManifest = true,
+            }, Ct);
+
+            Assert.Equal(Path.GetFullPath(_dbPath), backup.SourcePath);
+            Assert.Equal(Path.GetFullPath(backupPath), backup.DestinationPath);
+            Assert.Equal(manifestPath, backup.ManifestPath);
+            Assert.True(File.Exists(backupPath));
+            Assert.True(File.Exists(manifestPath));
+
+            await _client.ExecuteSqlAsync("INSERT INTO restore_test VALUES (2, 'after');", Ct);
+
+            var validate = await _client.RestoreAsync(new ClientModels.RestoreRequest
+            {
+                SourcePath = backupPath,
+                ValidateOnly = true,
+            }, Ct);
+
+            Assert.True(validate.ValidateOnly);
+            Assert.Null(validate.DestinationPath);
+
+            var restore = await _client.RestoreAsync(new ClientModels.RestoreRequest
+            {
+                SourcePath = backupPath,
+            }, Ct);
+
+            Assert.False(restore.ValidateOnly);
+            Assert.Equal(Path.GetFullPath(_dbPath), restore.DestinationPath);
+
+            var restoredRows = await _client.ExecuteSqlAsync("SELECT id, value FROM restore_test ORDER BY id;", Ct);
+            Assert.Null(restoredRows.Error);
+            Assert.NotNull(restoredRows.Rows);
+            var row = Assert.Single(restoredRows.Rows);
+            Assert.Equal(1L, row[0]);
+            Assert.Equal("before", row[1]);
+        }
+        finally
+        {
+            if (File.Exists(backupPath))
+                File.Delete(backupPath);
+            if (File.Exists(backupPath + ".wal"))
+                File.Delete(backupPath + ".wal");
+            if (File.Exists(manifestPath))
+                File.Delete(manifestPath);
+        }
+    }
+
+    [Fact]
     public async Task ReindexAsync_RebuildsNamedIndexTableScopeAndFullScope()
     {
         await _client.ExecuteSqlAsync("CREATE TABLE people (id INTEGER PRIMARY KEY, age INTEGER, name TEXT);", Ct);

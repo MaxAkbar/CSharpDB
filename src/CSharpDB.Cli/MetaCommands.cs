@@ -391,6 +391,63 @@ internal sealed class CheckpointCommand : IMetaCommand
     }
 }
 
+internal sealed class BackupCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".backup"];
+    public string Name => ".backup <FILE> [--with-manifest]";
+    public string Description => "Write a committed snapshot backup to a file";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (!MetaCommandHelpers.TryParseBackupArgument(argument, out string? destinationPath, out bool withManifest, out string? error))
+        {
+            output.WriteLine(Ansi.Colorize(error ?? "Usage: .backup <FILE> [--with-manifest]", Ansi.Yellow));
+            return;
+        }
+
+        var result = await context.BackupAsync(destinationPath!, withManifest, ct);
+        output.WriteLine(Ansi.Colorize($"Backup saved to {result.DestinationPath}.", Ansi.Green));
+        output.WriteLine(Ansi.Colorize(
+            $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}.",
+            Ansi.Dim));
+        output.WriteLine(Ansi.Colorize($"SHA-256={result.Sha256}", Ansi.Dim));
+
+        if (!string.IsNullOrWhiteSpace(result.ManifestPath))
+            output.WriteLine(Ansi.Colorize($"Manifest: {result.ManifestPath}", Ansi.Dim));
+    }
+}
+
+internal sealed class RestoreCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".restore"];
+    public string Name => ".restore <FILE> [--validate-only]";
+    public string Description => "Validate or restore a database snapshot into the current database";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (!MetaCommandHelpers.TryParseRestoreArgument(argument, out string? sourcePath, out bool validateOnly, out string? error))
+        {
+            output.WriteLine(Ansi.Colorize(error ?? "Usage: .restore <FILE> [--validate-only]", Ansi.Yellow));
+            return;
+        }
+
+        var result = await context.RestoreAsync(sourcePath!, validateOnly, ct);
+        if (result.ValidateOnly)
+        {
+            output.WriteLine(Ansi.Colorize($"Restore source is valid: {result.SourcePath}", Ansi.Green));
+        }
+        else
+        {
+            output.WriteLine(Ansi.Colorize($"Restore complete from {result.SourcePath}.", Ansi.Green));
+            output.WriteLine(Ansi.Colorize($"Target: {result.DestinationPath}", Ansi.Dim));
+        }
+
+        output.WriteLine(Ansi.Colorize(
+            $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}, sourceWal={(result.SourceWalExists ? "present" : "absent")}.",
+            Ansi.Dim));
+    }
+}
+
 internal sealed class ReindexCommand : IMetaCommand
 {
     public IReadOnlyList<string> Aliases => [".reindex"];
@@ -579,7 +636,7 @@ internal sealed class ReadCommand : IMetaCommand
             return;
         }
 
-        string path = NormalizePath(argument);
+        string path = MetaCommandHelpers.NormalizePath(argument);
         if (!File.Exists(path))
         {
             output.WriteLine(Ansi.Colorize($"File not found: {path}", Ansi.Red));
@@ -624,18 +681,6 @@ internal sealed class ReadCommand : IMetaCommand
         string summaryColor = fail == 0 ? Ansi.Green : Ansi.Yellow;
         output.WriteLine(Ansi.Colorize($"Script complete: {ok} passed, {fail} failed.", summaryColor));
     }
-
-    private static string NormalizePath(string argument)
-    {
-        string trimmed = argument.Trim();
-        if ((trimmed.StartsWith('"') && trimmed.EndsWith('"')) ||
-            (trimmed.StartsWith('\'') && trimmed.EndsWith('\'')))
-        {
-            trimmed = trimmed[1..^1];
-        }
-
-        return Path.GetFullPath(trimmed);
-    }
 }
 
 internal static class MetaCommandHelpers
@@ -673,6 +718,104 @@ internal static class MetaCommandHelpers
         request = new ReindexRequest();
         error = "Usage: .reindex [--all|--table <name>|--index <name>]";
         return false;
+    }
+
+    internal static bool TryParseBackupArgument(
+        string argument,
+        out string? destinationPath,
+        out bool withManifest,
+        out string? error)
+    {
+        destinationPath = null;
+        withManifest = false;
+        error = null;
+
+        if (!TryTokenizeArgument(argument, out var tokens, out error))
+            return false;
+
+        foreach (string token in tokens)
+        {
+            if (token.Equals("--with-manifest", StringComparison.OrdinalIgnoreCase))
+            {
+                withManifest = true;
+                continue;
+            }
+
+            if (destinationPath is not null)
+            {
+                error = "Usage: .backup <FILE> [--with-manifest]";
+                return false;
+            }
+
+            destinationPath = token;
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            error = "Usage: .backup <FILE> [--with-manifest]";
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool TryParseRestoreArgument(
+        string argument,
+        out string? sourcePath,
+        out bool validateOnly,
+        out string? error)
+    {
+        sourcePath = null;
+        validateOnly = false;
+        error = null;
+
+        if (!TryTokenizeArgument(argument, out var tokens, out error))
+            return false;
+
+        foreach (string token in tokens)
+        {
+            if (token.Equals("--validate-only", StringComparison.OrdinalIgnoreCase))
+            {
+                validateOnly = true;
+                continue;
+            }
+
+            if (sourcePath is not null)
+            {
+                error = "Usage: .restore <FILE> [--validate-only]";
+                return false;
+            }
+
+            sourcePath = token;
+        }
+
+        if (string.IsNullOrWhiteSpace(sourcePath))
+        {
+            error = "Usage: .restore <FILE> [--validate-only]";
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static string NormalizePath(string argument)
+    {
+        string trimmed = argument.Trim();
+        if ((trimmed.StartsWith('"') && trimmed.EndsWith('"')) ||
+            (trimmed.StartsWith('\'') && trimmed.EndsWith('\'')))
+        {
+            trimmed = trimmed[1..^1];
+        }
+
+        return Path.GetFullPath(trimmed);
+    }
+
+    internal static bool PathsEqual(string left, string right)
+    {
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), comparison);
     }
 
     internal static async Task<IReadOnlyList<string>> GetTableNamesAsync(
@@ -729,6 +872,64 @@ internal static class MetaCommandHelpers
                 })
                 .ToArray(),
         };
+    }
+
+    private static bool TryTokenizeArgument(
+        string argument,
+        out IReadOnlyList<string> tokens,
+        out string? error)
+    {
+        error = null;
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        char? quote = null;
+
+        foreach (char ch in argument)
+        {
+            if (quote.HasValue)
+            {
+                if (ch == quote.Value)
+                {
+                    quote = null;
+                    continue;
+                }
+
+                current.Append(ch);
+                continue;
+            }
+
+            if (ch is '"' or '\'')
+            {
+                quote = ch;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch))
+            {
+                if (current.Length > 0)
+                {
+                    result.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        if (quote.HasValue)
+        {
+            tokens = Array.Empty<string>();
+            error = "Unterminated quoted argument.";
+            return false;
+        }
+
+        if (current.Length > 0)
+            result.Add(current.ToString());
+
+        tokens = result;
+        return true;
     }
 
     private static CSharpDB.Client.Models.DbType MapDbType(CSharpDB.Primitives.DbType type) => type switch

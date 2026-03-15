@@ -151,6 +151,65 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_BackupAndRestore_WorkThroughTransport()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_backup_{Guid.NewGuid():N}.db");
+        string manifestPath = backupPath + ".manifest.json";
+
+        try
+        {
+            SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+                "CREATE TABLE grpc_restore (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO grpc_restore VALUES (1, 'before');",
+                Ct);
+            Assert.Null(createResult.Error);
+
+            BackupResult backup = await client.BackupAsync(new BackupRequest
+            {
+                DestinationPath = backupPath,
+                WithManifest = true,
+            }, Ct);
+
+            Assert.Equal(Path.GetFullPath(backupPath), backup.DestinationPath);
+            Assert.True(File.Exists(backupPath));
+            Assert.True(File.Exists(manifestPath));
+
+            SqlExecutionResult mutateResult = await client.ExecuteSqlAsync(
+                "INSERT INTO grpc_restore VALUES (2, 'after');",
+                Ct);
+            Assert.Null(mutateResult.Error);
+
+            RestoreResult validate = await client.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = backupPath,
+                ValidateOnly = true,
+            }, Ct);
+            Assert.True(validate.ValidateOnly);
+
+            RestoreResult restore = await client.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = backupPath,
+            }, Ct);
+            Assert.False(restore.ValidateOnly);
+
+            SqlExecutionResult rows = await client.ExecuteSqlAsync("SELECT id, value FROM grpc_restore ORDER BY id;", Ct);
+            Assert.Null(rows.Error);
+            Assert.NotNull(rows.Rows);
+            var row = Assert.Single(rows.Rows);
+            Assert.Equal(1L, row[0]);
+            Assert.Equal("before", row[1]);
+        }
+        finally
+        {
+            TryDelete(backupPath);
+            TryDelete(backupPath + ".wal");
+            TryDelete(manifestPath);
+        }
+    }
+
+    [Fact]
     public async Task GrpcContract_ExposesExplicitRpcMethods()
     {
         using var transportClient = CreateGrpcHttpClient();

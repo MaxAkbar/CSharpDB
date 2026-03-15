@@ -59,6 +59,8 @@ await using (client)
     commands.Add(new CommitCommand());
     commands.Add(new RollbackCommand());
     commands.Add(new CheckpointCommand());
+    commands.Add(new BackupCommand());
+    commands.Add(new RestoreCommand());
     commands.Add(new ReindexCommand());
     commands.Add(new VacuumCommand());
     commands.Add(new SnapshotCommand());

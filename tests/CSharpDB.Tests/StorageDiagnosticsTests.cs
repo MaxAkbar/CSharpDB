@@ -53,6 +53,31 @@ public sealed class StorageDiagnosticsTests
     }
 
     [Fact]
+    public async Task StorageInspectors_EmptyDatabase_DoNotWarnOnStatsCatalogSentinels()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using (var db = await Database.OpenAsync(dbPath, ct))
+            {
+            }
+
+            DatabaseInspectReport dbReport = await DatabaseInspector.InspectAsync(dbPath, ct: ct);
+            IndexInspectReport indexReport = await IndexInspector.CheckAsync(dbPath, ct: ct);
+
+            Assert.DoesNotContain(dbReport.Issues, i => i.Code == "CATALOG_TABLE_SCHEMA_DECODE_FAILED");
+            Assert.DoesNotContain(indexReport.Issues, i => i.Code == "CATALOG_TABLE_SCHEMA_DECODE_FAILED");
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task WalInspector_InspectAsync_TrailingPartialFrameReportsWarning()
     {
         var ct = TestContext.Current.CancellationToken;

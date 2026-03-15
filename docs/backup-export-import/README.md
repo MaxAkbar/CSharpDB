@@ -1,18 +1,53 @@
 # Backup, Export/Import, and Storage Maintenance Plan
 
 > Note: the canonical storage diagnostics spec now lives in [../storage-inspector.md](../storage-inspector.md).  
-> This document remains focused on broader backup/import/maintenance roadmap work.
+> This document now focuses on the remaining backup/restore and logical mobility roadmap work that sits above the existing storage engine.
 
-This document outlines the proposed tooling plan for:
+This document outlines the current state and remaining plan for:
 
-- database file structure checks
-- index consistency checks
-- WAL checks
-- backup flows
+- physical backup/restore flows built on committed-snapshot APIs
 - logical export/import flows
-- page reclaim and resize (later phase)
+- optional later reclaim/repair helpers beyond the maintenance tooling that already exists
 
-The goal is to ship low-risk read-only diagnostics first, then controlled repair and shrink operations.
+The immediate goal is to land backup/restore on top of the current engine/client surface so that we do not need to modify pager, WAL, or B+tree internals for the first version.
+
+---
+
+## Recommended Scope
+
+Backup/restore should be implemented as a top-layer workflow, not as new internal storage-engine behavior.
+
+Use the surfaces that already exist:
+
+- `Database.SaveToFileAsync(...)` and `CSharpDbConnection.SaveToFileAsync(...)` for consistent committed snapshot copies
+- `Database.LoadIntoMemoryAsync(...)` for restore validation and file+WAL recovery into memory
+- existing `inspect`, `inspect-page`, `check-wal`, and `check-indexes` commands for preflight/manifest validation
+- existing maintenance report, `REINDEX`, and `VACUUM` flows when repair or deterministic reclaim is required
+
+For the first backup/restore pass, avoid:
+
+- page-level restore into an open database
+- new pager or WAL file-format work
+- internal B+tree repair logic beyond the maintenance operations that already ship
+
+That keeps backup/restore isolated from storage-engine implementation changes.
+
+---
+
+## Already Implemented
+
+The following pieces are already shipped and should be treated as foundation, not future work:
+
+| Area | Current support | Status |
+|------|-----------------|--------|
+| **Storage diagnostics** | `inspect`, `inspect-page`, `check-wal`, `check-indexes` in CLI/API/native surfaces | Done |
+| **Maintenance reporting** | Database size, page counts, freelist/tail-freelist, and fragmentation reporting | Done |
+| **Index rebuild** | `REINDEX` for database, table, index, and collection scopes | Done |
+| **Full rewrite compaction** | `VACUUM` with temp-file rewrite and backup/rollback guard path | Done |
+| **Committed snapshot persistence** | `SaveToFileAsync(...)` from in-memory database/session surfaces | Done |
+| **Disk-to-memory restore path** | `LoadIntoMemoryAsync(...)` loads `.db` plus committed WAL state into memory | Done |
+| **Physical backup/restore** | `ICSharpDbClient.BackupAsync(...)` / `RestoreAsync(...)` with CLI, Admin, API, direct client, HTTP transport, and gRPC transport coverage | Done |
+| **Logical metadata surfaces** | Tables, indexes, views, triggers, procedures, and saved queries are discoverable/copiable | Done |
 
 ---
 
@@ -20,76 +55,89 @@ The goal is to ship low-risk read-only diagnostics first, then controlled repair
 
 Based on current implementation:
 
-- A freelist exists in the pager allocation path, but full page reclamation is not yet wired through all drop/delete flows.
-- Checkpoint copies committed WAL pages into the DB file but does not shrink file length.
+- A freelist exists in the pager allocation path, but tail-only shrink is not exposed; deterministic reclaim currently comes from full rewrite `VACUUM`.
+- Checkpoint copies committed WAL pages into the DB file but does not shrink file length on its own.
 - WAL recovery/checkpoint invariants are explicit and can be validated offline.
 - Metadata for tables, indexes, views, and triggers is available for logical export.
 - SQL parameter binding currently rejects `byte[]`, so SQL-only BLOB round-trip is not yet complete.
+- There is not yet a first-class `.export` or `.import` REPL/CLI surface.
 
 ---
 
 ## Proposed CLI Commands
 
-### Diagnostics (Read-Only First)
+### Already Shipped
 
 - `csharpdb inspect <dbfile> [--json]`
+- `csharpdb inspect-page <dbfile> <pageId> [--json] [--hex]`
 - `csharpdb check-indexes <dbfile> [--index <name>] [--sample <n>]`
 - `csharpdb check-wal <dbfile>`
-- `csharpdb reclaim <dbfile> --dry-run`
-
-### Backup
-
+- `csharpdb maintenance-report <dbfile> [--json]`
+- `csharpdb reindex <dbfile> [--all|--table <name>|--index <name>] [--json]`
+- `csharpdb vacuum <dbfile> [--json]`
 - `.backup <dest.db>`
-- `.backup <dest.db> --with-wal`
+- `.backup <dest.db> --with-manifest`
+- `.restore <src.db>`
+- `.restore <src.db> --validate-only`
+
+The Admin Storage tab and CLI now call the same `ICSharpDbClient` backup/restore surface. When the connection is remote, backup and restore paths are resolved on the connected host.
 
 Behavior:
 
-- force a checkpoint before copy when safe
-- create a consistent snapshot copy
-- optionally include `.wal`
-- emit a small manifest (timestamp, page count, change counter, checksums)
+- backup should be a thin wrapper over the existing committed-snapshot save/copy path
+- restore is an offline replace workflow that first normalizes the source through `LoadIntoMemoryAsync(...)` + `SaveToFileAsync(...)`
+- optional validation should reuse `inspect` / `check-wal`
+- backup manifests should be derived from existing inspection/report data rather than new low-level storage code
 
-### Export/Import
+### Export / Import
 
 - `.export sql <file.sql> [--schema-only|--data-only]`
 - `.export json <file.json> [--schema-only|--data-only]`
 - `.import sql <file.sql>` (can reuse `.read` statement execution path)
 - `.import json <file.json> [--truncate]`
 
+### Later Reclaim Helpers
+
+- `csharpdb reclaim <dbfile> --dry-run`
+- `csharpdb tail-trim <dbfile> --execute`
+
 ---
 
 ## Rollout Plan
 
-### Phase 1: Read-Only Validation
+### Phase 0: Existing Foundation
 
-1. Implement `inspect`
-2. Implement `check-indexes`
-3. Implement `check-wal`
-4. Implement `reclaim --dry-run`
+1. `inspect` / `inspect-page`
+2. `check-indexes`
+3. `check-wal`
+4. maintenance report
+5. `REINDEX`
+6. `VACUUM`
+7. committed snapshot save/load APIs
 
-### Phase 2: Safe Data Mobility
+### Phase 1: Logical Export / Import
 
-1. Implement `.backup` with checkpoint preflight and manifest
-2. Implement `.export sql` / `.import sql`
-3. Implement `.export json` / `.import json`
+1. Implement `.export sql` / `.import sql`
+2. Implement `.export json` / `.import json`
 
-### Phase 3: Repair and Space Reclaim
+### Phase 2: Optional Reclaim Helpers
 
-1. Add index rebuild helper (`rebuild-index <name|all>`)
+1. Implement `reclaim --dry-run`
 2. Add tail-only shrink (`tail-trim`) for contiguous free high pages
-3. Add full rewrite compaction (`vacuum`) for deterministic reclaim
 
 ---
 
 ## Safety Requirements
 
-Write-mode operations (`backup`, `rebuild-index`, `tail-trim`, `vacuum`, `import`) should enforce:
+Write-mode operations (`backup`, `restore`, `tail-trim`, `import`) should enforce:
 
 1. explicit write lock / single-writer guarantee
 2. snapshot-reader awareness (avoid invalidating active readers)
 3. checkpoint and WAL consistency prechecks
 4. fail-fast behavior with no partial metadata updates
 5. optional `--dry-run` or `--execute` confirmation flags where destructive
+
+For `restore`, start with an offline requirement: the target database should not already be open for writes.
 
 ---
 
@@ -106,11 +154,6 @@ This keeps logical backup/restore paths reliable while BLOB SQL round-trip remai
 
 ## Suggested Implementation Order
 
-1. `inspect`
-2. `check-indexes`
-3. `check-wal`
-4. `.backup`
-5. `.export/.import` (SQL and JSON)
-6. `reclaim --dry-run`
-7. `tail-trim`
-8. `vacuum`
+1. `.export/.import` (SQL and JSON)
+2. `reclaim --dry-run`
+3. `tail-trim`

@@ -547,6 +547,18 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         await EnsureSuccessAsync(response, ct);
     }
 
+    public async Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/backup"), request, ct);
+        return await ReadRequiredAsync<BackupResult>(response, ct);
+    }
+
+    public async Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/restore"), request, ct);
+        return await ReadRequiredAsync<RestoreResult>(response, ct);
+    }
+
     public async Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/maintenance/report"), payload: null, ct);

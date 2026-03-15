@@ -1,7 +1,9 @@
+@using CSharpDB.Client
 @using CSharpDB.Client.Models
 @using CSharpDB.Storage.Diagnostics
 @inject ICSharpDbClient DbClient
 @inject ToastService Toast
+@inject DatabaseChangeService Changes
 
 <div class="storage-tab">
     <div class="toolbar">
@@ -156,6 +158,54 @@
                     @if (!string.IsNullOrWhiteSpace(_maintenanceStatus))
                     {
                         <p class="schema-empty">@_maintenanceStatus</p>
+                    }
+                </div>
+
+                <div class="storage-subsection">
+                    <h4>Backup / Restore</h4>
+                    <p class="schema-empty">Paths are resolved on the connected host. For HTTP or gRPC connections, choose server-local paths.</p>
+
+                    <div class="storage-action-row">
+                        <input class="storage-input mono storage-path-input"
+                               type="text"
+                               @bind="_backupPath"
+                               placeholder="Backup destination path"
+                               disabled="@_maintenanceBusy" />
+
+                        <label class="storage-check">
+                            <input type="checkbox" @bind="_backupWithManifest" disabled="@_maintenanceBusy" />
+                            Write manifest
+                        </label>
+
+                        <button class="toolbar-btn" @onclick="RunBackupAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_backupPath))">
+                            <i class="bi bi-download"></i> Backup
+                        </button>
+                    </div>
+
+                    <div class="storage-action-row">
+                        <input class="storage-input mono storage-path-input"
+                               type="text"
+                               @bind="_restoreSourcePath"
+                               placeholder="Restore source path"
+                               disabled="@_maintenanceBusy" />
+
+                        <button class="toolbar-btn" @onclick="ValidateRestoreAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_restoreSourcePath))">
+                            <i class="bi bi-shield-check"></i> Validate
+                        </button>
+
+                        <label class="storage-check">
+                            <input type="checkbox" @bind="_restoreConfirmArmed" disabled="@_maintenanceBusy" />
+                            Confirm replace current database
+                        </label>
+
+                        <button class="toolbar-btn danger" @onclick="RunRestoreAsync" disabled="@(_maintenanceBusy || !_restoreConfirmArmed || string.IsNullOrWhiteSpace(_restoreSourcePath))">
+                            <i class="bi bi-arrow-counterclockwise"></i> Restore
+                        </button>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_backupRestoreStatus))
+                    {
+                        <p class="schema-empty">@_backupRestoreStatus</p>
                     }
                 </div>
             </section>
@@ -329,7 +379,12 @@
     private ReindexScope _reindexScope = ReindexScope.All;
     private string? _reindexName;
     private bool _vacuumConfirmArmed;
+    private bool _restoreConfirmArmed;
+    private bool _backupWithManifest = true;
     private string? _maintenanceStatus;
+    private string? _backupRestoreStatus;
+    private string? _backupPath;
+    private string? _restoreSourcePath;
     private IReadOnlyList<string> _availableTables = [];
     private IReadOnlyList<string> _availableIndexes = [];
 
@@ -354,6 +409,7 @@
                 .Select(index => index.IndexName)
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            EnsureBackupRestorePaths();
             EnsureReindexSelection();
             RebuildIssueList();
         }
@@ -364,6 +420,107 @@
         finally
         {
             _loading = false;
+        }
+    }
+
+    private async Task RunBackupAsync()
+    {
+        string? backupPath = _backupPath;
+        if (string.IsNullOrWhiteSpace(backupPath))
+        {
+            Toast.Error("Enter a backup destination path.");
+            return;
+        }
+
+        _maintenanceBusy = true;
+        _backupRestoreStatus = null;
+        try
+        {
+            var result = await DbClient.BackupAsync(new BackupRequest
+            {
+                DestinationPath = backupPath,
+                WithManifest = _backupWithManifest,
+            });
+
+            _backupPath = result.DestinationPath;
+            _backupRestoreStatus = $"Backup saved to {result.DestinationPath}.";
+            Toast.Success(_backupRestoreStatus);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Backup failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task ValidateRestoreAsync()
+    {
+        string? restoreSourcePath = _restoreSourcePath;
+        if (string.IsNullOrWhiteSpace(restoreSourcePath))
+        {
+            Toast.Error("Enter a restore source path.");
+            return;
+        }
+
+        _maintenanceBusy = true;
+        _backupRestoreStatus = null;
+        try
+        {
+            var result = await DbClient.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = restoreSourcePath,
+                ValidateOnly = true,
+            });
+            _restoreSourcePath = result.SourcePath;
+            _backupRestoreStatus = $"Restore source validated: {result.SourcePath}.";
+            Toast.Success(_backupRestoreStatus);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Restore validation failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task RunRestoreAsync()
+    {
+        string? restoreSourcePath = _restoreSourcePath;
+        if (string.IsNullOrWhiteSpace(restoreSourcePath))
+        {
+            Toast.Error("Enter a restore source path.");
+            return;
+        }
+
+        _maintenanceBusy = true;
+        _backupRestoreStatus = null;
+        try
+        {
+            var result = await DbClient.RestoreAsync(new RestoreRequest
+            {
+                SourcePath = restoreSourcePath,
+                ValidateOnly = false,
+            });
+
+            _restoreSourcePath = result.SourcePath;
+            _restoreConfirmArmed = false;
+            _backupRestoreStatus = $"Restore complete from {result.SourcePath}.";
+            Changes.NotifyChanged();
+            Toast.Success(_backupRestoreStatus);
+            await RefreshAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Restore failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
         }
     }
 
@@ -497,6 +654,28 @@
             ReindexScope.All => null,
             _ => _reindexName,
         };
+    }
+
+    private void EnsureBackupRestorePaths()
+    {
+        string? databasePath = _dbReport?.DatabasePath;
+        if (string.IsNullOrWhiteSpace(databasePath))
+            return;
+
+        if (string.IsNullOrWhiteSpace(_backupPath))
+            _backupPath = BuildDefaultBackupPath(databasePath);
+    }
+
+    private static string BuildDefaultBackupPath(string databasePath)
+    {
+        string fullPath = Path.GetFullPath(databasePath);
+        string directory = Path.GetDirectoryName(fullPath) ?? Environment.CurrentDirectory;
+        string extension = Path.GetExtension(fullPath);
+        if (string.IsNullOrWhiteSpace(extension))
+            extension = ".db";
+
+        string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fullPath);
+        return Path.Combine(directory, $"{fileNameWithoutExtension}.backup{extension}");
     }
 
     private static string SeverityClass(InspectSeverity severity) => severity switch

@@ -507,6 +507,105 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         }
     }
 
+    private async Task<ExclusiveDatabaseAccessLease> AcquireExclusiveDatabaseAccessAsync(
+        CancellationToken ct,
+        string activeReaderMessage)
+    {
+        await _lock.WaitAsync(ct);
+
+        Task<Database>? openTask;
+        var releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock (_databaseGate)
+        {
+            openTask = _databaseTask;
+            _catalogsInitialized = false;
+            _databaseTask = null;
+            _databaseReleaseCompletion = releaseCompletion;
+        }
+
+        try
+        {
+            if (openTask is not null)
+            {
+                Database db;
+                try
+                {
+                    db = await openTask.WaitAsync(ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    lock (_databaseGate)
+                    {
+                        if (_databaseTask is null)
+                            _databaseTask = openTask;
+                    }
+
+                    throw;
+                }
+                catch
+                {
+                    return new ExclusiveDatabaseAccessLease(this, releaseCompletion);
+                }
+
+                if (db.ActiveReaderCount > 0)
+                {
+                    lock (_databaseGate)
+                    {
+                        if (_databaseTask is null)
+                            _databaseTask = openTask;
+                    }
+
+                    throw new CSharpDbClientException(activeReaderMessage);
+                }
+
+                await db.DisposeAsync();
+            }
+
+            return new ExclusiveDatabaseAccessLease(this, releaseCompletion);
+        }
+        catch
+        {
+            CompleteExclusiveDatabaseAccess(releaseCompletion);
+            throw;
+        }
+    }
+
+    private void CompleteExclusiveDatabaseAccess(TaskCompletionSource releaseCompletion)
+    {
+        lock (_databaseGate)
+        {
+            if (ReferenceEquals(_databaseReleaseCompletion, releaseCompletion))
+                _databaseReleaseCompletion = null;
+        }
+
+        releaseCompletion.TrySetResult();
+        _lock.Release();
+    }
+
+    private sealed class ExclusiveDatabaseAccessLease : IAsyncDisposable
+    {
+        private readonly EngineTransportClient _owner;
+        private readonly TaskCompletionSource _releaseCompletion;
+        private int _disposed;
+
+        public ExclusiveDatabaseAccessLease(
+            EngineTransportClient owner,
+            TaskCompletionSource releaseCompletion)
+        {
+            _owner = owner;
+            _releaseCompletion = releaseCompletion;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                _owner.CompleteExclusiveDatabaseAccess(_releaseCompletion);
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static TableSchema MapTableSchema(CoreTableSchema schema)
         => new()
         {
