@@ -4760,6 +4760,626 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IProjectionPushdown
 }
 
 /// <summary>
+/// Index nested-loop join operator for hashed secondary indexes.
+/// Supports exact equality lookups over single-column text indexes and
+/// composite integer/text indexes on the right side.
+/// </summary>
+public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider
+{
+    private readonly IOperator _outer;
+    private readonly BTree _innerTableTree;
+    private readonly IIndexStore _innerIndexStore;
+    private readonly JoinType _joinType;
+    private readonly int[] _outerKeyIndices;
+    private readonly int[] _rightKeyColumnIndices;
+    private readonly int _leftColCount;
+    private readonly int _rightColCount;
+    private readonly int _rightPrimaryKeyColumnIndex;
+    private readonly int? _estimatedRowCount;
+    private readonly Func<DbValue[], DbValue>? _residualPredicate;
+    private readonly IRecordSerializer _recordSerializer;
+    private DbValue[]? _activeOuterRow;
+    private bool _activeOuterMatched;
+    private ReadOnlyMemory<byte> _pendingRowIdPayload;
+    private int _pendingRowIdOffset;
+    private bool _rowIdsVerifiedByIndexPayload;
+    private DbValue[]? _currentKeyComponents;
+    private byte[][]? _currentKeyTextBytes;
+    private RecordColumnAccessor?[]? _keyAccessors;
+    private DbValue[]? _rightRowBuffer;
+    private DbValue[]? _residualRowBuffer;
+    private int[]? _projectionColumnIndices;
+    private int[]? _decodedRightColumnIndices;
+    private int? _maxDecodedRightColumnIndex;
+    private bool _canProjectRightFromIndexPayload;
+
+    public ColumnDefinition[] OutputSchema { get; private set; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _estimatedRowCount;
+
+    public HashedIndexNestedLoopJoinOperator(
+        IOperator outer,
+        BTree innerTableTree,
+        IIndexStore innerIndexStore,
+        JoinType joinType,
+        ReadOnlySpan<int> outerKeyIndices,
+        ReadOnlySpan<int> rightKeyColumnIndices,
+        int leftColCount,
+        int rightColCount,
+        int rightPrimaryKeyColumnIndex,
+        Expression? residualCondition,
+        TableSchema compositeSchema,
+        IRecordSerializer? recordSerializer = null,
+        int? estimatedOutputRowCount = null)
+    {
+        _outer = outer;
+        _innerTableTree = innerTableTree;
+        _innerIndexStore = innerIndexStore;
+        _joinType = joinType;
+        _outerKeyIndices = outerKeyIndices.ToArray();
+        _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
+        _leftColCount = leftColCount;
+        _rightColCount = rightColCount;
+        _rightPrimaryKeyColumnIndex = rightPrimaryKeyColumnIndex;
+        _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
+        _residualPredicate = residualCondition != null
+            ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
+            : null;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_outer is IRowBufferReuseController outerController)
+            outerController.SetReuseCurrentRowBuffer(true);
+
+        await _outer.OpenAsync(ct);
+        Current = Array.Empty<DbValue>();
+        int decodedRightColumnCount = GetDecodedRightColumnCount();
+        _rightRowBuffer = decodedRightColumnCount == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[decodedRightColumnCount];
+        _residualRowBuffer = _residualPredicate == null
+            ? null
+            : new DbValue[_leftColCount + _rightColCount];
+        ResetActiveOuterState();
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            if (_activeOuterRow != null)
+            {
+                while (TryReadPendingRowId(out long rowId))
+                {
+                    if (_rowIdsVerifiedByIndexPayload && _canProjectRightFromIndexPayload)
+                    {
+                        Current = CreateCoveredMatchedRow(_activeOuterRow, rowId);
+                        _activeOuterMatched = true;
+                        return true;
+                    }
+
+                    ReadOnlyMemory<byte>? payload;
+                    if (_innerTableTree.TryFindCachedMemory(rowId, out var cachedPayload))
+                    {
+                        payload = cachedPayload;
+                    }
+                    else
+                    {
+                        payload = await _innerTableTree.FindMemoryAsync(rowId, ct);
+                    }
+
+                    if (payload is not { } payloadMemory)
+                        continue;
+
+                    if (!_rowIdsVerifiedByIndexPayload && !MatchesExpectedKeyComponents(payloadMemory.Span))
+                        continue;
+
+                    var rightRow = DecodeRightRowIntoBuffer(payloadMemory.Span);
+                    if (!PassesResidual(_activeOuterRow, rightRow))
+                        continue;
+
+                    Current = CreateMatchedRow(_activeOuterRow, rightRow);
+                    _activeOuterMatched = true;
+                    return true;
+                }
+
+                if (!_activeOuterMatched && _joinType == JoinType.LeftOuter)
+                {
+                    Current = CreateLeftOuterRow(_activeOuterRow);
+                    ResetActiveOuterState();
+                    return true;
+                }
+
+                ResetActiveOuterState();
+                continue;
+            }
+
+            if (!await _outer.MoveNextAsync(ct))
+                return false;
+
+            var outerRow = _outer.Current;
+            if (!TryBuildLookupKey(outerRow, out long lookupKey, out var keyComponents))
+            {
+                if (_joinType == JoinType.LeftOuter)
+                {
+                    Current = CreateLeftOuterRow(outerRow);
+                    return true;
+                }
+
+                continue;
+            }
+
+            _activeOuterRow = outerRow;
+            _activeOuterMatched = false;
+            _currentKeyComponents = keyComponents;
+            _currentKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+
+            byte[]? indexPayload;
+            if (_innerIndexStore is ICacheAwareIndexStore cacheAware &&
+                cacheAware.TryFindCached(lookupKey, out var cachedIndexPayload))
+            {
+                indexPayload = cachedIndexPayload;
+            }
+            else
+            {
+                indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
+            }
+
+            InitializePendingRowIds(indexPayload);
+        }
+    }
+
+    public ValueTask DisposeAsync() => _outer.DisposeAsync();
+
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        if (columnIndices == null)
+            throw new ArgumentNullException(nameof(columnIndices));
+        if (outputSchema == null)
+            throw new ArgumentNullException(nameof(outputSchema));
+
+        int compositeColumnCount = _leftColCount + _rightColCount;
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (columnIndex < 0 || columnIndex >= compositeColumnCount)
+                return false;
+        }
+
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        TryApplyDecodeBoundPushdown();
+        _canProjectRightFromIndexPayload = CanProjectRightFromIndexPayload();
+        return true;
+    }
+
+    private void TryApplyDecodeBoundPushdown()
+    {
+        if (_projectionColumnIndices == null)
+            return;
+
+        if (_residualPredicate != null)
+            return;
+
+        var outerFlags = new bool[_leftColCount];
+        var rightFlags = new bool[_rightColCount];
+        int outerRequiredCount = 0;
+        int rightRequiredCount = 0;
+
+        void MarkOuterRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_leftColCount || outerFlags[columnIndex])
+                return;
+
+            outerFlags[columnIndex] = true;
+            outerRequiredCount++;
+        }
+
+        void MarkRightRequired(int columnIndex)
+        {
+            if ((uint)columnIndex >= (uint)_rightColCount || rightFlags[columnIndex])
+                return;
+
+            rightFlags[columnIndex] = true;
+            rightRequiredCount++;
+        }
+
+        for (int i = 0; i < _outerKeyIndices.Length; i++)
+            MarkOuterRequired(_outerKeyIndices[i]);
+
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            int projectionIndex = _projectionColumnIndices[i];
+            if (projectionIndex < _leftColCount)
+                MarkOuterRequired(projectionIndex);
+            else
+                MarkRightRequired(projectionIndex - _leftColCount);
+        }
+
+        int[] outerRequiredColumns = BuildRequiredColumnIndices(outerFlags, outerRequiredCount);
+        _decodedRightColumnIndices = BuildRequiredColumnIndices(rightFlags, rightRequiredCount);
+        _maxDecodedRightColumnIndex = _decodedRightColumnIndices.Length == 0
+            ? -1
+            : _decodedRightColumnIndices[^1];
+
+        if (!TrySetDecodedColumnIndices(_outer, outerRequiredColumns) && outerRequiredColumns.Length > 0)
+            TrySetDecodedColumnUpperBound(_outer, outerRequiredColumns[^1]);
+    }
+
+    private static int[] BuildRequiredColumnIndices(bool[] flags, int count)
+    {
+        if (count <= 0)
+            return Array.Empty<int>();
+
+        var columns = new int[count];
+        int cursor = 0;
+        for (int i = 0; i < flags.Length; i++)
+        {
+            if (!flags[i])
+                continue;
+
+            columns[cursor++] = i;
+        }
+
+        return columns;
+    }
+
+    private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
+    {
+        if (columnIndices.Length == 0)
+            return true;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
+    {
+        if (maxColumnIndex < 0)
+            return;
+
+        switch (op)
+        {
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
+                break;
+        }
+    }
+
+    private bool TryBuildLookupKey(DbValue[] outerRow, out long lookupKey, out DbValue[] keyComponents)
+    {
+        lookupKey = 0;
+        keyComponents = new DbValue[_outerKeyIndices.Length];
+        for (int i = 0; i < _outerKeyIndices.Length; i++)
+        {
+            int outerKeyIndex = _outerKeyIndices[i];
+            var value = outerKeyIndex < outerRow.Length
+                ? outerRow[outerKeyIndex]
+                : DbValue.Null;
+
+            if (value.IsNull || value.Type is not (DbType.Integer or DbType.Text))
+                return false;
+
+            keyComponents[i] = value;
+        }
+
+        lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+        return true;
+    }
+
+    private void InitializePendingRowIds(byte[]? payload)
+    {
+        _pendingRowIdOffset = 0;
+        _rowIdsVerifiedByIndexPayload = false;
+
+        if (_currentKeyComponents is { Length: > 0 } &&
+            payload is { Length: > 0 } &&
+            HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, _currentKeyComponents, _currentKeyTextBytes, out var matchingRowIds))
+        {
+            _pendingRowIdPayload = matchingRowIds;
+            _rowIdsVerifiedByIndexPayload = true;
+            return;
+        }
+
+        _pendingRowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
+    }
+
+    private bool MatchesExpectedKeyComponents(ReadOnlySpan<byte> payload)
+    {
+        if (_currentKeyComponents is not { Length: > 0 })
+            return false;
+
+        return BoundColumnAccessHelper.MatchesKeyComponents(
+            payload,
+            _recordSerializer,
+            _rightKeyColumnIndices,
+            _currentKeyComponents,
+            EnsureKeyAccessors(),
+            _currentKeyTextBytes);
+    }
+
+    private RecordColumnAccessor?[] EnsureKeyAccessors()
+        => _keyAccessors ??= BoundColumnAccessHelper.CreateAccessors(_recordSerializer, _rightKeyColumnIndices);
+
+    private bool PassesResidual(DbValue[] leftRow, DbValue[] rightRow)
+    {
+        if (_residualPredicate == null)
+            return true;
+
+        var combined = _residualRowBuffer ??= new DbValue[_leftColCount + _rightColCount];
+        leftRow.CopyTo(combined, 0);
+        rightRow.CopyTo(combined, leftRow.Length);
+        return _residualPredicate(combined).IsTruthy;
+    }
+
+    private bool TryReadPendingRowId(out long rowId)
+    {
+        if (_pendingRowIdOffset + sizeof(long) > _pendingRowIdPayload.Length)
+        {
+            rowId = 0;
+            return false;
+        }
+
+        rowId = BinaryPrimitives.ReadInt64LittleEndian(
+            _pendingRowIdPayload.Span.Slice(_pendingRowIdOffset, sizeof(long)));
+        _pendingRowIdOffset += sizeof(long);
+        return true;
+    }
+
+    private void ResetActiveOuterState()
+    {
+        _activeOuterRow = null;
+        _activeOuterMatched = false;
+        _pendingRowIdPayload = ReadOnlyMemory<byte>.Empty;
+        _pendingRowIdOffset = 0;
+        _rowIdsVerifiedByIndexPayload = false;
+        _currentKeyComponents = null;
+        _currentKeyTextBytes = null;
+    }
+
+    private DbValue[] DecodeRightRowIntoBuffer(ReadOnlySpan<byte> payload)
+    {
+        var row = _rightRowBuffer;
+        if (row == null)
+        {
+            int decodedRightColumnCount = GetDecodedRightColumnCount();
+            row = decodedRightColumnCount == 0
+                ? Array.Empty<DbValue>()
+                : new DbValue[decodedRightColumnCount];
+            _rightRowBuffer = row;
+        }
+
+        var decodedRightColumnIndices = _decodedRightColumnIndices;
+        if (decodedRightColumnIndices is { Length: > 0 })
+        {
+            Array.Fill(row, DbValue.Null);
+            _recordSerializer.DecodeSelectedInto(payload, row, decodedRightColumnIndices);
+            return row;
+        }
+
+        if (row.Length == 0)
+            return row;
+
+        int decoded = _recordSerializer.DecodeInto(payload, row);
+        if (decoded < row.Length)
+            Array.Fill(row, DbValue.Null, decoded, row.Length - decoded);
+        return row;
+    }
+
+    private int GetDecodedRightColumnCount()
+        => _maxDecodedRightColumnIndex.HasValue
+            ? Math.Max(0, _maxDecodedRightColumnIndex.Value + 1)
+            : _rightColCount;
+
+    private DbValue[] CreateMatchedRow(DbValue[] leftRow, DbValue[] rightRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineRows(leftRow, rightRow)
+            : ProjectRows(leftRow, rightRow, projection);
+    }
+
+    private bool CanProjectRightFromIndexPayload()
+    {
+        if (_projectionColumnIndices == null || _residualPredicate != null)
+            return false;
+
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            int projectionIndex = _projectionColumnIndices[i];
+            if (projectionIndex < _leftColCount)
+                continue;
+
+            int rightColumnIndex = projectionIndex - _leftColCount;
+            if (rightColumnIndex == _rightPrimaryKeyColumnIndex)
+                continue;
+
+            bool matchedKeyColumn = false;
+            for (int j = 0; j < _rightKeyColumnIndices.Length; j++)
+            {
+                if (_rightKeyColumnIndices[j] == rightColumnIndex)
+                {
+                    matchedKeyColumn = true;
+                    break;
+                }
+            }
+
+            if (!matchedKeyColumn)
+                return false;
+        }
+
+        return true;
+    }
+
+    private DbValue[] CreateCoveredMatchedRow(DbValue[] leftRow, long rowId)
+    {
+        var projection = _projectionColumnIndices;
+        var keyComponents = _currentKeyComponents;
+        if (projection == null || keyComponents == null)
+            return Array.Empty<DbValue>();
+
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        DbValue rowIdValue = DbValue.FromInteger(rowId);
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int projectionIndex = projection[i];
+            if (projectionIndex < _leftColCount)
+            {
+                projected[i] = projectionIndex < leftRow.Length
+                    ? leftRow[projectionIndex]
+                    : DbValue.Null;
+                continue;
+            }
+
+            int rightColumnIndex = projectionIndex - _leftColCount;
+            if (rightColumnIndex == _rightPrimaryKeyColumnIndex)
+            {
+                projected[i] = rowIdValue;
+                continue;
+            }
+
+            int keyComponentIndex = -1;
+            for (int j = 0; j < _rightKeyColumnIndices.Length; j++)
+            {
+                if (_rightKeyColumnIndices[j] == rightColumnIndex)
+                {
+                    keyComponentIndex = j;
+                    break;
+                }
+            }
+
+            projected[i] = keyComponentIndex >= 0
+                ? keyComponents[keyComponentIndex]
+                : DbValue.Null;
+        }
+
+        return projected;
+    }
+
+    private DbValue[] CreateLeftOuterRow(DbValue[] leftRow)
+    {
+        var projection = _projectionColumnIndices;
+        return projection == null
+            ? CombineWithNulls(leftRow, _rightColCount, padRight: true)
+            : ProjectLeftWithNullRight(leftRow, projection);
+    }
+
+    private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)
+    {
+        var combined = new DbValue[left.Length + right.Length];
+        left.CopyTo(combined, 0);
+        right.CopyTo(combined, left.Length);
+        return combined;
+    }
+
+    private static DbValue[] CombineWithNulls(DbValue[] dataRow, int nullCount, bool padRight)
+    {
+        var combined = new DbValue[dataRow.Length + nullCount];
+        if (padRight)
+        {
+            dataRow.CopyTo(combined, 0);
+            for (int i = dataRow.Length; i < combined.Length; i++)
+                combined[i] = DbValue.Null;
+        }
+        else
+        {
+            for (int i = 0; i < nullCount; i++)
+                combined[i] = DbValue.Null;
+            dataRow.CopyTo(combined, nullCount);
+        }
+        return combined;
+    }
+
+    private DbValue[] ProjectLeftWithNullRight(DbValue[] leftRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                projected[i] = DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+
+    private DbValue[] ProjectRows(DbValue[] leftRow, DbValue[] rightRow, int[] projection)
+    {
+        if (projection.Length == 0)
+            return Array.Empty<DbValue>();
+
+        var projected = new DbValue[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                projected[i] = columnIndex < leftRow.Length
+                    ? leftRow[columnIndex]
+                    : DbValue.Null;
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                projected[i] = rightIndex < rightRow.Length
+                    ? rightRow[rightIndex]
+                    : DbValue.Null;
+            }
+        }
+
+        return projected;
+    }
+}
+
+/// <summary>
 /// Nested-loop join operator — materializes both sides and computes the join.
 /// Supports INNER, LEFT OUTER, RIGHT OUTER, and CROSS joins.
 /// </summary>

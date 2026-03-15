@@ -2394,6 +2394,124 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InnerJoin_OnRightCompositeIndex_UsesHashedLookupPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE left_comp_lookup (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, label TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_lookup VALUES (1, 10, 'alpha', 'L1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_lookup VALUES (2, 20, 'beta', 'L2')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_lookup VALUES (3, 30, 'gamma', 'L3')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_comp_lookup (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, amount INTEGER, left_id INTEGER)",
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_lookup_ab ON right_comp_lookup(a, b)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_lookup VALUES (10, 10, 'alpha', 100, 1)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_lookup VALUES (11, 20, 'beta', 200, 2)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_lookup VALUES (12, 30, 'gamma', 300, 3)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.label, r.amount FROM left_comp_lookup l JOIN right_comp_lookup r ON l.b = r.b AND l.a = r.a") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<HashedIndexNestedLoopJoinOperator>(rootOperator);
+
+        var orderedOuterKeys = GetPrivateField<int[]>(rootOperator, "_outerKeyIndices");
+        var orderedRightKeys = GetPrivateField<int[]>(rootOperator, "_rightKeyColumnIndices");
+        var decodedRightColumns = GetPrivateField<int[]>(rootOperator, "_decodedRightColumnIndices");
+        Assert.NotNull(orderedOuterKeys);
+        Assert.NotNull(orderedRightKeys);
+        Assert.Equal([1, 2], orderedOuterKeys!);
+        Assert.Equal([1, 2], orderedRightKeys!);
+        Assert.NotNull(decodedRightColumns);
+        Assert.Equal([3], decodedRightColumns!);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal("L1", rows[0][0].AsText);
+        Assert.Equal(100L, rows[0][1].AsInteger);
+        Assert.Equal("L2", rows[1][0].AsText);
+        Assert.Equal(200L, rows[1][1].AsInteger);
+        Assert.Equal("L3", rows[2][0].AsText);
+        Assert.Equal(300L, rows[2][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task LeftJoin_OnRightTextIndex_UsesHashedLookupPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE left_text_lookup (id INTEGER PRIMARY KEY, code TEXT, label TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO left_text_lookup VALUES (1, 'A-10', 'L1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_text_lookup VALUES (2, 'B-20', 'L2')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_text_lookup VALUES (3, 'C-30', 'L3')", ct);
+
+        await _db.ExecuteAsync("CREATE TABLE right_text_lookup (id INTEGER PRIMARY KEY, code TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_text_lookup_code ON right_text_lookup(code)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_text_lookup VALUES (10, 'A-10', 'R1')", ct);
+        await _db.ExecuteAsync("INSERT INTO right_text_lookup VALUES (11, 'B-20', 'R2')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.id, r.payload FROM left_text_lookup l LEFT JOIN right_text_lookup r ON l.code = r.code") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<HashedIndexNestedLoopJoinOperator>(rootOperator);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal("R1", rows[0][1].AsText);
+        Assert.Equal(2L, rows[1][0].AsInteger);
+        Assert.Equal("R2", rows[1][1].AsText);
+        Assert.Equal(3L, rows[2][0].AsInteger);
+        Assert.True(rows[2][1].IsNull);
+    }
+
+    [Fact]
+    public async Task InnerJoin_OnRightCompositeIndex_CoveredProjection_UsesIndexPayload()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE left_comp_cov (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, label TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_cov VALUES (1, 10, 'alpha', 'L1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_cov VALUES (2, 20, 'beta', 'L2')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_comp_cov (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, amount INTEGER)",
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_cov_ab ON right_comp_cov(a, b)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_cov VALUES (10, 10, 'alpha', 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_cov VALUES (11, 20, 'beta', 200)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.label, r.id, r.a, r.b FROM left_comp_cov l JOIN right_comp_cov r ON l.b = r.b AND l.a = r.a") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<HashedIndexNestedLoopJoinOperator>(rootOperator);
+
+        var coveredProjection = GetPrivateField<bool>(rootOperator, "_canProjectRightFromIndexPayload");
+        Assert.True(coveredProjection);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal("L1", rows[0][0].AsText);
+        Assert.Equal(10L, rows[0][1].AsInteger);
+        Assert.Equal(10L, rows[0][2].AsInteger);
+        Assert.Equal("alpha", rows[0][3].AsText);
+        Assert.Equal("L2", rows[1][0].AsText);
+        Assert.Equal(11L, rows[1][1].AsInteger);
+        Assert.Equal(20L, rows[1][2].AsInteger);
+        Assert.Equal("beta", rows[1][3].AsText);
+    }
+
+    [Fact]
     public async Task Scan_WithCompoundSimpleWhere_UsesMultiplePreDecodeFilters()
     {
         var ct = TestContext.Current.CancellationToken;

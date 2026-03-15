@@ -333,6 +333,10 @@ Defaults:
 |--------|------|-----------|-------|
 | Wide late-projection hash join (`1K x 1K`) | 372.8 us | 329.92 KB | Hash join trims both sides to join keys plus projected tail columns |
 | Wide late-projection forced nested-loop join (`1K x 1K`) | 45.70 ms | 492.52 KB | Nested-loop path now trims decode too, but still remains far slower than hash join |
+| Composite join `SELECT l.label, r.amount` lookup join (`1K x 1K`) | 514.3 us | 411.48 KB | New right-side composite/text lookup join path over hashed secondary indexes; still fetches base rows for non-covered right columns |
+| Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 478.9 us | 646.49 KB | Same join shape forced back to hash join; slightly faster here, but with materially higher allocation |
+| Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 432.6 us | 474.33 KB | Covered composite join now stays on index payloads for right PK and indexed key columns |
+| Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 533.8 us | 709.36 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the new covered lookup path |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 

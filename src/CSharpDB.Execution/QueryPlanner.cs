@@ -4938,66 +4938,86 @@ public sealed class QueryPlanner
             return false;
         }
 
-        // Index nested-loop currently supports single key lookups only.
-        if (leftKeyIndices.Length != 1 || rightKeyIndices.Length != 1)
-            return false;
-
-        int leftKeyIndex = leftKeyIndices[0];
-        int rightKeyIndex = rightKeyIndices[0];
-        if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
-            return false;
-
-        var rightKeyColumn = rightSchema.Columns[rightKeyIndex];
-        if (rightKeyColumn.Type != DbType.Integer)
+        if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
             return false;
 
         var rightTableTree = _catalog.GetTableTree(rightSimple.TableName, _pager);
         IIndexStore? rightIndexStore = null;
         bool lookupIsUnique = false;
         bool lookupIsPrimaryKey = false;
+        bool usesDirectIntegerLookup = false;
+        int[]? orderedLeftKeyIndices = null;
+        int[]? orderedRightKeyIndices = null;
 
         int rightPkIndex = rightSchema.PrimaryKeyColumnIndex;
         bool usesPrimaryKeyLookup =
-            rightPkIndex == rightKeyIndex &&
+            rightKeyIndices.Length == 1 &&
+            rightPkIndex == rightKeyIndices[0] &&
             rightSchema.Columns[rightPkIndex].Type == DbType.Integer;
 
-        if (!usesPrimaryKeyLookup)
+        if (usesPrimaryKeyLookup)
         {
-            // Secondary indexes in this engine omit NULL keys.
-            // Preserve current expression semantics by using index lookup only
-            // when the join key column is non-nullable.
-            if (rightKeyColumn.Nullable)
-                return false;
+            lookupIsUnique = true;
+            lookupIsPrimaryKey = true;
+            usesDirectIntegerLookup = true;
+            orderedLeftKeyIndices = [leftKeyIndices[0]];
+            orderedRightKeyIndices = [rightKeyIndices[0]];
+        }
+        else
+        {
+            for (int i = 0; i < rightKeyIndices.Length; i++)
+            {
+                int rightKeyIndex = rightKeyIndices[i];
+                if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
+                    return false;
+
+                var rightKeyColumn = rightSchema.Columns[rightKeyIndex];
+                if (rightKeyColumn.Type is not (DbType.Integer or DbType.Text))
+                    return false;
+            }
 
             var indexes = _catalog.GetIndexesForTable(rightSimple.TableName);
             IndexSchema? selected = null;
-            foreach (var idx in indexes)
+            int[]? selectedLeftKeyIndices = null;
+            int[]? selectedRightKeyIndices = null;
+            bool selectedUsesDirectIntegerKey = false;
+            for (int i = 0; i < indexes.Count; i++)
             {
-                if (idx.Columns.Count != 1 ||
-                    !string.Equals(idx.Columns[0], rightKeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+                var idx = indexes[i];
+                if (!TryMatchJoinLookupIndex(
+                        idx,
+                        rightSchema,
+                        leftKeyIndices,
+                        rightKeyIndices,
+                        out var candidateLeftKeyIndices,
+                        out var candidateRightKeyIndices))
                 {
                     continue;
                 }
 
-                if (idx.IsUnique)
+                bool candidateUsesDirectIntegerKey =
+                    candidateRightKeyIndices.Length == 1 &&
+                    rightSchema.Columns[candidateRightKeyIndices[0]].Type == DbType.Integer;
+
+                if (selected == null ||
+                    (idx.IsUnique && !selected.IsUnique) ||
+                    (candidateUsesDirectIntegerKey && !selectedUsesDirectIntegerKey && idx.IsUnique == selected.IsUnique))
                 {
                     selected = idx;
-                    break;
+                    selectedLeftKeyIndices = candidateLeftKeyIndices;
+                    selectedRightKeyIndices = candidateRightKeyIndices;
+                    selectedUsesDirectIntegerKey = candidateUsesDirectIntegerKey;
                 }
-
-                selected ??= idx;
             }
 
-            if (selected == null)
+            if (selected == null || selectedLeftKeyIndices == null || selectedRightKeyIndices == null)
                 return false;
 
             rightIndexStore = _catalog.GetIndexStore(selected.IndexName, _pager);
             lookupIsUnique = selected.IsUnique;
-        }
-        else
-        {
-            lookupIsUnique = true;
-            lookupIsPrimaryKey = true;
+            usesDirectIntegerLookup = selectedUsesDirectIntegerKey;
+            orderedLeftKeyIndices = selectedLeftKeyIndices;
+            orderedRightKeyIndices = selectedRightKeyIndices;
         }
 
         bool hasOuterEstimate = TryEstimateTableRefRowCount(join.Left, out long outerRows);
@@ -5017,18 +5037,95 @@ public sealed class QueryPlanner
             ? ToCapacityHint(outerRows)
             : EstimateJoinOutputRowCount(join.JoinType, hasOuterEstimate, outerRows, hasInnerEstimate, innerRows);
 
-        indexNestedJoinOp = new IndexNestedLoopJoinOperator(
-            leftOp,
-            rightTableTree,
-            rightIndexStore,
-            join.JoinType,
-            leftKeyIndex,
-            leftSchema.Columns.Count,
-            rightSchema.Columns.Count,
-            residualCondition,
-            compositeSchema,
-            GetReadSerializer(rightSchema),
-            estimatedOutputRowCount);
+        if (orderedLeftKeyIndices == null || orderedRightKeyIndices == null)
+            return false;
+
+        if (usesDirectIntegerLookup)
+        {
+            indexNestedJoinOp = new IndexNestedLoopJoinOperator(
+                leftOp,
+                rightTableTree,
+                rightIndexStore,
+                join.JoinType,
+                orderedLeftKeyIndices[0],
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                residualCondition,
+                compositeSchema,
+                GetReadSerializer(rightSchema),
+                estimatedOutputRowCount);
+        }
+        else
+        {
+            indexNestedJoinOp = new HashedIndexNestedLoopJoinOperator(
+                leftOp,
+                rightTableTree,
+                rightIndexStore!,
+                join.JoinType,
+                orderedLeftKeyIndices,
+                orderedRightKeyIndices,
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                rightSchema.PrimaryKeyColumnIndex,
+                residualCondition,
+                compositeSchema,
+                GetReadSerializer(rightSchema),
+                estimatedOutputRowCount);
+        }
+
+        return true;
+    }
+
+    private static bool TryMatchJoinLookupIndex(
+        IndexSchema indexSchema,
+        TableSchema rightSchema,
+        ReadOnlySpan<int> leftKeyIndices,
+        ReadOnlySpan<int> rightKeyIndices,
+        out int[] orderedLeftKeyIndices,
+        out int[] orderedRightKeyIndices)
+    {
+        orderedLeftKeyIndices = Array.Empty<int>();
+        orderedRightKeyIndices = Array.Empty<int>();
+
+        if (indexSchema.Columns.Count != rightKeyIndices.Length)
+            return false;
+
+        var consumed = new bool[rightKeyIndices.Length];
+        orderedLeftKeyIndices = new int[indexSchema.Columns.Count];
+        orderedRightKeyIndices = new int[indexSchema.Columns.Count];
+
+        for (int indexColumn = 0; indexColumn < indexSchema.Columns.Count; indexColumn++)
+        {
+            string indexColumnName = indexSchema.Columns[indexColumn];
+            int match = -1;
+            for (int candidate = 0; candidate < rightKeyIndices.Length; candidate++)
+            {
+                if (consumed[candidate])
+                    continue;
+
+                int rightKeyIndex = rightKeyIndices[candidate];
+                if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
+                    return false;
+
+                if (!string.Equals(
+                        rightSchema.Columns[rightKeyIndex].Name,
+                        indexColumnName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                match = candidate;
+                break;
+            }
+
+            if (match < 0)
+                return false;
+
+            consumed[match] = true;
+            orderedLeftKeyIndices[indexColumn] = leftKeyIndices[match];
+            orderedRightKeyIndices[indexColumn] = rightKeyIndices[match];
+        }
 
         return true;
     }
