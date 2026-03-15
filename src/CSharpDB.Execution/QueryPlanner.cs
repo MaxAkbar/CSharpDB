@@ -6494,14 +6494,18 @@ public sealed class QueryPlanner
 
         if (stmt.GroupBy != null || stmt.Having != null)
             return false;
+        if (stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression)))
+            return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
         if (stmt.Limit.HasValue || stmt.Offset.HasValue)
             return false;
 
-        var schema = _catalog.GetTable(simpleRef.TableName);
-        if (schema == null)
+        var baseSchema = _catalog.GetTable(simpleRef.TableName);
+        if (baseSchema == null)
             return false;
+        var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
+        var serializer = GetReadSerializer(baseSchema);
 
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
             ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
@@ -6509,8 +6513,20 @@ public sealed class QueryPlanner
             return false;
 
         IOperator op = indexOp;
-        if (remainingWhere != null && TryPushDownSimplePreDecodeFilter(op, remainingWhere, schema, out var pushedWhere))
-            remainingWhere = pushedWhere;
+        List<PushdownPredicateSpec>? pushedPredicates = null;
+        if (remainingWhere != null &&
+            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+        {
+            pushedPredicates = extractedPredicates;
+            remainingWhere = residualWhere;
+
+            for (int i = 0; i < pushedPredicates.Count; i++)
+            {
+                var predicate = pushedPredicates[i];
+                if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+        }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
@@ -6548,6 +6564,26 @@ public sealed class QueryPlanner
                 return true;
             }
 
+            if (indexOp is IEncodedPayloadSource &&
+                TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
+            {
+                var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
+                if (TryBuildColumnProjection(stmt.Columns, compactSchema, out var compactProjectionIndices, out var compactOutputCols))
+                {
+                    var compactOp = new CompactPayloadProjectionOperator(
+                        indexOp,
+                        serializer,
+                        decodeColumnIndices,
+                        compactProjectionIndices,
+                        compactOutputCols);
+                    if (remainingWhere != null)
+                        compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+                    result = new QueryResult(compactOp);
+                    return true;
+                }
+            }
+
             int maxCol = -1;
             for (int i = 0; i < columnIndices.Length; i++)
                 if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
@@ -6566,6 +6602,28 @@ public sealed class QueryPlanner
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = new QueryResult(op);
+            return true;
+        }
+
+        if (indexOp is IEncodedPayloadSource &&
+            TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var expressionDecodeColumnIndices))
+        {
+            var compactSchema = CreateCompactProjectionSchema(schema, expressionDecodeColumnIndices);
+            var expressions = stmt.Columns.Select(c => c.Expression!).ToArray();
+            var expressionOutputCols = new ColumnDefinition[expressions.Length];
+            for (int i = 0; i < expressions.Length; i++)
+                expressionOutputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, compactSchema, i);
+
+            var compactExpressionOp = new CompactPayloadProjectionOperator(
+                indexOp,
+                serializer,
+                expressionDecodeColumnIndices,
+                expressionOutputCols,
+                GetOrCompileExpressions(expressions, compactSchema));
+            if (remainingWhere != null)
+                compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+            result = new QueryResult(compactExpressionOp);
             return true;
         }
 

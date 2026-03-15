@@ -38,6 +38,11 @@ internal interface IProjectionPushdownTarget
     bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema);
 }
 
+internal interface IEncodedPayloadSource
+{
+    ReadOnlyMemory<byte> CurrentPayload { get; }
+}
+
 internal interface IMaterializedRowsProvider
 {
     bool TryTakeMaterializedRows(out List<DbValue[]> rows);

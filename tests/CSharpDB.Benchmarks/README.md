@@ -115,7 +115,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `BTreeCursorBenchmarks`: isolates raw forward cursor traversal and seek+window scans over a B+tree so sequential leaf-scan changes can be measured without the SQL executor on top
 - `CoveringIndexBenchmarks`: isolates unique-index lookup shapes that could become index-only from shapes that still need the wide base-row payload
 - `IndexProjectionBenchmarks`: isolates non-unique secondary-index lookups where `SELECT id` or `SELECT indexed_col` can now avoid base-row fetches
-- `OrderByIndexBenchmarks`: isolates indexed `ORDER BY` and integer range scan shapes where `SELECT id, value` can now stay on index data instead of fetching base rows
+- `OrderByIndexBenchmarks`: isolates indexed `ORDER BY`, covered integer range scans, and compact non-covered range projection shapes where indexed filtering still avoids full row materialization
 - `IndexAggregateBenchmarks`: isolates scalar `SUM` / `COUNT` / `MIN` / `MAX` queries and range aggregates that can now execute directly from integer index keys
 - `PrimaryKeyAggregateBenchmarks`: isolates scalar and ranged aggregates that can now execute directly from the `INTEGER PRIMARY KEY` table B-tree key stream
 - `GroupedIndexAggregateBenchmarks`: isolates `GROUP BY` on a duplicate-heavy integer key so grouped aggregates can be compared against the new direct index-grouped fast path
@@ -239,12 +239,14 @@ Defaults:
 | Unique index lookup `SELECT lookup_key` (100K rows) | 5.78 us | 1.11 KB | Covered projection from index payload |
 | Non-unique index lookup `SELECT *` (100K rows) | 388.88 us | 71.04 KB | Baseline duplicate-key secondary-index lookup |
 | Non-unique index lookup `SELECT id` (100K rows) | 378.87 us | 33.59 KB | Covered projection drops most row materialization cost |
-| `ORDER BY value` no index (100K rows) | 140.25 ms | 46.95 MB | Full sort baseline from the post-read-ahead rerun |
-| `ORDER BY value` covered index-order scan (100K rows) | 32.19 ms | 14.44 MB | `SELECT id, value` stays on index data |
-| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 40.92 us | 34.18 KB | Index order avoids sort, still fetches base rows |
-| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 18.95 us | 15.97 KB | Index-only top-N path |
-| `WHERE value BETWEEN ...` row fetch (100K rows) | 51.00 ms | 16.36 MB | Integer range scan with base-row fetch |
-| `WHERE value BETWEEN ...` covered projection (100K rows) | 14.69 ms | 7.23 MB | Integer range scan that stays on index data |
+| `ORDER BY value` no index (100K rows) | 155.35 ms | 48.64 MB | Full sort baseline from the latest indexed-order rerun |
+| `ORDER BY value` covered index-order scan (100K rows) | 28.06 ms | 14.56 MB | `SELECT id, value` stays on index data |
+| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 37.47 us | 34.37 KB | Index order avoids sort, still fetches base rows |
+| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 19.99 us | 16.35 KB | Index-only top-N path |
+| `WHERE value BETWEEN ...` row fetch (100K rows) | 50.48 ms | 16.43 MB | Integer range scan with base-row fetch |
+| `WHERE value BETWEEN ...` covered projection (100K rows) | 15.88 ms | 7.30 MB | Integer range scan that stays on index data |
+| `WHERE value BETWEEN ... SELECT id, category` compact projection (100K rows) | 36.79 ms | 7.28 MB | Non-covered indexed range scan decodes only projected payload columns instead of wide rows |
+| `WHERE value BETWEEN ... SELECT id, value + id` compact expression projection (100K rows) | 42.45 ms | 11.47 MB | Indexed range scan keeps the compact payload decode path even when projection includes an expression |
 
 ### SQL Composite Equality Lookup Spot Checks (March 14, 2026)
 

@@ -238,7 +238,7 @@ internal static class BoundColumnAccessHelper
 /// <summary>
 /// Full table scan operator — reads all rows from a B+tree via cursor.
 /// </summary>
-public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
+public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
 {
     private readonly BTree _tree;
     private readonly TableSchema _schema;
@@ -263,7 +263,7 @@ public sealed class TableScanOperator : IOperator, IRowBufferReuseController, IP
     public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
-    internal ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
+    public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal int? DecodedColumnUpperBound => _maxDecodedColumnIndex;
 
     public TableScanOperator(
@@ -1040,6 +1040,185 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
         int length = _additionalPreDecodeFilters.Length;
         Array.Resize(ref _additionalPreDecodeFilters, length + 1);
         _additionalPreDecodeFilters[length] = filter;
+    }
+}
+
+/// <summary>
+/// Compact projection path that reuses an existing payload-producing source
+/// and decodes only the referenced columns into a compact row layout.
+/// </summary>
+public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReuseController, IEstimatedRowCountProvider
+{
+    private readonly IOperator _source;
+    private readonly IEncodedPayloadSource _payloadSource;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly int[] _decodedColumnIndices;
+    private readonly int[] _projectionColumnIndices;
+    private readonly Func<DbValue[], DbValue>[]? _expressionEvaluators;
+    private bool _reuseCurrentRowBuffer = true;
+    private DbValue[]? _decodedRowBuffer;
+    private DbValue[]? _projectedRowBuffer;
+    private Func<DbValue[], DbValue>? _predicateEvaluator;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public int? EstimatedRowCount => _source is IEstimatedRowCountProvider estimated ? estimated.EstimatedRowCount : null;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public CompactPayloadProjectionOperator(
+        IOperator source,
+        IRecordSerializer recordSerializer,
+        int[] decodedColumnIndices,
+        int[] projectionColumnIndices,
+        ColumnDefinition[] outputSchema)
+    {
+        _source = source;
+        _payloadSource = source as IEncodedPayloadSource
+            ?? throw new ArgumentException("Source must expose encoded payload.", nameof(source));
+        _recordSerializer = recordSerializer;
+        _decodedColumnIndices = decodedColumnIndices;
+        _projectionColumnIndices = projectionColumnIndices;
+        OutputSchema = outputSchema;
+    }
+
+    public CompactPayloadProjectionOperator(
+        IOperator source,
+        IRecordSerializer recordSerializer,
+        int[] decodedColumnIndices,
+        ColumnDefinition[] outputSchema,
+        Func<DbValue[], DbValue>[] expressionEvaluators)
+    {
+        _source = source;
+        _payloadSource = source as IEncodedPayloadSource
+            ?? throw new ArgumentException("Source must expose encoded payload.", nameof(source));
+        _recordSerializer = recordSerializer;
+        _decodedColumnIndices = decodedColumnIndices;
+        _projectionColumnIndices = Array.Empty<int>();
+        _expressionEvaluators = expressionEvaluators;
+        OutputSchema = outputSchema;
+    }
+
+    public void SetPredicateEvaluator(Func<DbValue[], DbValue>? predicateEvaluator)
+        => _predicateEvaluator = predicateEvaluator;
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        SuppressSourceDecode();
+        _decodedRowBuffer = null;
+        _projectedRowBuffer = null;
+        Current = Array.Empty<DbValue>();
+        await _source.OpenAsync(ct);
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        while (await _source.MoveNextAsync(ct))
+        {
+            DbValue[] decodedRow = DecodeRow(_payloadSource.CurrentPayload.Span);
+            if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
+                continue;
+
+            if (_expressionEvaluators != null)
+            {
+                DbValue[] projectedRow = GetProjectedRowBuffer(_expressionEvaluators.Length);
+                for (int i = 0; i < _expressionEvaluators.Length; i++)
+                    projectedRow[i] = _expressionEvaluators[i](decodedRow);
+
+                Current = projectedRow;
+                return true;
+            }
+
+            if (CanPassThroughDecodedRow())
+            {
+                Current = decodedRow;
+                return true;
+            }
+
+            DbValue[] outputRow = GetProjectedRowBuffer(_projectionColumnIndices.Length);
+            for (int i = 0; i < _projectionColumnIndices.Length; i++)
+                outputRow[i] = decodedRow[_projectionColumnIndices[i]];
+
+            Current = outputRow;
+            return true;
+        }
+
+        Current = Array.Empty<DbValue>();
+        return false;
+    }
+
+    public ValueTask DisposeAsync() => _source.DisposeAsync();
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        _reuseCurrentRowBuffer = reuse;
+        if (!reuse)
+        {
+            _decodedRowBuffer = null;
+            _projectedRowBuffer = null;
+            Current = Array.Empty<DbValue>();
+        }
+    }
+
+    private void SuppressSourceDecode()
+    {
+        switch (_source)
+        {
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(Array.Empty<int>());
+                break;
+            case IndexOrderedScanOperator orderedScan:
+                orderedScan.SetDecodedColumnIndices(Array.Empty<int>());
+                break;
+            case UniqueIndexLookupOperator uniqueLookup:
+                uniqueLookup.SetDecodedColumnIndices(Array.Empty<int>());
+                break;
+        }
+    }
+
+    private DbValue[] DecodeRow(ReadOnlySpan<byte> payload)
+    {
+        int decodeCount = _decodedColumnIndices.Length;
+        if (decodeCount == 0)
+            return Array.Empty<DbValue>();
+
+        DbValue[] row = _reuseCurrentRowBuffer
+            ? EnsureDecodedRowBuffer(decodeCount)
+            : new DbValue[decodeCount];
+        _recordSerializer.DecodeSelectedCompactInto(payload, row, _decodedColumnIndices);
+        return row;
+    }
+
+    private DbValue[] EnsureDecodedRowBuffer(int columnCount)
+    {
+        if (_decodedRowBuffer == null || _decodedRowBuffer.Length != columnCount)
+            _decodedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        return _decodedRowBuffer;
+    }
+
+    private DbValue[] GetProjectedRowBuffer(int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        if (_projectedRowBuffer == null || _projectedRowBuffer.Length != columnCount)
+            _projectedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        return _projectedRowBuffer;
+    }
+
+    private bool CanPassThroughDecodedRow()
+    {
+        if (_expressionEvaluators != null || _projectionColumnIndices.Length != _decodedColumnIndices.Length)
+            return false;
+
+        for (int i = 0; i < _projectionColumnIndices.Length; i++)
+        {
+            if (_projectionColumnIndices[i] != i)
+                return false;
+        }
+
+        return true;
     }
 }
 
@@ -6318,7 +6497,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IProjectionPushdownTarge
 /// The index stores: key = indexed column value, payload = list of rowids (each 8 bytes).
 /// For each matching rowid, looks up the actual row in the table's B+tree.
 /// </summary>
-public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
+public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -6344,12 +6523,14 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+    private ReadOnlyMemory<byte> _currentPayload;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
+    public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
@@ -6419,6 +6600,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
+        _currentPayload = ReadOnlyMemory<byte>.Empty;
         if (_indexStore is ICacheAwareIndexStore cacheAware &&
             cacheAware.TryFindCached(_seekValue, out var cachedPayload))
         {
@@ -6461,6 +6643,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
                 if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
 
+                _currentPayload = cachedPayloadMemory;
                 PopulateCurrentFromPayload(cachedPayloadMemory.Span);
                 return ValueTask.FromResult(true);
             }
@@ -6480,6 +6663,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
                  MatchesExpectedKeyComponents(payloadMemory.Span)) &&
                 (!_hasPreDecodeFilter || EvaluatePreDecodeFilter(payloadMemory.Span)))
             {
+                _currentPayload = payloadMemory;
                 PopulateCurrentFromPayload(payloadMemory.Span);
                 return true;
             }
@@ -6507,6 +6691,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
                 if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
 
+                _currentPayload = cachedPayloadMemory;
                 PopulateCurrentFromPayload(cachedPayloadMemory.Span);
                 return true;
             }
@@ -6659,7 +6844,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 /// Unique-index lookup operator — performs a direct secondary-index equality lookup
 /// and resolves exactly one rowid from the index payload.
 /// </summary>
-public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport, IEstimatedRowCountProvider
+public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -6676,12 +6861,14 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+    private ReadOnlyMemory<byte> _currentPayload;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
     public long CurrentRowId { get; private set; }
+    public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
@@ -6741,6 +6928,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
         _consumed = false;
+        _currentPayload = ReadOnlyMemory<byte>.Empty;
         return ValueTask.CompletedTask;
     }
 
@@ -6784,6 +6972,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
         }
 
         CurrentRowId = rowId;
+        _currentPayload = rowPayloadMemory;
         int targetColumnCount = _maxDecodedColumnIndex.HasValue
             ? Math.Max(0, _maxDecodedColumnIndex.Value + 1)
             : _schema.Columns.Count;
@@ -6864,7 +7053,7 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
 /// Ordered index scan operator — walks an index B+tree in key order and fetches table rows by rowid.
 /// Used to satisfy ORDER BY on indexed INTEGER columns without a Sort operator.
 /// </summary>
-public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport
+public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEncodedPayloadSource
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -6886,11 +7075,13 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
     private byte[]? _preDecodeFilterTextBytes;
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+    private ReadOnlyMemory<byte> _currentPayload;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public long CurrentRowId { get; private set; }
+    public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
 
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
@@ -6956,6 +7147,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
         _cursor = _indexStore.CreateCursor(_scanRange);
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
+        _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
@@ -6990,6 +7182,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IRowBufferReuseControl
                     continue;
 
                 CurrentRowId = rowId;
+                _currentPayload = payloadMemory;
                 PopulateCurrentFromPayload(payloadMemory.Span);
                 return true;
             }

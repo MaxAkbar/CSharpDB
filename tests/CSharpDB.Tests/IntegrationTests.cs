@@ -1226,6 +1226,58 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IndexedRangeColumnProjection_UsesCompactPayloadProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_index_cols (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, category TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_compact_index_cols_score ON compact_index_cols(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols VALUES (1, 10, 'A')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols VALUES (3, 30, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols VALUES (4, 40, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT s.id, s.category FROM compact_index_cols s WHERE s.score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompactPayloadProjectionOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal("B", rows[0][1].AsText);
+        Assert.Equal("C", rows[1][1].AsText);
+        Assert.Equal("D", rows[2][1].AsText);
+    }
+
+    [Fact]
+    public async Task IndexedRangeExpressionProjection_UsesCompactPayloadProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_index_expr (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_compact_index_expr_score ON compact_index_expr(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_expr VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_expr VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_expr VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_expr VALUES (4, 40)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT s.id, s.score + 5 FROM compact_index_expr s WHERE s.score BETWEEN 20 AND 40") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompactPayloadProjectionOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal(25L, rows[0][1].AsInteger);
+        Assert.Equal(35L, rows[1][1].AsInteger);
+        Assert.Equal(45L, rows[2][1].AsInteger);
+    }
+
+    [Fact]
     public async Task IntegerPrimaryKeyMin_UsesTableKeyAggregateFastPath()
     {
         var ct = TestContext.Current.CancellationToken;
