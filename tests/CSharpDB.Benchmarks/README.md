@@ -6,7 +6,7 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 
 - `Balanced macro capture on March 14, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260314-214358.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
+- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, ScalarAggregateBenchmarks, DistinctBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -16,6 +16,8 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScanBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScanProjectionBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ColdLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
@@ -70,6 +72,8 @@ dotnet run -c Release -- --micro --filter *CompositeGroupedIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *PredicatePushdownBenchmarks*
 dotnet run -c Release -- --micro --filter *ScanBenchmarks*
 dotnet run -c Release -- --micro --filter *ScanProjectionBenchmarks*
+dotnet run -c Release -- --micro --filter *ScalarAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *DistinctBenchmarks*
 dotnet run -c Release -- --micro --filter *JoinBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
 
@@ -351,18 +355,41 @@ Defaults:
 | `SELECT * WHERE value < 10000` (100K rows) | 57.85 ms | 21.93 MB | Same batched scan root with a low-selectivity predicate |
 | `SELECT * LIMIT 100` (100K rows) | 119.36 us | 97.50 KB | `LimitOperator` now preserves the scan batch root instead of forcing row-by-row materialization at the result boundary |
 
+### SQL Batched Sort / Distinct Spot Checks (March 15, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `SELECT DISTINCT value` (10K rows) | 1.75 ms | 2.23 MB | `DistinctOperator` now ingests batch sources directly and can act as a batch-backed root rather than pulling one row at a time through the result boundary |
+| `SELECT DISTINCT value ORDER BY value LIMIT 100` (10K rows) | 2.27 ms | 969.46 KB | `Distinct` feeding `Sort` now stays batch-aware on both operators before final row materialization |
+| `SELECT * ORDER BY value` (100K rows) | 152.39 ms | 64.82 MB | `SortOperator` now materializes input from batch sources in `OpenAsync` and can emit sorted output in row batches |
+| `SELECT * ORDER BY value + id` (100K rows) | 145.88 ms | 64.75 MB | Same full-sort path with an expression key; batch-aware input still helps when sort keys are computed |
+| `SELECT * ORDER BY value LIMIT 100` (100K rows) | 53.49 ms | 20.89 MB | Top-N sort root now stays batch-backed at the output boundary too |
+| `SELECT * ORDER BY value + id LIMIT 100` (100K rows) | 53.40 ms | 20.93 MB | Expression top-N path over the batch-aware sort root |
+
+### SQL Batched Aggregate Consumer Spot Checks (March 15, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `Scalar SUM(value)` (100K rows) | 55.62 ms | 20.78 MB | `ScalarAggregateOperator` now ingests batch sources directly, removing row-by-row executor calls on the generic scan-fed aggregate path |
+| `Scalar COUNT(value)` (100K rows) | 55.82 ms | 20.79 MB | Same generic scalar aggregate consumer path with batch-fed row accumulation |
+| `Scalar MIN(value)` (100K rows) | 56.10 ms | 20.78 MB | Generic aggregate consumer stays on batched scan input even when the aggregate itself is non-additive |
+| `Hash SUM(value) via GROUP BY 1` (100K rows) | 55.02 ms | 20.79 MB | `HashAggregateOperator` now reads batches directly before materializing grouped output rows |
+| `GROUP BY with COUNT + AVG` (100K rows) | 58.42 ms | 20.93 MB | Generic grouped aggregate path over the batch-fed scan root; specialized index-grouped paths remain much faster when they apply |
+
 ### SQL Join Projection Spot Checks (March 15, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Wide late-projection hash join (`1K x 1K`) | 372.8 us | 329.92 KB | Hash join trims both sides to join keys plus projected tail columns |
-| Wide late-projection forced nested-loop join (`1K x 1K`) | 45.70 ms | 492.52 KB | Nested-loop path now trims decode too, but still remains far slower than hash join |
-| Composite join `SELECT l.label, r.amount` lookup join (`1K x 1K`) | 514.3 us | 411.48 KB | New right-side composite/text lookup join path over hashed secondary indexes; still fetches base rows for non-covered right columns |
-| Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 478.9 us | 646.49 KB | Same join shape forced back to hash join; slightly faster here, but with materially higher allocation |
-| Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 432.6 us | 474.33 KB | Covered composite join now stays on index payloads for right PK and indexed key columns |
-| Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 533.8 us | 709.36 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the new covered lookup path |
-| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 322.9 us | 568.09 KB | Generic expression-projection batching now reaches the join projection boundary too; latency improved slightly once `ProjectionOperator` became batch-capable |
-| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 302.7 us | 517.52 KB | Same generic batching path with a residual join filter, now flowing through batch-capable `FilterProjectionOperator` |
+| `INNER JOIN 1K x 1K` hash join | 289.1 us | 312.13 KB | `HashJoinOperator` now ingests build and probe sides from batch sources internally, reducing join-core overhead on the plain hash path |
+| `INNER JOIN 1K x 20K` planner-swap hash join | 5.00 ms | 2.04 MB | Same internal batch-fed hash path on a skewed join where the planner flips the build side |
+| Wide late-projection hash join (`1K x 1K`) | 410.8 us | 398.16 KB | Hash join still trims both sides to join keys plus projected tail columns, now over the batch-fed join core |
+| Wide late-projection forced nested-loop join (`1K x 1K`) | 43.55 ms | 561.03 KB | Nested-loop path trims decode too, but remains far slower than hash join |
+| Composite join `SELECT l.label, r.amount` lookup join (`1K x 1K`) | 528.6 us | 437.72 KB | Right-side composite/text lookup join path over hashed secondary indexes; still fetches base rows for non-covered right columns |
+| Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 474.9 us | 682.61 KB | Same join shape forced back to hash join; faster here, but with materially higher allocation |
+| Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 440.8 us | 500.56 KB | Covered composite join stays on index payloads for right PK and indexed key columns |
+| Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 514.4 us | 745.48 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the covered lookup path |
+| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 345.3 us | 568.12 KB | Generic expression-projection batching still sits above the join, with the join core itself now batch-fed internally |
+| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 329.8 us | 517.55 KB | Same join + residual filter shape over the batch-fed hash join core |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 

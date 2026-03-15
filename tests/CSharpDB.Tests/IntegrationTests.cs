@@ -928,6 +928,27 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GenericScalarAggregate_UsesScalarAggregateOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_scalar_agg (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scalar_agg VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scalar_agg VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scalar_agg VALUES (3, 30)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT AVG(score) FROM batch_scalar_agg") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<ScalarAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(20d, rows[0][0].AsReal);
+    }
+
+    [Fact]
     public async Task TextFunction_CanWrapAggregateOutput()
     {
         await _db.ExecuteAsync("CREATE TABLE agg_text (id INTEGER)", TestContext.Current.CancellationToken);
@@ -982,6 +1003,31 @@ public class IntegrationTests : IAsyncLifetime
         await using var result = await _db.ExecuteAsync("SELECT COUNT(v) FROM vals", TestContext.Current.CancellationToken);
         var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task GenericGroupedAggregate_UsesHashAggregateOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_hash_agg (id INTEGER PRIMARY KEY, category TEXT NOT NULL, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_hash_agg VALUES (1, 'A', 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_hash_agg VALUES (2, 'A', 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_hash_agg VALUES (3, 'B', 30)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT category, COUNT(*), AVG(score) FROM batch_hash_agg GROUP BY category") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<HashAggregateOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][1].AsInteger);
+        Assert.Equal(15d, rows[0][2].AsReal);
+        Assert.Equal(1L, rows[1][1].AsInteger);
+        Assert.Equal(30d, rows[1][2].AsReal);
     }
 
     [Fact]
@@ -1291,6 +1337,78 @@ public class IntegrationTests : IAsyncLifetime
 
         var rows = await result.ToListAsync(ct);
         Assert.Equal(2, rows.Count);
+    }
+
+    [Fact]
+    public async Task SimpleOrderBy_UsesBatchSortOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_sort_root (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_sort_root VALUES (1, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_sort_root VALUES (2, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_sort_root VALUES (3, 20)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_sort_root ORDER BY score ASC") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.IsType<SortOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(new long[] { 10, 20, 30 }, rows.Select(r => r[1].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task SimpleDistinct_UsesBatchDistinctOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_distinct_root (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_distinct_root VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_distinct_root VALUES (2, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_distinct_root VALUES (3, 20)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT DISTINCT score FROM batch_distinct_root") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.IsType<DistinctOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal(new long[] { 10, 20 }, rows.Select(r => r[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task SimpleHashJoin_UsesHashJoinOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_join_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE batch_join_right (id INTEGER PRIMARY KEY, left_id INTEGER NOT NULL, amount INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_left VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_left VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_left VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_right VALUES (1, 2, 200)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_right VALUES (2, 3, 300)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_right VALUES (3, 4, 400)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_join_left l INNER JOIN batch_join_right r ON l.id = r.left_id") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<HashJoinOperator>(GetStoredOperator(result));
+        Assert.IsType<HashJoinOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(200L, rows[0][4].AsInteger);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(300L, rows[1][4].AsInteger);
     }
 
     [Fact]
