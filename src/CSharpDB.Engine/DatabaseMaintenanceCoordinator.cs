@@ -356,7 +356,7 @@ public static class DatabaseMaintenanceCoordinator
             if (!TryBuildCollectionIndexKey(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, out long indexKey))
                 continue;
 
-            await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, ct);
+            await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct);
         }
     }
 

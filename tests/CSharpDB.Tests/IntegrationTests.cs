@@ -1330,6 +1330,143 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GroupBy_IndexedIntegerColumn_UsesGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_fast (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_fast_score ON grouped_fast(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_fast VALUES (1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_fast VALUES (2, 10, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_fast VALUES (3, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_fast VALUES (4, 20, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_fast VALUES (5, 20, 'e')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT score, COUNT(*), SUM(score), AVG(score), MIN(score), MAX(score) " +
+            "FROM grouped_fast GROUP BY score") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexGroupedAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (
+                Score: row[0].AsInteger,
+                Count: row[1].AsInteger,
+                Sum: row[2].AsInteger,
+                Avg: row[3].AsReal,
+                Min: row[4].AsInteger,
+                Max: row[5].AsInteger))
+            .OrderBy(row => row.Score)
+            .ToArray();
+
+        Assert.Equal(2, actual.Length);
+        Assert.Equal((10L, 2L, 20L, 10d, 10L, 10L), actual[0]);
+        Assert.Equal((20L, 3L, 60L, 20d, 20L, 20L), actual[1]);
+    }
+
+    [Fact]
+    public async Task GroupBy_IndexedIntegerColumn_WithRangeFilter_UsesGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_range_fast (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_range_fast_score ON grouped_range_fast(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (2, 10, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (3, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (4, 20, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (5, 30, 'e')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_range_fast VALUES (6, 40, 'f')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT score, COUNT(*), SUM(score) " +
+            "FROM grouped_range_fast " +
+            "WHERE score BETWEEN 20 AND 30 " +
+            "GROUP BY score") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexGroupedAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (Score: row[0].AsInteger, Count: row[1].AsInteger, Sum: row[2].AsInteger))
+            .OrderBy(row => row.Score)
+            .ToArray();
+
+        Assert.Equal([(20L, 2L, 40L), (30L, 1L, 30L)], actual);
+    }
+
+    [Fact]
+    public async Task GroupBy_IndexedIntegerColumn_WithOrderAndLimit_UsesGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_order_fast (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_order_fast_score ON grouped_order_fast(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_order_fast VALUES (1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_order_fast VALUES (2, 10, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_order_fast VALUES (3, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_order_fast VALUES (4, 30, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_order_fast VALUES (5, 30, 'e')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT score, COUNT(*) " +
+            "FROM grouped_order_fast " +
+            "GROUP BY score " +
+            "ORDER BY score " +
+            "LIMIT 2") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = GetRootOperator(result);
+        var limit = Assert.IsType<LimitOperator>(rootOperator);
+        var grouped = Assert.IsType<IndexGroupedAggregateOperator>(GetPrivateField<IOperator>(limit, "_source"));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (Score: row[0].AsInteger, Count: row[1].AsInteger))
+            .ToArray();
+
+        Assert.NotNull(grouped);
+        Assert.Equal([(10L, 2L), (20L, 1L)], actual);
+    }
+
+    [Fact]
+    public async Task GroupBy_IndexedIntegerColumn_WithEqualityFilterAndHavingCount_UsesGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_having_fast (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_having_fast_score ON grouped_having_fast(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_having_fast VALUES (1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_having_fast VALUES (2, 20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_having_fast VALUES (3, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_having_fast VALUES (4, 30, 'd')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT score, COUNT(*) " +
+            "FROM grouped_having_fast " +
+            "WHERE score = 20 " +
+            "GROUP BY score " +
+            "HAVING COUNT(*) = 2") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexGroupedAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (Score: row[0].AsInteger, Count: row[1].AsInteger))
+            .ToArray();
+
+        Assert.Equal([(20L, 2L)], actual);
+    }
+
+    [Fact]
     public async Task IntegerPrimaryKeyDistinctAggregates_UseTableKeyAggregateFastPath()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -3249,6 +3386,54 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(2, rows.Count);
         Assert.Equal(1, rows[0][0].AsInteger);
         Assert.Equal(4, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Index_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'x', 'keep-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 10, 'y', 'skip')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, a, b FROM t WHERE a = 10 AND b = 'x'") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var projected = rows
+            .Select(row => (Id: row[0].AsInteger, A: row[1].AsInteger, B: row[2].AsText))
+            .OrderBy(row => row.Id)
+            .ToArray();
+        Assert.Equal([(1L, 10L, "x"), (2L, 10L, "x")], projected);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'y', 'skip')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT a, b, id FROM t WHERE a = 10 AND b = 'x'") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+        Assert.Equal("x", rows[0][1].AsText);
+        Assert.Equal(1L, rows[0][2].AsInteger);
     }
 
     [Fact]

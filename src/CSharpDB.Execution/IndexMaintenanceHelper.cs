@@ -25,24 +25,52 @@ internal static class IndexMaintenanceHelper
 
         if (!indexSchema.IsUnique)
         {
-            var groupedRowIds = new SortedDictionary<long, List<long>>();
+            if (usesDirectIntegerKey)
+            {
+                var groupedRowIds = new SortedDictionary<long, List<long>>();
+
+                while (await scan.MoveNextAsync(ct))
+                {
+                    if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                        continue;
+
+                    if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+                    {
+                        rowIds = new List<long>();
+                        groupedRowIds[indexKey] = rowIds;
+                    }
+
+                    rowIds.Add(scan.CurrentRowId);
+                }
+
+                foreach (var entry in groupedRowIds)
+                    await indexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+
+                return;
+            }
+
+            var groupedPayloads = new SortedDictionary<long, byte[]>();
 
             while (await scan.MoveNextAsync(ct))
             {
-                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                     continue;
 
-                if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+                if (!groupedPayloads.TryGetValue(indexKey, out var payload))
                 {
-                    rowIds = new List<long>();
-                    groupedRowIds[indexKey] = rowIds;
+                    groupedPayloads[indexKey] = HashedIndexPayloadCodec.CreateSingle(keyComponents!, scan.CurrentRowId);
+                    continue;
                 }
 
-                rowIds.Add(scan.CurrentRowId);
+                groupedPayloads[indexKey] = HashedIndexPayloadCodec.Insert(
+                    payload,
+                    keyComponents!,
+                    scan.CurrentRowId,
+                    out _);
             }
 
-            foreach (var entry in groupedRowIds)
-                await indexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+            foreach (var entry in groupedPayloads)
+                await indexStore.InsertAsync(entry.Key, entry.Value, ct);
 
             return;
         }
@@ -81,12 +109,12 @@ internal static class IndexMaintenanceHelper
                         indexSchema.IndexName,
                         ct);
 
-                    await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, ct);
+                    await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, ct);
                 }
             }
             else
             {
-                await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, ct);
+                await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, ct);
             }
         }
     }
@@ -95,17 +123,31 @@ internal static class IndexMaintenanceHelper
         IIndexStore indexStore,
         long indexKey,
         long rowId,
+        DbValue[]? keyComponents = null,
         CancellationToken ct = default)
     {
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
         {
-            await indexStore.InsertAsync(indexKey, RowIdPayloadCodec.CreateSingle(rowId), ct);
+            byte[] initialPayload = keyComponents is { Length: > 0 }
+                ? HashedIndexPayloadCodec.CreateSingle(keyComponents, rowId)
+                : RowIdPayloadCodec.CreateSingle(rowId);
+            await indexStore.InsertAsync(indexKey, initialPayload, ct);
             return;
         }
 
-        if (!RowIdPayloadCodec.TryInsert(existing, rowId, out byte[] newPayload))
-            return;
+        byte[] newPayload;
+        if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
+        {
+            newPayload = HashedIndexPayloadCodec.Insert(existing, keyComponents, rowId, out bool changed);
+            if (!changed)
+                return;
+        }
+        else
+        {
+            if (!RowIdPayloadCodec.TryInsert(existing, rowId, out newPayload))
+                return;
+        }
 
         await indexStore.DeleteAsync(indexKey, ct);
         await indexStore.InsertAsync(indexKey, newPayload, ct);
@@ -115,14 +157,25 @@ internal static class IndexMaintenanceHelper
         IIndexStore indexStore,
         long indexKey,
         long rowId,
+        DbValue[]? keyComponents = null,
         CancellationToken ct = default)
     {
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
             return;
 
-        if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
-            return;
+        byte[]? newPayload;
+        if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
+        {
+            newPayload = HashedIndexPayloadCodec.Remove(existing, keyComponents, rowId, out bool changed);
+            if (!changed)
+                return;
+        }
+        else
+        {
+            if (!RowIdPayloadCodec.TryRemove(existing, rowId, out newPayload))
+                return;
+        }
 
         await indexStore.DeleteAsync(indexKey, ct);
         if (newPayload != null)
@@ -249,6 +302,18 @@ internal static class IndexMaintenanceHelper
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null || existing.Length < sizeof(long))
             return;
+
+        if (HashedIndexPayloadCodec.TryGetMatchingRowIds(existing, keyComponents, out var matchingPayload))
+        {
+            if (matchingPayload is { Length: > 0 })
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Duplicate key value in unique index '{indexName}'.");
+            }
+
+            return;
+        }
 
         int entryCount = existing.Length / sizeof(long);
         int maxIndexedColumn = indexColumnIndices.Max();

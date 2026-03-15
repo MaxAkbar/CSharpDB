@@ -71,6 +71,72 @@ internal static class BoundColumnAccessHelper
     public static RecordColumnAccessor? TryCreate(IRecordSerializer serializer, int columnIndex)
         => serializer is DefaultRecordSerializer ? new RecordColumnAccessor(columnIndex) : null;
 
+    public static RecordColumnAccessor?[] CreateAccessors(IRecordSerializer serializer, ReadOnlySpan<int> columnIndices)
+    {
+        var accessors = new RecordColumnAccessor?[columnIndices.Length];
+        for (int i = 0; i < columnIndices.Length; i++)
+            accessors[i] = TryCreate(serializer, columnIndices[i]);
+        return accessors;
+    }
+
+    public static byte[][]? CreateTextLiteralBytes(ReadOnlySpan<DbValue> keyComponents)
+    {
+        byte[][]? textBytes = null;
+        for (int i = 0; i < keyComponents.Length; i++)
+        {
+            if (keyComponents[i].Type != DbType.Text)
+                continue;
+
+            textBytes ??= new byte[keyComponents.Length][];
+            textBytes[i] = Encoding.UTF8.GetBytes(keyComponents[i].AsText);
+        }
+
+        return textBytes;
+    }
+
+    public static bool MatchesKeyComponents(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        ReadOnlySpan<int> columnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        RecordColumnAccessor?[]? accessors,
+        byte[][]? textBytes)
+    {
+        if (columnIndices.Length != keyComponents.Length)
+            return false;
+
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            DbValue expected = keyComponents[i];
+            byte[]? expectedTextBytes = textBytes is { Length: > 0 } ? textBytes[i] : null;
+            if (expectedTextBytes != null)
+            {
+                bool supported;
+                bool equals;
+                if (accessors is { Length: > 0 } && accessors[i] is { } boundAccessor)
+                    supported = boundAccessor.TryTextEquals(payload, expectedTextBytes, out equals);
+                else
+                    supported = serializer.TryColumnTextEquals(payload, columnIndices[i], expectedTextBytes, out equals);
+
+                if (supported)
+                {
+                    if (!equals)
+                        return false;
+
+                    continue;
+                }
+            }
+
+            DbValue actual = accessors is { Length: > 0 } && accessors[i] is { } decodeAccessor
+                ? decodeAccessor.Decode(payload)
+                : serializer.DecodeColumn(payload, columnIndices[i]);
+            if (actual.IsNull || DbValue.Compare(actual, expected) != 0)
+                return false;
+        }
+
+        return true;
+    }
+
     public static bool EvaluateValueFilter(DbValue value, BinaryOp op, DbValue literal)
     {
         int cmp = DbValue.Compare(value, literal);
@@ -5279,8 +5345,13 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     private readonly TableSchema _schema;
     private readonly long _seekValue;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly int[]? _expectedKeyColumnIndices;
+    private readonly DbValue[]? _expectedKeyComponents;
+    private readonly RecordColumnAccessor?[]? _expectedKeyAccessors;
+    private readonly byte[][]? _expectedKeyTextBytes;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
+    private bool _rowIdsVerifiedByIndexPayload;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private int? _estimatedRowCount;
@@ -5302,19 +5373,30 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
+    internal int[]? ExpectedKeyColumnIndices => _expectedKeyColumnIndices;
+    internal DbValue[]? ExpectedKeyComponents => _expectedKeyComponents;
 
     public IndexScanOperator(
         IIndexStore indexStore,
         BTree tableTree,
         TableSchema schema,
         long seekValue,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        int[]? expectedKeyColumnIndices = null,
+        DbValue[]? expectedKeyComponents = null)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
         _schema = schema;
         _seekValue = seekValue;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _expectedKeyColumnIndices = expectedKeyColumnIndices;
+        _expectedKeyComponents = expectedKeyComponents;
+        if (expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 })
+        {
+            _expectedKeyAccessors = BoundColumnAccessHelper.CreateAccessors(_recordSerializer, expectedKeyColumnIndices);
+            _expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(expectedKeyComponents);
+        }
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
     }
 
@@ -5360,11 +5442,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         if (_indexStore is ICacheAwareIndexStore cacheAware &&
             cacheAware.TryFindCached(_seekValue, out var cachedPayload))
         {
-            _rowIdPayload = cachedPayload ?? ReadOnlyMemory<byte>.Empty;
-            _rowIdPayloadOffset = 0;
-            _estimatedRowCount = _rowIdPayload.Length / 8;
-            _rowBuffer = null;
-            Current = Array.Empty<DbValue>();
+            InitializeRowIdPayload(cachedPayload);
             return ValueTask.CompletedTask;
         }
 
@@ -5373,13 +5451,7 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
 
     private async ValueTask OpenUncachedAsync(CancellationToken ct)
     {
-        var payload = await _indexStore.FindAsync(_seekValue, ct);
-        _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
-        _rowIdPayloadOffset = 0;
-        _estimatedRowCount = _rowIdPayload.Length / 8;
-
-        _rowBuffer = null;
-        Current = Array.Empty<DbValue>();
+        InitializeRowIdPayload(await _indexStore.FindAsync(_seekValue, ct));
     }
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
@@ -5399,6 +5471,13 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
                 if (cachedPayload is not { } cachedPayloadMemory)
                     continue; // deleted row
 
+                if (!_rowIdsVerifiedByIndexPayload &&
+                    _expectedKeyComponents is { Length: > 0 } &&
+                    !MatchesExpectedKeyComponents(cachedPayloadMemory.Span))
+                {
+                    continue;
+                }
+
                 if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
 
@@ -5416,6 +5495,9 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         {
             var payload = await _tableTree.FindMemoryAsync(rowId, ct);
             if (payload is { } payloadMemory &&
+                (_rowIdsVerifiedByIndexPayload ||
+                 _expectedKeyComponents is not { Length: > 0 } ||
+                 MatchesExpectedKeyComponents(payloadMemory.Span)) &&
                 (!_hasPreDecodeFilter || EvaluatePreDecodeFilter(payloadMemory.Span)))
             {
                 PopulateCurrentFromPayload(payloadMemory.Span);
@@ -5434,6 +5516,13 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
             {
                 if (cachedPayload is not { } cachedPayloadMemory)
                     continue;
+
+                if (!_rowIdsVerifiedByIndexPayload &&
+                    _expectedKeyComponents is { Length: > 0 } &&
+                    !MatchesExpectedKeyComponents(cachedPayloadMemory.Span))
+                {
+                    continue;
+                }
 
                 if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(cachedPayloadMemory.Span))
                     continue;
@@ -5545,6 +5634,44 @@ public sealed class IndexScanOperator : IOperator, IRowBufferReuseController, IP
         int length = _additionalPreDecodeFilters.Length;
         Array.Resize(ref _additionalPreDecodeFilters, length + 1);
         _additionalPreDecodeFilters[length] = filter;
+    }
+
+    private void InitializeRowIdPayload(byte[]? payload)
+    {
+        _rowBuffer = null;
+        Current = Array.Empty<DbValue>();
+        _rowIdPayloadOffset = 0;
+        _rowIdsVerifiedByIndexPayload = false;
+
+        if (_expectedKeyComponents is { Length: > 0 } &&
+            payload is { Length: > 0 } &&
+            HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, _expectedKeyComponents, _expectedKeyTextBytes, out var matchingRowIds))
+        {
+            _rowIdPayload = matchingRowIds;
+            _estimatedRowCount = _rowIdPayload.Length / sizeof(long);
+            _rowIdsVerifiedByIndexPayload = true;
+            return;
+        }
+
+        _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
+        _estimatedRowCount = _rowIdPayload.Length / sizeof(long);
+    }
+
+    private bool MatchesExpectedKeyComponents(ReadOnlySpan<byte> payload)
+    {
+        if (_expectedKeyColumnIndices is not { Length: > 0 } ||
+            _expectedKeyComponents is not { Length: > 0 })
+        {
+            return true;
+        }
+
+        return BoundColumnAccessHelper.MatchesKeyComponents(
+            payload,
+            _recordSerializer,
+            _expectedKeyColumnIndices,
+            _expectedKeyComponents,
+            _expectedKeyAccessors,
+            _expectedKeyTextBytes);
     }
 }
 
@@ -6301,6 +6428,27 @@ internal enum LookupProjectionValueKind
     LookupValue,
 }
 
+internal enum GroupedIndexAggregateProjectionKind
+{
+    GroupKey,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+public enum GroupedIndexAggregateCountPredicateKind
+{
+    None,
+    Equals,
+    NotEquals,
+    LessThan,
+    GreaterThan,
+    LessOrEqual,
+    GreaterOrEqual,
+}
+
 public sealed class UniqueIndexProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly IIndexStore _indexStore;
@@ -6581,6 +6729,248 @@ public sealed class IndexScanProjectionOperator : IOperator, IEstimatedRowCountP
 }
 
 /// <summary>
+/// Covered equality lookup projection fast path for hashed secondary indexes.
+/// Projects the integer primary key plus indexed key columns without fetching
+/// base table rows when the hashed bucket stores explicit key components.
+/// Legacy rowid-only hashed buckets fall back to row verification for correctness.
+/// </summary>
+public sealed class HashedIndexProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly IIndexStore _indexStore;
+    private readonly BTree _tableTree;
+    private readonly TableSchema _schema;
+    private readonly long _seekValue;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly int[] _keyColumnIndices;
+    private readonly DbValue[] _keyComponents;
+    private readonly DbValue[] _templateRow;
+    private readonly int[] _rowIdTargetIndices;
+    private readonly bool _requiresRowId;
+    private RecordColumnAccessor?[]? _keyAccessors;
+    private byte[][]? _keyTextBytes;
+    private bool _keyTextBytesInitialized;
+    private ReadOnlyMemory<byte> _rowIdPayload;
+    private int _rowIdPayloadOffset;
+    private bool _rowIdsVerifiedByIndexPayload;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => true;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount { get; private set; }
+
+    public HashedIndexProjectionLookupOperator(
+        IIndexStore indexStore,
+        BTree tableTree,
+        TableSchema schema,
+        long seekValue,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        IRecordSerializer? recordSerializer = null)
+    {
+        _indexStore = indexStore;
+        _tableTree = tableTree;
+        _schema = schema;
+        _seekValue = seekValue;
+        _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
+        _keyColumnIndices = keyColumnIndices.ToArray();
+        _keyComponents = keyComponents.ToArray();
+        OutputSchema = outputSchema;
+        _templateRow = BuildTemplateRow(
+            projectionColumnIndices,
+            schema.PrimaryKeyColumnIndex,
+            _keyColumnIndices,
+            _keyComponents,
+            out _rowIdTargetIndices);
+        _requiresRowId = _rowIdTargetIndices.Length != 0;
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_indexStore is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(_seekValue, out var cachedPayload))
+        {
+            InitializeRowIdPayload(cachedPayload);
+            return ValueTask.CompletedTask;
+        }
+
+        return OpenUncachedAsync(ct);
+    }
+
+    private async ValueTask OpenUncachedAsync(CancellationToken ct)
+    {
+        InitializeRowIdPayload(await _indexStore.FindAsync(_seekValue, ct));
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            if (_rowIdPayloadOffset + sizeof(long) > _rowIdPayload.Length)
+                return ValueTask.FromResult(false);
+
+            if (!_requiresRowId)
+            {
+                _rowIdPayloadOffset += sizeof(long);
+                Current = _templateRow;
+                return ValueTask.FromResult(true);
+            }
+
+            long rowId = BinaryPrimitives.ReadInt64LittleEndian(
+                _rowIdPayload.Span.Slice(_rowIdPayloadOffset, sizeof(long)));
+            _rowIdPayloadOffset += sizeof(long);
+
+            if (_rowIdsVerifiedByIndexPayload)
+            {
+                PopulateCurrent(rowId);
+                return ValueTask.FromResult(true);
+            }
+
+            if (_tableTree.TryFindCachedMemory(rowId, out var cachedPayload))
+            {
+                if (cachedPayload is not { } cachedPayloadMemory)
+                    continue;
+
+                if (!MatchesExpectedKeyComponents(cachedPayloadMemory.Span))
+                    continue;
+
+                PopulateCurrent(rowId);
+                return ValueTask.FromResult(true);
+            }
+
+            return MoveNextUncachedAsync(rowId, ct);
+        }
+    }
+
+    private async ValueTask<bool> MoveNextUncachedAsync(long rowId, CancellationToken ct)
+    {
+        while (true)
+        {
+            var payload = await _tableTree.FindMemoryAsync(rowId, ct);
+            if (payload is { } payloadMemory && MatchesExpectedKeyComponents(payloadMemory.Span))
+            {
+                PopulateCurrent(rowId);
+                return true;
+            }
+
+            if (_rowIdPayloadOffset + sizeof(long) > _rowIdPayload.Length)
+                return false;
+
+            rowId = BinaryPrimitives.ReadInt64LittleEndian(
+                _rowIdPayload.Span.Slice(_rowIdPayloadOffset, sizeof(long)));
+            _rowIdPayloadOffset += sizeof(long);
+        }
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private void InitializeRowIdPayload(byte[]? payload)
+    {
+        if (payload is { Length: > 0 } &&
+            HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, _keyComponents, EnsureKeyTextBytes(), out var matchingRowIds))
+        {
+            _rowIdPayload = matchingRowIds;
+            _rowIdsVerifiedByIndexPayload = true;
+        }
+        else
+        {
+            _rowIdPayload = payload ?? ReadOnlyMemory<byte>.Empty;
+            _rowIdsVerifiedByIndexPayload = false;
+        }
+
+        _rowIdPayloadOffset = 0;
+        EstimatedRowCount = _rowIdPayload.Length / sizeof(long);
+        Current = Array.Empty<DbValue>();
+    }
+
+    private bool MatchesExpectedKeyComponents(ReadOnlySpan<byte> payload)
+        => BoundColumnAccessHelper.MatchesKeyComponents(
+            payload,
+            _recordSerializer,
+            _keyColumnIndices,
+            _keyComponents,
+            EnsureKeyAccessors(),
+            EnsureKeyTextBytes());
+
+    private void PopulateCurrent(long rowId)
+    {
+        if (!_requiresRowId)
+        {
+            Current = _templateRow;
+            return;
+        }
+
+        DbValue rowIdValue = DbValue.FromInteger(rowId);
+        for (int i = 0; i < _rowIdTargetIndices.Length; i++)
+        {
+            _templateRow[_rowIdTargetIndices[i]] = rowIdValue;
+        }
+
+        Current = _templateRow;
+    }
+
+    private static DbValue[] BuildTemplateRow(
+        ReadOnlySpan<int> projectionColumnIndices,
+        int primaryKeyColumnIndex,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        out int[] rowIdTargetIndices)
+    {
+        if (projectionColumnIndices.Length == 0)
+        {
+            rowIdTargetIndices = Array.Empty<int>();
+            return Array.Empty<DbValue>();
+        }
+
+        var row = new DbValue[projectionColumnIndices.Length];
+        var rowIdTargets = new List<int>();
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyColumnIndex)
+            {
+                row[i] = DbValue.Null;
+                rowIdTargets.Add(i);
+                continue;
+            }
+
+            int keyComponentIndex = -1;
+            for (int j = 0; j < keyColumnIndices.Length; j++)
+            {
+                if (keyColumnIndices[j] == columnIndex)
+                {
+                    keyComponentIndex = j;
+                    break;
+                }
+            }
+
+            if (keyComponentIndex < 0)
+                throw new InvalidOperationException("Covered hashed index projection can only emit the primary key or indexed key columns.");
+
+            row[i] = keyComponents[keyComponentIndex];
+        }
+
+        rowIdTargetIndices = rowIdTargets.Count == 0 ? Array.Empty<int>() : rowIdTargets.ToArray();
+        return row;
+    }
+
+    private RecordColumnAccessor?[] EnsureKeyAccessors()
+        => _keyAccessors ??= BoundColumnAccessHelper.CreateAccessors(_recordSerializer, _keyColumnIndices);
+
+    private byte[][]? EnsureKeyTextBytes()
+    {
+        if (!_keyTextBytesInitialized)
+        {
+            _keyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(_keyComponents);
+            _keyTextBytesInitialized = true;
+        }
+
+        return _keyTextBytes;
+    }
+}
+
+/// <summary>
 /// Ordered/range index projection fast path for integer indexes.
 /// Emits projections composed only of the rowid (integer primary key)
 /// and the current integer index key without fetching base table rows.
@@ -6821,6 +7211,113 @@ public sealed class IndexKeyAggregateOperator : IOperator, IEstimatedRowCountPro
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+/// <summary>
+/// GROUP BY aggregate fast path over a direct INTEGER index.
+/// Streams distinct index keys and computes grouped aggregates without row fetches
+/// or generic hash grouping when the group key and aggregate arguments all map to
+/// the same indexed integer column.
+/// </summary>
+public sealed class IndexGroupedAggregateOperator : IOperator
+{
+    private readonly IIndexStore _indexStore;
+    private readonly IndexScanRange _scanRange;
+    private readonly int[] _projectionKinds;
+    private readonly GroupedIndexAggregateCountPredicateKind _countPredicateKind;
+    private readonly long _countPredicateValue;
+    private readonly DbValue[] _rowBuffer;
+    private IIndexCursor? _cursor;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => true;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public IndexGroupedAggregateOperator(
+        IIndexStore indexStore,
+        IndexScanRange scanRange,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionKinds,
+        GroupedIndexAggregateCountPredicateKind countPredicateKind = GroupedIndexAggregateCountPredicateKind.None,
+        long countPredicateValue = 0)
+    {
+        _indexStore = indexStore;
+        _scanRange = scanRange;
+        OutputSchema = outputSchema;
+        _projectionKinds = projectionKinds.ToArray();
+        _countPredicateKind = countPredicateKind;
+        _countPredicateValue = countPredicateValue;
+        _rowBuffer = outputSchema.Length == 0 ? Array.Empty<DbValue>() : new DbValue[outputSchema.Length];
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _cursor = _indexStore.CreateCursor(_scanRange);
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_cursor == null)
+            return false;
+
+        while (await _cursor.MoveNextAsync(ct))
+        {
+            int entryCount = RowIdPayloadCodec.GetCount(_cursor.CurrentValue.Span);
+            if (entryCount <= 0 || !SatisfiesCountPredicate(entryCount))
+                continue;
+
+            PopulateCurrent(_cursor.CurrentKey, entryCount);
+            return true;
+        }
+
+        return false;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _cursor = null;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    private void PopulateCurrent(long key, int entryCount)
+    {
+        double avg = key;
+        double sum = (double)key * entryCount;
+
+        for (int i = 0; i < _projectionKinds.Length; i++)
+        {
+            _rowBuffer[i] = (GroupedIndexAggregateProjectionKind)_projectionKinds[i] switch
+            {
+                GroupedIndexAggregateProjectionKind.GroupKey => DbValue.FromInteger(key),
+                GroupedIndexAggregateProjectionKind.Count => DbValue.FromInteger(entryCount),
+                GroupedIndexAggregateProjectionKind.Sum => DbValue.FromInteger((long)sum),
+                GroupedIndexAggregateProjectionKind.Avg => DbValue.FromReal(avg),
+                GroupedIndexAggregateProjectionKind.Min => DbValue.FromInteger(key),
+                GroupedIndexAggregateProjectionKind.Max => DbValue.FromInteger(key),
+                _ => DbValue.Null,
+            };
+        }
+
+        Current = _rowBuffer;
+    }
+
+    private bool SatisfiesCountPredicate(int entryCount)
+    {
+        return _countPredicateKind switch
+        {
+            GroupedIndexAggregateCountPredicateKind.None => true,
+            GroupedIndexAggregateCountPredicateKind.Equals => entryCount == _countPredicateValue,
+            GroupedIndexAggregateCountPredicateKind.NotEquals => entryCount != _countPredicateValue,
+            GroupedIndexAggregateCountPredicateKind.LessThan => entryCount < _countPredicateValue,
+            GroupedIndexAggregateCountPredicateKind.GreaterThan => entryCount > _countPredicateValue,
+            GroupedIndexAggregateCountPredicateKind.LessOrEqual => entryCount <= _countPredicateValue,
+            GroupedIndexAggregateCountPredicateKind.GreaterOrEqual => entryCount >= _countPredicateValue,
+            _ => true,
+        };
+    }
 }
 
 /// <summary>
