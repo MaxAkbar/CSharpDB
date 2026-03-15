@@ -6,7 +6,7 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 
 - `Balanced macro capture on March 14, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260314-214358.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 14, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
+- `Latest focused reruns on March 14, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanProjectionBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -66,6 +66,7 @@ dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *GroupedIndexAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *CompositeGroupedIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *PredicatePushdownBenchmarks*
+dotnet run -c Release -- --micro --filter *ScanProjectionBenchmarks*
 dotnet run -c Release -- --micro --filter *JoinBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
 
@@ -328,6 +329,15 @@ Defaults:
 | `WHERE value < 200000` (100K rows) | 15.16 ms | 6.06 MB | Single simple pre-decode predicate with about 20% selectivity |
 | `WHERE value >= 10000 AND value < 20000` (100K rows) | 7.36 ms | 1.04 MB | Compound same-column range now pushes both bounds into pre-decode filtering |
 | `WHERE category = 'Alpha' AND value < 200000` (100K rows) | 7.57 ms | 1.81 MB | Compound mixed text + integer predicate now pushes both conjuncts before row decode |
+
+### SQL Scan Projection Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Filtered scan + column projection (10K rows, 20% selectivity) | 742.4 us | 252.56 KB | Compact scan projection path with the lean row-by-row column buffer |
+| Filtered scan + expression projection (10K rows, 20% selectivity) | 751.0 us | 426.74 KB | First batch/vectorized scan slice now batches expression-projection output rows internally |
+| Filtered scan + column projection (100K rows, 20% selectivity) | 59.73 ms | 24.23 MB | Large filtered scan with compact decode and column projection |
+| Filtered scan + expression projection (100K rows, 20% selectivity) | 60.35 ms | 24.95 MB | Same scan shape with the batched expression-projection path |
 
 ### SQL Join Projection Spot Checks (March 14, 2026)
 

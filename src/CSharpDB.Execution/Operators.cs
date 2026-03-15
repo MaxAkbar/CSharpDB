@@ -820,6 +820,8 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
 /// </summary>
 public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
 {
+    private const int DefaultBatchSize = 64;
+
     private readonly BTree _tree;
     private readonly IRecordSerializer _recordSerializer;
     private readonly int[] _decodedColumnIndices;
@@ -830,6 +832,10 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
     private BTreeCursor? _cursor;
     private DbValue[]? _decodedRowBuffer;
     private DbValue[]? _projectedRowBuffer;
+    private DbValue[][]? _decodedBatchRows;
+    private DbValue[][]? _projectedBatchRows;
+    private int _batchIndex;
+    private int _batchCount;
     private Func<DbValue[], DbValue>? _predicateEvaluator;
     private int _preDecodeFilterColumnIndex;
     private BinaryOp _preDecodeFilterOp;
@@ -904,11 +910,98 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
         _cursor = _tree.CreateCursor();
         _decodedRowBuffer = null;
         _projectedRowBuffer = null;
+        _batchIndex = 0;
+        _batchCount = 0;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
     }
 
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_cursor == null)
+            return false;
+
+        if (_expressionEvaluators == null)
+            return await MoveNextRowByRowAsync(ct);
+
+        if (_batchIndex < _batchCount)
+        {
+            Current = _projectedBatchRows![_batchIndex++];
+            return true;
+        }
+
+        if (!await FillBatchAsync(ct))
+        {
+            Current = Array.Empty<DbValue>();
+            return false;
+        }
+
+        Current = _projectedBatchRows![_batchIndex++];
+        return true;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        _reuseCurrentRowBuffer = reuse;
+        if (!reuse)
+        {
+            _decodedRowBuffer = null;
+            _projectedRowBuffer = null;
+            _decodedBatchRows = null;
+            _projectedBatchRows = null;
+            _batchIndex = 0;
+            _batchCount = 0;
+            Current = Array.Empty<DbValue>();
+        }
+    }
+
+    private async ValueTask<bool> FillBatchAsync(CancellationToken ct)
+    {
+        if (_cursor == null)
+            return false;
+
+        bool passThroughDecodedRow = CanPassThroughDecodedRow();
+        _batchIndex = 0;
+        _batchCount = 0;
+
+        while (_batchCount < DefaultBatchSize && await _cursor.MoveNextAsync(ct))
+        {
+            ReadOnlySpan<byte> payload = _cursor.CurrentValue.Span;
+            if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
+                continue;
+
+            DbValue[] decodedRow = DecodeRow(payload, _batchCount);
+            if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
+                continue;
+
+            DbValue[] outputRow;
+            if (_expressionEvaluators != null)
+            {
+                outputRow = GetProjectedBatchRow(_batchCount, _expressionEvaluators.Length);
+                for (int i = 0; i < _expressionEvaluators.Length; i++)
+                    outputRow[i] = _expressionEvaluators[i](decodedRow);
+            }
+            else if (passThroughDecodedRow)
+            {
+                outputRow = decodedRow;
+            }
+            else
+            {
+                outputRow = GetProjectedBatchRow(_batchCount, _projectionColumnIndices.Length);
+                for (int i = 0; i < _projectionColumnIndices.Length; i++)
+                    outputRow[i] = decodedRow[_projectionColumnIndices[i]];
+            }
+
+            StoreProjectedBatchRow(_batchCount, outputRow);
+            _batchCount++;
+        }
+
+        return _batchCount > 0;
+    }
+
+    private async ValueTask<bool> MoveNextRowByRowAsync(CancellationToken ct)
     {
         if (_cursor == null)
             return false;
@@ -919,19 +1012,9 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
             if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(payload))
                 continue;
 
-            DbValue[] decodedRow = DecodeRow(payload);
+            DbValue[] decodedRow = DecodeSingleRow(payload);
             if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
                 continue;
-
-            if (_expressionEvaluators != null)
-            {
-                DbValue[] projectedRow = GetProjectedRowBuffer(_expressionEvaluators.Length);
-                for (int i = 0; i < _expressionEvaluators.Length; i++)
-                    projectedRow[i] = _expressionEvaluators[i](decodedRow);
-
-                Current = projectedRow;
-                return true;
-            }
 
             if (CanPassThroughDecodedRow())
             {
@@ -951,20 +1034,7 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
         return false;
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-    public void SetReuseCurrentRowBuffer(bool reuse)
-    {
-        _reuseCurrentRowBuffer = reuse;
-        if (!reuse)
-        {
-            _decodedRowBuffer = null;
-            _projectedRowBuffer = null;
-            Current = Array.Empty<DbValue>();
-        }
-    }
-
-    private DbValue[] DecodeRow(ReadOnlySpan<byte> payload)
+    private DbValue[] DecodeSingleRow(ReadOnlySpan<byte> payload)
     {
         int decodeCount = _decodedColumnIndices.Length;
         if (decodeCount == 0)
@@ -994,6 +1064,55 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
             _projectedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         return _projectedRowBuffer;
+    }
+
+    private DbValue[] DecodeRow(ReadOnlySpan<byte> payload, int batchSlot)
+    {
+        int decodeCount = _decodedColumnIndices.Length;
+        if (decodeCount == 0)
+            return Array.Empty<DbValue>();
+
+        DbValue[] row = GetDecodedBatchRow(batchSlot, decodeCount);
+        _recordSerializer.DecodeSelectedCompactInto(payload, row, _decodedColumnIndices);
+        return row;
+    }
+
+    private DbValue[] GetDecodedBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _decodedBatchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _decodedBatchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _decodedBatchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private DbValue[] GetProjectedBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _projectedBatchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _projectedBatchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _projectedBatchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private void StoreProjectedBatchRow(int batchSlot, DbValue[] row)
+    {
+        _projectedBatchRows ??= new DbValue[DefaultBatchSize][];
+        _projectedBatchRows[batchSlot] = row;
     }
 
     private bool CanPassThroughDecodedRow()
