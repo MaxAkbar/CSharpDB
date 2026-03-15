@@ -102,6 +102,37 @@ What is not solved yet:
 
 That means the next step is no longer "add more adapters" or "add a thin row-view wrapper". The next step is changing the evaluation contract inside the executor.
 
+## Pause Decision
+
+As of March 15, 2026, this workstream should be treated as paused.
+
+Reason:
+
+- the retained groundwork is useful and should stay
+- the small and medium follow-on experiments have been exhausted
+- repeated production rollouts did not produce stable enough wins to justify more local iteration
+- the next plausible gain is a deeper evaluator rewrite, not another incremental patch
+
+That means the project should not come back here for:
+
+- more adapter experiments
+- more alternate delegate shapes
+- more narrow planner hooks over the current evaluator model
+- more compact-operator-specific special cases
+
+If none of the deeper rewrite prerequisites are available, the right decision is to move to another performance area instead of spending more time here.
+
+## Revisit Gate
+
+Only reopen this work when all of the following are true:
+
+1. there is explicit willingness to do a deeper SQL executor rewrite rather than another bounded experiment
+2. the rewrite target is a new evaluator contract, not another wrapper over `Func<DbValue[], DbValue>`
+3. benchmark success criteria are agreed up front for scan-heavy production shapes, not just internal microbenchmarks
+4. the rollout starts behind a narrow gate and is measured against the current stable executor baseline
+
+If those conditions are not met, this document should be read as historical design context plus retained infrastructure notes, not as an active next task.
+
 ## Proposed Direction
 
 ### 1. Add a batch-native internal contract
@@ -471,6 +502,29 @@ Conclusion:
 - the specialized plan/compiler is still useful retained infrastructure
 - the next promotion target must be narrower again, or the plan itself needs deeper specialization before production use
 
+### 10. Direct row-specialized compact fast-path rollout
+
+Tried:
+
+- keeping the compact single-table fast path in place
+- adding a narrower row-specialized use of `SpecializedFilterProjectionBatchPlan` inside `CompactTableScanProjectionOperator`
+- avoiding the earlier double-buffered source-batch-to-destination-batch path and instead decoding once into the compact row buffer, then letting the specialized plan filter/project directly into the output row or batch
+
+Result:
+
+- the code was functionally correct, and focused integration tests stayed green
+- the production benchmark signal was still not good enough to keep:
+  - filtered scan + expression projection landed around `761.4 us` at `10K` and `59.81 ms` at `100K`
+  - filtered scan + column projection landed around `750.5 us` at `10K` and `58.94 ms` at `100K`
+- compared to the retained stable baseline, the expression path was still slower on the important scan-heavy shape
+- the rollout was backed out and the branch was returned to the prior stable executor baseline
+
+Conclusion:
+
+- a direct row-specialized hook inside the compact fast path is still not enough by itself
+- the remaining cost is deeper than the current compact scan wrapper and plan dispatch
+- the next meaningful gain needs a more fundamental evaluator contract change, not another specialized hook bolted onto the current compact operator
+
 ## Expression Execution
 
 The current expression compiler works against `DbValue[]` rows.
@@ -529,9 +583,9 @@ Success criteria should be measured against current row transport:
 
 These are acceptable if the rollout stays phased.
 
-## Recommended Next Step
+## If Revisited
 
-The next implementation pass should not be another adapter pass.
+If this area is reopened later, the first pass should not be another adapter pass.
 
 It should do this:
 
@@ -541,7 +595,7 @@ It should do this:
 4. benchmark scan and join expression-projection shapes again
 5. only after that, extend the same evaluator path to compact scans, aggregates, and joins
 
-That is the smallest next step that can plausibly unlock the next tier of SQL gains without repeating the already-rejected adapter-heavy and row-accessor-wrapper approaches.
+That is the smallest plausible restart point that does not immediately repeat the already-rejected adapter-heavy and row-accessor-wrapper approaches.
 
 ## Recommended Position
 
@@ -553,4 +607,4 @@ The right path is:
 - operator migration second
 - columnar/vectorized specialization later
 
-That keeps the design compatible with the current engine while creating a real foundation for the next tier of SQL performance work.
+Today that remains strategically true, but tactically this track is paused. The retained code and this document should be used as a checkpoint if the deeper rewrite is funded later; otherwise the team should move to a different performance area.
