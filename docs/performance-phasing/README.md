@@ -134,6 +134,7 @@ Deliverables:
 - more covering-index and index-only planning
 - reduced `DbValue[]` and `DbValue` materialization in hot operators
 - more specialized aggregate, join, and lookup execution paths
+- an internal batch-transport foundation for scan-heavy operators, as outlined in [SQL Batched Row Transport Design](../sql-batched-row-transport/README.md)
 
 Outcome:
 

@@ -134,6 +134,8 @@ This plan does not recommend:
 - revisit join and aggregate implementations after materialization costs are reduced
 - re-measure whether storage-level changes are still the highest remaining bottleneck
 
+The concrete design for that phase should follow the internal batch-transport model described in [SQL Batched Row Transport Design](../sql-batched-row-transport/README.md).
+
 ## Expected Performance Shape
 
 Roughly:
