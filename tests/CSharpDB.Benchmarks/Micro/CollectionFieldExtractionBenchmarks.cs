@@ -1,12 +1,13 @@
 using BenchmarkDotNet.Attributes;
 using CSharpDB.Primitives;
+using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Serialization;
 
 namespace CSharpDB.Benchmarks.Micro;
 
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 10)]
+[Config(typeof(CollectionInProcessBenchmarkConfig))]
 public class CollectionFieldExtractionBenchmarks
 {
     private readonly CollectionDocumentCodec<BenchDoc> _codec = new(new DefaultRecordSerializer());

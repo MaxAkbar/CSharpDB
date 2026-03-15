@@ -6,7 +6,7 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 
 - `Balanced macro capture on March 14, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260314-214358.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, ScalarAggregateBenchmarks, DistinctBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
+- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, ScalarAggregateBenchmarks, DistinctBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks, CollectionPayloadBenchmarks, CollectionFieldExtractionBenchmarks, CollectionAccessBenchmarks`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -20,6 +20,8 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ColdLookupBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionFieldExtractionBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionAccessBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemorySqlBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryCollectionBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryAdoNetBenchmarks-report.csv`
@@ -131,6 +133,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `CollectionFieldExtractionBenchmarks`: isolates early/middle/late extraction cost, nested-path access, miss cost, and full document hydration comparison for collection payload scans
 - `CollectionLookupFallbackBenchmarks`: isolates collection equality lookups on unindexed fields to measure the direct-payload compare fallback before full document hydration
 - `Run-Phase1-Baselines.ps1`: runs the focused phase-1 benchmark set without the larger macro, stress, or scaling suites
+- `CollectionFieldExtractionBenchmarks`, `CollectionPayloadBenchmarks`, and `CollectionAccessBenchmarks` use an in-process BenchmarkDotNet toolchain on this machine because that was the smallest stable fix for local child-job generation/runtime issues
 
 ### Baselines and Guardrails
 
@@ -183,12 +186,24 @@ Defaults:
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection encode (direct payload) | 189 ns | 216 B | Current collection payload path |
-| Collection encode (legacy row format) | 275 ns | 304 B | Prior `DbValue[]` + record serializer path |
-| Collection decode (direct payload) | 356 ns | 328 B | Current collection payload path |
-| Collection decode (legacy row format) | 433 ns | 600 B | Prior `DbValue[]` + record serializer path |
+| Collection encode (direct payload) | 167.5 ns | 552 B | Current versioned binary direct-payload path |
+| Collection encode (legacy row format) | 268.8 ns | 304 B | Prior `DbValue[]` + record serializer path |
+| Collection decode (direct payload) | 391.4 ns | 328 B | Current binary direct-payload path |
+| Collection decode (legacy row format) | 419.7 ns | 600 B | Prior `DbValue[]` + record serializer path |
 | Collection put (minimal schema, in-memory) | 2.45 us | 702 B | Auto-commit write with only the target collection loaded |
 | Collection put (48 extra tables + 48 extra collections, in-memory) | 2.51 us | 693 B | Unrelated schema breadth no longer adds measurable write tax |
+
+### Collection Extraction Spot Checks (March 15, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Collection field read (early field) | 178.2 ns | 112 B | Direct binary payload scan near the front of the document |
+| Collection field read (middle field) | 203.6 ns | 64 B | Unbound middle-field integer read |
+| Collection field read (late field) | 239.2 ns | 64 B | Unbound late-field integer read |
+| Collection field compare (late text field, bound accessor) | 206.8 ns | 0 B | Bound accessor text compare stays allocation-free |
+| Collection field read (middle field, bound accessor) | 188.0 ns | 0 B | Bound accessor integer extraction on the binary payload path |
+| Collection field read (nested path, bound accessor) | 311.5 ns | 40 B | Nested document walk without hydrating `T` |
+| Collection hydrate document (comparison) | 559.9 ns | 912 B | Full typed hydration on the new binary direct-payload path |
 
 ### Query Micro Spot Checks
 

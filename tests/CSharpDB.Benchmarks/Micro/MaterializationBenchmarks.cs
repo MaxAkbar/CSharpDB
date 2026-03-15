@@ -1,5 +1,6 @@
 using System.Text;
 using BenchmarkDotNet.Attributes;
+using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Serialization;
@@ -93,7 +94,7 @@ public class SqlMaterializationBenchmarks
 }
 
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 10)]
+[Config(typeof(CollectionInProcessBenchmarkConfig))]
 public class CollectionAccessBenchmarks
 {
     private readonly CollectionDocumentCodec<BenchDoc> _codec = new(new DefaultRecordSerializer());

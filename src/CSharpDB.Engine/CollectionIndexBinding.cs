@@ -124,10 +124,19 @@ internal sealed class CollectionIndexBinding<
     internal bool TryBuildKeyFromDirectPayload(ReadOnlySpan<byte> payload, out long indexKey)
     {
         indexKey = 0;
-        if (!_payloadAccessor.TryReadValue(payload, out var value))
+        if (_valueKind == CollectionIndexValueKind.Integer)
+        {
+            if (!_payloadAccessor.TryReadInt64(payload, out long integerValue))
+                return false;
+
+            indexKey = integerValue;
+            return true;
+        }
+
+        if (!_payloadAccessor.TryReadString(payload, out string? textValue) || textValue == null)
             return false;
 
-        return TryBuildKey(value, out indexKey);
+        return TryBuildKey(DbValue.FromText(textValue), out indexKey);
     }
 
     internal bool TryDirectPayloadTextEquals(ReadOnlySpan<byte> payload, string value)

@@ -5,24 +5,34 @@ namespace CSharpDB.Storage.Serialization;
 
 /// <summary>
 /// Binary payload codec for collection documents stored directly in table B+trees.
+/// Supports both the legacy direct JSON wrapper and the newer binary document payload.
 /// </summary>
 internal static class CollectionPayloadCodec
 {
-    internal const byte FormatMarker = 0xC1;
+    internal const byte LegacyJsonFormatMarker = 0xC1;
+    internal const byte BinaryFormatMarker = 0xC2;
+    internal const byte BinaryFormatVersion = 0x01;
 
     public static bool IsDirectPayload(ReadOnlySpan<byte> payload)
-    {
-        if (!TryReadHeader(payload, out var header))
-            return false;
+        => TryReadHeader(payload, out _);
 
-        return HasPlausibleJsonPayload(payload[header.JsonStart..]);
-    }
+    public static bool IsBinaryPayload(ReadOnlySpan<byte> payload)
+        => TryReadHeader(payload, out var header) && header.Format == CollectionPayloadFormat.Binary;
+
+    internal static bool TryReadValidatedHeader(ReadOnlySpan<byte> payload, out Header header)
+        => TryReadHeader(payload, out header);
+
+    internal static ReadOnlySpan<byte> GetKeyUtf8(ReadOnlySpan<byte> payload, Header header)
+        => payload.Slice(header.KeyStart, header.KeyByteCount);
+
+    internal static ReadOnlySpan<byte> GetDocumentPayload(ReadOnlySpan<byte> payload, Header header)
+        => payload[header.DocumentStart..];
 
     public static byte[] Encode(ReadOnlySpan<byte> keyUtf8, ReadOnlySpan<byte> jsonUtf8)
     {
         int keyLengthSize = Varint.SizeOf((ulong)keyUtf8.Length);
         byte[] payload = GC.AllocateUninitializedArray<byte>(1 + keyLengthSize + keyUtf8.Length + jsonUtf8.Length);
-        payload[0] = FormatMarker;
+        payload[0] = LegacyJsonFormatMarker;
 
         int position = 1;
         position += Varint.Write(payload.AsSpan(position), (ulong)keyUtf8.Length);
@@ -37,12 +47,42 @@ internal static class CollectionPayloadCodec
         int keyByteCount = Encoding.UTF8.GetByteCount(key);
         int keyLengthSize = Varint.SizeOf((ulong)keyByteCount);
         byte[] payload = GC.AllocateUninitializedArray<byte>(1 + keyLengthSize + keyByteCount + jsonUtf8.Length);
-        payload[0] = FormatMarker;
+        payload[0] = LegacyJsonFormatMarker;
 
         int position = 1;
         position += Varint.Write(payload.AsSpan(position), (ulong)keyByteCount);
         position += Encoding.UTF8.GetBytes(key.AsSpan(), payload.AsSpan(position, keyByteCount));
         jsonUtf8.CopyTo(payload.AsSpan(position));
+        return payload;
+    }
+
+    public static byte[] EncodeBinary(ReadOnlySpan<byte> keyUtf8, ReadOnlySpan<byte> documentPayload)
+    {
+        int keyLengthSize = Varint.SizeOf((ulong)keyUtf8.Length);
+        byte[] payload = GC.AllocateUninitializedArray<byte>(2 + keyLengthSize + keyUtf8.Length + documentPayload.Length);
+        payload[0] = BinaryFormatMarker;
+        payload[1] = BinaryFormatVersion;
+
+        int position = 2;
+        position += Varint.Write(payload.AsSpan(position), (ulong)keyUtf8.Length);
+        keyUtf8.CopyTo(payload.AsSpan(position));
+        position += keyUtf8.Length;
+        documentPayload.CopyTo(payload.AsSpan(position));
+        return payload;
+    }
+
+    public static byte[] EncodeBinary(string key, ReadOnlySpan<byte> documentPayload)
+    {
+        int keyByteCount = Encoding.UTF8.GetByteCount(key);
+        int keyLengthSize = Varint.SizeOf((ulong)keyByteCount);
+        byte[] payload = GC.AllocateUninitializedArray<byte>(2 + keyLengthSize + keyByteCount + documentPayload.Length);
+        payload[0] = BinaryFormatMarker;
+        payload[1] = BinaryFormatVersion;
+
+        int position = 2;
+        position += Varint.Write(payload.AsSpan(position), (ulong)keyByteCount);
+        position += Encoding.UTF8.GetBytes(key.AsSpan(), payload.AsSpan(position, keyByteCount));
+        documentPayload.CopyTo(payload.AsSpan(position));
         return payload;
     }
 
@@ -61,13 +101,44 @@ internal static class CollectionPayloadCodec
     public static string DecodeJson(ReadOnlySpan<byte> payload)
     {
         var header = ReadHeader(payload);
-        return Encoding.UTF8.GetString(payload[header.JsonStart..]);
+        return header.Format == CollectionPayloadFormat.LegacyJson
+            ? Encoding.UTF8.GetString(payload[header.DocumentStart..])
+            : CollectionBinaryDocumentCodec.DecodeJson(payload[header.DocumentStart..]);
+    }
+
+    public static bool JsonEquals(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> expectedUtf8)
+    {
+        var header = ReadHeader(payload);
+        if (header.Format == CollectionPayloadFormat.LegacyJson)
+            return payload[header.DocumentStart..].SequenceEqual(expectedUtf8);
+
+        return CollectionBinaryDocumentCodec.EncodeJsonUtf8(payload[header.DocumentStart..]).AsSpan().SequenceEqual(expectedUtf8);
     }
 
     public static ReadOnlySpan<byte> GetJsonUtf8(ReadOnlySpan<byte> payload)
     {
         var header = ReadHeader(payload);
-        return payload[header.JsonStart..];
+        if (header.Format != CollectionPayloadFormat.LegacyJson)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Binary collection payloads do not expose a direct JSON UTF-8 span.");
+        }
+
+        return payload[header.DocumentStart..];
+    }
+
+    public static ReadOnlySpan<byte> GetBinaryDocumentPayload(ReadOnlySpan<byte> payload)
+    {
+        var header = ReadHeader(payload);
+        if (header.Format != CollectionPayloadFormat.Binary)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Legacy collection payloads do not expose a binary document payload.");
+        }
+
+        return payload[header.DocumentStart..];
     }
 
     private static Header ReadHeader(ReadOnlySpan<byte> payload)
@@ -84,23 +155,50 @@ internal static class CollectionPayloadCodec
 
         try
         {
-            if (payload.Length < 2 || payload[0] != FormatMarker)
-                return false;
+            if (TryReadLegacyHeader(payload, out header))
+                return HasPlausibleJsonPayload(payload[header.DocumentStart..]);
 
-            int keyByteCount = checked((int)Varint.Read(payload[1..], out int keyLengthBytes));
-            int keyStart = 1 + keyLengthBytes;
-            int jsonStart = checked(keyStart + keyByteCount);
+            if (TryReadBinaryHeader(payload, out header))
+                return CollectionBinaryDocumentCodec.IsValidDocument(payload[header.DocumentStart..]);
 
-            if (keyByteCount < 0 || jsonStart >= payload.Length)
-                return false;
-
-            header = new Header(keyStart, keyByteCount, jsonStart);
-            return true;
+            return false;
         }
         catch (Exception ex) when (ex is ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
         {
             return false;
         }
+    }
+
+    private static bool TryReadLegacyHeader(ReadOnlySpan<byte> payload, out Header header)
+    {
+        header = default;
+        if (payload.Length < 2 || payload[0] != LegacyJsonFormatMarker)
+            return false;
+
+        int keyByteCount = checked((int)Varint.Read(payload[1..], out int keyLengthBytes));
+        int keyStart = 1 + keyLengthBytes;
+        int documentStart = checked(keyStart + keyByteCount);
+        if (keyByteCount < 0 || documentStart >= payload.Length)
+            return false;
+
+        header = new Header(CollectionPayloadFormat.LegacyJson, keyStart, keyByteCount, documentStart);
+        return true;
+    }
+
+    private static bool TryReadBinaryHeader(ReadOnlySpan<byte> payload, out Header header)
+    {
+        header = default;
+        if (payload.Length < 3 || payload[0] != BinaryFormatMarker || payload[1] != BinaryFormatVersion)
+            return false;
+
+        int keyByteCount = checked((int)Varint.Read(payload[2..], out int keyLengthBytes));
+        int keyStart = 2 + keyLengthBytes;
+        int documentStart = checked(keyStart + keyByteCount);
+        if (keyByteCount < 0 || documentStart >= payload.Length)
+            return false;
+
+        header = new Header(CollectionPayloadFormat.Binary, keyStart, keyByteCount, documentStart);
+        return true;
     }
 
     private static bool HasPlausibleJsonPayload(ReadOnlySpan<byte> jsonUtf8)
@@ -124,5 +222,15 @@ internal static class CollectionPayloadCodec
         return false;
     }
 
-    private readonly record struct Header(int KeyStart, int KeyByteCount, int JsonStart);
+    internal enum CollectionPayloadFormat : byte
+    {
+        LegacyJson = 1,
+        Binary = 2,
+    }
+
+    internal readonly record struct Header(
+        CollectionPayloadFormat Format,
+        int KeyStart,
+        int KeyByteCount,
+        int DocumentStart);
 }

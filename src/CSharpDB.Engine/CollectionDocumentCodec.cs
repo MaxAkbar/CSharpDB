@@ -42,8 +42,8 @@ internal sealed class CollectionDocumentCodec<T>
             ]);
         }
 
-        byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes(document, s_jsonOptions);
-        return CollectionPayloadCodec.Encode(key, jsonUtf8);
+        byte[] binaryDocument = CollectionBinaryDocumentCodec.Encode(document);
+        return CollectionPayloadCodec.EncodeBinary(key, binaryDocument);
     }
 
     [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
@@ -57,16 +57,26 @@ internal sealed class CollectionDocumentCodec<T>
     [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
     internal T DecodeDocument(ReadOnlySpan<byte> payload)
     {
-        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
-            return JsonSerializer.Deserialize<T>(CollectionPayloadCodec.GetJsonUtf8(payload), s_jsonOptions)!;
+        if (UsesDirectPayloadFormat &&
+            CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+                return CollectionBinaryDocumentCodec.Decode<T>(documentPayload);
+
+            return JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
+        }
 
         return DecodeLegacy(payload).Document;
     }
 
     internal string DecodeKey(ReadOnlySpan<byte> payload)
     {
-        if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
-            return CollectionPayloadCodec.DecodeKey(payload);
+        if (UsesDirectPayloadFormat &&
+            CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        {
+            return Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(payload, header));
+        }
 
         return DecodeLegacyKey(payload);
     }
@@ -105,8 +115,11 @@ internal sealed class CollectionDocumentCodec<T>
             int written = Encoding.UTF8.GetBytes(expectedKey.AsSpan(), utf8);
             ReadOnlySpan<byte> expectedKeyUtf8 = utf8[..written];
 
-            if (UsesDirectPayloadFormat && CollectionPayloadCodec.IsDirectPayload(payload))
-                return CollectionPayloadCodec.KeyEquals(payload, expectedKeyUtf8);
+            if (UsesDirectPayloadFormat &&
+                CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+            {
+                return CollectionPayloadCodec.GetKeyUtf8(payload, header).SequenceEqual(expectedKeyUtf8);
+            }
 
             if (_recordSerializer.TryColumnTextEquals(payload, 0, expectedKeyUtf8, out bool equals))
                 return equals;

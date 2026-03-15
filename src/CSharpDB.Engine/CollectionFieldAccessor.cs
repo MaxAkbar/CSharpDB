@@ -5,7 +5,7 @@ using CSharpDB.Primitives;
 namespace CSharpDB.Engine;
 
 /// <summary>
-/// Precomputed field-path accessor over collection payload JSON.
+/// Precomputed field-path accessor over collection payloads.
 /// This keeps path normalization and UTF-8 encoding out of hot read paths.
 /// </summary>
 internal sealed class CollectionFieldAccessor
@@ -55,6 +55,18 @@ internal sealed class CollectionFieldAccessor
     internal bool TryReadValue(ReadOnlySpan<byte> payload, out DbValue value)
         => CollectionIndexedFieldReader.TryReadValue(payload, this, out value);
 
+    internal bool TryReadInt64(ReadOnlySpan<byte> payload, out long value)
+        => CollectionIndexedFieldReader.TryReadInt64(payload, this, out value);
+
+    internal bool TryReadString(ReadOnlySpan<byte> payload, out string? value)
+        => CollectionIndexedFieldReader.TryReadString(payload, this, out value);
+
+    internal bool TryReadBoolean(ReadOnlySpan<byte> payload, out bool value)
+        => CollectionIndexedFieldReader.TryReadBoolean(payload, this, out value);
+
+    internal bool TryReadDecimal(ReadOnlySpan<byte> payload, out decimal value)
+        => CollectionIndexedFieldReader.TryReadDecimal(payload, this, out value);
+
     internal bool TryTextEquals(ReadOnlySpan<byte> payload, string expectedValue)
         => CollectionIndexedFieldReader.TryTextEquals(payload, this, expectedValue);
 
@@ -62,6 +74,12 @@ internal sealed class CollectionFieldAccessor
     {
         if (expectedValue.Type == DbType.Text)
             return TryTextEquals(payload, expectedValue.AsText);
+
+        if (expectedValue.Type == DbType.Integer &&
+            TryReadInt64(payload, out long actualInteger))
+        {
+            return actualInteger == expectedValue.AsInteger;
+        }
 
         if (!TryReadValue(payload, out var actualValue))
             return false;

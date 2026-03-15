@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BenchmarkDotNet.Attributes;
+using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Serialization;
@@ -7,7 +8,7 @@ using CSharpDB.Storage.Serialization;
 namespace CSharpDB.Benchmarks.Micro;
 
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 10)]
+[Config(typeof(CollectionInProcessBenchmarkConfig))]
 public class CollectionPayloadBenchmarks
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new()
