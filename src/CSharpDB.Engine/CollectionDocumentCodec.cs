@@ -58,7 +58,36 @@ internal sealed class CollectionDocumentCodec<T>
     internal T DecodeDocument(ReadOnlySpan<byte> payload)
     {
         if (UsesDirectPayloadFormat &&
-            CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+            CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                try
+                {
+                    return CollectionBinaryDocumentCodec.Decode<T>(documentPayload);
+                }
+                catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+                {
+                    // Fall through to the slower validated / legacy path if the fast binary probe
+                    // was triggered by a non-direct payload that happens to share the marker bytes.
+                }
+            }
+            else
+            {
+                try
+                {
+                    return JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
+                }
+                catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+                {
+                    // Fall through to the slower validated / legacy path.
+                }
+            }
+        }
+
+        if (UsesDirectPayloadFormat &&
+            CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
         {
             ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
             if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
@@ -73,7 +102,13 @@ internal sealed class CollectionDocumentCodec<T>
     internal string DecodeKey(ReadOnlySpan<byte> payload)
     {
         if (UsesDirectPayloadFormat &&
-            CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+            CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            return Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(payload, header));
+        }
+
+        if (UsesDirectPayloadFormat &&
+            CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
         {
             return Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(payload, header));
         }
@@ -116,7 +151,13 @@ internal sealed class CollectionDocumentCodec<T>
             ReadOnlySpan<byte> expectedKeyUtf8 = utf8[..written];
 
             if (UsesDirectPayloadFormat &&
-                CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+                CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+            {
+                return CollectionPayloadCodec.GetKeyUtf8(payload, header).SequenceEqual(expectedKeyUtf8);
+            }
+
+            if (UsesDirectPayloadFormat &&
+                CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
             {
                 return CollectionPayloadCodec.GetKeyUtf8(payload, header).SequenceEqual(expectedKeyUtf8);
             }
@@ -152,4 +193,7 @@ internal sealed class CollectionDocumentCodec<T>
         var values = _recordSerializer.DecodeUpTo(payload, 0);
         return values[0].AsText;
     }
+
+    private static bool IsFastHeaderFallbackCandidate(Exception ex)
+        => ex is CSharpDbException or JsonException or DecoderFallbackException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException;
 }

@@ -22,6 +22,24 @@ internal static class CollectionPayloadCodec
     internal static bool TryReadValidatedHeader(ReadOnlySpan<byte> payload, out Header header)
         => TryReadHeader(payload, out header);
 
+    internal static bool TryReadFastHeader(ReadOnlySpan<byte> payload, out Header header)
+    {
+        header = default;
+
+        try
+        {
+            if (TryReadLegacyHeader(payload, out header))
+                return HasPlausibleJsonPayload(payload[header.DocumentStart..]);
+
+            return TryReadBinaryHeader(payload, out header);
+        }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
+        {
+            header = default;
+            return false;
+        }
+    }
+
     internal static ReadOnlySpan<byte> GetKeyUtf8(ReadOnlySpan<byte> payload, Header header)
         => payload.Slice(header.KeyStart, header.KeyByteCount);
 

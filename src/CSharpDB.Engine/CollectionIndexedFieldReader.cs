@@ -53,45 +53,56 @@ internal static class CollectionIndexedFieldReader
     public static bool TryReadValue(ReadOnlySpan<byte> payload, string jsonPropertyName, out DbValue value)
     {
         value = default;
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
-            return false;
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
-            byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-            return CollectionBinaryDocumentCodec.TryReadValue(
-                documentPayload,
-                pathSegments,
-                out value);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        while (reader.Read())
-        {
-            if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
-                continue;
-
-            if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
-                continue;
-
-            if (!reader.Read())
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
                 return false;
-
-            switch (reader.TokenType)
-            {
-                case JsonTokenType.String:
-                    value = DbValue.FromText(reader.GetString()!);
-                    return true;
-                case JsonTokenType.Number when reader.TryGetInt64(out long integerValue):
-                    value = DbValue.FromInteger(integerValue);
-                    return true;
-                default:
-                    return false;
-            }
         }
 
-        return false;
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
+                return CollectionBinaryDocumentCodec.TryReadValue(
+                    documentPayload,
+                    pathSegments,
+                    out value);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
+                    continue;
+
+                if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
+                    continue;
+
+                if (!reader.Read())
+                    return false;
+
+                switch (reader.TokenType)
+                {
+                    case JsonTokenType.String:
+                        value = DbValue.FromText(reader.GetString()!);
+                        return true;
+                    case JsonTokenType.Number when reader.TryGetInt64(out long integerValue):
+                        value = DbValue.FromInteger(integerValue);
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            value = default;
+            return false;
+        }
     }
 
     public static bool TryTextEquals(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, string expectedValue)
@@ -103,188 +114,266 @@ internal static class CollectionIndexedFieldReader
 
     public static bool TryTextEquals(ReadOnlySpan<byte> payload, string jsonPropertyName, string expectedValue)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
-            return false;
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
-            byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-            return CollectionBinaryDocumentCodec.TryTextEquals(
-                documentPayload,
-                pathSegments,
-                expectedValue);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        while (reader.Read())
-        {
-            if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
-                continue;
-
-            if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
-                continue;
-
-            if (!reader.Read())
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
                 return false;
-
-            return reader.TokenType == JsonTokenType.String &&
-                   reader.ValueTextEquals(expectedValue.AsSpan());
         }
 
-        return false;
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
+                return CollectionBinaryDocumentCodec.TryTextEquals(
+                    documentPayload,
+                    pathSegments,
+                    expectedValue);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
+                    continue;
+
+                if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
+                    continue;
+
+                if (!reader.Read())
+                    return false;
+
+                return reader.TokenType == JsonTokenType.String &&
+                       reader.ValueTextEquals(expectedValue.AsSpan());
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            return false;
+        }
     }
 
     private static bool TryReadInt64(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out long value)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryReadInt64(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    out value);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                value = default;
+                return false;
+            }
+
+            return TryReadInt64FromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
         {
             value = default;
             return false;
         }
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
-        {
-            return CollectionBinaryDocumentCodec.TryReadInt64(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                out value);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            value = default;
-            return false;
-        }
-
-        return TryReadInt64FromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
     }
 
     private static bool TryReadString(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out string? value)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = null;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryReadString(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    out value);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                value = null;
+                return false;
+            }
+
+            return TryReadStringFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
         {
             value = null;
             return false;
         }
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
-        {
-            return CollectionBinaryDocumentCodec.TryReadString(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                out value);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            value = null;
-            return false;
-        }
-
-        return TryReadStringFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
     }
 
     private static bool TryReadBoolean(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out bool value)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryReadBoolean(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    out value);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                value = default;
+                return false;
+            }
+
+            return TryReadBooleanFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
         {
             value = default;
             return false;
         }
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
-        {
-            return CollectionBinaryDocumentCodec.TryReadBoolean(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                out value);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            value = default;
-            return false;
-        }
-
-        return TryReadBooleanFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
     }
 
     private static bool TryReadDecimal(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out decimal value)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryReadDecimal(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    out value);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                value = default;
+                return false;
+            }
+
+            return TryReadDecimalFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
         {
             value = default;
             return false;
         }
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
-        {
-            return CollectionBinaryDocumentCodec.TryReadDecimal(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                out value);
-        }
-
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            value = default;
-            return false;
-        }
-
-        return TryReadDecimalFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
     }
 
     private static bool TryReadValue(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out DbValue value)
     {
         value = default;
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
-            return false;
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
-            return CollectionBinaryDocumentCodec.TryReadValue(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                out value);
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+                return false;
         }
 
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-            return false;
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryReadValue(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    out value);
+            }
 
-        return TryReadValueFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return false;
+
+            return TryReadValueFromObject(ref reader, jsonPathSegmentsUtf8, 0, out value);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            value = default;
+            return false;
+        }
     }
 
     private static bool TryTextEquals(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, string expectedValue)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out var header))
-            return false;
-
-        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-        if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
-            return CollectionBinaryDocumentCodec.TryTextEquals(
-                documentPayload,
-                jsonPathSegmentsUtf8,
-                expectedValue);
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+                return false;
         }
 
-        var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-            return false;
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryTextEquals(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    expectedValue);
+            }
 
-        return TryTextEqualsFromObject(ref reader, jsonPathSegmentsUtf8, 0, expectedValue);
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return false;
+
+            return TryTextEqualsFromObject(ref reader, jsonPathSegmentsUtf8, 0, expectedValue);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            return false;
+        }
     }
+
+    private static bool IsFastHeaderFallbackCandidate(Exception ex)
+        => ex is CSharpDbException or JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException;
 
     private static bool TryReadValueFromObject(
         ref Utf8JsonReader reader,
