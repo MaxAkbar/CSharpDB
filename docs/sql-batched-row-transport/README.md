@@ -75,6 +75,33 @@ That contract is deeply embedded in:
 
 So the migration cannot be a big-bang replacement. It needs compatibility layers.
 
+## Current Status
+
+As of March 15, 2026, the branch has a partial retained implementation:
+
+- `RowBatch` and `IBatchOperator` exist in `src/CSharpDB.Execution/IOperator.cs`
+- `RowSelection`, `IFilterProjectionBatchPlan`, and a delegate-backed compatibility plan now exist in `src/CSharpDB.Execution/BatchEvaluation.cs`
+- a narrow `BatchPlanCompiler` and `SpecializedFilterProjectionBatchPlan` now exist for simple integer predicates and simple integer-or-column projections, but they are still internal opt-in infrastructure rather than planner-driven behavior
+- several scan/filter/projection/sort/distinct operators can already produce or consume batches internally
+- `QueryResult` in `src/CSharpDB.Execution/QueryResult.cs` now supports storing batch-native roots directly instead of always wrapping them in `BatchToRowOperatorAdapter`
+- partial-consumption behavior is covered: a caller can `MoveNextAsync()` on a batch-backed result and then call `ToListAsync()` without losing the remainder of the current batch
+
+The first retained benchmark signal for that specialized plan is positive on the internal operator path in `tests/CSharpDB.Benchmarks/Micro/BatchEvaluationBenchmarks.cs`:
+
+- projection-only batch plan: about `378.8 us` down to `345.5 us` over `16,384` rows
+- filter + projection batch plan: about `221.4 us` down to `208.8 us` over `16,384` rows
+
+That is enough to justify keeping the specialized-plan direction, but not enough yet to route production queries through it blindly.
+
+What is not solved yet:
+
+- the generic expression/filter/projection boundary still pays too much per-row cost
+- batch transport is still not cheap enough once the engine falls back to `Func<DbValue[], DbValue>`-style evaluation
+- adapter-heavy transport broadening has not produced stable wins
+- the new batch-plan contract is only wired as an internal opt-in path so far; it is not planner-driven yet
+
+That means the next step is no longer "add more adapters" or "add a thin row-view wrapper". The next step is changing the evaluation contract inside the executor.
+
 ## Proposed Direction
 
 ### 1. Add a batch-native internal contract
@@ -165,6 +192,8 @@ Two adapters are needed early:
   Wrap a batch-native operator so existing row-based operators and `QueryResult` can still consume it.
 
 These adapters are what make phased migration possible.
+
+In practice, adapter use needs to stay narrow. Recent branch work showed that broadening adapter use too aggressively can erase the gains from batched transport, especially on join-expression and scan-projection workloads.
 
 ## Migration Strategy
 
@@ -261,9 +290,186 @@ Those should consume batches only after the producer and projection path is stab
 Recommended approach:
 
 - keep external enumeration unchanged
-- add a `BatchToRowAdapter` before `QueryResult` when the root operator is batch-native
+- allow `QueryResult` to hold either an `IOperator` or an `IBatchOperator`
+- materialize rows only at the public boundary when callers enumerate rows or call `ToListAsync()`
 
-That preserves API compatibility while allowing the executor interior to evolve.
+This is now the retained branch direction. Earlier versions used `BatchToRowAdapter` at the boundary, but the current implementation keeps batch-native roots intact for longer while preserving the public API.
+
+## Tried And Backed Out
+
+The following approaches were already implemented and benchmarked on this branch, then reverted because the results were not good enough.
+
+### 1. Broad `RowToBatch` adapter expansion
+
+Tried:
+
+- adding a `RowToBatch` adapter and wiring generic batch-capable consumers to request "a batch source" unconditionally
+- pushing that through scan/filter/projection consumers, `SortOperator`, `DistinctOperator`, aggregate consumers, and join-side batch build/probe paths
+
+Result:
+
+- scan-projection results became mixed to worse
+- join-expression rows regressed materially
+
+Conclusion:
+
+- do not broaden batching further by layering adapters over row-mode operators
+- adapters are acceptable as narrow compatibility seams, not as the main strategy
+
+### 2. Batch-aware expression evaluator seam over the current compiler
+
+Tried:
+
+- adding a batch-row evaluation seam around the existing `ExpressionCompiler`
+- wiring generic filter/projection operators to evaluate over that seam
+
+Result:
+
+- join-expression benchmarks regressed enough that the work was backed out
+
+Conclusion:
+
+- the next evaluator step cannot be just another wrapper around `Func<DbValue[], DbValue>`
+- the evaluator contract itself needs to change
+
+### 3. Parallel compiled batch-expression trees over the current compiler model
+
+Tried:
+
+- compiling a second cached evaluator path for generic `ProjectionOperator` and `FilterProjectionOperator`
+- evaluating batch rows through precompiled batch-expression objects instead of the normal per-row `Func<DbValue[], DbValue>` delegates
+
+Result:
+
+- filtered scan projection improved slightly
+- join expression projection rows regressed enough to erase the scan win
+- the change was backed out
+
+Conclusion:
+
+- a parallel evaluator object tree layered on the current expression compiler model is still too expensive on important join shapes
+- the next rewrite needs a new internal evaluator contract, not a second cached evaluator stack over the existing `DbValue[]` compiler model
+
+### 4. Additional operator-local transport experiments
+
+Tried and reverted:
+
+- batch-side `TopNSortOperator` consumption
+- batch output from hash join for projected join consumers
+- direct materialized-row fast paths in `BatchTransport`
+
+Result:
+
+- no stable broad win
+- too much risk of making important query shapes worse
+
+Conclusion:
+
+- stop spending time on isolated operator-local transport tweaks
+- move to a deeper shared execution contract instead
+
+### 5. `ReadOnlySpan<DbValue>` compiled delegate evaluators
+
+Tried:
+
+- compiling a second cached evaluator path over `ReadOnlySpan<DbValue>`
+- wiring generic `ProjectionOperator` and `FilterProjectionOperator` batch paths to use those span-based delegates instead of copying rows into temporary `DbValue[]` buffers
+
+Result:
+
+- scan-projection benchmarks regressed versus the current stable batch baseline
+- join-expression rows regressed more materially
+- the change was backed out
+
+Conclusion:
+
+- even a narrower span-based delegate path is not enough if it still mirrors the current expression-compiler model
+- the next retained step needs a deeper evaluator contract, not another alternate delegate shape layered beside `Func<DbValue[], DbValue>`
+
+### 6. Narrow bytecode evaluator plus selection-vector filtering
+
+Tried:
+
+- compiling a compact bytecode form for common literals, column refs, arithmetic, comparisons, boolean operators, and `IS NULL`
+- wiring generic `ProjectionOperator` and `FilterProjectionOperator` batch paths to use that bytecode when available
+- adding a simple selected-row index buffer for batched filter/projection instead of projecting every candidate row immediately
+
+Result:
+
+- scan projection regressed clearly versus the retained baseline
+- filtered scan + column projection moved from about `738.0 us` to `816.8 us` at `10K`, and from `57.09 ms` to `62.04 ms` at `100K`
+- filtered scan + expression projection moved from about `711.5 us` to `929.1 us` at `10K`, and from `57.76 ms` to `62.83 ms` at `100K`
+- the change was backed out before spending more time validating join shapes
+
+Conclusion:
+
+- a bytecode layer is not enough if the executor still pays the current generic row/evaluator costs around it
+- selection-vector filtering by itself does not recover the lost time
+- the next retained step still needs a deeper shared evaluator contract, not another execution engine bolted onto the current expression boundary
+
+### 7. Planner-routed delegate-backed batch plan for generic expression projection
+
+Tried:
+
+- keeping the new `RowSelection` and `IFilterProjectionBatchPlan` scaffolding
+- routing generic expression projection and filter+expression projection through `DelegateFilterProjectionBatchPlan` whenever the source was already batch-capable
+
+Result:
+
+- expression-heavy scan rows improved, but not enough to justify the regressions elsewhere
+- filtered scan + expression projection improved to about `742.1 us` at `10K` and `59.27 ms` at `100K`
+- join expression projection regressed to about `352.4 us`
+- join filter + expression projection regressed to about `344.0 us`
+- the planner hook was backed out, but the shared batch-plan infrastructure was retained
+
+Conclusion:
+
+- the contract scaffolding is worth keeping
+- the delegate-backed compatibility implementation is not good enough as a planner-routed production path
+- the next retained use needs a more specialized evaluator on top of the new contract, not direct routing of the compatibility layer
+
+### 8. Planner-routed specialized batch plan for generic expression projection
+
+Tried:
+
+- keeping the new `BatchPlanCompiler` and `SpecializedFilterProjectionBatchPlan`
+- routing the generic planner expression path through that specialized plan whenever the source was already batch-capable and the SQL shape was supported
+
+Result:
+
+- the retained internal contract benchmark stayed positive
+- broad production routing was not good enough:
+  - join with expression projection landed around `323.5 us`, which was effectively flat
+  - join with filter + expression projection regressed to about `340.6 us`
+  - scan expression rows were not a clear enough win to justify keeping the planner route
+- the planner hook was backed out
+
+Conclusion:
+
+- the specialized plan implementation is worth keeping as infrastructure
+- it is not yet good enough as a generic planner-routed production path
+- the next use needs a narrower production target or a deeper evaluator specialization before planner rollout
+
+### 9. Narrow specialized-plan rollout in compact scan / compact payload expression operators
+
+Tried:
+
+- routing the specialized plan only through `CompactTableScanProjectionOperator` and `CompactPayloadProjectionOperator`
+- keeping the broad generic join path untouched
+
+Result:
+
+- the scan-heavy production signal was still not good enough to keep:
+  - filtered scan + expression projection landed around `734.9 us` at `10K` and `57.28 ms` at `100K`
+  - compact indexed range expression projection landed around `45.63 ms` at `100K`
+- that did not clearly beat the retained baseline enough to justify the extra runtime path
+- the planner and compact-operator rollout was backed out
+
+Conclusion:
+
+- even the compact-operator production rollout is not yet compelling
+- the specialized plan/compiler is still useful retained infrastructure
+- the next promotion target must be narrower again, or the plan itself needs deeper specialization before production use
 
 ## Expression Execution
 
@@ -323,17 +529,19 @@ Success criteria should be measured against current row transport:
 
 These are acceptable if the rollout stays phased.
 
-## Recommended Starting Point
+## Recommended Next Step
 
-The first implementation pass should do only this:
+The next implementation pass should not be another adapter pass.
 
-1. add `RowBatch`
-2. add `IBatchOperator`
-3. add adapters
-4. make table scan and generic projection/filter-projection batch-native
-5. benchmark scan and join expression-projection shapes against the current row-based path
+It should do this:
 
-That is enough to prove whether true batch transport is worth rolling further into aggregates and joins.
+1. keep the retained direct-batch `QueryResult` boundary
+2. design a new internal evaluator contract that is not centered on `Func<DbValue[], DbValue>`
+3. make generic `ProjectionOperator` and `FilterProjectionOperator` consume that contract first
+4. benchmark scan and join expression-projection shapes again
+5. only after that, extend the same evaluator path to compact scans, aggregates, and joins
+
+That is the smallest next step that can plausibly unlock the next tier of SQL gains without repeating the already-rejected adapter-heavy and row-accessor-wrapper approaches.
 
 ## Recommended Position
 

@@ -1237,6 +1237,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
         Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1261,6 +1263,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
         Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1285,7 +1289,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<TableScanOperator>(GetStoredOperator(result));
         Assert.IsType<TableScanOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1309,7 +1314,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<FilterOperator>(GetStoredOperator(result));
         Assert.IsType<FilterOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1332,7 +1338,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<LimitOperator>(GetStoredOperator(result));
         Assert.IsType<LimitOperator>(GetRootOperator(result));
 
         var rows = await result.ToListAsync(ct);
@@ -1353,7 +1360,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<SortOperator>(GetStoredOperator(result));
         Assert.IsType<SortOperator>(GetRootOperator(result));
 
         var rows = await result.ToListAsync(ct);
@@ -1374,11 +1382,60 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<DistinctOperator>(GetStoredOperator(result));
         Assert.IsType<DistinctOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
         Assert.Equal(new long[] { 10, 20 }, rows.Select(r => r[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task IndexedEqualitySelectStar_UsesIndexScanOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_index_eq_root (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, label TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_index_eq_root_score ON batch_index_eq_root(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_root VALUES (1, 10, 'A')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_root VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_root VALUES (3, 20, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_root VALUES (4, 30, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_index_eq_root WHERE score = 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.False(UsesDirectBatchStorage(result));
+        Assert.IsType<IndexScanOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(new long[] { 2, 3 }, rows.Select(r => r[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task IndexedOrderedSelectStar_UsesIndexOrderedScanOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_index_order_root (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, label TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_index_order_root_score ON batch_index_order_root(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_order_root VALUES (1, 30, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_order_root VALUES (2, 10, 'A')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_order_root VALUES (3, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_order_root VALUES (4, 40, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_index_order_root WHERE score BETWEEN 10 AND 30 ORDER BY score ASC") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.False(UsesDirectBatchStorage(result));
+        Assert.IsType<IndexOrderedScanOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(new long[] { 10, 20, 30 }, rows.Select(r => r[1].AsInteger).ToArray());
     }
 
     [Fact]
@@ -1430,13 +1487,45 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
         Assert.IsType<ProjectionOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
         Assert.Equal(200L, rows[0][1].AsInteger);
         Assert.Equal(300L, rows[1][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task JoinedExpressionProjection_UsesBatchProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_expr_proj_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE batch_expr_proj_right (id INTEGER PRIMARY KEY, left_id INTEGER NOT NULL, amount INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_left VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_left VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_left VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_right VALUES (1, 1, 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_right VALUES (2, 2, 200)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_expr_proj_right VALUES (3, 3, 300)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.id, r.amount + l.score FROM batch_expr_proj_left l INNER JOIN batch_expr_proj_right r ON l.id = r.left_id") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<ProjectionOperator>(rootOperator);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal(110L, rows[0][1].AsInteger);
+        Assert.Equal(220L, rows[1][1].AsInteger);
+        Assert.Equal(330L, rows[2][1].AsInteger);
     }
 
     [Fact]
@@ -1458,8 +1547,10 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<BatchToRowOperatorAdapter>(GetStoredOperator(result));
-        Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<FilterProjectionOperator>(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -1484,6 +1575,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<CompactPayloadProjectionOperator>(GetStoredOperator(result));
         Assert.IsType<CompactPayloadProjectionOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1510,6 +1603,8 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<CompactPayloadProjectionOperator>(GetStoredOperator(result));
         Assert.IsType<CompactPayloadProjectionOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -1517,6 +1612,32 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(25L, rows[0][1].AsInteger);
         Assert.Equal(35L, rows[1][1].AsInteger);
         Assert.Equal(45L, rows[2][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task DirectBatchQueryResult_ToListAsync_ContinuesAfterMoveNextAsync()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_result_resume (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_result_resume VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_result_resume VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_result_resume VALUES (3, 30)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_result_resume") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        Assert.True(await result.MoveNextAsync(ct));
+        Assert.Equal(1L, result.Current[0].AsInteger);
+        Assert.Equal(10L, result.Current[1].AsInteger);
+
+        var remainingRows = await result.ToListAsync(ct);
+        Assert.Equal(2, remainingRows.Count);
+        Assert.Equal(new long[] { 2, 3 }, remainingRows.Select(row => row[0].AsInteger).ToArray());
+        Assert.False(await result.MoveNextAsync(ct));
     }
 
     [Fact]
@@ -4747,7 +4868,13 @@ public class IntegrationTests : IAsyncLifetime
     {
         var operatorField = typeof(QueryResult).GetField("_operator", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("QueryResult operator field not found.");
-        return (IOperator?)operatorField.GetValue(result)
+        var storedOperator = (IOperator?)operatorField.GetValue(result);
+        if (storedOperator != null)
+            return storedOperator;
+
+        var batchOperatorField = typeof(QueryResult).GetField("_batchOperator", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult batch operator field not found.");
+        return (IOperator?)batchOperatorField.GetValue(result)
             ?? throw new InvalidOperationException("QueryResult did not contain an operator.");
     }
 
@@ -4765,6 +4892,13 @@ public class IntegrationTests : IAsyncLifetime
         var hasSyncLookupField = typeof(QueryResult).GetField("_hasSyncLookupResult", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("QueryResult sync lookup field not found.");
         return (bool)hasSyncLookupField.GetValue(result)!;
+    }
+
+    private static bool UsesDirectBatchStorage(QueryResult result)
+    {
+        var batchOperatorField = typeof(QueryResult).GetField("_batchOperator", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult batch operator field not found.");
+        return batchOperatorField.GetValue(result) is not null;
     }
 
     private static T? GetPrivateField<T>(object target, string fieldName)

@@ -3072,9 +3072,17 @@ public sealed class QueryPlanner
     }
 
     private static QueryResult CreateQueryResult(IOperator op)
-        => op is IBatchOperator batchOperator
+        => op is IBatchOperator batchOperator && ShouldUseBatchResultBoundary(op)
             ? QueryResult.FromBatchOperator(batchOperator)
             : new QueryResult(op);
+
+    private static bool ShouldUseBatchResultBoundary(IOperator op)
+        => op switch
+        {
+            IndexScanOperator => false,
+            IndexOrderedScanOperator => false,
+            _ => true,
+        };
 
     private static int? GetOrderByTopN(SelectStatement stmt)
         => GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset);
