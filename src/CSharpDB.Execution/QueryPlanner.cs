@@ -2487,7 +2487,8 @@ public sealed class QueryPlanner
                     return lookupScalarAggResult;
                 break;
             case SelectPlanKind.SimpleGroupedIndexAggregate:
-                if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult))
+                if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult) ||
+                    TryBuildCompositeGroupedIndexAggregateQuery(stmt, out groupedIndexAggResult))
                     return groupedIndexAggResult;
                 break;
             case SelectPlanKind.SimpleConstantGroupAggregateColumn:
@@ -2551,7 +2552,8 @@ public sealed class QueryPlanner
                 selectedPlan = SelectPlanKind.SimpleLookupScalarAggregateColumn;
                 return lookupScalarAggResult;
             }
-            if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult))
+            if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult) ||
+                TryBuildCompositeGroupedIndexAggregateQuery(stmt, out groupedIndexAggResult))
             {
                 selectedPlan = SelectPlanKind.SimpleGroupedIndexAggregate;
                 return groupedIndexAggResult;
@@ -4088,6 +4090,55 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private bool TryBuildCompositeGroupedIndexAggregateQuery(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (stmt.Where != null || stmt.Having != null || stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+        if (stmt.GroupBy is not { Count: > 0 })
+            return false;
+        if (stmt.Columns.Count == 0 || stmt.Columns.Any(c => c.IsStar))
+            return false;
+        if (_catalog.IsView(simpleRef.TableName))
+            return false;
+        if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
+            return false;
+
+        string expectedAlias = simpleRef.Alias ?? simpleRef.TableName;
+        var schema = GetSchema(simpleRef.TableName);
+        if (!TryResolveCompositeGroupByColumns(stmt.GroupBy, schema, expectedAlias, out var groupColumnIndices))
+            return false;
+
+        var matchingIndex = FindCompositeGroupedIndex(simpleRef.TableName, schema, groupColumnIndices);
+        if (matchingIndex == null)
+            return false;
+
+        if (!TryBuildCompositeGroupedAggregateProjection(
+                stmt.Columns,
+                schema,
+                expectedAlias,
+                groupColumnIndices,
+                out var projectionKinds))
+        {
+            return false;
+        }
+
+        var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        result = new QueryResult(new CompositeIndexGroupedAggregateOperator(
+            _catalog.GetIndexStore(matchingIndex.IndexName, _pager),
+            _catalog.GetTableTree(simpleRef.TableName, _pager),
+            GetReadSerializer(schema),
+            groupColumnIndices,
+            outputSchema,
+            projectionKinds));
+        return true;
+    }
+
     private static bool TryBuildGroupedIndexAggregateCountPredicate(
         Expression? having,
         out GroupedIndexAggregateCountPredicateKind predicateKind,
@@ -4188,6 +4239,132 @@ public sealed class QueryPlanner
             IsStarArg: true,
             Arguments.Count: 0,
         };
+    }
+
+    private static bool TryResolveCompositeGroupByColumns(
+        List<Expression> groupByExpressions,
+        TableSchema schema,
+        string expectedAlias,
+        out int[] groupColumnIndices)
+    {
+        groupColumnIndices = Array.Empty<int>();
+        var resolved = new int[groupByExpressions.Count];
+
+        for (int i = 0; i < groupByExpressions.Count; i++)
+        {
+            if (groupByExpressions[i] is not ColumnRefExpression columnRef ||
+                !TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int columnIndex))
+            {
+                return false;
+            }
+
+            var column = schema.Columns[columnIndex];
+            if (column.Nullable || column.Type is not (DbType.Integer or DbType.Text))
+                return false;
+
+            for (int j = 0; j < i; j++)
+            {
+                if (resolved[j] == columnIndex)
+                    return false;
+            }
+
+            resolved[i] = columnIndex;
+        }
+
+        groupColumnIndices = resolved;
+        return true;
+    }
+
+    private IndexSchema? FindCompositeGroupedIndex(string tableName, TableSchema schema, ReadOnlySpan<int> groupColumnIndices)
+    {
+        IndexSchema? best = null;
+        foreach (var index in _catalog.GetIndexesForTable(tableName))
+        {
+            if (index.Columns.Count < groupColumnIndices.Length || index.Columns.Count < 2)
+                continue;
+
+            bool matches = true;
+            for (int i = 0; i < groupColumnIndices.Length; i++)
+            {
+                if (!string.Equals(
+                        index.Columns[i],
+                        schema.Columns[groupColumnIndices[i]].Name,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (!matches)
+                continue;
+
+            if (best == null ||
+                index.Columns.Count < best.Columns.Count ||
+                (index.Columns.Count == best.Columns.Count && index.IsUnique && !best.IsUnique))
+            {
+                best = index;
+            }
+        }
+
+        return best;
+    }
+
+    private static bool TryBuildCompositeGroupedAggregateProjection(
+        List<SelectColumn> columns,
+        TableSchema schema,
+        string expectedAlias,
+        ReadOnlySpan<int> groupColumnIndices,
+        out int[] projectionKinds)
+    {
+        projectionKinds = Array.Empty<int>();
+        var kinds = new int[columns.Count];
+
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var expression = columns[i].Expression;
+            if (expression is null)
+                return false;
+
+            if (expression is ColumnRefExpression columnRef)
+            {
+                if (!TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int columnIndex))
+                    return false;
+
+                int groupOrdinal = -1;
+                for (int j = 0; j < groupColumnIndices.Length; j++)
+                {
+                    if (groupColumnIndices[j] == columnIndex)
+                    {
+                        groupOrdinal = j;
+                        break;
+                    }
+                }
+
+                if (groupOrdinal < 0)
+                    return false;
+
+                kinds[i] = groupOrdinal;
+                continue;
+            }
+
+            if (expression is FunctionCallExpression
+                {
+                    FunctionName: "COUNT",
+                    IsDistinct: false,
+                    IsStarArg: true,
+                    Arguments.Count: 0,
+                })
+            {
+                kinds[i] = -1;
+                continue;
+            }
+
+            return false;
+        }
+
+        projectionKinds = kinds;
+        return true;
     }
 
     private static bool TryBuildGroupedIndexAggregateProjection(

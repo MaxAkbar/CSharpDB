@@ -1467,6 +1467,69 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GroupBy_CompositeIndexedColumns_UsesCompositeGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_comp_fast (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_comp_fast_ab ON grouped_comp_fast(a, b)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_fast VALUES (1, 1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_fast VALUES (2, 1, 10, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_fast VALUES (3, 1, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_fast VALUES (4, 2, 10, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_fast VALUES (5, 2, 10, 'e')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT a, b, COUNT(*) " +
+            "FROM grouped_comp_fast " +
+            "GROUP BY a, b") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompositeIndexGroupedAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (A: row[0].AsInteger, B: row[1].AsInteger, Count: row[2].AsInteger))
+            .OrderBy(row => row.A)
+            .ThenBy(row => row.B)
+            .ToArray();
+
+        Assert.Equal([(1L, 10L, 2L), (1L, 20L, 1L), (2L, 10L, 2L)], actual);
+    }
+
+    [Fact]
+    public async Task GroupBy_CompositeIndexLeftmostPrefix_UsesCompositeGroupedIndexAggregateFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE grouped_comp_prefix (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_grouped_comp_prefix_ab ON grouped_comp_prefix(a, b)", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_prefix VALUES (1, 1, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_prefix VALUES (2, 1, 20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_prefix VALUES (3, 1, 20, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_prefix VALUES (4, 2, 10, 'd')", ct);
+        await _db.ExecuteAsync("INSERT INTO grouped_comp_prefix VALUES (5, 2, 30, 'e')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT a, COUNT(*) " +
+            "FROM grouped_comp_prefix " +
+            "GROUP BY a") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<CompositeIndexGroupedAggregateOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        var actual = rows
+            .Select(row => (A: row[0].AsInteger, Count: row[1].AsInteger))
+            .OrderBy(row => row.A)
+            .ToArray();
+
+        Assert.Equal([(1L, 3L), (2L, 2L)], actual);
+    }
+
+    [Fact]
     public async Task IntegerPrimaryKeyDistinctAggregates_UseTableKeyAggregateFastPath()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -214,7 +214,7 @@ internal static class HashedIndexPayloadCodec
         return null;
     }
 
-    private static bool TryDecodeGroups(
+    internal static bool TryDecodeGroups(
         ReadOnlySpan<byte> payload,
         out int componentCount,
         out List<BucketGroup> groups)
@@ -397,5 +397,5 @@ internal static class HashedIndexPayloadCodec
 
     private static ReadOnlySpan<byte> MagicBytes => "CSDBHIX1"u8;
 
-    private readonly record struct BucketGroup(DbValue[] KeyComponents, byte[] RowIdPayload);
+    internal readonly record struct BucketGroup(DbValue[] KeyComponents, byte[] RowIdPayload);
 }

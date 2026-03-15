@@ -7321,6 +7321,223 @@ public sealed class IndexGroupedAggregateOperator : IOperator
 }
 
 /// <summary>
+/// Grouped aggregate fast path over hashed composite index payloads.
+/// Avoids base-row scans when GROUP BY matches the leftmost index prefix and
+/// the result only needs the grouped key columns plus COUNT(*).
+/// </summary>
+public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
+{
+    private readonly IIndexStore _indexStore;
+    private readonly BTree _tableTree;
+    private readonly IRecordSerializer _recordSerializer;
+    private readonly int[] _groupColumnIndices;
+    private readonly int[] _projectionKinds;
+    private readonly RecordColumnAccessor?[] _groupAccessors;
+    private List<DbValue[]>? _results;
+    private int _index;
+
+    private static readonly CompositeGroupKeyComparer s_groupComparer = new();
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _results?.Count;
+
+    public CompositeIndexGroupedAggregateOperator(
+        IIndexStore indexStore,
+        BTree tableTree,
+        IRecordSerializer recordSerializer,
+        ReadOnlySpan<int> groupColumnIndices,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionKinds)
+    {
+        _indexStore = indexStore;
+        _tableTree = tableTree;
+        _recordSerializer = recordSerializer;
+        _groupColumnIndices = groupColumnIndices.ToArray();
+        _projectionKinds = projectionKinds.ToArray();
+        _groupAccessors = BoundColumnAccessHelper.CreateAccessors(recordSerializer, _groupColumnIndices);
+        OutputSchema = outputSchema;
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        var groups = new List<GroupState>();
+        var groupIndex = new Dictionary<CompositeGroupKey, int>(s_groupComparer);
+        var cursor = _indexStore.CreateCursor(IndexScanRange.All);
+
+        while (await cursor.MoveNextAsync(ct))
+        {
+            ReadOnlyMemory<byte> payloadMemory = cursor.CurrentValue;
+            if (HashedIndexPayloadCodec.TryDecodeGroups(payloadMemory.Span, out int componentCount, out var decodedGroups) &&
+                componentCount >= _groupColumnIndices.Length)
+            {
+                for (int i = 0; i < decodedGroups.Count; i++)
+                {
+                    int entryCount = RowIdPayloadCodec.GetCount(decodedGroups[i].RowIdPayload);
+                    if (entryCount <= 0)
+                        continue;
+
+                    AccumulateGroup(decodedGroups[i].KeyComponents, entryCount, groups, groupIndex);
+                }
+
+                continue;
+            }
+
+            int rowIdCount = RowIdPayloadCodec.GetCount(payloadMemory.Span);
+            for (int i = 0; i < rowIdCount; i++)
+            {
+                long rowId = RowIdPayloadCodec.ReadAt(payloadMemory.Span, i);
+                var rowPayload = await _tableTree.FindMemoryAsync(rowId, ct);
+                if (rowPayload == null)
+                    continue;
+
+                var groupComponents = DecodeGroupComponents(rowPayload.Value.Span);
+                AccumulateGroup(groupComponents, 1, groups, groupIndex);
+            }
+        }
+
+        _results = new List<DbValue[]>(groups.Count);
+        for (int i = 0; i < groups.Count; i++)
+            _results.Add(BuildOutputRow(groups[i]));
+
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        _index++;
+        if (_results == null || _index >= _results.Count)
+            return ValueTask.FromResult(false);
+
+        Current = _results[_index];
+        return ValueTask.FromResult(true);
+    }
+
+    public bool TryTakeMaterializedRows(out List<DbValue[]> rows)
+    {
+        if (_results == null)
+        {
+            rows = new List<DbValue[]>(0);
+            return false;
+        }
+
+        rows = _results;
+        _results = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        return true;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _results = null;
+        _index = -1;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    private void AccumulateGroup(
+        ReadOnlySpan<DbValue> sourceComponents,
+        int entryCount,
+        List<GroupState> groups,
+        Dictionary<CompositeGroupKey, int> groupIndex)
+    {
+        var prefixComponents = new DbValue[_groupColumnIndices.Length];
+        sourceComponents[.._groupColumnIndices.Length].CopyTo(prefixComponents);
+
+        var key = new CompositeGroupKey(prefixComponents, ComputeGroupHash(prefixComponents));
+        if (groupIndex.TryGetValue(key, out int existingIndex))
+        {
+            groups[existingIndex].Count += entryCount;
+            return;
+        }
+
+        groupIndex[key] = groups.Count;
+        groups.Add(new GroupState(prefixComponents, entryCount));
+    }
+
+    private DbValue[] DecodeGroupComponents(ReadOnlySpan<byte> payload)
+    {
+        var components = new DbValue[_groupColumnIndices.Length];
+        for (int i = 0; i < _groupColumnIndices.Length; i++)
+        {
+            components[i] = _groupAccessors[i] is { } accessor
+                ? accessor.Decode(payload)
+                : _recordSerializer.DecodeColumn(payload, _groupColumnIndices[i]);
+        }
+
+        return components;
+    }
+
+    private DbValue[] BuildOutputRow(GroupState group)
+    {
+        var row = new DbValue[_projectionKinds.Length];
+        for (int i = 0; i < _projectionKinds.Length; i++)
+        {
+            int projectionKind = _projectionKinds[i];
+            row[i] = projectionKind >= 0
+                ? group.Components[projectionKind]
+                : DbValue.FromInteger(group.Count);
+        }
+
+        return row;
+    }
+
+    private static int ComputeGroupHash(ReadOnlySpan<DbValue> components)
+    {
+        var hash = new HashCode();
+        for (int i = 0; i < components.Length; i++)
+            hash.Add(components[i]);
+        return hash.ToHashCode();
+    }
+
+    private sealed class GroupState
+    {
+        public GroupState(DbValue[] components, long count)
+        {
+            Components = components;
+            Count = count;
+        }
+
+        public DbValue[] Components { get; }
+        public long Count { get; set; }
+    }
+
+    private readonly struct CompositeGroupKey
+    {
+        public CompositeGroupKey(DbValue[] components, int hashCode)
+        {
+            Components = components;
+            HashCode = hashCode;
+        }
+
+        public DbValue[] Components { get; }
+        public int HashCode { get; }
+    }
+
+    private sealed class CompositeGroupKeyComparer : IEqualityComparer<CompositeGroupKey>
+    {
+        public bool Equals(CompositeGroupKey x, CompositeGroupKey y)
+        {
+            if (x.HashCode != y.HashCode || x.Components.Length != y.Components.Length)
+                return false;
+
+            for (int i = 0; i < x.Components.Length; i++)
+            {
+                if (DbValue.Compare(x.Components[i], y.Components[i]) != 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(CompositeGroupKey obj) => obj.HashCode;
+    }
+}
+
+/// <summary>
 /// Scalar aggregate fast path over the table row key for INTEGER PRIMARY KEY tables.
 /// Uses only the B-tree key stream and avoids row payload materialization.
 /// </summary>

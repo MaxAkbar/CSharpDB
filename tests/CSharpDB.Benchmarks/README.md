@@ -6,7 +6,7 @@ The current snapshot in this README mixes the March 14, 2026 balanced macro capt
 
 - `Balanced macro capture on March 14, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260314-214358.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 14, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, JoinBenchmarks, ColdLookupBenchmarks`
+- `Latest focused reruns on March 14, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -64,6 +64,7 @@ dotnet run -c Release -- --micro --filter *IndexAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *PrimaryKeyAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *GroupedIndexAggregateBenchmarks*
+dotnet run -c Release -- --micro --filter *CompositeGroupedIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *PredicatePushdownBenchmarks*
 dotnet run -c Release -- --micro --filter *JoinBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionLookupFallbackBenchmarks*
@@ -118,6 +119,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `IndexAggregateBenchmarks`: isolates scalar `SUM` / `COUNT` / `MIN` / `MAX` queries and range aggregates that can now execute directly from integer index keys
 - `PrimaryKeyAggregateBenchmarks`: isolates scalar and ranged aggregates that can now execute directly from the `INTEGER PRIMARY KEY` table B-tree key stream
 - `GroupedIndexAggregateBenchmarks`: isolates `GROUP BY` on a duplicate-heavy integer key so grouped aggregates can be compared against the new direct index-grouped fast path
+- `CompositeGroupedIndexBenchmarks`: isolates `GROUP BY` on composite indexed keys and leftmost-prefix grouped scans so composite grouped fast paths can be compared against generic grouped scans
 - `CollectionFieldExtractionBenchmarks`: isolates early/middle/late extraction cost, nested-path access, miss cost, and full document hydration comparison for collection payload scans
 - `CollectionLookupFallbackBenchmarks`: isolates collection equality lookups on unindexed fields to measure the direct-payload compare fallback before full document hydration
 - `Run-Phase1-Baselines.ps1`: runs the focused phase-1 benchmark set without the larger macro, stress, or scaling suites
@@ -307,6 +309,15 @@ Defaults:
 | `GROUP BY group_id ORDER BY group_id LIMIT 100 SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 15.96 us | 10.30 KB | Natural key order from the index lets the grouped path stop after the first 100 groups |
 | `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` no index (100K rows) | 28.07 ms | 10.76 MB | Equality filter still scans the table, groups one key, and applies HAVING in the generic path |
 | `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 1.04 us | 1.41 KB | Equality-restricted grouped fast path now applies `HAVING COUNT(*)` directly from the index payload count |
+
+### SQL Composite Grouped Aggregate Spot Checks (March 14, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `GROUP BY a, b SELECT a, b, COUNT(*)` no index (100K rows) | 45.17 ms | 22.64 MB | Generic grouped aggregate over the full composite key builds hash state from decoded rows |
+| `GROUP BY a, b SELECT a, b, COUNT(*)` composite index aggregate (100K rows) | 3.01 ms | 3.65 MB | Streams hashed composite index payloads and aggregates directly from grouped key buckets |
+| `GROUP BY a SELECT a, COUNT(*)` no index (100K rows) | 35.53 ms | 11.46 MB | Generic grouped aggregate over the leftmost composite key prefix |
+| `GROUP BY a SELECT a, COUNT(*)` composite index prefix aggregate (100K rows) | 951.0 us | 2.09 MB | Leftmost-prefix grouping stays on the `(a, b)` index and avoids base-row decode |
 
 ### SQL Predicate Pushdown Spot Checks (March 14, 2026)
 
