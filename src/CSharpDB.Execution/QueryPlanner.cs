@@ -2300,7 +2300,7 @@ public sealed class QueryPlanner
                     return existsResult.Value;
                 break;
             }
-            case InSubqueryExpression inSubquery when !inSubquery.Negated:
+            case InSubqueryExpression inSubquery:
             {
                 bool? inResult = await TryEvaluateInSubqueryFilterFastAsync(inSubquery, row, schema, outerScopes, ct);
                 if (inResult.HasValue)
@@ -2395,7 +2395,9 @@ public sealed class QueryPlanner
 
         var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
         var boundQuery = BindOuterScopesInQuery(inSubquery.Query, correlationScopes);
-        return await TryExecuteSimpleInFilterProbeAsync(boundQuery, operandValue, ct);
+        return inSubquery.Negated
+            ? await TryExecuteSimpleNotInFilterProbeAsync(boundQuery, operandValue, ct)
+            : await TryExecuteSimpleInFilterProbeAsync(boundQuery, operandValue, ct);
     }
 
     private async ValueTask<bool?> TryExecuteSimpleExistsProbeAsync(QueryStatement query, CancellationToken ct)
@@ -2470,6 +2472,62 @@ public sealed class QueryPlanner
         }
 
         return false;
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleNotInFilterProbeAsync(
+        QueryStatement query,
+        DbValue operandValue,
+        CancellationToken ct)
+    {
+        if (query is not SelectStatement select)
+            return null;
+
+        if (select.Columns.Count != 1 ||
+            select.Columns[0].IsStar ||
+            select.Columns[0].Expression is not ColumnRefExpression projectedColumn)
+        {
+            return null;
+        }
+
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        int projectedColumnIndex = projectedColumn.TableAlias != null
+            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
+            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
+        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
+            return null;
+
+        bool sawNullCandidate = false;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate != null &&
+                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    continue;
+                }
+
+                var candidateValue = projectedColumnIndex < source.Current.Length
+                    ? source.Current[projectedColumnIndex]
+                    : DbValue.Null;
+                if (candidateValue.IsNull)
+                {
+                    sawNullCandidate = true;
+                    continue;
+                }
+
+                if (DbValue.Compare(candidateValue, operandValue) == 0)
+                    return false;
+            }
+        }
+
+        return !sawNullCandidate;
     }
 
     private bool TryCreateSimpleBoundSubquerySource(

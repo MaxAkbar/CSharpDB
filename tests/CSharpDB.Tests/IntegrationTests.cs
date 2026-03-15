@@ -2010,6 +2010,28 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CorrelatedNotInSubquery_FiltersRows_AndPreservesNullSemantics()
+    {
+        await _db.ExecuteAsync("CREATE TABLE corr_not_in_users (id INTEGER PRIMARY KEY, region_id INTEGER, name TEXT)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE corr_not_in_excluded (region_id INTEGER, user_id INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_users VALUES (1, 10, 'Ada')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_users VALUES (2, 10, 'Grace')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_users VALUES (3, 20, 'Linus')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_users VALUES (4, 30, 'Ken')", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_excluded VALUES (10, 2)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO corr_not_in_excluded VALUES (20, NULL)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT name FROM corr_not_in_users u WHERE id NOT IN (SELECT user_id FROM corr_not_in_excluded e WHERE e.region_id = u.region_id) ORDER BY id",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Ada", rows[0][0].AsText);
+        Assert.Equal("Ken", rows[1][0].AsText);
+    }
+
+    [Fact]
     public async Task CorrelatedExistsSubquery_FiltersRows()
     {
         await _db.ExecuteAsync("CREATE TABLE corr_exists_projects (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);

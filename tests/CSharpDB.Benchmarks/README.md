@@ -348,9 +348,10 @@ Defaults:
 | Query-plan cache stable SQL | 1.013 ms | Statement + plan cache hits |
 | Query-plan cache pre-parsed | 1.003 ms | Plan cache hit |
 | Query-plan cache varying SQL | 974 us | Limited plan reuse |
-| Correlated scalar subquery filter (1K / 10K) | 2.839 ms / 29.376 ms | `COUNT(*)` guardrail |
-| Correlated IN subquery filter (1K / 10K) | 1.441 ms / 15.814 ms | `COUNT(*)` guardrail, simple bound-probe fast path |
-| Correlated EXISTS subquery filter (1K / 10K) | 1.703 ms / 20.002 ms | `COUNT(*)` guardrail, simple bound-probe fast path |
+| Correlated scalar subquery filter (1K / 10K) | 3.061 ms / 29.292 ms | `COUNT(*)` guardrail |
+| Correlated IN subquery filter (1K / 10K) | 1.440 ms / 16.344 ms | `COUNT(*)` guardrail, simple bound-probe fast path |
+| Correlated NOT IN subquery filter (1K / 10K) | 1.515 ms / 17.848 ms | `COUNT(*)` guardrail, null-aware anti-semi bound-probe fast path |
+| Correlated EXISTS subquery filter (1K / 10K) | 1.693 ms / 19.511 ms | `COUNT(*)` guardrail, simple bound-probe fast path |
 
 ### In-Memory Spot Checks
 
