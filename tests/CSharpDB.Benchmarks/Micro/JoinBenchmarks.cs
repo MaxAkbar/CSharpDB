@@ -242,4 +242,20 @@ public class JoinBenchmarks
             "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id = r.left_id WHERE r.amount > 2500");
         await result.ToListAsync();
     }
+
+    [Benchmark(Description = "INNER JOIN with expression projection")]
+    public async Task InnerJoinWithExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN with filter + expression projection")]
+    public async Task InnerJoinWithFilterAndExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id = r.left_id WHERE r.amount > 2500");
+        await result.ToListAsync();
+    }
 }

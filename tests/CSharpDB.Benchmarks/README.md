@@ -349,6 +349,8 @@ Defaults:
 | Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 478.9 us | 646.49 KB | Same join shape forced back to hash join; slightly faster here, but with materially higher allocation |
 | Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 432.6 us | 474.33 KB | Covered composite join now stays on index payloads for right PK and indexed key columns |
 | Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 533.8 us | 709.36 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the new covered lookup path |
+| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 327.6 us | 539.95 KB | New generic expression-projection batching now covers join output shaping too, not just compact scan/range paths |
+| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 313.4 us | 489.07 KB | Same generic batching path with a residual join filter, exercising `FilterProjectionOperator` rather than the scan-specific compact operators |
 
 ### Focused Query-Engine Validation (March 12, 2026)
 

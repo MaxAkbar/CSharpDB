@@ -565,11 +565,16 @@ public sealed class FilterOperator : IOperator, IRowBufferReuseController
 /// </summary>
 public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
 {
+    private const int DefaultBatchSize = 64;
+
     private readonly IOperator _source;
     private readonly int[] _columnIndices;
     private readonly Func<DbValue[], DbValue>[]? _expressionEvaluators;
     private bool _reuseCurrentRowBuffer = true;
     private DbValue[]? _rowBuffer;
+    private DbValue[][]? _batchRows;
+    private int _batchIndex;
+    private int _batchCount;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -603,44 +608,54 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         _rowBuffer = null;
+        _batchRows = null;
+        _batchIndex = 0;
+        _batchCount = 0;
         Current = Array.Empty<DbValue>();
         await _source.OpenAsync(ct);
     }
 
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
-        if (!await _source.MoveNextAsync(ct)) return false;
-
         if (_expressionEvaluators != null)
         {
-            int valueCount = _expressionEvaluators.Length;
-            var target = _reuseCurrentRowBuffer
-                ? EnsureRowBuffer(valueCount)
-                : valueCount == 0 ? Array.Empty<DbValue>() : new DbValue[valueCount];
-
-            for (int i = 0; i < valueCount; i++)
-                target[i] = _expressionEvaluators[i](_source.Current);
-
-            Current = target;
-        }
-        else
-        {
-            int valueCount = _columnIndices.Length;
-            if (CanPassThroughSourceRow(valueCount))
+            if (_batchIndex < _batchCount)
             {
-                Current = _source.Current;
+                Current = _batchRows![_batchIndex++];
                 return true;
             }
 
-            var target = _reuseCurrentRowBuffer
-                ? EnsureRowBuffer(valueCount)
-                : valueCount == 0 ? Array.Empty<DbValue>() : new DbValue[valueCount];
+            if (!await FillExpressionBatchAsync(ct))
+            {
+                Current = Array.Empty<DbValue>();
+                return false;
+            }
 
-            for (int i = 0; i < valueCount; i++)
-                target[i] = _source.Current[_columnIndices[i]];
-
-            Current = target;
+            Current = _batchRows![_batchIndex++];
+            return true;
         }
+
+        if (!await _source.MoveNextAsync(ct))
+        {
+            Current = Array.Empty<DbValue>();
+            return false;
+        }
+
+        int valueCount = _columnIndices.Length;
+        if (CanPassThroughSourceRow(valueCount))
+        {
+            Current = _source.Current;
+            return true;
+        }
+
+        var target = _reuseCurrentRowBuffer
+            ? EnsureRowBuffer(valueCount)
+            : valueCount == 0 ? Array.Empty<DbValue>() : new DbValue[valueCount];
+
+        for (int i = 0; i < valueCount; i++)
+            target[i] = _source.Current[_columnIndices[i]];
+
+        Current = target;
         return true;
     }
 
@@ -652,8 +667,29 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
         if (!reuse)
         {
             _rowBuffer = null;
+            _batchRows = null;
+            _batchIndex = 0;
+            _batchCount = 0;
             Current = Array.Empty<DbValue>();
         }
+    }
+
+    private async ValueTask<bool> FillExpressionBatchAsync(CancellationToken ct)
+    {
+        _batchIndex = 0;
+        _batchCount = 0;
+
+        while (_batchCount < DefaultBatchSize && await _source.MoveNextAsync(ct))
+        {
+            DbValue[] row = GetBatchRow(_batchCount, _expressionEvaluators!.Length);
+            for (int i = 0; i < _expressionEvaluators.Length; i++)
+                row[i] = _expressionEvaluators[i](_source.Current);
+
+            StoreBatchRow(_batchCount, row);
+            _batchCount++;
+        }
+
+        return _batchCount > 0;
     }
 
     private DbValue[] EnsureRowBuffer(int columnCount)
@@ -662,6 +698,28 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
             _rowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         return _rowBuffer;
+    }
+
+    private DbValue[] GetBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _batchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _batchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _batchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private void StoreBatchRow(int batchSlot, DbValue[] row)
+    {
+        _batchRows ??= new DbValue[DefaultBatchSize][];
+        _batchRows[batchSlot] = row;
     }
 
     private bool CanPassThroughSourceRow(int valueCount)
@@ -689,12 +747,17 @@ public sealed class ProjectionOperator : IOperator, IRowBufferReuseController
 /// </summary>
 public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseController, IEstimatedRowCountProvider
 {
+    private const int DefaultBatchSize = 64;
+
     private readonly IOperator _source;
     private readonly Func<DbValue[], DbValue> _predicateEvaluator;
     private readonly int[] _columnIndices;
     private readonly Func<DbValue[], DbValue>[]? _expressionEvaluators;
     private bool _reuseCurrentRowBuffer = true;
     private DbValue[]? _rowBuffer;
+    private DbValue[][]? _batchRows;
+    private int _batchIndex;
+    private int _batchCount;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -729,30 +792,37 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         _rowBuffer = null;
+        _batchRows = null;
+        _batchIndex = 0;
+        _batchCount = 0;
         Current = Array.Empty<DbValue>();
         await _source.OpenAsync(ct);
     }
 
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
+        if (_expressionEvaluators != null)
+        {
+            if (_batchIndex < _batchCount)
+            {
+                Current = _batchRows![_batchIndex++];
+                return true;
+            }
+
+            if (!await FillExpressionBatchAsync(ct))
+            {
+                Current = Array.Empty<DbValue>();
+                return false;
+            }
+
+            Current = _batchRows![_batchIndex++];
+            return true;
+        }
+
         while (await _source.MoveNextAsync(ct))
         {
             if (!_predicateEvaluator(_source.Current).IsTruthy)
                 continue;
-
-            if (_expressionEvaluators != null)
-            {
-                int valueCount = _expressionEvaluators.Length;
-                var target = _reuseCurrentRowBuffer
-                    ? EnsureRowBuffer(valueCount)
-                    : valueCount == 0 ? Array.Empty<DbValue>() : new DbValue[valueCount];
-
-                for (int i = 0; i < valueCount; i++)
-                    target[i] = _expressionEvaluators[i](_source.Current);
-
-                Current = target;
-                return true;
-            }
 
             int columnCount = _columnIndices.Length;
             if (CanPassThroughSourceRow(columnCount))
@@ -772,6 +842,7 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
             return true;
         }
 
+        Current = Array.Empty<DbValue>();
         return false;
     }
 
@@ -783,8 +854,32 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
         if (!reuse)
         {
             _rowBuffer = null;
+            _batchRows = null;
+            _batchIndex = 0;
+            _batchCount = 0;
             Current = Array.Empty<DbValue>();
         }
+    }
+
+    private async ValueTask<bool> FillExpressionBatchAsync(CancellationToken ct)
+    {
+        _batchIndex = 0;
+        _batchCount = 0;
+
+        while (_batchCount < DefaultBatchSize && await _source.MoveNextAsync(ct))
+        {
+            if (!_predicateEvaluator(_source.Current).IsTruthy)
+                continue;
+
+            DbValue[] row = GetBatchRow(_batchCount, _expressionEvaluators!.Length);
+            for (int i = 0; i < _expressionEvaluators.Length; i++)
+                row[i] = _expressionEvaluators[i](_source.Current);
+
+            StoreBatchRow(_batchCount, row);
+            _batchCount++;
+        }
+
+        return _batchCount > 0;
     }
 
     private DbValue[] EnsureRowBuffer(int columnCount)
@@ -793,6 +888,28 @@ public sealed class FilterProjectionOperator : IOperator, IRowBufferReuseControl
             _rowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         return _rowBuffer;
+    }
+
+    private DbValue[] GetBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _batchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _batchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _batchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private void StoreBatchRow(int batchSlot, DbValue[] row)
+    {
+        _batchRows ??= new DbValue[DefaultBatchSize][];
+        _batchRows[batchSlot] = row;
     }
 
     private bool CanPassThroughSourceRow(int valueCount)
@@ -1168,6 +1285,8 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IRowBufferRe
 /// </summary>
 public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReuseController, IEstimatedRowCountProvider
 {
+    private const int DefaultBatchSize = 64;
+
     private readonly IOperator _source;
     private readonly IEncodedPayloadSource _payloadSource;
     private readonly IRecordSerializer _recordSerializer;
@@ -1177,6 +1296,10 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReus
     private bool _reuseCurrentRowBuffer = true;
     private DbValue[]? _decodedRowBuffer;
     private DbValue[]? _projectedRowBuffer;
+    private DbValue[][]? _decodedBatchRows;
+    private DbValue[][]? _projectedBatchRows;
+    private int _batchIndex;
+    private int _batchCount;
     private Func<DbValue[], DbValue>? _predicateEvaluator;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -1225,27 +1348,42 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReus
         SuppressSourceDecode();
         _decodedRowBuffer = null;
         _projectedRowBuffer = null;
+        _decodedBatchRows = null;
+        _projectedBatchRows = null;
+        _batchIndex = 0;
+        _batchCount = 0;
         Current = Array.Empty<DbValue>();
         await _source.OpenAsync(ct);
     }
 
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
+        if (_expressionEvaluators == null)
+            return await MoveNextRowByRowAsync(ct);
+
+        if (_batchIndex < _batchCount)
+        {
+            Current = _projectedBatchRows![_batchIndex++];
+            return true;
+        }
+
+        if (!await FillExpressionBatchAsync(ct))
+        {
+            Current = Array.Empty<DbValue>();
+            return false;
+        }
+
+        Current = _projectedBatchRows![_batchIndex++];
+        return true;
+    }
+
+    private async ValueTask<bool> MoveNextRowByRowAsync(CancellationToken ct)
+    {
         while (await _source.MoveNextAsync(ct))
         {
             DbValue[] decodedRow = DecodeRow(_payloadSource.CurrentPayload.Span);
             if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
                 continue;
-
-            if (_expressionEvaluators != null)
-            {
-                DbValue[] projectedRow = GetProjectedRowBuffer(_expressionEvaluators.Length);
-                for (int i = 0; i < _expressionEvaluators.Length; i++)
-                    projectedRow[i] = _expressionEvaluators[i](decodedRow);
-
-                Current = projectedRow;
-                return true;
-            }
 
             if (CanPassThroughDecodedRow())
             {
@@ -1274,6 +1412,10 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReus
         {
             _decodedRowBuffer = null;
             _projectedRowBuffer = null;
+            _decodedBatchRows = null;
+            _projectedBatchRows = null;
+            _batchIndex = 0;
+            _batchCount = 0;
             Current = Array.Empty<DbValue>();
         }
     }
@@ -1324,6 +1466,77 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IRowBufferReus
             _projectedRowBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         return _projectedRowBuffer;
+    }
+
+    private async ValueTask<bool> FillExpressionBatchAsync(CancellationToken ct)
+    {
+        _batchIndex = 0;
+        _batchCount = 0;
+
+        while (_batchCount < DefaultBatchSize && await _source.MoveNextAsync(ct))
+        {
+            DbValue[] decodedRow = DecodeBatchRow(_payloadSource.CurrentPayload.Span, _batchCount);
+            if (_predicateEvaluator != null && !_predicateEvaluator(decodedRow).IsTruthy)
+                continue;
+
+            DbValue[] projectedRow = GetProjectedBatchRow(_batchCount, _expressionEvaluators!.Length);
+            for (int i = 0; i < _expressionEvaluators.Length; i++)
+                projectedRow[i] = _expressionEvaluators[i](decodedRow);
+
+            StoreProjectedBatchRow(_batchCount, projectedRow);
+            _batchCount++;
+        }
+
+        return _batchCount > 0;
+    }
+
+    private DbValue[] DecodeBatchRow(ReadOnlySpan<byte> payload, int batchSlot)
+    {
+        int decodeCount = _decodedColumnIndices.Length;
+        if (decodeCount == 0)
+            return Array.Empty<DbValue>();
+
+        DbValue[] row = GetDecodedBatchRow(batchSlot, decodeCount);
+        _recordSerializer.DecodeSelectedCompactInto(payload, row, _decodedColumnIndices);
+        return row;
+    }
+
+    private DbValue[] GetDecodedBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _decodedBatchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _decodedBatchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _decodedBatchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private DbValue[] GetProjectedBatchRow(int batchSlot, int columnCount)
+    {
+        if (!_reuseCurrentRowBuffer)
+            return columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        _projectedBatchRows ??= new DbValue[DefaultBatchSize][];
+        DbValue[]? row = _projectedBatchRows[batchSlot];
+        if (row == null || row.Length != columnCount)
+        {
+            row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+            _projectedBatchRows[batchSlot] = row;
+        }
+
+        return row;
+    }
+
+    private void StoreProjectedBatchRow(int batchSlot, DbValue[] row)
+    {
+        _projectedBatchRows ??= new DbValue[DefaultBatchSize][];
+        _projectedBatchRows[batchSlot] = row;
     }
 
     private bool CanPassThroughDecodedRow()
