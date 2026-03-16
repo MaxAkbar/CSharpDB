@@ -306,7 +306,7 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task FindByPathRange_TextPath_WorksAgainstHashedTextIndex()
+    public async Task FindByPathRange_TextPath_UsesOrderedTextIndex()
     {
         var ct = TestContext.Current.CancellationToken;
         var users = await _db.GetCollectionAsync<User>("users_email_range", ct);
@@ -317,11 +317,39 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         await users.PutAsync("u:4", new User("Dana", 50, "delta@example.com"), ct);
         await users.EnsureIndexAsync(x => x.Email, ct);
 
+        var binding = GetBinding(users, nameof(User.Email));
+        long betaIndexKey = OrderedTextIndexKeyCodec.ComputeKey("beta@example.com");
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(betaIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
         var matches = await CollectAsync(
             users.FindByPathRangeAsync("Email", "beta@example.com", "charlie@example.com", ct: ct),
             ct);
 
         Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_TextPath_HandlesOrderedPrefixBucketCollisions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_email_prefix_collisions", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "prefix-alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "prefix-beta@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "prefix-gamma@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        var exact = await CollectAsync(users.FindByPathAsync("Email", "prefix-beta@example.com", ct), ct);
+        Assert.Single(exact);
+        Assert.Equal("u:2", exact[0].Key);
+
+        var range = await CollectAsync(
+            users.FindByPathRangeAsync("Email", "prefix-beta@example.com", "prefix-gamma@example.com", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], range.Select(x => x.Key).OrderBy(x => x).ToArray());
     }
 
     [Fact]
@@ -671,7 +699,15 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         Assert.True(binding.TryBuildKeyFromValue("alpha@example.com", out long alphaIndexKey));
 
         long wrongRowId = await FindStoredRowIdAsync(users, "u:2", ct);
-        await InsertRowIdAsync(binding.IndexStore, alphaIndexKey, wrongRowId, ct);
+        byte[] existingPayload = await binding.IndexStore.FindAsync(alphaIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        byte[] updatedPayload = OrderedTextIndexPayloadCodec.Insert(
+            existingPayload,
+            "alpha@example.com",
+            wrongRowId,
+            out bool changed);
+        Assert.True(changed);
+        await WriteIndexPayloadAsync(binding.IndexStore, alphaIndexKey, updatedPayload, ct);
 
         var matches = await CollectAsync(users.FindByIndexAsync(x => x.Email, "alpha@example.com", ct), ct);
 

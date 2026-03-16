@@ -451,13 +451,36 @@ public sealed class Collection<
     {
         var cursor = _tree.CreateCursor();
         var groupedRowIds = new SortedDictionary<long, List<long>>();
+        var groupedTextRowIds = new SortedDictionary<long, SortedDictionary<string, List<long>>>();
         var indexKeys = new HashSet<long>();
+        var textValues = new HashSet<string>(StringComparer.Ordinal);
 
         while (await cursor.MoveNextAsync(ct))
         {
             long rowId = cursor.CurrentKey;
-            indexKeys.Clear();
 
+            if (binding.UsesTextKey)
+            {
+                textValues.Clear();
+                if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
+                {
+                    if (!binding.TryCollectTextValuesFromDirectPayload(cursor.CurrentValue.Span, textValues))
+                        continue;
+                }
+                else
+                {
+                    T textDocument = _codec.DecodeDocument(cursor.CurrentValue.Span);
+                    if (!binding.TryCollectTextValuesFromDocument(textDocument, textValues))
+                        continue;
+                }
+
+                foreach (string textValue in textValues)
+                    AddGroupedTextRowId(groupedTextRowIds, textValue, rowId);
+
+                continue;
+            }
+
+            indexKeys.Clear();
             if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
             {
                 if (binding.TryCollectKeysFromDirectPayload(cursor.CurrentValue.Span, indexKeys))
@@ -479,6 +502,9 @@ public sealed class Collection<
 
         foreach (var entry in groupedRowIds)
             await binding.IndexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+
+        foreach (var entry in groupedTextRowIds)
+            await binding.IndexStore.InsertAsync(entry.Key, OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value), ct);
     }
 
     private async ValueTask InsertIntoIndexesAsync(long rowId, T document, CancellationToken ct)
@@ -508,6 +534,18 @@ public sealed class Collection<
         {
             foreach (var binding in _indexes.Values)
             {
+                if (binding.UsesTextKey)
+                {
+                    var textValues = new HashSet<string>(StringComparer.Ordinal);
+                    if (!binding.TryCollectTextValuesFromDirectPayload(payload.Span, textValues))
+                        continue;
+
+                    foreach (string textValue in textValues)
+                        await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                    continue;
+                }
+
                 var indexKeys = new HashSet<long>();
                 if (!binding.TryCollectKeysFromDirectPayload(payload.Span, indexKeys))
                     continue;
@@ -529,6 +567,18 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
+        if (binding.UsesTextKey)
+        {
+            var textValues = new HashSet<string>(StringComparer.Ordinal);
+            if (!binding.TryCollectTextValuesFromDocument(document, textValues))
+                return;
+
+            foreach (string textValue in textValues)
+                await InsertTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
         var indexKeys = new HashSet<long>();
         if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
@@ -543,6 +593,18 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
+        if (binding.UsesTextKey)
+        {
+            var textValues = new HashSet<string>(StringComparer.Ordinal);
+            if (!binding.TryCollectTextValuesFromDocument(document, textValues))
+                return;
+
+            foreach (string textValue in textValues)
+                await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
         var indexKeys = new HashSet<long>();
         if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
@@ -571,6 +633,34 @@ public sealed class Collection<
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
+    private static async ValueTask InsertTextRowIdAsync(
+        IIndexStore indexStore,
+        string text,
+        long rowId,
+        CancellationToken ct)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+        {
+            await indexStore.InsertAsync(indexKey, OrderedTextIndexPayloadCodec.CreateSingle(text, rowId), ct);
+            return;
+        }
+
+        if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+        {
+            throw new InvalidOperationException(
+                "Collection text index payload format mismatch detected. Drop and recreate the text collection index.");
+        }
+
+        byte[] newPayload = OrderedTextIndexPayloadCodec.Insert(existing, text, rowId, out bool changed);
+        if (!changed)
+            return;
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
     private static async ValueTask DeleteRowIdAsync(
         IIndexStore indexStore,
         long indexKey,
@@ -582,6 +672,34 @@ public sealed class Collection<
             return;
 
         if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
+            return;
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        if (newPayload == null)
+            return;
+
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private static async ValueTask DeleteTextRowIdAsync(
+        IIndexStore indexStore,
+        string text,
+        long rowId,
+        CancellationToken ct)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+            return;
+
+        if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+        {
+            throw new InvalidOperationException(
+                "Collection text index payload format mismatch detected. Drop and recreate the text collection index.");
+        }
+
+        byte[]? newPayload = OrderedTextIndexPayloadCodec.Remove(existing, text, rowId, out bool changed);
+        if (!changed)
             return;
 
         await indexStore.DeleteAsync(indexKey, ct);
@@ -706,13 +824,32 @@ public sealed class Collection<
         }
 
         byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
-        if (payload == null || payload.Length < sizeof(long))
+        if (payload == null)
             yield break;
 
-        int rowIdCount = payload.Length / sizeof(long);
+        ReadOnlyMemory<byte> rowIdPayload = payload;
+        if (attachedBinding.UsesTextKey)
+        {
+            if (!CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) ||
+                expectedValue.Type != DbType.Text)
+            {
+                yield break;
+            }
+
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload) ||
+                !OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, expectedValue.AsText, out rowIdPayload))
+            {
+                yield break;
+            }
+        }
+
+        if (rowIdPayload.Length < sizeof(long))
+            yield break;
+
+        int rowIdCount = rowIdPayload.Length / sizeof(long);
         for (int i = 0; i < rowIdCount; i++)
         {
-            long rowId = RowIdPayloadCodec.ReadAt(payload, i);
+            long rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
             var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
             if (documentPayload is not { } documentMemory)
                 continue;
@@ -788,8 +925,9 @@ public sealed class Collection<
         bool canUseOrderedIndex =
             hasIndex &&
             attachedBinding.SupportsOrderedRange &&
-            lowerValue.Type == DbType.Integer &&
-            upperValue.Type == DbType.Integer;
+            lowerValue.Type == upperValue.Type &&
+            ((attachedBinding.UsesIntegerKey && lowerValue.Type == DbType.Integer) ||
+             (attachedBinding.UsesTextKey && lowerValue.Type == DbType.Text));
 
         if (canUseOrderedIndex)
         {
@@ -824,9 +962,55 @@ public sealed class Collection<
 
         var range = new IndexScanRange(lowerKey, lowerInclusive, upperKey, upperInclusive);
         var indexCursor = attachedBinding.IndexStore.CreateCursor(range);
+        var textRowIds = attachedBinding.UsesTextKey
+            ? new List<long>()
+            : null;
         while (await indexCursor.MoveNextAsync(ct))
         {
             ReadOnlyMemory<byte> rowIdPayload = indexCursor.CurrentValue;
+            if (attachedBinding.UsesTextKey)
+            {
+                if (!OrderedTextIndexPayloadCodec.IsEncoded(rowIdPayload.Span))
+                    continue;
+
+                textRowIds!.Clear();
+                if (!OrderedTextIndexPayloadCodec.TryCollectMatchingRowIdsInRange(
+                        rowIdPayload.Span,
+                        lowerValue.AsText,
+                        lowerInclusive,
+                        upperValue.AsText,
+                        upperInclusive,
+                        textRowIds))
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < textRowIds.Count; i++)
+                {
+                    long rowId = textRowIds[i];
+                    var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+                    if (documentPayload is not { } documentMemory)
+                        continue;
+
+                    if (CollectionPayloadCodec.IsDirectPayload(documentMemory.Span))
+                    {
+                        if (!binding.TryDirectPayloadValueInRange(documentMemory.Span, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                            continue;
+
+                        string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                        T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                        yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                        continue;
+                    }
+
+                    var (key, document) = _codec.Decode(documentMemory.Span);
+                    if (binding.MatchesRangeValue(document, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        yield return new KeyValuePair<string, T>(key, document);
+                }
+
+                continue;
+            }
+
             if (rowIdPayload.Length < sizeof(long))
                 continue;
 
@@ -865,6 +1049,27 @@ public sealed class Collection<
         {
             rowIds = new List<long>();
             groupedRowIds[indexKey] = rowIds;
+        }
+
+        rowIds.Add(rowId);
+    }
+
+    private static void AddGroupedTextRowId(
+        SortedDictionary<long, SortedDictionary<string, List<long>>> groupedTextRowIds,
+        string text,
+        long rowId)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        if (!groupedTextRowIds.TryGetValue(indexKey, out var textBuckets))
+        {
+            textBuckets = new SortedDictionary<string, List<long>>(StringComparer.Ordinal);
+            groupedTextRowIds[indexKey] = textBuckets;
+        }
+
+        if (!textBuckets.TryGetValue(text, out var rowIds))
+        {
+            rowIds = new List<long>();
+            textBuckets[text] = rowIds;
         }
 
         rowIds.Add(rowId);

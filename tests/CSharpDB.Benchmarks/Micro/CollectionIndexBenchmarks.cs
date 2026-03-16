@@ -113,6 +113,13 @@ public class CollectionIndexBenchmarks
             _sink ^= match.Value.Value;
     }
 
+    [Benchmark(Description = "Collection FindByPath text range (string path, 1000 matches)")]
+    public async Task FindByPath_TextRange_StringPath()
+    {
+        await foreach (var match in _lookupCollection.FindByPathRangeAsync("Tag", "tag:1000", "tag:1999"))
+            _sink ^= match.Value.Value;
+    }
+
     [Benchmark(Description = "Collection Put with secondary indexes (insert, tx rollback)")]
     public async Task PutWithIndexes_Insert()
     {

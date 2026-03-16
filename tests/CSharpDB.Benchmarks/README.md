@@ -197,12 +197,13 @@ Defaults:
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` nested path equality (`$.address.city`) | 530.8 ns | 1.05 KB | Public string-path index lookup over a nested scalar path with many matches |
-| Collection `FindByPath` nested path equality (`$.address.city`) | 523.6 ns | 1.05 KB | Query-facing path API running on the same nested scalar index |
-| Collection `FindByIndex` array path equality (`$.tags[]`) | 497.1 ns | 904 B | Multi-value array element lookup over a public string-path collection index |
-| Collection `FindByPath` array path equality (`$.tags[]`) | 452.9 ns | 904 B | Query-facing path API running on the same array index |
-| Collection `FindByPath` nested array path equality (`$.orders[].sku`) | 547.0 ns | 1.13 KB | Query-facing path API over an index on scalar fields inside array elements |
-| Collection `FindByPath` integer range (`Value`, 1024 matches) | 509.4 us | 307.16 KB | Ordered integer path range over the collection index path/query surface |
+| Collection `FindByIndex` nested path equality (`$.address.city`) | 493.2 ns | 1.05 KB | Public string-path index lookup over a nested scalar path with many matches |
+| Collection `FindByPath` nested path equality (`$.address.city`) | 501.1 ns | 1.05 KB | Query-facing path API running on the same nested scalar index |
+| Collection `FindByIndex` array path equality (`$.tags[]`) | 403.6 ns | 912 B | Multi-value array element lookup over a public string-path collection index |
+| Collection `FindByPath` array path equality (`$.tags[]`) | 414.7 ns | 912 B | Query-facing path API running on the same array index |
+| Collection `FindByPath` nested array path equality (`$.orders[].sku`) | 496.1 ns | 1.13 KB | Query-facing path API over an index on scalar fields inside array elements |
+| Collection `FindByPath` integer range (`Value`, 1024 matches) | 491.8 us | 307.18 KB | Ordered integer path range over the collection index path/query surface |
+| Collection `FindByPath` text range (`Tag`, 1000 matches) | 496.9 us | 449.78 KB | Ordered text path range over prefix-bucket text indexes with exact in-bucket filtering |
 
 ### Collection Extraction Spot Checks (March 15, 2026)
 
@@ -464,17 +465,18 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` int equality (1 match) | 1.25 us | 1.50 KB | Direct integer-key index probe |
-| Collection `FindByIndex` text equality (1 match) | 1.50 us | 1.56 KB | Raw-payload text verification before document materialization |
-| Collection `FindByIndex` nested path equality | 531 ns | 1.05 KB | Indexed nested scalar path probe |
-| Collection `FindByPath` nested path equality | 524 ns | 1.05 KB | Query-facing path API on the same indexed nested path |
-| Collection `FindByIndex` array path equality | 497 ns | 904 B | Indexed terminal-array contains lookup |
-| Collection `FindByPath` array path equality | 453 ns | 904 B | Query-facing path API on the same indexed array path |
-| Collection `FindByPath` nested array path equality | 547 ns | 1.13 KB | Indexed scalar lookup through array-of-object elements |
-| Collection `FindByPath` integer range (1024 matches) | 509.4 us | 307.16 KB | Ordered integer path range query over the public collection path surface |
-| Collection `PutAsync` with secondary indexes (insert) | 9.21 us | 41.94 KB | Transaction + rollback micro for write maintenance |
-| Collection `PutAsync` with secondary indexes (update) | 15.36 us | 49.41 KB | Includes old-entry removal plus reinsert |
-| Collection `DeleteAsync` with secondary indexes | 13.81 us | 41.27 KB | Transaction + rollback micro for delete-side cleanup |
+| Collection `FindByIndex` int equality (1 match) | 1.17 us | 1.51 KB | Direct integer-key index probe |
+| Collection `FindByIndex` text equality (1 match) | 1.68 us | 3.90 KB | Ordered text bucket probe with exact string match before document materialization |
+| Collection `FindByIndex` nested path equality | 493 ns | 1.05 KB | Indexed nested scalar path probe |
+| Collection `FindByPath` nested path equality | 501 ns | 1.05 KB | Query-facing path API on the same indexed nested path |
+| Collection `FindByIndex` array path equality | 404 ns | 912 B | Indexed terminal-array contains lookup |
+| Collection `FindByPath` array path equality | 415 ns | 912 B | Query-facing path API on the same indexed array path |
+| Collection `FindByPath` nested array path equality | 496 ns | 1.13 KB | Indexed scalar lookup through array-of-object elements |
+| Collection `FindByPath` integer range (1024 matches) | 491.8 us | 307.18 KB | Ordered integer path range query over the public collection path surface |
+| Collection `FindByPath` text range (1000 matches) | 496.9 us | 449.78 KB | Ordered text path range query over prefix-bucket collection indexes |
+| Collection `PutAsync` with secondary indexes (insert) | 8.99 us | 42.08 KB | Transaction + rollback micro for write maintenance |
+| Collection `PutAsync` with secondary indexes (update) | 20.34 us | 72.54 KB | Includes old-entry removal plus reinsert |
+| Collection `DeleteAsync` with secondary indexes | 17.51 us | 64.58 KB | Transaction + rollback micro for delete-side cleanup |
 
 ### File-Backed Lookup Tuning Takeaways
 

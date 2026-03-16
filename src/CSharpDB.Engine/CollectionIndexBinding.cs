@@ -51,7 +51,7 @@ internal sealed class CollectionIndexBinding<
 
     internal bool IsMultiValueArray => _payloadAccessor.TargetsArrayElements;
 
-    internal bool SupportsOrderedRange => UsesIntegerKey && !IsMultiValueArray;
+    internal bool SupportsOrderedRange => !IsMultiValueArray && (UsesIntegerKey || UsesTextKey);
 
     internal bool MatchesValue<TField>(T document, TField value, EqualityComparer<TField> comparer)
     {
@@ -200,6 +200,9 @@ internal sealed class CollectionIndexBinding<
     internal bool TryCollectKeysFromDocument(T document, HashSet<long> indexKeys)
         => TryCollectKeys(_fieldAccessor(document), indexKeys);
 
+    internal bool TryCollectTextValuesFromDocument(T document, HashSet<string> textValues)
+        => TryCollectTextValues(_fieldAccessor(document), textValues);
+
     internal bool TryCollectKeysFromDirectPayload(ReadOnlySpan<byte> payload, HashSet<long> indexKeys)
     {
         int startCount = indexKeys.Count;
@@ -223,6 +226,33 @@ internal sealed class CollectionIndexBinding<
         }
 
         return indexKeys.Count != startCount;
+    }
+
+    internal bool TryCollectTextValuesFromDirectPayload(ReadOnlySpan<byte> payload, HashSet<string> textValues)
+    {
+        int startCount = textValues.Count;
+        if (!UsesTextKey)
+            return false;
+
+        if (!IsMultiValueArray)
+        {
+            if (_payloadAccessor.TryReadString(payload, out string? textValue) && textValue != null)
+                textValues.Add(textValue);
+
+            return textValues.Count != startCount;
+        }
+
+        var values = new List<DbValue>();
+        if (!_payloadAccessor.TryReadIndexValues(payload, values))
+            return false;
+
+        for (int i = 0; i < values.Count; i++)
+        {
+            if (values[i].Type == DbType.Text)
+                textValues.Add(values[i].AsText);
+        }
+
+        return textValues.Count != startCount;
     }
 
     internal bool TryDirectPayloadValueEquals(ReadOnlySpan<byte> payload, DbValue value)
@@ -290,17 +320,49 @@ internal sealed class CollectionIndexBinding<
         return indexKeys.Count != startCount;
     }
 
+    private bool TryCollectTextValues(object? value, HashSet<string> textValues)
+    {
+        int startCount = textValues.Count;
+        if (!UsesTextKey)
+            return false;
+
+        if (!IsMultiValueArray)
+        {
+            if (TryConvertToDbValue(value, out var dbValue) && dbValue.Type == DbType.Text)
+                textValues.Add(dbValue.AsText);
+
+            return textValues.Count != startCount;
+        }
+
+        if (value is string || value is not System.Collections.IEnumerable enumerable)
+            return false;
+
+        foreach (object? element in enumerable)
+        {
+            if (TryConvertToDbValue(element, out var dbValue) && dbValue.Type == DbType.Text)
+                textValues.Add(dbValue.AsText);
+        }
+
+        return textValues.Count != startCount;
+    }
+
     private bool TryBuildKey(DbValue dbValue, out long indexKey)
     {
         indexKey = 0;
 
         if (_valueKind == CollectionIndexValueKind.Integer)
         {
+            if (dbValue.Type != DbType.Integer)
+                return false;
+
             indexKey = dbValue.AsInteger;
             return true;
         }
 
-        indexKey = ComputeIndexKey([dbValue]);
+        if (dbValue.Type != DbType.Text)
+            return false;
+
+        indexKey = OrderedTextIndexKeyCodec.ComputeKey(dbValue.AsText);
         return true;
     }
 
