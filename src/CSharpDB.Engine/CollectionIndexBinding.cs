@@ -108,13 +108,16 @@ internal sealed class CollectionIndexBinding<
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
-        string[] segments = ParseFieldPathSegments(fieldPath, out bool targetsArrayElements);
-        MemberInfo[] memberPath = ResolveMemberPath(segments, fieldPath);
+        string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
 
         string[] canonicalSegments = Array.ConvertAll(memberPath, static member => member.Name);
-        if (targetsArrayElements)
-            canonicalSegments[^1] += "[]";
+        for (int i = 0; i < canonicalSegments.Length; i++)
+        {
+            if (arraySegments[i])
+                canonicalSegments[i] += "[]";
+        }
 
         return string.Join(".", canonicalSegments);
     }
@@ -128,8 +131,9 @@ internal sealed class CollectionIndexBinding<
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
         ArgumentNullException.ThrowIfNull(indexStore);
 
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out bool targetsArrayElements), fieldPath);
-        var accessor = BuildAccessor(memberPath);
+        string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
+        var accessor = BuildAccessor(memberPath, arraySegments);
         var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
         var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         return new CollectionIndexBinding<T>(
@@ -144,14 +148,16 @@ internal sealed class CollectionIndexBinding<
     internal static Func<T, object?> CreateFieldAccessor(string fieldPath)
     {
         fieldPath = NormalizeFieldPath(fieldPath);
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out _), fieldPath);
-        return BuildAccessor(memberPath);
+        string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out _);
+        MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
+        return BuildAccessor(memberPath, arraySegments);
     }
 
     internal static void ValidateFieldPath(string fieldPath)
     {
         fieldPath = NormalizeFieldPath(fieldPath);
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out bool targetsArrayElements), fieldPath);
+        string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
     }
 
@@ -298,7 +304,7 @@ internal sealed class CollectionIndexBinding<
         return true;
     }
 
-    private static MemberInfo[] ResolveMemberPath(string[] segments, string fieldPath)
+    private static MemberInfo[] ResolveMemberPath(string[] segments, bool[] arraySegments, string fieldPath)
     {
         var memberPath = new MemberInfo[segments.Length];
         Type currentType = typeof(T);
@@ -314,13 +320,26 @@ internal sealed class CollectionIndexBinding<
 
             MemberInfo member = ResolveMember(currentType, segment, fieldPath);
             memberPath[i] = member;
-            currentType = Nullable.GetUnderlyingType(GetMemberType(member)) ?? GetMemberType(member);
+            Type memberType = Nullable.GetUnderlyingType(GetMemberType(member)) ?? GetMemberType(member);
+            if (arraySegments[i])
+            {
+                if (!TryGetCollectionElementType(memberType, out Type? elementType) || elementType == null)
+                {
+                    throw new NotSupportedException(
+                        $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must target an array or list field when using '[]'.");
+                }
+
+                currentType = Nullable.GetUnderlyingType(elementType) ?? elementType;
+                continue;
+            }
+
+            currentType = memberType;
         }
 
         return memberPath;
     }
 
-    private static string[] ParseFieldPathSegments(string fieldPath, out bool targetsArrayElements)
+    private static string[] ParseFieldPathSegments(string fieldPath, out bool[] arraySegments, out bool targetsArrayElements)
     {
         targetsArrayElements = false;
         string trimmed = fieldPath.Trim();
@@ -350,6 +369,7 @@ internal sealed class CollectionIndexBinding<
         }
 
         string[] segments = trimmed.Split('.');
+        arraySegments = new bool[segments.Length];
         for (int i = 0; i < segments.Length; i++)
         {
             segments[i] = segments[i].Trim();
@@ -360,12 +380,11 @@ internal sealed class CollectionIndexBinding<
                     nameof(fieldPath));
             }
 
-            bool isLastSegment = i == segments.Length - 1;
-            if (isLastSegment &&
-                (segments[i].EndsWith("[]", StringComparison.Ordinal) ||
-                 segments[i].EndsWith("[*]", StringComparison.Ordinal)))
+            if (segments[i].EndsWith("[]", StringComparison.Ordinal) ||
+                segments[i].EndsWith("[*]", StringComparison.Ordinal))
             {
                 targetsArrayElements = true;
+                arraySegments[i] = true;
                 segments[i] = segments[i].EndsWith("[*]", StringComparison.Ordinal)
                     ? segments[i][..^3]
                     : segments[i][..^2];
@@ -373,7 +392,7 @@ internal sealed class CollectionIndexBinding<
             else if (segments[i].IndexOf('[') >= 0 || segments[i].IndexOf(']') >= 0)
             {
                 throw new NotSupportedException(
-                    "Collection path indexes currently support only terminal array segments like 'Tags[]' or '$.tags[]'.");
+                    "Collection path indexes currently support only wildcard array segments like 'Tags[]' or '$.orders[].sku'.");
             }
 
             if (segments[i].Length == 0)
@@ -411,10 +430,11 @@ internal sealed class CollectionIndexBinding<
             $"Cannot bind collection index field '{fieldPath}' for document type '{typeof(T).Name}'.");
     }
 
-    private static Func<T, object?> BuildAccessor(IReadOnlyList<MemberInfo> memberPath)
+    private static Func<T, object?> BuildAccessor(IReadOnlyList<MemberInfo> memberPath, bool[] arraySegments)
     {
         MemberInfo[] capturedPath = memberPath.ToArray();
-        return document => ReadMemberPathValue(document, capturedPath);
+        bool[] capturedArraySegments = arraySegments.ToArray();
+        return document => ReadMemberPathValue(document, capturedPath, capturedArraySegments, 0);
     }
 
     private static Type GetMemberType(MemberInfo member)
@@ -431,18 +451,13 @@ internal sealed class CollectionIndexBinding<
         Type effectiveType = Nullable.GetUnderlyingType(memberType) ?? memberType;
         if (targetsArrayElements)
         {
-            if (!TryGetCollectionElementType(memberType, out Type? elementType) || elementType == null)
-            {
-                throw new NotSupportedException(
-                    $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must target an array or list field when using '[]'.");
-            }
-
-            effectiveType = Nullable.GetUnderlyingType(elementType) ?? elementType;
+            if (TryGetCollectionElementType(memberType, out Type? elementType) && elementType != null)
+                effectiveType = Nullable.GetUnderlyingType(elementType) ?? elementType;
         }
         else if (TryGetCollectionElementType(memberType, out _, out _))
         {
             throw new NotSupportedException(
-                $"Collection index field '{fieldPath}' on '{typeof(T).Name}' is multi-valued. Use a terminal '[]' suffix for array/list element indexing.");
+                $"Collection index field '{fieldPath}' on '{typeof(T).Name}' is multi-valued. Use an explicit '[]' segment for array/list element indexing.");
         }
 
         if (effectiveType == typeof(string))
@@ -547,18 +562,52 @@ internal sealed class CollectionIndexBinding<
         return expression;
     }
 
-    private static object? ReadMemberPathValue(object? current, IReadOnlyList<MemberInfo> memberPath)
+    private static object? ReadMemberPathValue(
+        object? current,
+        IReadOnlyList<MemberInfo> memberPath,
+        IReadOnlyList<bool> arraySegments,
+        int pathIndex)
     {
-        object? value = current;
-        for (int i = 0; i < memberPath.Count; i++)
+        if (current is null)
+            return null;
+
+        object? value = ReadMemberValue(current, memberPath[pathIndex]);
+        if (arraySegments[pathIndex])
         {
-            if (value is null)
+            if (value is string || value is not System.Collections.IEnumerable enumerable)
                 return null;
 
-            value = ReadMemberValue(value, memberPath[i]);
+            var flattened = new List<object?>();
+            foreach (object? element in enumerable)
+            {
+                object? nestedValue = pathIndex == memberPath.Count - 1
+                    ? element
+                    : ReadMemberPathValue(element, memberPath, arraySegments, pathIndex + 1);
+                AddFlattenedValue(flattened, nestedValue);
+            }
+
+            return flattened.Count == 0 ? null : flattened;
         }
 
-        return value;
+        if (pathIndex == memberPath.Count - 1)
+            return value;
+
+        return ReadMemberPathValue(value, memberPath, arraySegments, pathIndex + 1);
+    }
+
+    private static void AddFlattenedValue(List<object?> values, object? value)
+    {
+        if (value is null)
+            return;
+
+        if (value is string || value is not System.Collections.IEnumerable enumerable)
+        {
+            values.Add(value);
+            return;
+        }
+
+        foreach (object? element in enumerable)
+            AddFlattenedValue(values, element);
     }
 
     private static object? ReadMemberValue(object source, MemberInfo member)

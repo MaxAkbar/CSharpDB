@@ -139,14 +139,28 @@ internal static class CollectionBinaryDocumentCodec
     public static bool TryReadArrayValues(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, List<DbValue> values)
     {
         ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        return TryReadArrayValues(payload, pathSegmentsUtf8, CreateDefaultArrayFlags(pathSegmentsUtf8.Length), values);
+    }
+
+    public static bool TryReadArrayValues(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, bool[] pathArraySegments, List<DbValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        ArgumentNullException.ThrowIfNull(pathArraySegments);
         ArgumentNullException.ThrowIfNull(values);
-        return TryReadArrayValuesFromObject(payload, 0, pathSegmentsUtf8, values);
+        return TryReadArrayValuesFromObject(payload, 0, pathSegmentsUtf8, pathArraySegments, values);
     }
 
     public static bool TryArrayContainsValue(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, DbValue expectedValue)
     {
         ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
-        return TryArrayContainsValueFromObject(payload, 0, pathSegmentsUtf8, expectedValue);
+        return TryArrayContainsValue(payload, pathSegmentsUtf8, CreateDefaultArrayFlags(pathSegmentsUtf8.Length), expectedValue);
+    }
+
+    public static bool TryArrayContainsValue(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, bool[] pathArraySegments, DbValue expectedValue)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        ArgumentNullException.ThrowIfNull(pathArraySegments);
+        return TryArrayContainsValueFromObject(payload, 0, pathSegmentsUtf8, pathArraySegments, expectedValue);
     }
 
     public static bool TryReadDocument(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out ReadOnlySpan<byte> documentPayload)
@@ -290,30 +304,138 @@ internal static class CollectionBinaryDocumentCodec
         ReadOnlySpan<byte> payload,
         int pathIndex,
         byte[][] pathSegmentsUtf8,
+        bool[] pathArraySegments,
         List<DbValue> values)
     {
         if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
-            tag != ArrayTag)
+            (tag != ArrayTag && tag != ObjectTag))
         {
             return false;
         }
 
-        return TryCollectScalarArrayValues(payload.Slice(valueStart, valueLength), values);
+        if (pathArraySegments[pathIndex])
+        {
+            if (tag != ArrayTag)
+                return false;
+
+            if (pathIndex == pathSegmentsUtf8.Length - 1)
+                return TryCollectScalarArrayValues(payload.Slice(valueStart, valueLength), values);
+
+            return TryReadArrayValuesFromArray(payload.Slice(valueStart, valueLength), pathIndex + 1, pathSegmentsUtf8, pathArraySegments, values);
+        }
+
+        if (pathIndex == pathSegmentsUtf8.Length - 1)
+        {
+            if (!TryConvertValue(tag, payload.Slice(valueStart, valueLength), out DbValue value) ||
+                value.Type is not (DbType.Integer or DbType.Text))
+            {
+                return false;
+            }
+
+            values.Add(value);
+            return true;
+        }
+
+        if (tag != ObjectTag)
+            return false;
+
+        return TryReadArrayValuesFromObject(payload.Slice(valueStart, valueLength), pathIndex + 1, pathSegmentsUtf8, pathArraySegments, values);
     }
 
     private static bool TryArrayContainsValueFromObject(
         ReadOnlySpan<byte> payload,
         int pathIndex,
         byte[][] pathSegmentsUtf8,
+        bool[] pathArraySegments,
         DbValue expectedValue)
     {
         if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
-            tag != ArrayTag)
+            (tag != ArrayTag && tag != ObjectTag))
         {
             return false;
         }
 
-        return TryScalarArrayContainsValue(payload.Slice(valueStart, valueLength), expectedValue);
+        if (pathArraySegments[pathIndex])
+        {
+            if (tag != ArrayTag)
+                return false;
+
+            if (pathIndex == pathSegmentsUtf8.Length - 1)
+                return TryScalarArrayContainsValue(payload.Slice(valueStart, valueLength), expectedValue);
+
+            return TryArrayContainsValueFromArray(payload.Slice(valueStart, valueLength), pathIndex + 1, pathSegmentsUtf8, pathArraySegments, expectedValue);
+        }
+
+        if (pathIndex == pathSegmentsUtf8.Length - 1)
+        {
+            return TryConvertValue(tag, payload.Slice(valueStart, valueLength), out DbValue value) &&
+                   value.Type == expectedValue.Type &&
+                   DbValue.Compare(value, expectedValue) == 0;
+        }
+
+        if (tag != ObjectTag)
+            return false;
+
+        return TryArrayContainsValueFromObject(payload.Slice(valueStart, valueLength), pathIndex + 1, pathSegmentsUtf8, pathArraySegments, expectedValue);
+    }
+
+    private static bool TryReadArrayValuesFromArray(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        bool[] pathArraySegments,
+        List<DbValue> values)
+    {
+        int position = 0;
+        ulong elementCount = ReadVarint(payload, ref position);
+        bool foundAny = false;
+
+        for (ulong i = 0; i < elementCount; i++)
+        {
+            if (!TryReadValuePayload(payload, ref position, out byte tag, out int valueStart, out int valueLength))
+                return false;
+
+            if (tag != ObjectTag)
+                continue;
+
+            if (TryReadArrayValuesFromObject(payload.Slice(valueStart, valueLength), pathIndex, pathSegmentsUtf8, pathArraySegments, values))
+                foundAny = true;
+        }
+
+        return foundAny;
+    }
+
+    private static bool TryArrayContainsValueFromArray(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        bool[] pathArraySegments,
+        DbValue expectedValue)
+    {
+        int position = 0;
+        ulong elementCount = ReadVarint(payload, ref position);
+
+        for (ulong i = 0; i < elementCount; i++)
+        {
+            if (!TryReadValuePayload(payload, ref position, out byte tag, out int valueStart, out int valueLength))
+                return false;
+
+            if (tag != ObjectTag)
+                continue;
+
+            if (TryArrayContainsValueFromObject(payload.Slice(valueStart, valueLength), pathIndex, pathSegmentsUtf8, pathArraySegments, expectedValue))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool[] CreateDefaultArrayFlags(int length)
+    {
+        var flags = new bool[length];
+        if (length > 0)
+            flags[^1] = true;
+        return flags;
     }
 
     private static bool TryCollectScalarArrayValues(ReadOnlySpan<byte> payload, List<DbValue> values)

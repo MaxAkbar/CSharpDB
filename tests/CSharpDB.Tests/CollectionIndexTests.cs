@@ -39,6 +39,8 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     private record Address(string City, int ZipCode);
     private record UserWithAddress(string Name, Address Address);
     private record UserWithTags(string Name, string[] Tags, List<int> Scores);
+    private record OrderLine(string Sku, int Quantity);
+    private record UserWithOrders(string Name, OrderLine[] Orders);
 
     [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerField()
@@ -220,6 +222,54 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         Assert.Single(matches);
         Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForNestedArrayObjectPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+        await users.PutAsync("u:3", new UserWithOrders("Cara", [new OrderLine("sku-beta", 5)]), ct);
+
+        await users.EnsureIndexAsync("$.orders[].sku", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.orders[].sku", "sku-beta", ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_NestedArrayObjectPath_UsesIndexedContainsSemantics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+        await users.PutAsync("u:3", new UserWithOrders("Cara", [new OrderLine("sku-beta", 5)]), ct);
+        await users.EnsureIndexAsync("$.orders[].sku", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.orders[].sku", "sku-beta", ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_NestedArrayObjectPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("Orders[].Sku", "sku-beta", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
     }
 
     [Fact]

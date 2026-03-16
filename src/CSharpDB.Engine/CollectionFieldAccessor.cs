@@ -12,13 +12,20 @@ internal sealed class CollectionFieldAccessor
 {
     private readonly string[] _jsonPathSegments;
     private readonly byte[][] _jsonPathSegmentsUtf8;
+    private readonly bool[] _jsonPathArraySegments;
     private readonly bool _targetsArrayElements;
 
-    private CollectionFieldAccessor(string fieldPath, string[] jsonPathSegments, byte[][] jsonPathSegmentsUtf8, bool targetsArrayElements)
+    private CollectionFieldAccessor(
+        string fieldPath,
+        string[] jsonPathSegments,
+        byte[][] jsonPathSegmentsUtf8,
+        bool[] jsonPathArraySegments,
+        bool targetsArrayElements)
     {
         FieldPath = fieldPath;
         _jsonPathSegments = jsonPathSegments;
         _jsonPathSegmentsUtf8 = jsonPathSegmentsUtf8;
+        _jsonPathArraySegments = jsonPathArraySegments;
         _targetsArrayElements = targetsArrayElements;
     }
 
@@ -27,6 +34,8 @@ internal sealed class CollectionFieldAccessor
     internal string[] JsonPathSegments => _jsonPathSegments;
 
     internal byte[][] JsonPathSegmentsUtf8 => _jsonPathSegmentsUtf8;
+
+    internal bool[] JsonPathArraySegments => _jsonPathArraySegments;
 
     internal bool TargetsArrayElements => _targetsArrayElements;
 
@@ -37,6 +46,7 @@ internal sealed class CollectionFieldAccessor
         string[] fieldPathSegments = fieldPath.Split('.');
         var jsonPathSegments = new string[fieldPathSegments.Length];
         var jsonPathSegmentsUtf8 = new byte[fieldPathSegments.Length][];
+        var jsonPathArraySegments = new bool[fieldPathSegments.Length];
         bool targetsArrayElements = false;
 
         for (int i = 0; i < fieldPathSegments.Length; i++)
@@ -49,10 +59,10 @@ internal sealed class CollectionFieldAccessor
                     nameof(fieldPath));
             }
 
-            bool isLastSegment = i == fieldPathSegments.Length - 1;
-            if (isLastSegment && (segment.EndsWith("[]", StringComparison.Ordinal) || segment.EndsWith("[*]", StringComparison.Ordinal)))
+            if (segment.EndsWith("[]", StringComparison.Ordinal) || segment.EndsWith("[*]", StringComparison.Ordinal))
             {
                 targetsArrayElements = true;
+                jsonPathArraySegments[i] = true;
                 segment = segment.EndsWith("[*]", StringComparison.Ordinal)
                     ? segment[..^3]
                     : segment[..^2];
@@ -76,7 +86,12 @@ internal sealed class CollectionFieldAccessor
             jsonPathSegmentsUtf8[i] = Encoding.UTF8.GetBytes(jsonSegment);
         }
 
-        return new CollectionFieldAccessor(fieldPath, jsonPathSegments, jsonPathSegmentsUtf8, targetsArrayElements);
+        return new CollectionFieldAccessor(
+            fieldPath,
+            jsonPathSegments,
+            jsonPathSegmentsUtf8,
+            jsonPathArraySegments,
+            targetsArrayElements);
     }
 
     internal bool TryReadValue(ReadOnlySpan<byte> payload, out DbValue value)

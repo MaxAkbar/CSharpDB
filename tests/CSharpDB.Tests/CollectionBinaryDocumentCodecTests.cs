@@ -24,10 +24,14 @@ public sealed class CollectionBinaryDocumentCodecTests
         string Name,
         string[] Tags,
         List<int> Scores);
+    private sealed record BenchDocWithNestedArray(
+        string Name,
+        BenchOrder[] Orders);
 
     private sealed record BenchProfile(string Segment, BenchAddress Address);
 
     private sealed record BenchAddress(string City, int ZipCode);
+    private sealed record BenchOrder(string Sku, int Quantity);
 
     [Fact]
     public void BinaryCollectionPayload_RoundTripsNestedDocument()
@@ -164,6 +168,34 @@ public sealed class CollectionBinaryDocumentCodecTests
 
         Assert.Equal(["alpha", "beta", "alpha"], tags.Select(static value => value.AsText).ToArray());
         Assert.Equal([10L, 20L, 30L], scores.Select(static value => value.AsInteger).ToArray());
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_ArrayExtraction_ReadsNestedObjectScalarElements()
+    {
+        var codec = new CollectionDocumentCodec<BenchDocWithNestedArray>(new DefaultRecordSerializer());
+        byte[] payload = codec.Encode(
+            "doc:orders",
+            new BenchDocWithNestedArray(
+                "Alice Example",
+                [
+                    new BenchOrder("sku-alpha", 1),
+                    new BenchOrder("sku-beta", 2),
+                    new BenchOrder("sku-alpha", 3)
+                ]));
+        var skuAccessor = CollectionFieldAccessor.FromFieldPath(nameof(BenchDocWithNestedArray.Orders) + "[]." + nameof(BenchOrder.Sku));
+        var quantityAccessor = CollectionFieldAccessor.FromFieldPath(nameof(BenchDocWithNestedArray.Orders) + "[]." + nameof(BenchOrder.Quantity));
+        var skus = new List<DbValue>();
+        var quantities = new List<DbValue>();
+
+        Assert.True(skuAccessor.TryReadIndexValues(payload, skus));
+        Assert.True(quantityAccessor.TryReadIndexValues(payload, quantities));
+        Assert.True(skuAccessor.TryValueEquals(payload, DbValue.FromText("sku-beta")));
+        Assert.True(quantityAccessor.TryValueEquals(payload, DbValue.FromInteger(2)));
+        Assert.False(skuAccessor.TryValueEquals(payload, DbValue.FromText("sku-gamma")));
+
+        Assert.Equal(["sku-alpha", "sku-beta", "sku-alpha"], skus.Select(static value => value.AsText).ToArray());
+        Assert.Equal([1L, 2L, 3L], quantities.Select(static value => value.AsInteger).ToArray());
     }
 
     [Fact]
