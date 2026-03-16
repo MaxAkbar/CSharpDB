@@ -27,6 +27,11 @@ public sealed class CollectionBinaryDocumentCodecTests
     private sealed record BenchDocWithNestedArray(
         string Name,
         BenchOrder[] Orders);
+    private sealed record BenchTemporalDoc(
+        Guid SessionId,
+        DateOnly EventDate,
+        TimeOnly StartTime,
+        string Name);
 
     private sealed record BenchProfile(string Segment, BenchAddress Address);
 
@@ -51,6 +56,48 @@ public sealed class CollectionBinaryDocumentCodecTests
         Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
         Assert.Equal("doc:42", actual.Key);
         Assert.Equal(expected, actual.Document);
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_RoundTripsGuidAndTemporalScalars()
+    {
+        var codec = new CollectionDocumentCodec<BenchTemporalDoc>(new DefaultRecordSerializer());
+        var expected = new BenchTemporalDoc(
+            Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0"),
+            new DateOnly(2026, 3, 15),
+            new TimeOnly(14, 30, 45, 123),
+            "Alice Example");
+
+        byte[] payload = codec.Encode("doc:temporal", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("doc:temporal", actual.Key);
+        Assert.Equal(expected, actual.Document);
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_PathReader_ExposesGuidAndTemporalScalars()
+    {
+        var codec = new CollectionDocumentCodec<BenchTemporalDoc>(new DefaultRecordSerializer());
+        var expected = new BenchTemporalDoc(
+            Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0"),
+            new DateOnly(2026, 3, 15),
+            new TimeOnly(14, 30, 45, 123),
+            "Alice Example");
+        byte[] payload = codec.Encode("doc:temporal", expected);
+
+        Assert.True(CollectionIndexedFieldReader.TryReadValue(payload, "sessionId", out DbValue sessionId));
+        Assert.Equal(DbType.Text, sessionId.Type);
+        Assert.Equal(expected.SessionId.ToString("D"), sessionId.AsText);
+
+        Assert.True(CollectionIndexedFieldReader.TryReadValue(payload, "eventDate", out DbValue eventDate));
+        Assert.Equal(DbType.Text, eventDate.Type);
+        Assert.Equal(expected.EventDate.ToString("O"), eventDate.AsText);
+
+        Assert.True(CollectionIndexedFieldReader.TryReadValue(payload, "startTime", out DbValue startTime));
+        Assert.Equal(DbType.Text, startTime.Type);
+        Assert.Equal(expected.StartTime.ToString("O"), startTime.AsText);
     }
 
     [Fact]

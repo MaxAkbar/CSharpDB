@@ -41,6 +41,7 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     private record UserWithTags(string Name, string[] Tags, List<int> Scores);
     private record OrderLine(string Sku, int Quantity);
     private record UserWithOrders(string Name, OrderLine[] Orders);
+    private record TemporalUser(string Name, Guid SessionId, DateOnly EventDate, TimeOnly StartTime);
 
     [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerField()
@@ -149,6 +150,24 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
 
         Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForGuidField()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<TemporalUser>("users_guid", ct);
+        Guid shared = Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0");
+
+        await users.PutAsync("u:1", new TemporalUser("Alice", shared, new DateOnly(2026, 3, 10), new TimeOnly(9, 0)), ct);
+        await users.PutAsync("u:2", new TemporalUser("Bob", Guid.Parse("37fa4200-acaf-4a56-81d2-b4a85de6c9d1"), new DateOnly(2026, 3, 11), new TimeOnly(10, 0)), ct);
+        await users.PutAsync("u:3", new TemporalUser("Cara", shared, new DateOnly(2026, 3, 12), new TimeOnly(11, 0)), ct);
+
+        await users.EnsureIndexAsync(x => x.SessionId, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.SessionId, shared, ct), ct);
+
         Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
     }
 
@@ -325,6 +344,31 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         var matches = await CollectAsync(
             users.FindByPathRangeAsync("Email", "beta@example.com", "charlie@example.com", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPathRange_DateOnlyPath_UsesOrderedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<TemporalUser>("users_event_date_range", ct);
+
+        await users.PutAsync("u:1", new TemporalUser("Alice", Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0"), new DateOnly(2026, 3, 10), new TimeOnly(9, 0)), ct);
+        await users.PutAsync("u:2", new TemporalUser("Bob", Guid.Parse("37fa4200-acaf-4a56-81d2-b4a85de6c9d1"), new DateOnly(2026, 3, 11), new TimeOnly(10, 0)), ct);
+        await users.PutAsync("u:3", new TemporalUser("Cara", Guid.Parse("3f826528-a8f8-4bb0-a58e-c9515ac1021f"), new DateOnly(2026, 3, 12), new TimeOnly(11, 0)), ct);
+        await users.PutAsync("u:4", new TemporalUser("Dana", Guid.Parse("5be0d5f8-22b1-43ed-b913-50255c4e8aa1"), new DateOnly(2026, 3, 13), new TimeOnly(12, 0)), ct);
+        await users.EnsureIndexAsync(x => x.EventDate, ct);
+
+        var binding = GetBinding(users, nameof(TemporalUser.EventDate));
+        long lowerKey = OrderedTextIndexKeyCodec.ComputeKey(new DateOnly(2026, 3, 11).ToString("O"));
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(lowerKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
+        var matches = await CollectAsync(
+            users.FindByPathRangeAsync("EventDate", new DateOnly(2026, 3, 11), new DateOnly(2026, 3, 12), ct: ct),
             ct);
 
         Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());

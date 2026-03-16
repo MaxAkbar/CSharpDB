@@ -20,6 +20,7 @@ public class CollectionIndexBenchmarks
     private Collection<NestedBenchDoc> _nestedLookupCollection = null!;
     private Collection<ArrayBenchDoc> _arrayLookupCollection = null!;
     private Collection<NestedArrayBenchDoc> _nestedArrayLookupCollection = null!;
+    private Collection<TemporalBenchDoc> _temporalLookupCollection = null!;
     private Collection<BenchDoc> _writeCollection = null!;
     private Random _lookupRandom = null!;
     private int _nextInsertId;
@@ -33,6 +34,7 @@ public class CollectionIndexBenchmarks
     private sealed record ArrayBenchDoc(string Name, string[] Tags, int Value);
     private sealed record BenchOrder(string Sku, int Quantity);
     private sealed record NestedArrayBenchDoc(string Name, BenchOrder[] Orders, int Value);
+    private sealed record TemporalBenchDoc(string Name, Guid SessionId, DateOnly EventDate, TimeOnly StartTime, int Value);
 
     [GlobalSetup]
     public void GlobalSetup()
@@ -120,6 +122,29 @@ public class CollectionIndexBenchmarks
             _sink ^= match.Value.Value;
     }
 
+    [Benchmark(Description = "Collection FindByPath Guid equality (string path, 1 match)")]
+    public async Task FindByPath_GuidEquality_StringPath()
+    {
+        int id = _lookupRandom.Next(0, SeedCount);
+        Guid sessionId = CreateGuid(id);
+        await foreach (var match in _temporalLookupCollection.FindByPathAsync("SessionId", sessionId))
+            _sink ^= match.Value.Value;
+    }
+
+    [Benchmark(Description = "Collection FindByPath DateOnly range (string path, 1000 matches)")]
+    public async Task FindByPath_DateOnlyRange_StringPath()
+    {
+        int startOffset = _lookupRandom.Next(0, SeedCount - 1_000);
+        DateOnly start = new(2026, 1, 1);
+        await foreach (var match in _temporalLookupCollection.FindByPathRangeAsync(
+            "EventDate",
+            start.AddDays(startOffset),
+            start.AddDays(startOffset + 999)))
+        {
+            _sink ^= match.Value.Value;
+        }
+    }
+
     [Benchmark(Description = "Collection Put with secondary indexes (insert, tx rollback)")]
     public async Task PutWithIndexes_Insert()
     {
@@ -167,12 +192,14 @@ public class CollectionIndexBenchmarks
         _nestedLookupCollection = await _lookupDb.GetCollectionAsync<NestedBenchDoc>("nested_bench_docs");
         _arrayLookupCollection = await _lookupDb.GetCollectionAsync<ArrayBenchDoc>("array_bench_docs");
         _nestedArrayLookupCollection = await _lookupDb.GetCollectionAsync<NestedArrayBenchDoc>("nested_array_bench_docs");
+        _temporalLookupCollection = await _lookupDb.GetCollectionAsync<TemporalBenchDoc>("temporal_bench_docs");
         _writeCollection = await _writeDb.GetCollectionAsync<BenchDoc>("bench_docs");
 
         await SeedLookupCollectionAsync();
         await SeedNestedLookupCollectionAsync();
         await SeedArrayLookupCollectionAsync();
         await SeedNestedArrayLookupCollectionAsync();
+        await SeedTemporalLookupCollectionAsync();
         await SeedWriteCollectionAsync();
 
         await _lookupCollection.EnsureIndexAsync(d => d.Value);
@@ -180,6 +207,8 @@ public class CollectionIndexBenchmarks
         await _nestedLookupCollection.EnsureIndexAsync("$.address.city");
         await _arrayLookupCollection.EnsureIndexAsync("$.tags[]");
         await _nestedArrayLookupCollection.EnsureIndexAsync("$.orders[].sku");
+        await _temporalLookupCollection.EnsureIndexAsync(d => d.SessionId);
+        await _temporalLookupCollection.EnsureIndexAsync(d => d.EventDate);
         await _writeCollection.EnsureIndexAsync(d => d.Value);
         await _writeCollection.EnsureIndexAsync(d => d.Tag);
 
@@ -304,12 +333,42 @@ public class CollectionIndexBenchmarks
         }
     }
 
+    private async Task SeedTemporalLookupCollectionAsync()
+    {
+        await _lookupDb.BeginTransactionAsync();
+        try
+        {
+            DateOnly start = new(2026, 1, 1);
+            for (int i = 0; i < SeedCount; i++)
+            {
+                await _temporalLookupCollection.PutAsync(
+                    $"temporal:{i}",
+                    new TemporalBenchDoc(
+                        $"Temporal_{i}",
+                        CreateGuid(i),
+                        start.AddDays(i),
+                        new TimeOnly((i / 60) % 24, i % 60, i % 60),
+                        i));
+            }
+
+            await _lookupDb.CommitAsync();
+        }
+        catch
+        {
+            await _lookupDb.RollbackAsync();
+            throw;
+        }
+    }
+
     private static BenchDoc CreateDoc(int value, string tag)
         => new(
             $"User_{value}",
             value,
             s_categories[value % s_categories.Length],
             tag);
+
+    private static Guid CreateGuid(int value)
+        => new(value, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     private static DatabaseOptions CreateInMemoryOptions()
     {

@@ -524,6 +524,12 @@ internal sealed class CollectionIndexBinding<
 
         if (effectiveType == typeof(string))
             return CollectionIndexValueKind.Text;
+        if (effectiveType == typeof(Guid))
+            return CollectionIndexValueKind.Text;
+        if (effectiveType == typeof(DateOnly))
+            return CollectionIndexValueKind.Text;
+        if (effectiveType == typeof(TimeOnly))
+            return CollectionIndexValueKind.Text;
 
         if (effectiveType.IsEnum)
             effectiveType = Enum.GetUnderlyingType(effectiveType);
@@ -541,7 +547,7 @@ internal sealed class CollectionIndexBinding<
         }
 
         throw new NotSupportedException(
-            $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must be string or integer typed.");
+            $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must be string, Guid, DateOnly, TimeOnly, or integer typed.");
     }
 
     private static bool TryGetCollectionElementType(
@@ -690,6 +696,15 @@ internal sealed class CollectionIndexBinding<
                 return false;
             case string text:
                 dbValue = DbValue.FromText(text);
+                return true;
+            case Guid guidValue:
+                dbValue = DbValue.FromText(guidValue.ToString("D"));
+                return true;
+            case DateOnly dateOnlyValue:
+                dbValue = DbValue.FromText(dateOnlyValue.ToString("O", CultureInfo.InvariantCulture));
+                return true;
+            case TimeOnly timeOnlyValue:
+                dbValue = DbValue.FromText(timeOnlyValue.ToString("O", CultureInfo.InvariantCulture));
                 return true;
             case byte byteValue:
                 dbValue = DbValue.FromInteger(byteValue);

@@ -204,6 +204,8 @@ Defaults:
 | Collection `FindByPath` nested array path equality (`$.orders[].sku`) | 496.1 ns | 1.13 KB | Query-facing path API over an index on scalar fields inside array elements |
 | Collection `FindByPath` integer range (`Value`, 1024 matches) | 491.8 us | 307.18 KB | Ordered integer path range over the collection index path/query surface |
 | Collection `FindByPath` text range (`Tag`, 1000 matches) | 496.9 us | 449.78 KB | Ordered text path range over prefix-bucket text indexes with exact in-bucket filtering |
+| Collection `FindByPath` Guid equality (`SessionId`) | 890.4 ns | 1.10 KB | Canonical `Guid` path lookup over the ordered text collection index path/query surface |
+| Collection `FindByPath` DateOnly range (`EventDate`, 1000 matches) | 438.1 us | 203.02 KB | Canonical `DateOnly` range over ordered text collection indexes using fixed-width ISO keys |
 
 ### Collection Extraction Spot Checks (March 15, 2026)
 

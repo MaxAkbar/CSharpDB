@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Storage.Serialization;
@@ -42,6 +43,9 @@ internal static class CollectionBinaryDocumentCodec
         Single,
         Double,
         Decimal,
+        Guid,
+        DateOnly,
+        TimeOnly,
         Array,
         Enum,
         Object,
@@ -808,6 +812,18 @@ internal static class CollectionBinaryDocumentCodec
                 WriteByte(writer, StringTag);
                 WriteLengthPrefixedString(writer, (string)value);
                 return;
+            case MemberValueKind.Guid:
+                WriteByte(writer, StringTag);
+                WriteLengthPrefixedString(writer, ((Guid)value).ToString("D"));
+                return;
+            case MemberValueKind.DateOnly:
+                WriteByte(writer, StringTag);
+                WriteLengthPrefixedString(writer, ((DateOnly)value).ToString("O", CultureInfo.InvariantCulture));
+                return;
+            case MemberValueKind.TimeOnly:
+                WriteByte(writer, StringTag);
+                WriteLengthPrefixedString(writer, ((TimeOnly)value).ToString("O", CultureInfo.InvariantCulture));
+                return;
 
             case MemberValueKind.Boolean:
                 WriteByte(writer, (bool)value ? TrueTag : FalseTag);
@@ -1008,6 +1024,23 @@ internal static class CollectionBinaryDocumentCodec
             case MemberValueKind.String:
                 EnsureTag(tag, StringTag);
                 return Encoding.UTF8.GetString(ReadLengthPrefixedBytes(payload, ref position));
+            case MemberValueKind.Guid:
+                EnsureTag(tag, StringTag);
+                return Guid.ParseExact(
+                    Encoding.UTF8.GetString(ReadLengthPrefixedBytes(payload, ref position)),
+                    "D");
+            case MemberValueKind.DateOnly:
+                EnsureTag(tag, StringTag);
+                return DateOnly.ParseExact(
+                    Encoding.UTF8.GetString(ReadLengthPrefixedBytes(payload, ref position)),
+                    "O",
+                    CultureInfo.InvariantCulture);
+            case MemberValueKind.TimeOnly:
+                EnsureTag(tag, StringTag);
+                return TimeOnly.ParseExact(
+                    Encoding.UTF8.GetString(ReadLengthPrefixedBytes(payload, ref position)),
+                    "O",
+                    CultureInfo.InvariantCulture);
 
             case MemberValueKind.Boolean:
                 if (tag == FalseTag)
@@ -1429,6 +1462,12 @@ internal static class CollectionBinaryDocumentCodec
     {
         if (effectiveType == typeof(string))
             return MemberValueKind.String;
+        if (effectiveType == typeof(Guid))
+            return MemberValueKind.Guid;
+        if (effectiveType == typeof(DateOnly))
+            return MemberValueKind.DateOnly;
+        if (effectiveType == typeof(TimeOnly))
+            return MemberValueKind.TimeOnly;
         if (TryGetCollectionElementType(effectiveType, out _, out _))
             return MemberValueKind.Array;
         if (effectiveType.IsEnum)
