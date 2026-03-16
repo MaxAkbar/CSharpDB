@@ -65,12 +65,30 @@ public class CollectionIndexBenchmarks
             _sink ^= match.Value.Value;
     }
 
+    [Benchmark(Description = "Collection FindByPath nested path equality (string path, many matches)")]
+    public async Task FindByPath_NestedPath_StringPath()
+    {
+        int id = _lookupRandom.Next(0, SeedCount);
+        string city = s_categories[id % s_categories.Length];
+        await foreach (var match in _nestedLookupCollection.FindByPathAsync("$.address.city", city))
+            _sink ^= match.Value.Value;
+    }
+
     [Benchmark(Description = "Collection FindByIndex array path equality (string path, many matches)")]
     public async Task FindByIndex_ArrayPath_StringPath()
     {
         int id = _lookupRandom.Next(0, SeedCount);
         string tag = s_categories[id % s_categories.Length];
         await foreach (var match in _arrayLookupCollection.FindByIndexAsync("$.tags[]", tag))
+            _sink ^= match.Value.Value;
+    }
+
+    [Benchmark(Description = "Collection FindByPath array path equality (string path, many matches)")]
+    public async Task FindByPath_ArrayPath_StringPath()
+    {
+        int id = _lookupRandom.Next(0, SeedCount);
+        string tag = s_categories[id % s_categories.Length];
+        await foreach (var match in _arrayLookupCollection.FindByPathAsync("$.tags[]", tag))
             _sink ^= match.Value.Value;
     }
 

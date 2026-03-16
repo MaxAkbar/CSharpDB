@@ -209,6 +209,38 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Find all documents matching a field/property selector path, using a collection index when present
+    /// and falling back to direct payload path matching when absent.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        await foreach (var match in FindByFieldPathCoreAsync(fieldPath, value, ct))
+            yield return match;
+    }
+
+    /// <summary>
+    /// Find all documents matching a path equality predicate, or array-contains predicate for terminal
+    /// array-element paths such as <c>Tags[]</c> or <c>$.tags[]</c>. Uses a collection index when present
+    /// and falls back to direct payload path matching when absent.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathAsync<TField>(
+        string fieldPath,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        await foreach (var match in FindByFieldPathCoreAsync(canonicalFieldPath, value, ct))
+            yield return match;
+    }
+
+    /// <summary>
     /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
     /// </summary>
     public async ValueTask EnsureIndexAsync<TField>(
@@ -242,7 +274,7 @@ public sealed class Collection<
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        await foreach (var match in FindByIndexCoreAsync(fieldPath, value, ct))
+        await foreach (var match in FindByFieldPathCoreAsync(fieldPath, value, ct))
             yield return match;
     }
 
@@ -258,7 +290,7 @@ public sealed class Collection<
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
         string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
-        await foreach (var match in FindByIndexCoreAsync(
+        await foreach (var match in FindByFieldPathCoreAsync(
             canonicalFieldPath,
             value,
             ct))
@@ -582,7 +614,7 @@ public sealed class Collection<
         }
     }
 
-    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexCoreAsync<TField>(
+    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathCoreAsync<TField>(
         string fieldPath,
         TField value,
         [EnumeratorCancellation] CancellationToken ct)

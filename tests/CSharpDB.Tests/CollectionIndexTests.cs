@@ -172,6 +172,27 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FindByPath_PathString_ReusesSelectorIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        await users.EnsureIndexAsync(x => x.Address.City, ct);
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+
+        var catalog = GetCollectionCatalog(users);
+        Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(users)));
+    }
+
+    [Fact]
     public async Task FindByIndex_PathString_FallsBackToScan_WhenIndexDoesNotExist()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -181,6 +202,21 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
 
         var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Portland", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPath_PathString_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.address.city", "Portland", ct), ct);
 
         Assert.Single(matches);
         Assert.Equal("u:2", matches[0].Key);
@@ -244,6 +280,38 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
 
         var matches = await CollectAsync(users.FindByIndexAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPath_ArrayPath_UsesContainsSemantics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green", "yellow"], [40]), ct);
+        await users.EnsureIndexAsync("$.tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_ArrayPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("Tags[]", "green", ct), ct);
 
         Assert.Single(matches);
         Assert.Equal("u:1", matches[0].Key);
