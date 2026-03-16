@@ -223,6 +223,58 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FindByPathRange_IntegerPath_UsesOrderedIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_age_range", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "cara@example.com"), ct);
+        await users.PutAsync("u:4", new User("Dana", 50, "dana@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+
+        var matches = await CollectAsync(users.FindByPathRangeAsync("Age", 25, 45, ct: ct), ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPathRange_IntegerPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_age_range_scan", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "cara@example.com"), ct);
+
+        var matches = await CollectAsync(users.FindByPathRangeAsync("Age", 25, 35, ct: ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPathRange_TextPath_WorksAgainstHashedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_email_range", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "beta@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "charlie@example.com"), ct);
+        await users.PutAsync("u:4", new User("Dana", 50, "delta@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        var matches = await CollectAsync(
+            users.FindByPathRangeAsync("Email", "beta@example.com", "charlie@example.com", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task EnsureIndex_PathString_RejectsArraySegments()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -315,6 +367,20 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         Assert.Single(matches);
         Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPathRange_ArrayPath_RejectsArrayPaths()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_range", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await CollectAsync(users.FindByPathRangeAsync("Tags[]", "green", "yellow", ct: ct), ct));
+
+        Assert.Contains("scalar", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

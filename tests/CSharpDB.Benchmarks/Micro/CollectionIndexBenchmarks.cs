@@ -92,6 +92,15 @@ public class CollectionIndexBenchmarks
             _sink ^= match.Value.Value;
     }
 
+    [Benchmark(Description = "Collection FindByPath integer range (string path, 1024 matches)")]
+    public async Task FindByPath_IntegerRange_StringPath()
+    {
+        int start = (_lookupRandom.Next(0, SeedCount - 1_024) / 64) * 64;
+        int end = start + 1_023;
+        await foreach (var match in _lookupCollection.FindByPathRangeAsync("Value", start, end))
+            _sink ^= match.Value.Value;
+    }
+
     [Benchmark(Description = "Collection Put with secondary indexes (insert, tx rollback)")]
     public async Task PutWithIndexes_Insert()
     {

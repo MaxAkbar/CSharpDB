@@ -197,8 +197,11 @@ Defaults:
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` nested path equality (`$.address.city`) | 544.1 ns | 1.02 KB | Public string-path index lookup over a nested scalar path with many matches |
-| Collection `FindByIndex` array path equality (`$.tags[]`) | 464.2 ns | 872 B | Multi-value array element lookup over a public string-path collection index |
+| Collection `FindByIndex` nested path equality (`$.address.city`) | 504.1 ns | 1.02 KB | Public string-path index lookup over a nested scalar path with many matches |
+| Collection `FindByPath` nested path equality (`$.address.city`) | 503.4 ns | 1.02 KB | Query-facing path API running on the same nested scalar index |
+| Collection `FindByIndex` array path equality (`$.tags[]`) | 421.2 ns | 872 B | Multi-value array element lookup over a public string-path collection index |
+| Collection `FindByPath` array path equality (`$.tags[]`) | 405.5 ns | 872 B | Query-facing path API running on the same array index |
+| Collection `FindByPath` integer range (`Value`, 1024 matches) | 491.4 us | 307.13 KB | Ordered integer path range over the collection index path/query surface |
 
 ### Collection Extraction Spot Checks (March 15, 2026)
 
@@ -460,15 +463,16 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` int equality (1 match) | 1.14 us | 1.50 KB | Direct integer-key index probe |
-| Collection `FindByIndex` text equality (1 match) | 1.43 us | 1.56 KB | Raw-payload text verification before document materialization |
-| Collection `FindByIndex` nested path equality | 480 ns | 1.02 KB | Indexed nested scalar path probe |
-| Collection `FindByPath` nested path equality | 483 ns | 1.02 KB | Query-facing path API on the same indexed nested path |
-| Collection `FindByIndex` array path equality | 401 ns | 872 B | Indexed terminal-array contains lookup |
-| Collection `FindByPath` array path equality | 399 ns | 872 B | Query-facing path API on the same indexed array path |
-| Collection `PutAsync` with secondary indexes (insert) | 8.62 us | 41.68 KB | Transaction + rollback micro for write maintenance |
-| Collection `PutAsync` with secondary indexes (update) | 14.93 us | 48.93 KB | Includes old-entry removal plus reinsert |
-| Collection `DeleteAsync` with secondary indexes | 13.25 us | 40.99 KB | Transaction + rollback micro for delete-side cleanup |
+| Collection `FindByIndex` int equality (1 match) | 1.18 us | 1.50 KB | Direct integer-key index probe |
+| Collection `FindByIndex` text equality (1 match) | 1.47 us | 1.56 KB | Raw-payload text verification before document materialization |
+| Collection `FindByIndex` nested path equality | 504 ns | 1.02 KB | Indexed nested scalar path probe |
+| Collection `FindByPath` nested path equality | 503 ns | 1.02 KB | Query-facing path API on the same indexed nested path |
+| Collection `FindByIndex` array path equality | 421 ns | 872 B | Indexed terminal-array contains lookup |
+| Collection `FindByPath` array path equality | 406 ns | 872 B | Query-facing path API on the same indexed array path |
+| Collection `FindByPath` integer range (1024 matches) | 491.4 us | 307.13 KB | Ordered integer path range query over the public collection path surface |
+| Collection `PutAsync` with secondary indexes (insert) | 10.23 us | 41.66 KB | Transaction + rollback micro for write maintenance |
+| Collection `PutAsync` with secondary indexes (update) | 14.22 us | 49.08 KB | Includes old-entry removal plus reinsert |
+| Collection `DeleteAsync` with secondary indexes | 11.37 us | 40.99 KB | Transaction + rollback micro for delete-side cleanup |
 
 ### File-Backed Lookup Tuning Takeaways
 

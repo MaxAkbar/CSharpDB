@@ -51,6 +51,8 @@ internal sealed class CollectionIndexBinding<
 
     internal bool IsMultiValueArray => _payloadAccessor.TargetsArrayElements;
 
+    internal bool SupportsOrderedRange => UsesIntegerKey && !IsMultiValueArray;
+
     internal bool MatchesValue<TField>(T document, TField value, EqualityComparer<TField> comparer)
     {
         object? fieldValue = _fieldAccessor(document);
@@ -222,6 +224,32 @@ internal sealed class CollectionIndexBinding<
 
     internal bool TryDirectPayloadTextEquals(ReadOnlySpan<byte> payload, string value)
         => UsesTextKey && _payloadAccessor.TryTextEquals(payload, value);
+
+    internal bool TryDirectPayloadValueInRange(
+        ReadOnlySpan<byte> payload,
+        DbValue lowerBound,
+        bool lowerInclusive,
+        DbValue upperBound,
+        bool upperInclusive)
+    {
+        if (IsMultiValueArray || !_payloadAccessor.TryReadValue(payload, out var actualValue))
+            return false;
+
+        return IsWithinRange(actualValue, lowerBound, lowerInclusive, upperBound, upperInclusive);
+    }
+
+    internal bool MatchesRangeValue(
+        T document,
+        DbValue lowerBound,
+        bool lowerInclusive,
+        DbValue upperBound,
+        bool upperInclusive)
+    {
+        if (IsMultiValueArray || !TryConvertToDbValue(_fieldAccessor(document), out var actualValue))
+            return false;
+
+        return IsWithinRange(actualValue, lowerBound, lowerInclusive, upperBound, upperInclusive);
+    }
 
     private bool TryBuildKey(object? value, out long indexKey)
     {
@@ -584,6 +612,27 @@ internal sealed class CollectionIndexBinding<
                 dbValue = default;
                 return false;
         }
+    }
+
+    private static bool IsWithinRange(
+        DbValue actualValue,
+        DbValue lowerBound,
+        bool lowerInclusive,
+        DbValue upperBound,
+        bool upperInclusive)
+    {
+        if (actualValue.Type != lowerBound.Type || actualValue.Type != upperBound.Type)
+            return false;
+
+        int lowerComparison = DbValue.Compare(actualValue, lowerBound);
+        if (lowerComparison < 0 || (!lowerInclusive && lowerComparison == 0))
+            return false;
+
+        int upperComparison = DbValue.Compare(actualValue, upperBound);
+        if (upperComparison > 0 || (!upperInclusive && upperComparison == 0))
+            return false;
+
+        return true;
     }
 
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)

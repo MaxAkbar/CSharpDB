@@ -241,6 +241,59 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Find all documents whose scalar path value falls within the supplied bounded range.
+    /// Array-element paths are not supported for range queries.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathRangeAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            fieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
+    /// Find all documents whose scalar path value falls within the supplied bounded range.
+    /// Supports paths such as <c>Age</c> or <c>$.address.zipCode</c>.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathRangeAsync<TField>(
+        string fieldPath,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            canonicalFieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
     /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
     /// </summary>
     public async ValueTask EnsureIndexAsync<TField>(
@@ -685,6 +738,121 @@ public sealed class Collection<
             var (key, document) = _codec.Decode(documentMemory.Span);
             if (binding.MatchesValue(document, value, comparer))
                 yield return new KeyValuePair<string, T>(key, document);
+        }
+    }
+
+    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathRangeCoreAsync<TField>(
+        string fieldPath,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive,
+        bool upperInclusive,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        bool hasIndex = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding);
+        CollectionIndexBinding<T> binding = hasIndex
+            ? attachedBinding
+            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+
+        if (binding.IsMultiValueArray)
+        {
+            throw new NotSupportedException(
+                "Collection path range queries currently support only scalar field paths.");
+        }
+
+        if (!CollectionIndexBinding<T>.TryConvertComparableValue(lowerBound, out var lowerValue) ||
+            !CollectionIndexBinding<T>.TryConvertComparableValue(upperBound, out var upperValue))
+        {
+            throw new NotSupportedException(
+                "Collection path range queries currently support only string and integer bounds.");
+        }
+
+        if (lowerValue.Type != upperValue.Type)
+        {
+            throw new ArgumentException(
+                "Collection path range query bounds must use the same comparable type.",
+                nameof(upperBound));
+        }
+
+        int boundComparison = DbValue.Compare(lowerValue, upperValue);
+        if (boundComparison > 0 ||
+            (boundComparison == 0 && (!lowerInclusive || !upperInclusive)))
+        {
+            yield break;
+        }
+
+        long lowerKey = 0;
+        long upperKey = 0;
+        bool canUseOrderedIndex =
+            hasIndex &&
+            attachedBinding.SupportsOrderedRange &&
+            lowerValue.Type == DbType.Integer &&
+            upperValue.Type == DbType.Integer;
+
+        if (canUseOrderedIndex)
+        {
+            canUseOrderedIndex =
+                attachedBinding.TryBuildKeyFromValue(lowerBound, out lowerKey) &&
+                attachedBinding.TryBuildKeyFromValue(upperBound, out upperKey);
+        }
+
+        if (!canUseOrderedIndex)
+        {
+            var cursor = _tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
+            {
+                ReadOnlySpan<byte> payload = cursor.CurrentValue.Span;
+                if (CollectionPayloadCodec.IsDirectPayload(payload))
+                {
+                    if (!binding.TryDirectPayloadValueInRange(payload, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        continue;
+
+                    var (matchedKey, matchedDocument) = _codec.Decode(payload);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (fallbackKey, fallbackDocument) = _codec.Decode(payload);
+                if (binding.MatchesRangeValue(fallbackDocument, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
+            }
+
+            yield break;
+        }
+
+        var range = new IndexScanRange(lowerKey, lowerInclusive, upperKey, upperInclusive);
+        var indexCursor = attachedBinding.IndexStore.CreateCursor(range);
+        while (await indexCursor.MoveNextAsync(ct))
+        {
+            ReadOnlyMemory<byte> rowIdPayload = indexCursor.CurrentValue;
+            if (rowIdPayload.Length < sizeof(long))
+                continue;
+
+            int rowIdCount = rowIdPayload.Length / sizeof(long);
+            for (int i = 0; i < rowIdCount; i++)
+            {
+                long rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
+                var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+                if (documentPayload is not { } documentMemory)
+                    continue;
+
+                if (CollectionPayloadCodec.IsDirectPayload(documentMemory.Span))
+                {
+                    if (!binding.TryDirectPayloadValueInRange(documentMemory.Span, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        continue;
+
+                    string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                    T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (key, document) = _codec.Decode(documentMemory.Span);
+                if (binding.MatchesRangeValue(document, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                    yield return new KeyValuePair<string, T>(key, document);
+            }
         }
     }
 
