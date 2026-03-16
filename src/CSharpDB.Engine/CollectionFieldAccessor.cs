@@ -12,12 +12,14 @@ internal sealed class CollectionFieldAccessor
 {
     private readonly string[] _jsonPathSegments;
     private readonly byte[][] _jsonPathSegmentsUtf8;
+    private readonly bool _targetsArrayElements;
 
-    private CollectionFieldAccessor(string fieldPath, string[] jsonPathSegments, byte[][] jsonPathSegmentsUtf8)
+    private CollectionFieldAccessor(string fieldPath, string[] jsonPathSegments, byte[][] jsonPathSegmentsUtf8, bool targetsArrayElements)
     {
         FieldPath = fieldPath;
         _jsonPathSegments = jsonPathSegments;
         _jsonPathSegmentsUtf8 = jsonPathSegmentsUtf8;
+        _targetsArrayElements = targetsArrayElements;
     }
 
     internal string FieldPath { get; }
@@ -26,6 +28,8 @@ internal sealed class CollectionFieldAccessor
 
     internal byte[][] JsonPathSegmentsUtf8 => _jsonPathSegmentsUtf8;
 
+    internal bool TargetsArrayElements => _targetsArrayElements;
+
     internal static CollectionFieldAccessor FromFieldPath(string fieldPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
@@ -33,10 +37,33 @@ internal sealed class CollectionFieldAccessor
         string[] fieldPathSegments = fieldPath.Split('.');
         var jsonPathSegments = new string[fieldPathSegments.Length];
         var jsonPathSegmentsUtf8 = new byte[fieldPathSegments.Length][];
+        bool targetsArrayElements = false;
 
         for (int i = 0; i < fieldPathSegments.Length; i++)
         {
             string segment = fieldPathSegments[i].Trim();
+            if (segment.Length == 0)
+            {
+                throw new ArgumentException(
+                    $"Collection field path '{fieldPath}' contains an empty path segment.",
+                    nameof(fieldPath));
+            }
+
+            bool isLastSegment = i == fieldPathSegments.Length - 1;
+            if (isLastSegment && (segment.EndsWith("[]", StringComparison.Ordinal) || segment.EndsWith("[*]", StringComparison.Ordinal)))
+            {
+                targetsArrayElements = true;
+                segment = segment.EndsWith("[*]", StringComparison.Ordinal)
+                    ? segment[..^3]
+                    : segment[..^2];
+            }
+            else if (segment.IndexOf('[') >= 0 || segment.IndexOf(']') >= 0)
+            {
+                throw new ArgumentException(
+                    $"Collection field path '{fieldPath}' contains an unsupported array/index segment.",
+                    nameof(fieldPath));
+            }
+
             if (segment.Length == 0)
             {
                 throw new ArgumentException(
@@ -49,7 +76,7 @@ internal sealed class CollectionFieldAccessor
             jsonPathSegmentsUtf8[i] = Encoding.UTF8.GetBytes(jsonSegment);
         }
 
-        return new CollectionFieldAccessor(fieldPath, jsonPathSegments, jsonPathSegmentsUtf8);
+        return new CollectionFieldAccessor(fieldPath, jsonPathSegments, jsonPathSegmentsUtf8, targetsArrayElements);
     }
 
     internal bool TryReadValue(ReadOnlySpan<byte> payload, out DbValue value)
@@ -70,8 +97,14 @@ internal sealed class CollectionFieldAccessor
     internal bool TryTextEquals(ReadOnlySpan<byte> payload, string expectedValue)
         => CollectionIndexedFieldReader.TryTextEquals(payload, this, expectedValue);
 
+    internal bool TryReadIndexValues(ReadOnlySpan<byte> payload, List<DbValue> values)
+        => CollectionIndexedFieldReader.TryReadIndexValues(payload, this, values);
+
     internal bool TryValueEquals(ReadOnlySpan<byte> payload, DbValue expectedValue)
     {
+        if (_targetsArrayElements)
+            return CollectionIndexedFieldReader.TryArrayContainsValue(payload, this, expectedValue);
+
         if (expectedValue.Type == DbType.Text)
             return TryTextEquals(payload, expectedValue.AsText);
 

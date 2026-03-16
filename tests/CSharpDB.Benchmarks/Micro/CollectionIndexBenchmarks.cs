@@ -18,6 +18,7 @@ public class CollectionIndexBenchmarks
     private Database _writeDb = null!;
     private Collection<BenchDoc> _lookupCollection = null!;
     private Collection<NestedBenchDoc> _nestedLookupCollection = null!;
+    private Collection<ArrayBenchDoc> _arrayLookupCollection = null!;
     private Collection<BenchDoc> _writeCollection = null!;
     private Random _lookupRandom = null!;
     private int _nextInsertId;
@@ -28,6 +29,7 @@ public class CollectionIndexBenchmarks
     private sealed record BenchDoc(string Name, int Value, string Category, string Tag);
     private sealed record BenchAddress(string City, int ZipCode);
     private sealed record NestedBenchDoc(string Name, BenchAddress Address, int Value);
+    private sealed record ArrayBenchDoc(string Name, string[] Tags, int Value);
 
     [GlobalSetup]
     public void GlobalSetup()
@@ -60,6 +62,15 @@ public class CollectionIndexBenchmarks
         int id = _lookupRandom.Next(0, SeedCount);
         string city = s_categories[id % s_categories.Length];
         await foreach (var match in _nestedLookupCollection.FindByIndexAsync("$.address.city", city))
+            _sink ^= match.Value.Value;
+    }
+
+    [Benchmark(Description = "Collection FindByIndex array path equality (string path, many matches)")]
+    public async Task FindByIndex_ArrayPath_StringPath()
+    {
+        int id = _lookupRandom.Next(0, SeedCount);
+        string tag = s_categories[id % s_categories.Length];
+        await foreach (var match in _arrayLookupCollection.FindByIndexAsync("$.tags[]", tag))
             _sink ^= match.Value.Value;
     }
 
@@ -108,15 +119,18 @@ public class CollectionIndexBenchmarks
 
         _lookupCollection = await _lookupDb.GetCollectionAsync<BenchDoc>("bench_docs");
         _nestedLookupCollection = await _lookupDb.GetCollectionAsync<NestedBenchDoc>("nested_bench_docs");
+        _arrayLookupCollection = await _lookupDb.GetCollectionAsync<ArrayBenchDoc>("array_bench_docs");
         _writeCollection = await _writeDb.GetCollectionAsync<BenchDoc>("bench_docs");
 
         await SeedLookupCollectionAsync();
         await SeedNestedLookupCollectionAsync();
+        await SeedArrayLookupCollectionAsync();
         await SeedWriteCollectionAsync();
 
         await _lookupCollection.EnsureIndexAsync(d => d.Value);
         await _lookupCollection.EnsureIndexAsync(d => d.Tag);
         await _nestedLookupCollection.EnsureIndexAsync("$.address.city");
+        await _arrayLookupCollection.EnsureIndexAsync("$.tags[]");
         await _writeCollection.EnsureIndexAsync(d => d.Value);
         await _writeCollection.EnsureIndexAsync(d => d.Tag);
 
@@ -177,6 +191,30 @@ public class CollectionIndexBenchmarks
                     new NestedBenchDoc(
                         $"User_{i}",
                         new BenchAddress(s_categories[i % s_categories.Length], 98000 + (i % 100)),
+                        i));
+            }
+
+            await _lookupDb.CommitAsync();
+        }
+        catch
+        {
+            await _lookupDb.RollbackAsync();
+            throw;
+        }
+    }
+
+    private async Task SeedArrayLookupCollectionAsync()
+    {
+        await _lookupDb.BeginTransactionAsync();
+        try
+        {
+            for (int i = 0; i < SeedCount; i++)
+            {
+                await _arrayLookupCollection.PutAsync(
+                    $"array:{i}",
+                    new ArrayBenchDoc(
+                        $"User_{i}",
+                        [s_categories[i % s_categories.Length], $"tag:{i % 128}"],
                         i));
             }
 

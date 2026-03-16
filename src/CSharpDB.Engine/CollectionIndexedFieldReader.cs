@@ -50,6 +50,19 @@ internal static class CollectionIndexedFieldReader
         return TryReadValue(payload, accessor.JsonPathSegmentsUtf8, out value);
     }
 
+    public static bool TryReadIndexValues(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, List<DbValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(accessor);
+        ArgumentNullException.ThrowIfNull(values);
+        return TryReadIndexValues(payload, accessor.JsonPathSegmentsUtf8, out _, values);
+    }
+
+    public static bool TryArrayContainsValue(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, DbValue expectedValue)
+    {
+        ArgumentNullException.ThrowIfNull(accessor);
+        return TryArrayContainsValue(payload, accessor.JsonPathSegmentsUtf8, expectedValue);
+    }
+
     public static bool TryReadValue(ReadOnlySpan<byte> payload, string jsonPropertyName, out DbValue value)
     {
         value = default;
@@ -372,6 +385,77 @@ internal static class CollectionIndexedFieldReader
         }
     }
 
+    private static bool TryReadIndexValues(
+        ReadOnlySpan<byte> payload,
+        byte[][] jsonPathSegmentsUtf8,
+        out bool isBinaryPayload,
+        List<DbValue> values)
+    {
+        isBinaryPayload = false;
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+                return false;
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            isBinaryPayload = header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary;
+            if (isBinaryPayload)
+            {
+                return CollectionBinaryDocumentCodec.TryReadArrayValues(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    values);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return false;
+
+            return TryReadIndexValuesFromObject(ref reader, jsonPathSegmentsUtf8, 0, values);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            return false;
+        }
+    }
+
+    private static bool TryArrayContainsValue(
+        ReadOnlySpan<byte> payload,
+        byte[][] jsonPathSegmentsUtf8,
+        DbValue expectedValue)
+    {
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+                return false;
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                return CollectionBinaryDocumentCodec.TryArrayContainsValue(
+                    documentPayload,
+                    jsonPathSegmentsUtf8,
+                    expectedValue);
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return false;
+
+            return TryArrayContainsValueFromObject(ref reader, jsonPathSegmentsUtf8, 0, expectedValue);
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            return false;
+        }
+    }
+
     private static bool IsFastHeaderFallbackCandidate(Exception ex)
         => ex is CSharpDbException or JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException;
 
@@ -638,6 +722,140 @@ internal static class CollectionIndexedFieldReader
                 break;
 
             return TryTextEqualsFromObject(ref reader, jsonPathSegmentsUtf8, pathIndex + 1, expectedValue);
+        }
+
+        return false;
+    }
+
+    private static bool TryReadIndexValuesFromObject(
+        ref Utf8JsonReader reader,
+        byte[][] jsonPathSegmentsUtf8,
+        int pathIndex,
+        List<DbValue> values)
+    {
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+                break;
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                continue;
+
+            bool matches = reader.ValueTextEquals(jsonPathSegmentsUtf8[pathIndex]);
+            if (!reader.Read())
+                break;
+
+            if (!matches)
+            {
+                if (!SkipValue(ref reader))
+                    break;
+
+                continue;
+            }
+
+            if (pathIndex == jsonPathSegmentsUtf8.Length - 1)
+            {
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    break;
+
+                return TryCollectScalarArrayValues(ref reader, values);
+            }
+
+            if (reader.TokenType != JsonTokenType.StartObject)
+                break;
+
+            return TryReadIndexValuesFromObject(ref reader, jsonPathSegmentsUtf8, pathIndex + 1, values);
+        }
+
+        return false;
+    }
+
+    private static bool TryArrayContainsValueFromObject(
+        ref Utf8JsonReader reader,
+        byte[][] jsonPathSegmentsUtf8,
+        int pathIndex,
+        DbValue expectedValue)
+    {
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+                break;
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                continue;
+
+            bool matches = reader.ValueTextEquals(jsonPathSegmentsUtf8[pathIndex]);
+            if (!reader.Read())
+                break;
+
+            if (!matches)
+            {
+                if (!SkipValue(ref reader))
+                    break;
+
+                continue;
+            }
+
+            if (pathIndex == jsonPathSegmentsUtf8.Length - 1)
+            {
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    break;
+
+                return TryScalarArrayContainsValue(ref reader, expectedValue);
+            }
+
+            if (reader.TokenType != JsonTokenType.StartObject)
+                break;
+
+            return TryArrayContainsValueFromObject(ref reader, jsonPathSegmentsUtf8, pathIndex + 1, expectedValue);
+        }
+
+        return false;
+    }
+
+    private static bool TryCollectScalarArrayValues(ref Utf8JsonReader reader, List<DbValue> values)
+    {
+        bool foundAny = false;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+                return foundAny;
+
+            if (TryConvertCurrentTokenToDbValue(ref reader, out DbValue value) &&
+                value.Type is DbType.Integer or DbType.Text)
+            {
+                values.Add(value);
+                foundAny = true;
+                continue;
+            }
+
+            if (!SkipValue(ref reader))
+                return false;
+        }
+
+        return false;
+    }
+
+    private static bool TryScalarArrayContainsValue(ref Utf8JsonReader reader, DbValue expectedValue)
+    {
+        if (expectedValue.Type is not (DbType.Integer or DbType.Text))
+            return false;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+                return false;
+
+            if (TryConvertCurrentTokenToDbValue(ref reader, out DbValue value) &&
+                value.Type == expectedValue.Type &&
+                DbValue.Compare(value, expectedValue) == 0)
+            {
+                return true;
+            }
+
+            if (!SkipValue(ref reader))
+                return false;
         }
 
         return false;

@@ -49,9 +49,28 @@ internal sealed class CollectionIndexBinding<
 
     internal bool UsesTextKey => _valueKind == CollectionIndexValueKind.Text;
 
+    internal bool IsMultiValueArray => _payloadAccessor.TargetsArrayElements;
+
     internal bool MatchesValue<TField>(T document, TField value, EqualityComparer<TField> comparer)
     {
         object? fieldValue = _fieldAccessor(document);
+        if (IsMultiValueArray)
+        {
+            if (fieldValue is string || fieldValue is not System.Collections.IEnumerable enumerable)
+                return false;
+
+            foreach (object? element in enumerable)
+            {
+                if (element is TField arrayElement && comparer.Equals(arrayElement, value))
+                    return true;
+
+                if (element is null && value is null)
+                    return true;
+            }
+
+            return false;
+        }
+
         if (fieldValue is TField typed)
             return comparer.Equals(typed, value);
 
@@ -87,9 +106,14 @@ internal sealed class CollectionIndexBinding<
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
-        string[] segments = ParseFieldPathSegments(fieldPath);
+        string[] segments = ParseFieldPathSegments(fieldPath, out bool targetsArrayElements);
         MemberInfo[] memberPath = ResolveMemberPath(segments, fieldPath);
+        _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
+
         string[] canonicalSegments = Array.ConvertAll(memberPath, static member => member.Name);
+        if (targetsArrayElements)
+            canonicalSegments[^1] += "[]";
+
         return string.Join(".", canonicalSegments);
     }
 
@@ -102,9 +126,9 @@ internal sealed class CollectionIndexBinding<
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
         ArgumentNullException.ThrowIfNull(indexStore);
 
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out bool targetsArrayElements), fieldPath);
         var accessor = BuildAccessor(memberPath);
-        var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
+        var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
         var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         return new CollectionIndexBinding<T>(
             fieldPath,
@@ -118,16 +142,19 @@ internal sealed class CollectionIndexBinding<
     internal static Func<T, object?> CreateFieldAccessor(string fieldPath)
     {
         fieldPath = NormalizeFieldPath(fieldPath);
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out _), fieldPath);
         return BuildAccessor(memberPath);
     }
 
     internal static void ValidateFieldPath(string fieldPath)
     {
         fieldPath = NormalizeFieldPath(fieldPath);
-        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath), fieldPath);
-        _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath);
+        MemberInfo[] memberPath = ResolveMemberPath(ParseFieldPathSegments(fieldPath, out bool targetsArrayElements), fieldPath);
+        _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
     }
+
+    internal static CollectionIndexBinding<T> CreateTransient(string fieldPath)
+        => Create(fieldPath, "__collection_index_transient__", NoopIndexStore.Instance);
 
     internal bool TryBuildKeyFromDocument(T document, out long indexKey)
         => TryBuildKey(_fieldAccessor(document), out indexKey);
@@ -140,6 +167,12 @@ internal sealed class CollectionIndexBinding<
 
     internal bool TryBuildKeyFromDirectPayload(ReadOnlySpan<byte> payload, out long indexKey)
     {
+        if (IsMultiValueArray)
+        {
+            indexKey = 0;
+            return false;
+        }
+
         indexKey = 0;
         if (_valueKind == CollectionIndexValueKind.Integer)
         {
@@ -156,6 +189,37 @@ internal sealed class CollectionIndexBinding<
         return TryBuildKey(DbValue.FromText(textValue), out indexKey);
     }
 
+    internal bool TryCollectKeysFromDocument(T document, HashSet<long> indexKeys)
+        => TryCollectKeys(_fieldAccessor(document), indexKeys);
+
+    internal bool TryCollectKeysFromDirectPayload(ReadOnlySpan<byte> payload, HashSet<long> indexKeys)
+    {
+        int startCount = indexKeys.Count;
+
+        if (!IsMultiValueArray)
+        {
+            if (TryBuildKeyFromDirectPayload(payload, out long indexKey))
+                indexKeys.Add(indexKey);
+
+            return indexKeys.Count != startCount;
+        }
+
+        var values = new List<DbValue>();
+        if (!_payloadAccessor.TryReadIndexValues(payload, values))
+            return false;
+
+        for (int i = 0; i < values.Count; i++)
+        {
+            if (TryBuildKey(values[i], out long indexKey))
+                indexKeys.Add(indexKey);
+        }
+
+        return indexKeys.Count != startCount;
+    }
+
+    internal bool TryDirectPayloadValueEquals(ReadOnlySpan<byte> payload, DbValue value)
+        => _payloadAccessor.TryValueEquals(payload, value);
+
     internal bool TryDirectPayloadTextEquals(ReadOnlySpan<byte> payload, string value)
         => UsesTextKey && _payloadAccessor.TryTextEquals(payload, value);
 
@@ -166,6 +230,30 @@ internal sealed class CollectionIndexBinding<
             return false;
 
         return TryBuildKey(dbValue, out indexKey);
+    }
+
+    private bool TryCollectKeys(object? value, HashSet<long> indexKeys)
+    {
+        int startCount = indexKeys.Count;
+
+        if (!IsMultiValueArray)
+        {
+            if (TryBuildKey(value, out long indexKey))
+                indexKeys.Add(indexKey);
+
+            return indexKeys.Count != startCount;
+        }
+
+        if (value is string || value is not System.Collections.IEnumerable enumerable)
+            return false;
+
+        foreach (object? element in enumerable)
+        {
+            if (TryBuildKey(element, out long indexKey))
+                indexKeys.Add(indexKey);
+        }
+
+        return indexKeys.Count != startCount;
     }
 
     private bool TryBuildKey(DbValue dbValue, out long indexKey)
@@ -204,8 +292,9 @@ internal sealed class CollectionIndexBinding<
         return memberPath;
     }
 
-    private static string[] ParseFieldPathSegments(string fieldPath)
+    private static string[] ParseFieldPathSegments(string fieldPath, out bool targetsArrayElements)
     {
+        targetsArrayElements = false;
         string trimmed = fieldPath.Trim();
         if (trimmed.Length == 0)
         {
@@ -232,16 +321,33 @@ internal sealed class CollectionIndexBinding<
             trimmed = trimmed[2..];
         }
 
-        if (trimmed.IndexOf('[') >= 0 || trimmed.IndexOf(']') >= 0)
-        {
-            throw new NotSupportedException(
-                "Collection path indexes do not yet support array/index segments.");
-        }
-
         string[] segments = trimmed.Split('.');
         for (int i = 0; i < segments.Length; i++)
         {
             segments[i] = segments[i].Trim();
+            if (segments[i].Length == 0)
+            {
+                throw new ArgumentException(
+                    $"Collection index field path '{fieldPath}' contains an empty path segment.",
+                    nameof(fieldPath));
+            }
+
+            bool isLastSegment = i == segments.Length - 1;
+            if (isLastSegment &&
+                (segments[i].EndsWith("[]", StringComparison.Ordinal) ||
+                 segments[i].EndsWith("[*]", StringComparison.Ordinal)))
+            {
+                targetsArrayElements = true;
+                segments[i] = segments[i].EndsWith("[*]", StringComparison.Ordinal)
+                    ? segments[i][..^3]
+                    : segments[i][..^2];
+            }
+            else if (segments[i].IndexOf('[') >= 0 || segments[i].IndexOf(']') >= 0)
+            {
+                throw new NotSupportedException(
+                    "Collection path indexes currently support only terminal array segments like 'Tags[]' or '$.tags[]'.");
+            }
+
             if (segments[i].Length == 0)
             {
                 throw new ArgumentException(
@@ -292,9 +398,25 @@ internal sealed class CollectionIndexBinding<
                 $"Member '{member.Name}' cannot be used for collection indexing."),
         };
 
-    private static CollectionIndexValueKind ResolveValueKind(Type memberType, string fieldPath)
+    private static CollectionIndexValueKind ResolveValueKind(Type memberType, string fieldPath, bool targetsArrayElements)
     {
         Type effectiveType = Nullable.GetUnderlyingType(memberType) ?? memberType;
+        if (targetsArrayElements)
+        {
+            if (!TryGetCollectionElementType(memberType, out Type? elementType) || elementType == null)
+            {
+                throw new NotSupportedException(
+                    $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must target an array or list field when using '[]'.");
+            }
+
+            effectiveType = Nullable.GetUnderlyingType(elementType) ?? elementType;
+        }
+        else if (TryGetCollectionElementType(memberType, out _, out _))
+        {
+            throw new NotSupportedException(
+                $"Collection index field '{fieldPath}' on '{typeof(T).Name}' is multi-valued. Use a terminal '[]' suffix for array/list element indexing.");
+        }
+
         if (effectiveType == typeof(string))
             return CollectionIndexValueKind.Text;
 
@@ -315,6 +437,75 @@ internal sealed class CollectionIndexBinding<
 
         throw new NotSupportedException(
             $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must be string or integer typed.");
+    }
+
+    private static bool TryGetCollectionElementType(
+        Type memberType,
+        [NotNullWhen(true)] out Type? elementType)
+        => TryGetCollectionElementType(memberType, out elementType, out _);
+
+    private static bool TryGetCollectionElementType(
+        Type memberType,
+        [NotNullWhen(true)] out Type? elementType,
+        out bool isConcreteList)
+    {
+        if (memberType == typeof(string))
+        {
+            elementType = null;
+            isConcreteList = false;
+            return false;
+        }
+
+        if (memberType.IsArray)
+        {
+            elementType = memberType.GetElementType();
+            isConcreteList = true;
+            return elementType != null;
+        }
+
+        if (memberType.IsGenericType && memberType.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            elementType = memberType.GenericTypeArguments[0];
+            isConcreteList = true;
+            return true;
+        }
+
+        if (memberType.IsGenericType)
+        {
+            Type genericDefinition = memberType.GetGenericTypeDefinition();
+            if (genericDefinition == typeof(IEnumerable<>) ||
+                genericDefinition == typeof(ICollection<>) ||
+                genericDefinition == typeof(IList<>) ||
+                genericDefinition == typeof(IReadOnlyCollection<>) ||
+                genericDefinition == typeof(IReadOnlyList<>))
+            {
+                elementType = memberType.GenericTypeArguments[0];
+                isConcreteList = false;
+                return true;
+            }
+        }
+
+        foreach (Type implementedInterface in memberType.GetInterfaces())
+        {
+            if (!implementedInterface.IsGenericType)
+                continue;
+
+            Type genericDefinition = implementedInterface.GetGenericTypeDefinition();
+            if (genericDefinition == typeof(IEnumerable<>) ||
+                genericDefinition == typeof(ICollection<>) ||
+                genericDefinition == typeof(IList<>) ||
+                genericDefinition == typeof(IReadOnlyCollection<>) ||
+                genericDefinition == typeof(IReadOnlyList<>))
+            {
+                elementType = implementedInterface.GenericTypeArguments[0];
+                isConcreteList = false;
+                return true;
+            }
+        }
+
+        elementType = null;
+        isConcreteList = false;
+        return false;
     }
 
     private static Expression StripConvert(Expression expression)
@@ -434,5 +625,27 @@ internal sealed class CollectionIndexBinding<
                 throw new InvalidOperationException(
                     $"Collection indexes do not support values of type '{value.Type}'.");
         }
+    }
+
+    private sealed class NoopIndexStore : IIndexStore
+    {
+        internal static readonly NoopIndexStore Instance = new();
+
+        public uint RootPageId => 0;
+
+        public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
+            => ValueTask.FromResult<byte[]?>(null);
+
+        public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+            => ValueTask.FromResult<long?>(null);
+
+        public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+            => throw new NotSupportedException("Transient collection index bindings do not support writes.");
+
+        public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
+            => throw new NotSupportedException("Transient collection index bindings do not support writes.");
+
+        public IIndexCursor CreateCursor(IndexScanRange range)
+            => throw new NotSupportedException("Transient collection index bindings do not support scans.");
     }
 }

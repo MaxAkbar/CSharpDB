@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -20,6 +21,7 @@ internal static class CollectionBinaryDocumentCodec
     private const byte DoubleTag = 5;
     private const byte DecimalTag = 6;
     private const byte ObjectTag = 7;
+    private const byte ArrayTag = 8;
 
     private delegate object? MemberGetter(object instance);
     private delegate void MemberSetter(object instance, object? value);
@@ -40,8 +42,17 @@ internal static class CollectionBinaryDocumentCodec
         Single,
         Double,
         Decimal,
+        Array,
         Enum,
         Object,
+    }
+
+    private enum CollectionContainerKind : byte
+    {
+        None,
+        Array,
+        List,
+        Interface,
     }
 
     [RequiresUnreferencedCode("Binary collection encoding relies on reflection over document types.")]
@@ -123,6 +134,19 @@ internal static class CollectionBinaryDocumentCodec
     {
         ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
         return TryReadDecimalFromObject(payload, 0, pathSegmentsUtf8, out value);
+    }
+
+    public static bool TryReadArrayValues(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, List<DbValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        ArgumentNullException.ThrowIfNull(values);
+        return TryReadArrayValuesFromObject(payload, 0, pathSegmentsUtf8, values);
+    }
+
+    public static bool TryArrayContainsValue(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, DbValue expectedValue)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        return TryArrayContainsValueFromObject(payload, 0, pathSegmentsUtf8, expectedValue);
     }
 
     public static bool TryReadDocument(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out ReadOnlySpan<byte> documentPayload)
@@ -262,6 +286,86 @@ internal static class CollectionBinaryDocumentCodec
         return true;
     }
 
+    private static bool TryReadArrayValuesFromObject(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        List<DbValue> values)
+    {
+        if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != ArrayTag)
+        {
+            return false;
+        }
+
+        return TryCollectScalarArrayValues(payload.Slice(valueStart, valueLength), values);
+    }
+
+    private static bool TryArrayContainsValueFromObject(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        DbValue expectedValue)
+    {
+        if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != ArrayTag)
+        {
+            return false;
+        }
+
+        return TryScalarArrayContainsValue(payload.Slice(valueStart, valueLength), expectedValue);
+    }
+
+    private static bool TryCollectScalarArrayValues(ReadOnlySpan<byte> payload, List<DbValue> values)
+    {
+        int position = 0;
+        ulong elementCount = ReadVarint(payload, ref position);
+        bool foundAny = false;
+
+        for (ulong i = 0; i < elementCount; i++)
+        {
+            if (!TryReadValuePayload(payload, ref position, out byte tag, out int valueStart, out int valueLength))
+                return false;
+
+            if (!TryConvertValue(tag, payload.Slice(valueStart, valueLength), out DbValue value))
+                continue;
+
+            if (value.Type is not (DbType.Integer or DbType.Text))
+                continue;
+
+            values.Add(value);
+            foundAny = true;
+        }
+
+        return foundAny;
+    }
+
+    private static bool TryScalarArrayContainsValue(ReadOnlySpan<byte> payload, DbValue expectedValue)
+    {
+        if (expectedValue.Type is not (DbType.Integer or DbType.Text))
+            return false;
+
+        int position = 0;
+        ulong elementCount = ReadVarint(payload, ref position);
+
+        for (ulong i = 0; i < elementCount; i++)
+        {
+            if (!TryReadValuePayload(payload, ref position, out byte tag, out int valueStart, out int valueLength))
+                return false;
+
+            if (!TryConvertValue(tag, payload.Slice(valueStart, valueLength), out DbValue value))
+                continue;
+
+            if (value.Type != expectedValue.Type)
+                continue;
+
+            if (DbValue.Compare(value, expectedValue) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool TryReadDocumentFromObject(
         ReadOnlySpan<byte> payload,
         int pathIndex,
@@ -387,6 +491,18 @@ internal static class CollectionBinaryDocumentCodec
                 valueStart = nestedStart;
                 valueLength = position - nestedStart;
                 return true;
+            case ArrayTag:
+                int arrayStart = position;
+                if (!TrySkipArray(payload, ref position))
+                {
+                    valueStart = 0;
+                    valueLength = 0;
+                    return false;
+                }
+
+                valueStart = arrayStart;
+                valueLength = position - arrayStart;
+                return true;
             default:
                 valueStart = 0;
                 valueLength = 0;
@@ -502,6 +618,13 @@ internal static class CollectionBinaryDocumentCodec
             case ObjectTag:
                 WriteJsonObject(payload, ref position, writer);
                 return;
+            case ArrayTag:
+                ulong elementCount = ReadVarint(payload, ref position);
+                writer.WriteStartArray();
+                for (ulong i = 0; i < elementCount; i++)
+                    WriteJsonValue(payload, ref position, writer);
+                writer.WriteEndArray();
+                return;
             default:
                 throw new CSharpDbException(ErrorCode.CorruptDatabase, "Unknown binary collection value tag.");
         }
@@ -523,13 +646,36 @@ internal static class CollectionBinaryDocumentCodec
         MemberMetadata member,
         object? value)
     {
+        if (member.ValueKind == MemberValueKind.Array)
+        {
+            WriteArrayValue(writer, member, value);
+            return;
+        }
+
+        WriteTypedValue(
+            writer,
+            member.Member.Name,
+            member.ValueKind,
+            member.EffectiveType,
+            value,
+            member.ValueKind == MemberValueKind.Object ? member.GetNestedMetadata() : null);
+    }
+
+    private static void WriteTypedValue(
+        IBufferWriter<byte> writer,
+        string memberName,
+        MemberValueKind valueKind,
+        Type effectiveType,
+        object? value,
+        TypeMetadata? nestedMetadata)
+    {
         if (value is null)
         {
             WriteByte(writer, NullTag);
             return;
         }
 
-        switch (member.ValueKind)
+        switch (valueKind)
         {
             case MemberValueKind.Enum:
                 WriteByte(writer, IntegerTag);
@@ -594,12 +740,69 @@ internal static class CollectionBinaryDocumentCodec
 
             case MemberValueKind.Object:
                 WriteByte(writer, ObjectTag);
-                WriteObject(writer, value, member.GetNestedMetadata());
+                WriteObject(writer, value, nestedMetadata ?? TypeMetadataCache.GetMetadata(effectiveType));
                 return;
 
             default:
                 throw new NotSupportedException(
-                    $"Member '{member.Member.Name}' is not supported for binary collection storage.");
+                    $"Member '{memberName}' is not supported for binary collection storage.");
+        }
+    }
+
+    private static void WriteArrayValue(
+        IBufferWriter<byte> writer,
+        MemberMetadata member,
+        object? value)
+    {
+        if (value is null)
+        {
+            WriteByte(writer, NullTag);
+            return;
+        }
+
+        if (value is not IEnumerable enumerable || value is string)
+        {
+            throw new NotSupportedException(
+                $"Member '{member.Member.Name}' is not supported for binary collection storage.");
+        }
+
+        WriteByte(writer, ArrayTag);
+
+        if (value is ICollection collection)
+        {
+            WriteVarint(writer, (ulong)collection.Count);
+            foreach (object? element in enumerable)
+            {
+                WriteTypedValue(
+                    writer,
+                    member.Member.Name,
+                    member.ArrayElementValueKind,
+                    member.ArrayElementEffectiveType,
+                    element,
+                    member.ArrayElementValueKind == MemberValueKind.Object
+                        ? member.GetArrayElementNestedMetadata()
+                        : null);
+            }
+
+            return;
+        }
+
+        var buffered = new List<object?>();
+        foreach (object? element in enumerable)
+            buffered.Add(element);
+
+        WriteVarint(writer, (ulong)buffered.Count);
+        for (int i = 0; i < buffered.Count; i++)
+        {
+            WriteTypedValue(
+                writer,
+                member.Member.Name,
+                member.ArrayElementValueKind,
+                member.ArrayElementEffectiveType,
+                buffered[i],
+                member.ArrayElementValueKind == MemberValueKind.Object
+                    ? member.GetArrayElementNestedMetadata()
+                    : null);
         }
     }
 
@@ -640,23 +843,44 @@ internal static class CollectionBinaryDocumentCodec
         MemberMetadata member)
     {
         byte tag = ReadByte(payload, ref position);
-        Type targetType = member.MemberType;
+        return ReadTypedValue(
+            payload,
+            ref position,
+            tag,
+            member.Member.Name,
+            member.MemberType,
+            member.EffectiveType,
+            member.ValueKind,
+            member.ValueKind == MemberValueKind.Object ? member.GetNestedMetadata() : null,
+            member);
+    }
 
+    private static object? ReadTypedValue(
+        ReadOnlySpan<byte> payload,
+        ref int position,
+        byte tag,
+        string memberName,
+        Type targetType,
+        Type effectiveType,
+        MemberValueKind valueKind,
+        TypeMetadata? nestedMetadata,
+        MemberMetadata? member)
+    {
         if (tag == NullTag)
             return targetType.IsValueType && Nullable.GetUnderlyingType(targetType) == null
                 ? CreateDefaultValueInstance(targetType)
                 : null;
 
-        switch (member.ValueKind)
+        switch (valueKind)
         {
             case MemberValueKind.Enum:
                 EnsureTag(tag, IntegerTag);
                 long enumValue = ReadInt64(payload, ref position);
                 return Enum.ToObject(
-                    member.EffectiveType,
+                    effectiveType,
                     Convert.ChangeType(
                         enumValue,
-                        Enum.GetUnderlyingType(member.EffectiveType),
+                        Enum.GetUnderlyingType(effectiveType),
                         System.Globalization.CultureInfo.InvariantCulture)!);
 
             case MemberValueKind.String:
@@ -704,13 +928,47 @@ internal static class CollectionBinaryDocumentCodec
             case MemberValueKind.Decimal:
                 EnsureTag(tag, DecimalTag);
                 return ReadDecimal(payload, ref position);
+            case MemberValueKind.Array:
+                if (member == null)
+                {
+                    throw new NotSupportedException(
+                        $"Member '{memberName}' is not supported for binary collection storage.");
+                }
+
+                EnsureTag(tag, ArrayTag);
+                return ReadArray(payload, ref position, member);
             case MemberValueKind.Object:
                 EnsureTag(tag, ObjectTag);
-                return ReadObject(payload, ref position, member.GetNestedMetadata());
+                return ReadObject(payload, ref position, nestedMetadata ?? TypeMetadataCache.GetMetadata(effectiveType));
             default:
                 throw new NotSupportedException(
-                    $"Member '{member.Member.Name}' is not supported for binary collection storage.");
+                    $"Member '{memberName}' is not supported for binary collection storage.");
         }
+    }
+
+    private static object ReadArray(ReadOnlySpan<byte> payload, ref int position, MemberMetadata member)
+    {
+        int elementCount = checked((int)ReadVarint(payload, ref position));
+        object?[] values = new object?[elementCount];
+
+        for (int i = 0; i < elementCount; i++)
+        {
+            byte elementTag = ReadByte(payload, ref position);
+            values[i] = ReadTypedValue(
+                payload,
+                ref position,
+                elementTag,
+                member.Member.Name,
+                member.ArrayElementType,
+                member.ArrayElementEffectiveType,
+                member.ArrayElementValueKind,
+                member.ArrayElementValueKind == MemberValueKind.Object
+                    ? member.GetArrayElementNestedMetadata()
+                    : null,
+                member.ArrayElementValueKind == MemberValueKind.Array ? member : null);
+        }
+
+        return member.MaterializeArray(values);
     }
 
     private static void SkipValue(ReadOnlySpan<byte> payload, ref int position)
@@ -742,6 +1000,8 @@ internal static class CollectionBinaryDocumentCodec
                 return position <= payload.Length;
             case ObjectTag:
                 return TrySkipObject(payload, ref position);
+            case ArrayTag:
+                return TrySkipArray(payload, ref position);
             default:
                 return false;
         }
@@ -753,6 +1013,18 @@ internal static class CollectionBinaryDocumentCodec
         for (ulong i = 0; i < fieldCount; i++)
         {
             _ = ReadLengthPrefixedBytes(payload, ref position);
+            if (!TrySkipValue(payload, ref position))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool TrySkipArray(ReadOnlySpan<byte> payload, ref int position)
+    {
+        ulong elementCount = ReadVarint(payload, ref position);
+        for (ulong i = 0; i < elementCount; i++)
+        {
             if (!TrySkipValue(payload, ref position))
                 return false;
         }
@@ -1033,10 +1305,12 @@ internal static class CollectionBinaryDocumentCodec
 
     private static MemberValueKind ResolveValueKind(Type effectiveType)
     {
-        if (effectiveType.IsEnum)
-            return MemberValueKind.Enum;
         if (effectiveType == typeof(string))
             return MemberValueKind.String;
+        if (TryGetCollectionElementType(effectiveType, out _, out _))
+            return MemberValueKind.Array;
+        if (effectiveType.IsEnum)
+            return MemberValueKind.Enum;
         if (effectiveType == typeof(bool))
             return MemberValueKind.Boolean;
         if (effectiveType == typeof(byte))
@@ -1063,6 +1337,92 @@ internal static class CollectionBinaryDocumentCodec
             return MemberValueKind.Decimal;
 
         return MemberValueKind.Object;
+    }
+
+    private static bool TryGetCollectionElementType(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+        Type type,
+        [NotNullWhen(true)] out Type? elementType,
+        out CollectionContainerKind containerKind)
+    {
+        if (type == typeof(string))
+        {
+            elementType = null;
+            containerKind = CollectionContainerKind.None;
+            return false;
+        }
+
+        if (type.IsArray)
+        {
+            elementType = type.GetElementType();
+            containerKind = CollectionContainerKind.Array;
+            return elementType != null;
+        }
+
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            elementType = type.GenericTypeArguments[0];
+            containerKind = CollectionContainerKind.List;
+            return true;
+        }
+
+        if (TryGetEnumerableElementType(type, out elementType))
+        {
+            containerKind = CollectionContainerKind.Interface;
+            return true;
+        }
+
+        containerKind = CollectionContainerKind.None;
+        elementType = null;
+        return false;
+    }
+
+    private static bool TryGetEnumerableElementType(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+        Type type,
+        [NotNullWhen(true)] out Type? elementType)
+    {
+        if (type.IsGenericType)
+        {
+            Type genericDefinition = type.GetGenericTypeDefinition();
+            if (genericDefinition == typeof(IEnumerable<>) ||
+                genericDefinition == typeof(ICollection<>) ||
+                genericDefinition == typeof(IList<>) ||
+                genericDefinition == typeof(IReadOnlyCollection<>) ||
+                genericDefinition == typeof(IReadOnlyList<>))
+            {
+                elementType = type.GenericTypeArguments[0];
+                return true;
+            }
+        }
+
+        foreach (Type implementedInterface in type.GetInterfaces())
+        {
+            if (!implementedInterface.IsGenericType)
+                continue;
+
+            Type genericDefinition = implementedInterface.GetGenericTypeDefinition();
+            if (genericDefinition == typeof(IEnumerable<>) ||
+                genericDefinition == typeof(ICollection<>) ||
+                genericDefinition == typeof(IList<>) ||
+                genericDefinition == typeof(IReadOnlyCollection<>) ||
+                genericDefinition == typeof(IReadOnlyList<>))
+            {
+                elementType = implementedInterface.GenericTypeArguments[0];
+                return true;
+            }
+        }
+
+        elementType = null;
+        return false;
     }
 
     private static class TypeMetadataCache<
@@ -1217,6 +1577,8 @@ internal static class CollectionBinaryDocumentCodec
         private readonly MemberGetter _getter;
         private readonly MemberSetter? _setter;
         private TypeMetadata? _nestedMetadata;
+        private TypeMetadata? _arrayElementNestedMetadata;
+        private readonly CollectionContainerKind _collectionContainerKind;
 
         internal MemberMetadata(MemberInfo member, string encodedName, Type memberType)
         {
@@ -1226,6 +1588,32 @@ internal static class CollectionBinaryDocumentCodec
             MemberType = memberType;
             EffectiveType = Nullable.GetUnderlyingType(memberType) ?? memberType;
             ValueKind = ResolveValueKind(EffectiveType);
+            if (ValueKind == MemberValueKind.Array)
+            {
+                if (!TryGetCollectionElementType(memberType, out Type? arrayElementType, out _collectionContainerKind) ||
+                    arrayElementType == null)
+                {
+                    throw new NotSupportedException(
+                        $"Member '{member.Name}' is not supported for binary collection storage.");
+                }
+
+                ArrayElementType = arrayElementType;
+                ArrayElementEffectiveType = Nullable.GetUnderlyingType(arrayElementType) ?? arrayElementType;
+                ArrayElementValueKind = ResolveValueKind(ArrayElementEffectiveType);
+                if (ArrayElementValueKind == MemberValueKind.Array)
+                {
+                    throw new NotSupportedException(
+                        $"Member '{member.Name}' is not supported for binary collection storage.");
+                }
+            }
+            else
+            {
+                ArrayElementType = typeof(object);
+                ArrayElementEffectiveType = typeof(object);
+                ArrayElementValueKind = MemberValueKind.Object;
+                _collectionContainerKind = CollectionContainerKind.None;
+            }
+
             _property = member as PropertyInfo;
             _field = member as FieldInfo;
             _getter = CreateGetter(member);
@@ -1245,6 +1633,12 @@ internal static class CollectionBinaryDocumentCodec
         internal Type EffectiveType { get; }
 
         internal MemberValueKind ValueKind { get; }
+
+        internal Type ArrayElementType { get; }
+
+        internal Type ArrayElementEffectiveType { get; }
+
+        internal MemberValueKind ArrayElementValueKind { get; }
 
         internal int ConstructorParameterIndex { get; private set; }
 
@@ -1283,6 +1677,38 @@ internal static class CollectionBinaryDocumentCodec
                 throw new InvalidOperationException($"Member '{Member.Name}' is not an object.");
 
             return _nestedMetadata ??= TypeMetadataCache.GetMetadata(EffectiveType);
+        }
+
+        internal TypeMetadata GetArrayElementNestedMetadata()
+        {
+            if (ArrayElementValueKind != MemberValueKind.Object)
+                throw new InvalidOperationException($"Member '{Member.Name}' does not contain object array elements.");
+
+            return _arrayElementNestedMetadata ??= TypeMetadataCache.GetMetadata(ArrayElementEffectiveType);
+        }
+
+        internal object MaterializeArray(object?[] values)
+        {
+            switch (_collectionContainerKind)
+            {
+                case CollectionContainerKind.Array:
+                    Array array = Array.CreateInstance(ArrayElementType, values.Length);
+                    for (int i = 0; i < values.Length; i++)
+                        array.SetValue(values[i], i);
+                    return array;
+
+                case CollectionContainerKind.List:
+                case CollectionContainerKind.Interface:
+                    Type listType = typeof(List<>).MakeGenericType(ArrayElementType);
+                    var list = (IList)Activator.CreateInstance(listType)!;
+                    for (int i = 0; i < values.Length; i++)
+                        list.Add(values[i]);
+                    return list;
+
+                default:
+                    throw new NotSupportedException(
+                        $"Member '{Member.Name}' is not supported for binary collection storage.");
+            }
         }
 
         private static MemberGetter CreateGetter(MemberInfo member)

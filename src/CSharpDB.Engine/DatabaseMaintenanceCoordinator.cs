@@ -350,68 +350,113 @@ public static class DatabaseMaintenanceCoordinator
         var tableTree = context.Catalog.GetTableTree(indexSchema.TableName);
         var indexStore = context.Catalog.GetIndexStore(indexSchema.IndexName);
         var cursor = tableTree.CreateCursor();
+        var indexKeys = new HashSet<long>();
 
         while (await cursor.MoveNextAsync(ct))
         {
-            if (!TryBuildCollectionIndexKey(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, out long indexKey))
+            indexKeys.Clear();
+            if (!TryBuildCollectionIndexKeys(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, indexKeys))
                 continue;
 
-            await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct);
+            foreach (long indexKey in indexKeys)
+                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct);
         }
     }
 
-    private static bool TryBuildCollectionIndexKey(
+    private static bool TryBuildCollectionIndexKeys(
         ReadOnlySpan<byte> payload,
         CollectionFieldAccessor payloadAccessor,
         IRecordSerializer recordSerializer,
-        out long indexKey)
+        HashSet<long> indexKeys)
     {
-        if (TryBuildCollectionIndexKeyFromDirectPayload(payload, payloadAccessor, out indexKey))
+        if (TryBuildCollectionIndexKeysFromDirectPayload(payload, payloadAccessor, indexKeys))
             return true;
 
         try
         {
             string json = recordSerializer.DecodeColumn(payload, 1).AsText;
             using var document = JsonDocument.Parse(json);
-            return TryBuildCollectionIndexKeyFromJson(document.RootElement, payloadAccessor, out indexKey);
+            return TryBuildCollectionIndexKeysFromJson(document.RootElement, payloadAccessor, indexKeys);
         }
         catch
         {
-            indexKey = 0;
             return false;
         }
     }
 
-    private static bool TryBuildCollectionIndexKeyFromDirectPayload(
+    private static bool TryBuildCollectionIndexKeysFromDirectPayload(
         ReadOnlySpan<byte> payload,
         CollectionFieldAccessor payloadAccessor,
-        out long indexKey)
+        HashSet<long> indexKeys)
     {
-        if (!payloadAccessor.TryReadValue(payload, out var value))
+        int startCount = indexKeys.Count;
+
+        if (payloadAccessor.TargetsArrayElements)
         {
-            indexKey = 0;
-            return false;
+            var values = new List<DbValue>();
+            if (!payloadAccessor.TryReadIndexValues(payload, values))
+                return false;
+
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (TryBuildCollectionIndexKeyFromValue(values[i], out long indexKey))
+                    indexKeys.Add(indexKey);
+            }
+
+            return indexKeys.Count != startCount;
         }
 
-        return TryBuildCollectionIndexKeyFromValue(value, out indexKey);
+        if (!payloadAccessor.TryReadValue(payload, out var value))
+            return false;
+
+        if (TryBuildCollectionIndexKeyFromValue(value, out long scalarIndexKey))
+            indexKeys.Add(scalarIndexKey);
+
+        return indexKeys.Count != startCount;
     }
 
-    private static bool TryBuildCollectionIndexKeyFromJson(
+    private static bool TryBuildCollectionIndexKeysFromJson(
         JsonElement document,
         CollectionFieldAccessor payloadAccessor,
-        out long indexKey)
+        HashSet<long> indexKeys)
     {
-        indexKey = 0;
+        int startCount = indexKeys.Count;
         if (document.ValueKind != JsonValueKind.Object)
             return false;
 
         if (!TryGetJsonProperty(document, payloadAccessor.JsonPathSegments, out JsonElement property))
             return false;
 
+        if (payloadAccessor.TargetsArrayElements)
+        {
+            if (property.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (JsonElement element in property.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.String &&
+                    TryBuildCollectionIndexKeyFromValue(DbValue.FromText(element.GetString()!), out long textIndexKey))
+                {
+                    indexKeys.Add(textIndexKey);
+                    continue;
+                }
+
+                if (element.ValueKind == JsonValueKind.Number &&
+                    element.TryGetInt64(out long integerValue) &&
+                    TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long integerIndexKey))
+                {
+                    indexKeys.Add(integerIndexKey);
+                }
+            }
+
+            return indexKeys.Count != startCount;
+        }
+
         return property.ValueKind switch
         {
-            JsonValueKind.String => TryBuildCollectionIndexKeyFromValue(DbValue.FromText(property.GetString()!), out indexKey),
-            JsonValueKind.Number when property.TryGetInt64(out long integerValue) => TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out indexKey),
+            JsonValueKind.String when TryBuildCollectionIndexKeyFromValue(DbValue.FromText(property.GetString()!), out long textIndexKey) => indexKeys.Add(textIndexKey),
+            JsonValueKind.Number when property.TryGetInt64(out long integerValue) &&
+                                      TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long numericIndexKey) => indexKeys.Add(numericIndexKey),
             _ => false,
         };
     }

@@ -242,8 +242,7 @@ public sealed class Collection<
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        var fieldAccessor = fieldSelector.Compile();
-        await foreach (var match in FindByIndexCoreAsync(fieldPath, value, fieldAccessor, ct))
+        await foreach (var match in FindByIndexCoreAsync(fieldPath, value, ct))
             yield return match;
     }
 
@@ -259,12 +258,9 @@ public sealed class Collection<
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
         string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
-        var fieldAccessor = CollectionIndexBinding<T>.CreateFieldAccessor(canonicalFieldPath);
-
         await foreach (var match in FindByIndexCoreAsync(
             canonicalFieldPath,
             value,
-            document => ConvertFieldValue<TField>(fieldAccessor(document)),
             ct))
         {
             yield return match;
@@ -370,21 +366,29 @@ public sealed class Collection<
     {
         var cursor = _tree.CreateCursor();
         var groupedRowIds = new SortedDictionary<long, List<long>>();
+        var indexKeys = new HashSet<long>();
 
         while (await cursor.MoveNextAsync(ct))
         {
             long rowId = cursor.CurrentKey;
+            indexKeys.Clear();
 
             if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
             {
-                if (binding.TryBuildKeyFromDirectPayload(cursor.CurrentValue.Span, out long directIndexKey))
-                    AddGroupedRowId(groupedRowIds, directIndexKey, rowId);
+                if (binding.TryCollectKeysFromDirectPayload(cursor.CurrentValue.Span, indexKeys))
+                {
+                    foreach (long directIndexKey in indexKeys)
+                        AddGroupedRowId(groupedRowIds, directIndexKey, rowId);
+                }
 
                 continue;
             }
 
             T document = _codec.DecodeDocument(cursor.CurrentValue.Span);
-            if (binding.TryBuildKeyFromDocument(document, out long indexKey))
+            if (!binding.TryCollectKeysFromDocument(document, indexKeys))
+                continue;
+
+            foreach (long indexKey in indexKeys)
                 AddGroupedRowId(groupedRowIds, indexKey, rowId);
         }
 
@@ -419,7 +423,11 @@ public sealed class Collection<
         {
             foreach (var binding in _indexes.Values)
             {
-                if (binding.TryBuildKeyFromDirectPayload(payload.Span, out long indexKey))
+                var indexKeys = new HashSet<long>();
+                if (!binding.TryCollectKeysFromDirectPayload(payload.Span, indexKeys))
+                    continue;
+
+                foreach (long indexKey in indexKeys)
                     await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
             }
 
@@ -436,10 +444,12 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
-        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+        var indexKeys = new HashSet<long>();
+        if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
 
-        await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+        foreach (long indexKey in indexKeys)
+            await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
     }
 
     private static async ValueTask DeleteFromIndexAsync(
@@ -448,10 +458,12 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
-        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+        var indexKeys = new HashSet<long>();
+        if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
 
-        await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+        foreach (long indexKey in indexKeys)
+            await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
     }
 
     private static async ValueTask InsertRowIdAsync(
@@ -573,16 +585,17 @@ public sealed class Collection<
     private async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexCoreAsync<TField>(
         string fieldPath,
         TField value,
-        Func<T, TField> fieldAccessor,
         [EnumeratorCancellation] CancellationToken ct)
     {
         RefreshIndexesIfSchemaChanged();
 
-        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
+        CollectionIndexBinding<T> binding = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding)
+            ? attachedBinding
+            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
         var comparer = EqualityComparer<TField>.Default;
 
-        if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
-            !binding.TryBuildKeyFromValue(value, out long indexKey))
+        if (!TryGetOrAttachIndexBinding(fieldPath, out attachedBinding) ||
+            !attachedBinding.TryBuildKeyFromValue(value, out long indexKey))
         {
             bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
             var cursor = _tree.CreateCursor();
@@ -591,7 +604,7 @@ public sealed class Collection<
                 ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
                 if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
                 {
-                    if (!payloadAccessor.TryValueEquals(fallbackPayload, expectedValue))
+                    if (!binding.TryDirectPayloadValueEquals(fallbackPayload, expectedValue))
                         continue;
 
                     var (matchedKey, matchedDocument) = _codec.Decode(fallbackPayload);
@@ -600,7 +613,7 @@ public sealed class Collection<
                 }
 
                 var (fallbackKey, fallbackDocument) = _codec.Decode(fallbackPayload);
-                if (comparer.Equals(fieldAccessor(fallbackDocument), value))
+                if (binding.MatchesValue(fallbackDocument, value, comparer))
                     yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
             }
 
@@ -619,7 +632,7 @@ public sealed class Collection<
             if (documentPayload is not { } documentMemory)
                 continue;
 
-            if (binding.UsesIntegerKey)
+            if (attachedBinding.UsesIntegerKey)
             {
                 string matchedKey = _codec.DecodeKey(documentMemory.Span);
                 T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
@@ -627,9 +640,9 @@ public sealed class Collection<
                 continue;
             }
 
-            if (binding.UsesTextKey &&
-                value is string textValue &&
-                binding.TryDirectPayloadTextEquals(documentMemory.Span, textValue))
+            if (CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) &&
+                CollectionPayloadCodec.IsDirectPayload(documentMemory.Span) &&
+                binding.TryDirectPayloadValueEquals(documentMemory.Span, expectedValue))
             {
                 string matchedKey = _codec.DecodeKey(documentMemory.Span);
                 T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
@@ -641,17 +654,6 @@ public sealed class Collection<
             if (binding.MatchesValue(document, value, comparer))
                 yield return new KeyValuePair<string, T>(key, document);
         }
-    }
-
-    private static TField ConvertFieldValue<TField>(object? value)
-    {
-        if (value is TField typed)
-            return typed;
-
-        if (value is null)
-            return default!;
-
-        return (TField)value;
     }
 
     private static void AddGroupedRowId(

@@ -197,7 +197,8 @@ Defaults:
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` nested path equality (`$.address.city`) | 1.028 us | 2.37 KB | Public string-path index lookup over a nested scalar path with many matches |
+| Collection `FindByIndex` nested path equality (`$.address.city`) | 544.1 ns | 1.02 KB | Public string-path index lookup over a nested scalar path with many matches |
+| Collection `FindByIndex` array path equality (`$.tags[]`) | 464.2 ns | 872 B | Multi-value array element lookup over a public string-path collection index |
 
 ### Collection Extraction Spot Checks (March 15, 2026)
 

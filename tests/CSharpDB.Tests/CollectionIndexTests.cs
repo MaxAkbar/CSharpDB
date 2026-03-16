@@ -38,6 +38,7 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     private record User(string Name, int Age, string Email);
     private record Address(string City, int ZipCode);
     private record UserWithAddress(string Name, Address Address);
+    private record UserWithTags(string Name, string[] Tags, List<int> Scores);
 
     [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerField()
@@ -195,6 +196,96 @@ public sealed class CollectionIndexTests : IAsyncLifetime
             async () => await users.EnsureIndexAsync("$.address[0].city", ct));
 
         Assert.Contains("array", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForStringArrayPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [20, 30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green", "yellow"], [40]), ct);
+
+        await users.EnsureIndexAsync("$.tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerArrayPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_scores", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [20, 30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green"], [40]), ct);
+
+        await users.EnsureIndexAsync("Scores[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("Scores[]", 20, ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:2"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByIndex_ArrayPath_FallsBackToScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task Put_UpdateExistingDocument_UpdatesArrayCollectionIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_update", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.EnsureIndexAsync("Tags[]", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["blue"], [10, 20]), ct);
+
+        Assert.Empty(await CollectAsync(users.FindByIndexAsync("Tags[]", "green", ct), ct));
+
+        var updated = await CollectAsync(users.FindByIndexAsync("Tags[]", "blue", ct), ct);
+        Assert.Single(updated);
+        Assert.Equal("u:1", updated[0].Key);
+    }
+
+    [Fact]
+    public async Task ArrayCollectionIndex_DeduplicatesDuplicateElementsPerDocument()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_dupes", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["green", "green", "green"], [10, 10]), ct);
+        await users.EnsureIndexAsync("Tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("Tags[]", "green", ct), ct);
+        var binding = GetBinding(users, "Tags[]");
+        var matcher = CollectionIndexBinding<UserWithTags>.CreateTransient("Tags[]");
+        Assert.True(matcher.TryBuildKeyFromValue("green", out long indexKey));
+        byte[] payload = await binding.IndexStore.FindAsync(indexKey, ct)
+            ?? throw new InvalidOperationException("Expected array collection index payload.");
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+        Assert.Equal(1, RowIdPayloadCodec.GetCount(payload));
     }
 
     [Fact]

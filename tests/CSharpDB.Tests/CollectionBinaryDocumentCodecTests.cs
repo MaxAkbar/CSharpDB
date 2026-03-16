@@ -20,6 +20,11 @@ public sealed class CollectionBinaryDocumentCodecTests
         decimal Balance,
         BenchProfile Profile);
 
+    private sealed record BenchDocWithArrays(
+        string Name,
+        string[] Tags,
+        List<int> Scores);
+
     private sealed record BenchProfile(string Segment, BenchAddress Address);
 
     private sealed record BenchAddress(string City, int ZipCode);
@@ -122,6 +127,43 @@ public sealed class CollectionBinaryDocumentCodecTests
                 [System.Text.Encoding.UTF8.GetBytes("city")],
                 out string? city));
         Assert.Equal("Seattle", city);
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_RoundTripsScalarArrays()
+    {
+        var codec = new CollectionDocumentCodec<BenchDocWithArrays>(new DefaultRecordSerializer());
+        var expected = new BenchDocWithArrays("Alice Example", ["alpha", "beta"], [10, 20, 30]);
+
+        byte[] payload = codec.Encode("doc:arrays", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal(expected.Name, actual.Document.Name);
+        Assert.Equal(expected.Tags, actual.Document.Tags);
+        Assert.Equal(expected.Scores, actual.Document.Scores);
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_ArrayExtraction_ReadsScalarElements()
+    {
+        var codec = new CollectionDocumentCodec<BenchDocWithArrays>(new DefaultRecordSerializer());
+        byte[] payload = codec.Encode(
+            "doc:arrays",
+            new BenchDocWithArrays("Alice Example", ["alpha", "beta", "alpha"], [10, 20, 30]));
+        var tagAccessor = CollectionFieldAccessor.FromFieldPath(nameof(BenchDocWithArrays.Tags) + "[]");
+        var scoreAccessor = CollectionFieldAccessor.FromFieldPath(nameof(BenchDocWithArrays.Scores) + "[]");
+        var tags = new List<DbValue>();
+        var scores = new List<DbValue>();
+
+        Assert.True(tagAccessor.TryReadIndexValues(payload, tags));
+        Assert.True(scoreAccessor.TryReadIndexValues(payload, scores));
+        Assert.True(tagAccessor.TryValueEquals(payload, DbValue.FromText("beta")));
+        Assert.True(scoreAccessor.TryValueEquals(payload, DbValue.FromInteger(20)));
+        Assert.False(tagAccessor.TryValueEquals(payload, DbValue.FromText("gamma")));
+
+        Assert.Equal(["alpha", "beta", "alpha"], tags.Select(static value => value.AsText).ToArray());
+        Assert.Equal([10L, 20L, 30L], scores.Select(static value => value.AsInteger).ToArray());
     }
 
     [Fact]
