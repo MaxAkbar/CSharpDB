@@ -468,7 +468,13 @@ internal sealed class CollectionIndexBinding<
         return segments;
     }
 
-    private static MemberInfo ResolveMember(Type sourceType, string segment, string fieldPath)
+    private static MemberInfo ResolveMember(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields)]
+        Type sourceType,
+        string segment,
+        string fieldPath)
     {
         foreach (PropertyInfo property in sourceType.GetProperties())
         {
@@ -499,6 +505,14 @@ internal sealed class CollectionIndexBinding<
         return document => ReadMemberPathValue(document, capturedPath, capturedArraySegments, 0);
     }
 
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2073",
+        Justification = "Collection index binding is a reflection-based feature layered on Collection<T>, which already requires public document members and is not trim-safe without those members preserved.")]
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.Interfaces)]
     private static Type GetMemberType(MemberInfo member)
         => member switch
         {
@@ -508,7 +522,11 @@ internal sealed class CollectionIndexBinding<
                 $"Member '{member.Name}' cannot be used for collection indexing."),
         };
 
-    private static CollectionIndexValueKind ResolveValueKind(Type memberType, string fieldPath, bool targetsArrayElements)
+    private static CollectionIndexValueKind ResolveValueKind(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
+        Type memberType,
+        string fieldPath,
+        bool targetsArrayElements)
     {
         Type effectiveType = Nullable.GetUnderlyingType(memberType) ?? memberType;
         if (targetsArrayElements)
@@ -551,11 +569,13 @@ internal sealed class CollectionIndexBinding<
     }
 
     private static bool TryGetCollectionElementType(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         Type memberType,
         [NotNullWhen(true)] out Type? elementType)
         => TryGetCollectionElementType(memberType, out elementType, out _);
 
     private static bool TryGetCollectionElementType(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         Type memberType,
         [NotNullWhen(true)] out Type? elementType,
         out bool isConcreteList)

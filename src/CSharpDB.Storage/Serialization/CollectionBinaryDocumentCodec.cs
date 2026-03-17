@@ -791,6 +791,12 @@ internal static class CollectionBinaryDocumentCodec
         IBufferWriter<byte> writer,
         string memberName,
         MemberValueKind valueKind,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         Type effectiveType,
         object? value,
         TypeMetadata? nestedMetadata)
@@ -999,6 +1005,12 @@ internal static class CollectionBinaryDocumentCodec
         byte tag,
         string memberName,
         Type targetType,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         Type effectiveType,
         MemberValueKind valueKind,
         TypeMetadata? nestedMetadata,
@@ -1338,6 +1350,16 @@ internal static class CollectionBinaryDocumentCodec
         return members.ToArray();
     }
 
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2073",
+        Justification = "Binary collection serialization is reflection-based and already surfaced through RequiresUnreferencedCode/RequiresDynamicCode APIs.")]
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicConstructors |
+        DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+        DynamicallyAccessedMemberTypes.Interfaces)]
     private static Type GetMemberType(MemberInfo member)
         => member switch
         {
@@ -1354,7 +1376,8 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicProperties |
             DynamicallyAccessedMemberTypes.PublicFields |
             DynamicallyAccessedMemberTypes.PublicConstructors |
-            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         Type type)
     {
         if (type == typeof(string) || type.IsPrimitive || type == typeof(decimal))
@@ -1458,7 +1481,14 @@ internal static class CollectionBinaryDocumentCodec
         return false;
     }
 
-    private static MemberValueKind ResolveValueKind(Type effectiveType)
+    private static MemberValueKind ResolveValueKind(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
+        Type effectiveType)
     {
         if (effectiveType == typeof(string))
             return MemberValueKind.String;
@@ -1505,7 +1535,8 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicProperties |
             DynamicallyAccessedMemberTypes.PublicFields |
             DynamicallyAccessedMemberTypes.PublicConstructors |
-            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         Type type,
         [NotNullWhen(true)] out Type? elementType,
         out CollectionContainerKind containerKind)
@@ -1547,7 +1578,8 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicProperties |
             DynamicallyAccessedMemberTypes.PublicFields |
             DynamicallyAccessedMemberTypes.PublicConstructors |
-            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         Type type,
         [NotNullWhen(true)] out Type? elementType)
     {
@@ -1591,7 +1623,8 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicProperties |
             DynamicallyAccessedMemberTypes.PublicFields |
             DynamicallyAccessedMemberTypes.PublicConstructors |
-            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         T>
     {
         internal static readonly TypeMetadata Metadata = BuildMetadata(typeof(T));
@@ -1607,7 +1640,8 @@ internal static class CollectionBinaryDocumentCodec
                 DynamicallyAccessedMemberTypes.PublicProperties |
                 DynamicallyAccessedMemberTypes.PublicFields |
                 DynamicallyAccessedMemberTypes.PublicConstructors |
-                DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+                DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+                DynamicallyAccessedMemberTypes.Interfaces)]
             Type type)
         {
             lock (s_gate)
@@ -1625,7 +1659,17 @@ internal static class CollectionBinaryDocumentCodec
 
     private sealed class TypeMetadata
     {
-        internal TypeMetadata(Type type, MemberMetadata[] members, ConstructorBinding constructor, MemberMetadata[] postConstructionMembers)
+        internal TypeMetadata(
+            [DynamicallyAccessedMembers(
+                DynamicallyAccessedMemberTypes.PublicProperties |
+                DynamicallyAccessedMemberTypes.PublicFields |
+                DynamicallyAccessedMemberTypes.PublicConstructors |
+                DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+                DynamicallyAccessedMemberTypes.Interfaces)]
+            Type type,
+            MemberMetadata[] members,
+            ConstructorBinding constructor,
+            MemberMetadata[] postConstructionMembers)
         {
             Type = type;
             Members = members;
@@ -1633,6 +1677,12 @@ internal static class CollectionBinaryDocumentCodec
             PostConstructionMembers = postConstructionMembers;
         }
 
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         internal Type Type { get; }
 
         internal MemberMetadata[] Members { get; }
@@ -1741,7 +1791,16 @@ internal static class CollectionBinaryDocumentCodec
         private TypeMetadata? _arrayElementNestedMetadata;
         private readonly CollectionContainerKind _collectionContainerKind;
 
-        internal MemberMetadata(MemberInfo member, string encodedName, Type memberType)
+        internal MemberMetadata(
+            MemberInfo member,
+            string encodedName,
+            [DynamicallyAccessedMembers(
+                DynamicallyAccessedMemberTypes.PublicProperties |
+                DynamicallyAccessedMemberTypes.PublicFields |
+                DynamicallyAccessedMemberTypes.PublicConstructors |
+                DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+                DynamicallyAccessedMemberTypes.Interfaces)]
+            Type memberType)
         {
             Member = member;
             EncodedName = encodedName;
@@ -1789,14 +1848,38 @@ internal static class CollectionBinaryDocumentCodec
 
         internal byte[] EncodedNameUtf8 { get; }
 
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         internal Type MemberType { get; }
 
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         internal Type EffectiveType { get; }
 
         internal MemberValueKind ValueKind { get; }
 
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         internal Type ArrayElementType { get; }
 
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         internal Type ArrayElementEffectiveType { get; }
 
         internal MemberValueKind ArrayElementValueKind { get; }
@@ -1848,6 +1931,10 @@ internal static class CollectionBinaryDocumentCodec
             return _arrayElementNestedMetadata ??= TypeMetadataCache.GetMetadata(ArrayElementEffectiveType);
         }
 
+        [UnconditionalSuppressMessage(
+            "Aot",
+            "IL3050",
+            Justification = "Binary collection array materialization is only used from the reflection-based decode path, which already requires dynamic code.")]
         internal object MaterializeArray(object?[] values)
         {
             switch (_collectionContainerKind)
@@ -1916,11 +2003,10 @@ internal static class CollectionBinaryDocumentCodec
         }
     }
 
-    private static object CreateDefaultValueInstance(
-        [DynamicallyAccessedMembers(
-            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
-            DynamicallyAccessedMemberTypes.PublicConstructors |
-            DynamicallyAccessedMemberTypes.NonPublicConstructors)]
-        Type type)
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2067",
+        Justification = "Binary collection decoding intentionally creates uninitialized value-type defaults inside the reflection-based decode path, which is already surfaced through RequiresUnreferencedCode/RequiresDynamicCode APIs.")]
+    private static object CreateDefaultValueInstance(Type type)
         => RuntimeHelpers.GetUninitializedObject(type);
 }
