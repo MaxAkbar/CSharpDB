@@ -1,6 +1,42 @@
-# Storage Study Examples
+# Storage Examples
 
-An interactive REPL with two categories of examples:
+This page is the runnable example index for the `CSharpDB.Storage` tutorial track.
+
+There are two distinct example tracks:
+
+1. **Study examples** — the shared `StorageStudyExamples.*` REPL-based walkthroughs for guided exploration
+2. **Advanced standalone examples** — larger sample applications that extend `CSharpDB.Storage` into domain-specific engines
+
+## Choose a track
+
+| Track | Best for | Shape |
+|-------|----------|-------|
+| **Study examples** | Learning the storage surface in guided slices | Shared REPL host with multiple small examples |
+| **Advanced standalone examples** | Seeing how to build a full storage-backed engine | Separate app per domain with its own CLI/API/UI |
+
+Start with the study examples if you are learning `Pager`, WAL, B+tree, and configurability. Start with the advanced standalone examples if you want bigger, self-contained applications that demonstrate how to extend `CSharpDB.Storage` directly.
+
+## Advanced standalone examples
+
+These four apps are the official advanced examples for extending `CSharpDB.Storage` into domain-specific engines. Each sample keeps its own README as the authoritative deep dive.
+
+| Example | Scenario | Storage pattern | Run | README | Key concepts |
+|---------|----------|-----------------|-----|--------|--------------|
+| **CSharpDB.GraphDB** | Graph database | Multi-tree graph adjacency with reverse-edge index | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj` | [GraphDB](./CSharpDB.GraphDB/README.md) | Multiple B+trees, composite edge keys, forward/reverse traversal |
+| **CSharpDB.SpatialIndex** | Spatial proximity search | Single-tree Hilbert-key locality index | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj` | [SpatialIndex](./CSharpDB.SpatialIndex/README.md) | Space-filling curves, range scans, post-filtered nearest queries |
+| **CSharpDB.TimeSeries** | Time-series engine | Monotonic-key append and range scan | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj` | [TimeSeries](./CSharpDB.TimeSeries/README.md) | Natural key ordering, right-edge inserts, cursor-based time windows |
+| **CSharpDB.VirtualFS** | Virtual file system | Multi-tree metadata/content/path/children layout | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj` | [VirtualFS](./CSharpDB.VirtualFS/README.md) | Multiple B+trees, composite child keys, hashed path lookup, transactional file content |
+
+### What each advanced sample demonstrates
+
+- **GraphDB**: a graph database built on multiple B+trees, with separate outgoing and incoming edge indexes for efficient directed traversal
+- **SpatialIndex**: a geographic index that maps 2D points onto a Hilbert curve so a single B+tree can support nearby and bounding-box queries
+- **TimeSeries**: a minimal time-series design where `DateTime.UtcNow.Ticks` becomes the natural B+tree key for append-heavy writes and range scans
+- **VirtualFS**: a virtual file system split across metadata, content, path, and child trees to support directory listings, file content, and path-based lookup
+
+## Study examples
+
+The study examples are an interactive REPL with two categories of examples:
 
 1. **Application patterns** — real-world use cases built entirely on the `Database` API, proving the storage engine can back much more than traditional SQL tables. Each example provides domain-specific commands for natural interaction (file system commands for virtual-drive, graph queries for graph-store, etc.).
 2. **Storage extensibility** — custom caches, checkpoint policies, interceptors, checksum providers, and more. These demonstrate how to plug into the storage engine internals.

@@ -28,6 +28,12 @@ CSharpDB.slnx
 │   │   ├── SchemaSerializer.cs         Encode/decode TableSchema ↔ byte[]
 │   │   └── SchemaCatalog.cs            In-memory schema cache (tables, indexes, views, triggers) backed by B+trees
 │   │
+│   ├── CSharpDB.Storage.Diagnostics/  Read-only diagnostics (depends on Storage, Primitives)
+│   │   ├── DatabaseInspector.cs        Database file validation and page inspection
+│   │   ├── WalInspector.cs             WAL validation and frame inspection
+│   │   ├── IndexInspector.cs           Index integrity verification
+│   │   └── README.md                   Package guide and usage examples
+│   │
 │   ├── CSharpDB.Sql/                SQL frontend (depends on Primitives)
 │   │   ├── TokenType.cs                Token type enum
 │   │   ├── Token.cs                    Token struct
@@ -52,7 +58,7 @@ CSharpDB.slnx
 │   │   ├── CSharpDbClientOptions.cs    Configuration (DataSource, Endpoint, Transport, ConnectionString)
 │   │   ├── CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, NamedPipes)
 │   │   ├── ServiceCollectionExtensions.cs  DI registration (AddCSharpDbClient)
-│   │   ├── Internal/                   Direct-transport implementation (engine-backed client)
+│   │   ├── Internal/                   Transport resolver and direct/HTTP/gRPC implementations
 │   │   └── Models/                     Schema, data, procedure, transaction, and collection models
 │   │
 │   ├── CSharpDB.Data/               ADO.NET provider (depends on Engine)
@@ -93,6 +99,12 @@ CSharpDB.slnx
 │   │   ├── Helpers/                    JSON coercion helpers
 │   │   └── Middleware/                 Exception handling middleware
 │   │
+│   ├── CSharpDB.Daemon/             gRPC host (depends on Client)
+│   │   ├── Program.cs                  ASP.NET Core gRPC entry point
+│   │   ├── Grpc/                       Generated-contract host implementation
+│   │   ├── Configuration/              Daemon config binding helpers
+│   │   └── README.md                   Host model, deployment, and client usage
+│   │
 │   └── CSharpDB.Mcp/                MCP server for AI assistants (depends on Client)
 │       ├── Program.cs                  Generic Host with stdio transport
 │       ├── Tools/                      SchemaTools, DataTools, MutationTools, SqlTools (15 tools)
@@ -124,11 +136,17 @@ CSharpDB.slnx
 │   │
 │   ├── CSharpDB.Cli.Tests/          CLI smoke + integration tests
 │   │
+│   ├── CSharpDB.Api.Tests/          REST API transport and endpoint tests
+│   │
+│   ├── CSharpDB.Daemon.Tests/       gRPC daemon transport tests
+│   │
 │   └── CSharpDB.Benchmarks/         Performance benchmarks
 │
 ├── docs/
 │   ├── tutorials/native-ffi/         FFI tutorials (JavaScript via koffi, Python via ctypes)
-│   └── service-daemon/               Service daemon design document
+│   ├── tutorials/storage/            Storage tutorial track, study examples, and advanced standalone examples
+│   ├── roadmap.md                    Product roadmap and status
+│   └── rest-api.md                   REST host reference
 │
 └── samples/                          Sample datasets + import helpers
     ├── ecommerce-store/
@@ -298,10 +316,12 @@ Recognize `SELECT DISTINCT` in `ParseSelect()` and set a flag on `SelectStatemen
 ### Running Tests
 
 ```bash
-dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj -- -class "CSharpDB.Tests.IntegrationTests"  # Run integration tests
-dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj -- -class "CSharpDB.Tests.WalTests"          # Run WAL tests
-dotnet run --project tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj --                      # Run ADO.NET tests
-dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --                        # Run CLI tests
+dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~IntegrationTests"
+dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~WalTests"
+dotnet test tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
+dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+dotnet test tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj
+dotnet test tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj
 ```
 
 ---
@@ -332,15 +352,21 @@ These are known simplifications:
 
 | Area | Limitation |
 |------|-----------|
-| **B+tree** | Delete doesn't rebalance/merge underflowed pages |
-| **Storage** | No page-level compression |
-| **Storage** | No mmap read path |
-| **Query** | No subqueries |
+| **Functions** | Very limited built-in scalar function surface today; broader built-ins and user-defined functions remain planned |
+| **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE`; correlated subqueries are still unsupported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections |
+| **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
-| **Query** | No UNION / INTERSECT / EXCEPT |
-| **RowId** | Initial next-rowid load still scans keys once per table (high-water mark not persisted in table metadata) |
+| **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
+| **Storage** | No page-level compression |
+| **Storage** | No at-rest encryption for database/WAL files |
+| **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
+| **RowId** | Legacy table schemas without persisted high-water metadata may still pay a one-time key scan on first insert |
+| **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
+| **Collections** | No JSON-path querying or expression/path-based document indexes yet |
+| **Networking** | The shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned |
+| **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in auth, authorization, and TLS/mTLS support remain planned |
 | **Concurrency** | Single writer only (no multi-writer) |
-| **Indexes** | Composite indexes are supported, but general range-scan pushdown is still limited |
+| **Indexes** | Composite indexes are supported, but ordered range-scan pushdown is still limited to narrower index shapes |
 
 ---
 
@@ -355,10 +381,11 @@ See [docs/roadmap.md](roadmap.md) for the full roadmap with near-term, mid-term,
 - [Client SDK](../src/CSharpDB.Client/README.md) — Unified client API and transport model
 - [Native Library Reference](../src/CSharpDB.Native/README.md) — C FFI API, build instructions, cross-language examples
 - [Node.js Client](../clients/node/README.md) — TypeScript/JavaScript package
-- [REST API Reference](rest-api.md) — All 33 API endpoints with examples
+- [REST API Reference](rest-api.md) — All 34 API endpoints with examples
 - [MCP Server Reference](mcp-server.md) — AI assistant integration via Model Context Protocol
 - [CLI Reference](cli.md) — Interactive REPL commands and meta-commands
-- [Service Daemon Design](service-daemon/README.md) — Background service architecture and roadmap
-- [FFI Tutorials](tutorials/native-ffi/) — JavaScript and Python interop guides
+- [Daemon Host Guide](../src/CSharpDB.Daemon/README.md) — gRPC host architecture, deployment, and client usage
+- [Storage Tutorial Track](tutorials/storage/README.md) — Storage architecture, extensibility, and advanced example apps
+- [FFI Tutorials](tutorials/native-ffi/README.md) — JavaScript and Python interop guides
 - [Roadmap](roadmap.md) — Planned features and project direction
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data and comparison

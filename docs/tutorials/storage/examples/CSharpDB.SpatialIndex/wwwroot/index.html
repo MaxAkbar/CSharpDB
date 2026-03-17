@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CSharpDB — Spatial Index</title>
+<style>
+:root{
+  --bg:#0a0f1e;--panel:#111827;--panel-alt:#0d1424;--border:#1e293b;
+  --accent:#38bdf8;--accent-dim:rgba(56,189,248,.12);--accent-glow:rgba(56,189,248,.35);
+  --success:#22c55e;--danger:#f87171;--warn:#fbbf24;
+  --text:#e2e8f0;--muted:#94a3b8;--dim:#475569;
+  --mono:'Cascadia Code',Consolas,'Courier New',monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --radius:10px;--radius-lg:14px;
+  --shadow:0 4px 24px rgba(0,0,0,.3);
+  --transition:150ms ease;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.55}
+body{min-height:100vh}
+
+/* ── Layout ─────────────────────────────────────── */
+.shell{display:grid;grid-template-columns:350px 1fr;min-height:100vh}
+@media(max-width:1024px){.shell{grid-template-columns:1fr}.sidebar{position:relative;max-height:none}}
+.sidebar{background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow-y:auto;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:12px}
+.content{padding:24px 28px;overflow-y:auto}
+
+/* ── Brand ──────────────────────────────────────── */
+.brand{text-align:center;padding:12px 0 6px}
+.brand h1{font-size:18px;letter-spacing:.5px;color:var(--accent)}
+.brand small{color:var(--muted);font-size:11px;display:block;margin-top:2px}
+
+/* ── Panels ─────────────────────────────────────── */
+.panel{background:var(--panel-alt);border:1px solid var(--border);border-radius:var(--radius)}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none;font-weight:600;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.panel-header:hover{color:var(--text)}
+.panel-header .chevron{transition:transform var(--transition);font-size:11px;color:var(--dim)}
+.panel-header[aria-expanded="false"] .chevron{transform:rotate(-90deg)}
+.panel-body{padding:10px 14px 14px;display:flex;flex-direction:column;gap:8px}
+.panel-body.collapsed{display:none}
+label{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:600}
+input,select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;outline:none;transition:border var(--transition)}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+
+/* ── Buttons ────────────────────────────────────── */
+.btn{padding:8px 14px;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;transition:all var(--transition);font-family:var(--sans)}
+.btn-primary{background:var(--accent);color:#0a0f1e}.btn-primary:hover{filter:brightness(1.15)}
+.btn-success{background:var(--success);color:#0a0f1e}.btn-success:hover{filter:brightness(1.15)}
+.btn-danger{background:var(--danger);color:#0a0f1e}.btn-danger:hover{filter:brightness(1.15)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted)}.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn-block{width:100%}
+
+/* ── Stats cards ────────────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+@media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center}
+.stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:4px}
+.stat .value{font-size:26px;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.stat .sub{font-size:11px;color:var(--dim);margin-top:2px}
+
+/* ── Map Canvas ─────────────────────────────────── */
+.map-section{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px}
+.map-section h2{font-size:15px;color:var(--muted);margin-bottom:10px;font-weight:600}
+.map-container{position:relative;width:100%;height:420px;background:var(--bg);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
+.map-container canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.map-legend{display:flex;gap:18px;margin-top:10px;flex-wrap:wrap}
+.map-legend span{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}
+.map-legend .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.map-tooltip{position:absolute;display:none;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 12px;pointer-events:none;z-index:10;font-size:12px;box-shadow:var(--shadow);max-width:220px}
+
+/* ── Results section ────────────────────────────── */
+.results-section{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px}
+.results-section h2{font-size:15px;color:var(--muted);margin-bottom:10px;font-weight:600}
+.query-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.query-stat{background:var(--bg);border-radius:6px;padding:10px;text-align:center}
+.query-stat .qs-label{font-size:10px;text-transform:uppercase;color:var(--dim);letter-spacing:.3px}
+.query-stat .qs-value{font-size:18px;font-weight:700;font-family:var(--mono);margin-top:2px}
+
+/* ── Table ──────────────────────────────────────── */
+.tbl-wrap{overflow-x:auto;max-height:400px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:var(--panel);text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border-bottom:2px solid var(--border)}
+td{padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+tr:hover td{background:rgba(56,189,248,.04)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.badge-landmark{background:rgba(251,191,36,.15);color:#fbbf24}
+.badge-city{background:rgba(56,189,248,.15);color:#38bdf8}
+.badge-restaurant{background:rgba(244,114,182,.15);color:#f472b6}
+.badge-default{background:rgba(148,163,184,.15);color:#94a3b8}
+
+/* ── Toast ──────────────────────────────────────── */
+.toast-container{position:fixed;top:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;color:#fff;animation:slideIn 250ms ease;box-shadow:var(--shadow)}
+.toast.ok{background:#166534}.toast.error{background:#991b1b}
+@keyframes slideIn{from{opacity:0;transform:translateX(60px)}to{opacity:1;transform:translateX(0)}}
+@keyframes fadeOut{to{opacity:0;transform:translateX(60px)}}
+
+/* ── Empty state ────────────────────────────────── */
+.empty{text-align:center;padding:40px;color:var(--dim);font-size:14px}
+.empty svg{margin-bottom:10px;opacity:.3}
+
+/* ── Scrollbar ──────────────────────────────────── */
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- ════════════════ SIDEBAR ════════════════ -->
+<aside class="sidebar">
+  <div class="brand">
+    <h1>CSharpDB Spatial Index</h1>
+    <small>Hilbert-curve B+tree &bull; Geographic queries</small>
+  </div>
+
+  <!-- ── Add Point ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x2795; Add Point</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Latitude</label><input id="addLat" type="number" step="any" placeholder="48.8566"/></div>
+        <div><label>Longitude</label><input id="addLon" type="number" step="any" placeholder="2.3522"/></div>
+      </div>
+      <div><label>Name</label><input id="addName" placeholder="Eiffel Tower"/></div>
+      <div class="row">
+        <div><label>Category</label>
+          <select id="addCategory"><option value="">— none —</option><option>landmark</option><option>city</option><option>restaurant</option></select>
+        </div>
+        <div><label>Description</label><input id="addDesc" placeholder="Optional"/></div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="addPoint()">Add Point</button>
+    </div>
+  </div>
+
+  <!-- ── Nearby Query ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x1F4CD; Nearby Query</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Center Lat</label><input id="nearLat" type="number" step="any" placeholder="48.8566"/></div>
+        <div><label>Center Lon</label><input id="nearLon" type="number" step="any" placeholder="2.3522"/></div>
+      </div>
+      <div class="row">
+        <div><label>Radius (km)</label><input id="nearRadius" type="number" step="any" value="50"/></div>
+        <div><label>Category</label>
+          <select id="nearCategory"><option value="">All</option><option>landmark</option><option>city</option><option>restaurant</option></select>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="queryNearby()">Search Nearby</button>
+    </div>
+  </div>
+
+  <!-- ── Bounding Box Query ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x1F5FA; Bounding Box</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Min Lat</label><input id="bboxMinLat" type="number" step="any" placeholder="35"/></div>
+        <div><label>Min Lon</label><input id="bboxMinLon" type="number" step="any" placeholder="-10"/></div>
+      </div>
+      <div class="row">
+        <div><label>Max Lat</label><input id="bboxMaxLat" type="number" step="any" placeholder="70"/></div>
+        <div><label>Max Lon</label><input id="bboxMaxLon" type="number" step="any" placeholder="40"/></div>
+      </div>
+      <div><label>Category</label>
+        <select id="bboxCategory"><option value="">All</option><option>landmark</option><option>city</option><option>restaurant</option></select>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="queryBbox()">Search Bounding Box</button>
+    </div>
+  </div>
+
+  <!-- ── Lookup ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x1F50D; Lookup by Key</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <div><label>Hilbert Key</label><input id="lookupKey" type="number" placeholder="12345678"/></div>
+      <div class="row">
+        <button class="btn btn-primary" onclick="lookupPoint()">Lookup</button>
+        <button class="btn btn-danger" onclick="deletePoint()">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Data Management ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x2699; Data Management</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <button class="btn btn-success btn-block" onclick="loadSampleData()">Load Sample Data</button>
+      <button class="btn btn-danger btn-block" onclick="resetDatabase()">Reset Database</button>
+    </div>
+  </div>
+
+  <!-- ── Quick Presets ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x26A1; Quick Queries</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetNearby(48.8566,2.3522,50,'Paris 50km')">Near Paris (50 km)</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetNearby(40.7128,-74.006,500,'New York 500km')">Near New York (500 km)</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetNearby(41.9028,12.4964,200,'Rome landmarks 200km','landmark')">Landmarks near Rome (200 km)</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetBbox(35,-10,70,40,'Europe')">Bounding Box: Europe</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetBbox(-45,110,0,180,'Oceania')">Bounding Box: Oceania</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="presetBbox(24,-130,50,-60,'North America')">Bounding Box: N. America</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ════════════════ CONTENT ════════════════ -->
+<main class="content">
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat"><div class="label">Total Points</div><div class="value" id="statCount">—</div></div>
+    <div class="stat"><div class="label">Last Query</div><div class="value" id="statQueryType">—</div><div class="sub" id="statQueryDesc"></div></div>
+    <div class="stat"><div class="label">Results</div><div class="value" id="statResults">—</div><div class="sub" id="statScanned"></div></div>
+    <div class="stat"><div class="label">Efficiency</div><div class="value" id="statEfficiency">—</div><div class="sub">results / scanned</div></div>
+  </div>
+
+  <!-- Map -->
+  <div class="map-section">
+    <h2>Geographic Scatter Plot</h2>
+    <div class="map-container" id="mapContainer">
+      <canvas id="mapCanvas"></canvas>
+      <div class="map-tooltip" id="mapTooltip"></div>
+    </div>
+    <div class="map-legend">
+      <span><span class="dot" style="background:#fbbf24"></span> Landmark</span>
+      <span><span class="dot" style="background:#38bdf8"></span> City</span>
+      <span><span class="dot" style="background:#f472b6"></span> Restaurant</span>
+      <span><span class="dot" style="background:#94a3b8"></span> Other</span>
+      <span><span class="dot" style="background:#22c55e;border:2px solid #166534"></span> Query Centre</span>
+      <span style="color:var(--dim)">&#9634; Radius / Bounding Box</span>
+    </div>
+  </div>
+
+  <!-- Query Statistics -->
+  <div class="results-section" id="queryStatsSection" style="display:none">
+    <h2>Query Statistics</h2>
+    <div class="query-stats" id="queryStats"></div>
+  </div>
+
+  <!-- Results Table -->
+  <div class="results-section">
+    <h2>Results <span id="resultCount" style="color:var(--dim);font-weight:400"></span></h2>
+    <div class="tbl-wrap" id="tableWrap">
+      <div class="empty" id="emptyState">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6m0-6 6 6"/></svg>
+        <div>No data yet. Add points or load sample data to get started.</div>
+      </div>
+    </div>
+  </div>
+</main>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+/* ── Helpers ───────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+const fmt = n => typeof n === 'number' ? n.toLocaleString(undefined, {maximumFractionDigits:2}) : n;
+const fmtDist = n => n < 1 ? (n*1000).toFixed(0) + ' m' : n.toFixed(2) + ' km';
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : null;
+}
+async function postJson(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : null;
+}
+async function deleteJson(url) {
+  const r = await fetch(url, { method:'DELETE' });
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+}
+
+function toast(msg, ok=true) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'ok' : 'error');
+  el.textContent = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.style.animation = 'fadeOut 200ms ease forwards'; setTimeout(() => el.remove(), 220); }, 3500);
+}
+
+function togglePanel(header) {
+  const expanded = header.getAttribute('aria-expanded') === 'true';
+  header.setAttribute('aria-expanded', !expanded);
+  header.nextElementSibling.classList.toggle('collapsed', expanded);
+}
+
+/* ── State ─────────────────────────────────────── */
+let allPoints = [];           // all displayed points
+let queryMeta = null;         // { type, centre, radius, bbox }
+let queryResult = null;       // last SpatialQueryResult
+
+/* ── API calls ─────────────────────────────────── */
+async function refreshCount() {
+  try {
+    const c = await fetchJson('/api/spatial/count');
+    $('statCount').textContent = fmt(c);
+  } catch { $('statCount').textContent = '?'; }
+}
+
+async function addPoint() {
+  const lat = parseFloat($('addLat').value);
+  const lon = parseFloat($('addLon').value);
+  const name = $('addName').value.trim();
+  if (isNaN(lat) || isNaN(lon) || !name) { toast('Lat, Lon and Name are required.', false); return; }
+  try {
+    const cat = $('addCategory').value || null;
+    const desc = $('addDesc').value.trim() || null;
+    const pt = await postJson('/api/spatial/points', { latitude:lat, longitude:lon, name, category:cat, description:desc, tags:null });
+    toast(`Added "${name}" (key ${pt.hilbertKey})`);
+    $('addName').value = ''; $('addDesc').value = '';
+    refreshCount();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function queryNearby() {
+  const lat = parseFloat($('nearLat').value);
+  const lon = parseFloat($('nearLon').value);
+  const r = parseFloat($('nearRadius').value);
+  if (isNaN(lat) || isNaN(lon) || isNaN(r)) { toast('Lat, Lon and Radius are required.', false); return; }
+  const cat = $('nearCategory').value || undefined;
+  try {
+    let url = `/api/spatial/nearby?lat=${lat}&lon=${lon}&radiusKm=${r}&maxResults=500`;
+    if (cat) url += `&category=${encodeURIComponent(cat)}`;
+    const result = await fetchJson(url);
+    queryResult = result;
+    queryMeta = { type:'nearby', centre:{lat,lon}, radius:r, category: cat||'all' };
+    allPoints = result.points.map(p => ({...p.point, distanceKm: p.distanceKm}));
+    showStats(result.statistics, 'Nearby', `${lat.toFixed(4)}, ${lon.toFixed(4)} — ${r} km`);
+    renderTable(allPoints, true);
+    drawMap();
+    refreshCount();
+    toast(`Nearby: ${result.statistics.totalResults} results`);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function queryBbox() {
+  const minLat = parseFloat($('bboxMinLat').value);
+  const minLon = parseFloat($('bboxMinLon').value);
+  const maxLat = parseFloat($('bboxMaxLat').value);
+  const maxLon = parseFloat($('bboxMaxLon').value);
+  if ([minLat,minLon,maxLat,maxLon].some(isNaN)) { toast('All bounding box fields are required.', false); return; }
+  const cat = $('bboxCategory').value || undefined;
+  try {
+    let url = `/api/spatial/bbox?minLat=${minLat}&minLon=${minLon}&maxLat=${maxLat}&maxLon=${maxLon}&maxResults=2000`;
+    if (cat) url += `&category=${encodeURIComponent(cat)}`;
+    const result = await fetchJson(url);
+    queryResult = result;
+    queryMeta = { type:'bbox', bbox:{minLat,minLon,maxLat,maxLon}, category: cat||'all' };
+    allPoints = result.points.map(p => ({...p.point, distanceKm: p.distanceKm}));
+    showStats(result.statistics, 'BBox', `(${minLat},${minLon}) → (${maxLat},${maxLon})`);
+    renderTable(allPoints, false);
+    drawMap();
+    refreshCount();
+    toast(`BBox: ${result.statistics.totalResults} results`);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function lookupPoint() {
+  const key = parseInt($('lookupKey').value);
+  if (isNaN(key)) { toast('Enter a valid Hilbert key.', false); return; }
+  try {
+    const pt = await fetchJson(`/api/spatial/points/${key}`);
+    allPoints = [pt];
+    queryMeta = { type:'lookup' };
+    queryResult = null;
+    $('queryStatsSection').style.display = 'none';
+    renderTable(allPoints, false);
+    drawMap();
+    toast(`Found: ${pt.name}`);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function deletePoint() {
+  const key = parseInt($('lookupKey').value);
+  if (isNaN(key)) { toast('Enter a valid Hilbert key.', false); return; }
+  try {
+    await deleteJson(`/api/spatial/points/${key}`);
+    toast(`Deleted key ${key}`);
+    refreshCount();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function loadSampleData() {
+  try {
+    await postJson('/api/spatial/reset');
+    const landmarks = [
+      [48.8584,2.2945,"Eiffel Tower","landmark"],[40.6892,-74.0445,"Statue of Liberty","landmark"],
+      [51.5007,-0.1246,"Big Ben","landmark"],[41.8902,12.4922,"Colosseum","landmark"],
+      [27.1751,78.0421,"Taj Mahal","landmark"],[-33.8568,151.2153,"Sydney Opera House","landmark"],
+      [-13.1631,-72.545,"Machu Picchu","landmark"],[40.4319,116.5704,"Great Wall","landmark"],
+      [-22.9519,-43.2105,"Christ the Redeemer","landmark"],[30.3285,35.4444,"Petra","landmark"],
+      [20.6843,-88.5678,"Chichen Itza","landmark"],[37.9715,23.7267,"Acropolis","landmark"],
+      [48.8606,2.3376,"Louvre Museum","landmark"],[41.4036,2.1744,"Sagrada Familia","landmark"],
+      [52.5163,13.3777,"Brandenburg Gate","landmark"],[35.6586,139.7454,"Tokyo Tower","landmark"],
+      [55.752,37.6175,"Red Square","landmark"],[29.9792,31.1342,"Pyramids of Giza","landmark"],
+      [43.723,10.3966,"Leaning Tower of Pisa","landmark"],[59.3293,18.0686,"Stockholm Palace","landmark"],
+      [38.8977,-77.0365,"White House","landmark"],[51.1789,-1.8262,"Stonehenge","landmark"],
+      [64.1466,-21.9426,"Hallgrimskirkja","landmark"],[-25.3444,131.0369,"Uluru","landmark"],
+      [47.5576,10.7498,"Neuschwanstein Castle","landmark"]
+    ];
+    const cities = [
+      [40.7128,-74.006,"New York","city"],[51.5074,-0.1278,"London","city"],
+      [35.6762,139.6503,"Tokyo","city"],[48.8566,2.3522,"Paris","city"],
+      [-33.8688,151.2093,"Sydney","city"],[30.0444,31.2357,"Cairo","city"],
+      [-22.9068,-43.1729,"Rio de Janeiro","city"],[55.7558,37.6173,"Moscow","city"],
+      [39.9042,116.4074,"Beijing","city"],[28.6139,77.209,"New Delhi","city"],
+      [41.0082,28.9784,"Istanbul","city"],[-34.6037,-58.3816,"Buenos Aires","city"],
+      [52.52,13.405,"Berlin","city"],[41.3851,2.1734,"Barcelona","city"],
+      [45.4642,9.19,"Milan","city"],[37.7749,-122.4194,"San Francisco","city"],
+      [1.3521,103.8198,"Singapore","city"],[25.2048,55.2708,"Dubai","city"],
+      [-1.2921,36.8219,"Nairobi","city"],[59.9139,10.7522,"Oslo","city"]
+    ];
+    const restaurants = [
+      [48.8645,2.35,"Le Comptoir du Pantheon","restaurant"],[48.853,2.3499,"Chez Janou","restaurant"],
+      [48.8738,2.295,"Le Jules Verne","restaurant"],[41.8925,12.4853,"Roscioli","restaurant"],
+      [41.8986,12.4733,"Pizzeria da Baffetto","restaurant"],[51.5113,-0.1224,"The Barbary","restaurant"],
+      [51.4994,-0.1272,"Regency Cafe","restaurant"],[41.387,2.17,"Can Culleretes","restaurant"],
+      [41.392,2.165,"La Boqueria","restaurant"],[52.523,13.4015,"Curry 36","restaurant"],
+      [52.507,13.391,"Tim Raue","restaurant"],[45.464,9.188,"Luini Panzerotti","restaurant"],
+      [47.37,8.5393,"Zeughauskeller","restaurant"],[50.0875,14.4213,"Lokál","restaurant"],
+      [60.1699,24.9384,"Ravintola Savoy","restaurant"]
+    ];
+    const all = [...landmarks,...cities,...restaurants];
+    for (const [lat,lon,name,cat] of all) {
+      await postJson('/api/spatial/points', { latitude:lat, longitude:lon, name, category:cat, description:null, tags:null });
+    }
+    toast(`Loaded ${all.length} sample points (${landmarks.length} landmarks, ${cities.length} cities, ${restaurants.length} restaurants)`);
+    refreshCount();
+    // Auto-run a nearby Paris query to show results
+    $('nearLat').value = '48.8566'; $('nearLon').value = '2.3522'; $('nearRadius').value = '50';
+    queryNearby();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function resetDatabase() {
+  if (!confirm('Reset the database? All spatial data will be deleted.')) return;
+  try {
+    await postJson('/api/spatial/reset');
+    allPoints = []; queryMeta = null; queryResult = null;
+    $('statCount').textContent = '0';
+    $('statQueryType').textContent = '—'; $('statQueryDesc').textContent = '';
+    $('statResults').textContent = '—'; $('statScanned').textContent = '';
+    $('statEfficiency').textContent = '—';
+    $('queryStatsSection').style.display = 'none';
+    renderTable([], false);
+    drawMap();
+    toast('Database reset.');
+  } catch (e) { toast(e.message, false); }
+}
+
+/* ── Presets ────────────────────────────────────── */
+function presetNearby(lat,lon,r,label,cat) {
+  $('nearLat').value = lat; $('nearLon').value = lon; $('nearRadius').value = r;
+  $('nearCategory').value = cat || '';
+  queryNearby();
+}
+function presetBbox(minLat,minLon,maxLat,maxLon,label) {
+  $('bboxMinLat').value = minLat; $('bboxMinLon').value = minLon;
+  $('bboxMaxLat').value = maxLat; $('bboxMaxLon').value = maxLon;
+  $('bboxCategory').value = '';
+  queryBbox();
+}
+
+/* ── Stats Display ─────────────────────────────── */
+function showStats(stats, type, desc) {
+  $('statQueryType').textContent = type;
+  $('statQueryDesc').textContent = desc;
+  $('statResults').textContent = fmt(stats.totalResults);
+  $('statScanned').textContent = `${fmt(stats.scannedEntries)} scanned`;
+  const eff = stats.scannedEntries > 0 ? ((stats.totalResults / stats.scannedEntries) * 100).toFixed(1) : '0';
+  $('statEfficiency').textContent = eff + '%';
+
+  const sec = $('queryStatsSection');
+  sec.style.display = '';
+  let html = '';
+  html += qsStat('Total Results', stats.totalResults);
+  html += qsStat('Scanned', stats.scannedEntries);
+  html += qsStat('Efficiency', eff + '%');
+  if (stats.minDistanceKm > 0 || stats.maxDistanceKm > 0) {
+    html += qsStat('Min Distance', fmtDist(stats.minDistanceKm));
+    html += qsStat('Max Distance', fmtDist(stats.maxDistanceKm));
+  }
+  if (stats.boundingBoxAreaSqKm > 0) {
+    html += qsStat('BBox Area', fmt(stats.boundingBoxAreaSqKm) + ' km²');
+  }
+  $('queryStats').innerHTML = html;
+}
+
+function qsStat(label, value) {
+  const color = label === 'Efficiency' ? effColor(value) : 'var(--accent)';
+  return `<div class="query-stat"><div class="qs-label">${esc(label)}</div><div class="qs-value" style="color:${color}">${esc(String(value))}</div></div>`;
+}
+function effColor(v) { const n = parseFloat(v); return n >= 50 ? 'var(--success)' : n >= 20 ? 'var(--warn)' : 'var(--danger)'; }
+
+/* ── Table ─────────────────────────────────────── */
+function renderTable(points, showDist) {
+  $('resultCount').textContent = points.length > 0 ? `(${points.length})` : '';
+  if (!points.length) {
+    $('tableWrap').innerHTML = `<div class="empty"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6m0-6 6 6"/></svg><div>No results.</div></div>`;
+    return;
+  }
+  let html = '<table><thead><tr><th>Name</th><th>Category</th><th>Latitude</th><th>Longitude</th><th>Hilbert Key</th>';
+  if (showDist) html += '<th>Distance</th>';
+  html += '</tr></thead><tbody>';
+  for (const p of points) {
+    const badge = badgeClass(p.category);
+    html += `<tr>
+      <td><strong>${esc(p.name)}</strong></td>
+      <td><span class="badge ${badge}">${esc(p.category||'—')}</span></td>
+      <td style="font-family:var(--mono)">${p.latitude.toFixed(4)}</td>
+      <td style="font-family:var(--mono)">${p.longitude.toFixed(4)}</td>
+      <td style="font-family:var(--mono);color:var(--dim)">${p.hilbertKey}</td>`;
+    if (showDist) html += `<td style="font-family:var(--mono)">${fmtDist(p.distanceKm)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  $('tableWrap').innerHTML = html;
+}
+
+function badgeClass(cat) {
+  if (!cat) return 'badge-default';
+  switch(cat.toLowerCase()) {
+    case 'landmark': return 'badge-landmark';
+    case 'city': return 'badge-city';
+    case 'restaurant': return 'badge-restaurant';
+    default: return 'badge-default';
+  }
+}
+
+/* ── Map Canvas ────────────────────────────────── */
+const catColors = { landmark:'#fbbf24', city:'#38bdf8', restaurant:'#f472b6' };
+const defaultColor = '#94a3b8';
+function ptColor(cat) { return (cat && catColors[cat.toLowerCase()]) || defaultColor; }
+
+function drawMap() {
+  const canvas = $('mapCanvas');
+  const container = $('mapContainer');
+  const dpr = window.devicePixelRatio || 1;
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const pad = { top:30, right:30, bottom:35, left:55 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  // Determine bounds
+  let minLat = -90, maxLat = 90, minLon = -180, maxLon = 180;
+  if (queryMeta && queryMeta.type === 'bbox') {
+    const b = queryMeta.bbox;
+    const mLat = (b.maxLat - b.minLat) * 0.15;
+    const mLon = (b.maxLon - b.minLon) * 0.15;
+    minLat = b.minLat - mLat; maxLat = b.maxLat + mLat;
+    minLon = b.minLon - mLon; maxLon = b.maxLon + mLon;
+  } else if (queryMeta && queryMeta.type === 'nearby') {
+    const c = queryMeta.centre;
+    const rDeg = queryMeta.radius / 111.32;
+    const margin = rDeg * 0.4;
+    minLat = c.lat - rDeg - margin; maxLat = c.lat + rDeg + margin;
+    minLon = c.lon - rDeg - margin; maxLon = c.lon + rDeg + margin;
+  } else if (allPoints.length > 0) {
+    minLat = Math.min(...allPoints.map(p=>p.latitude)) - 2;
+    maxLat = Math.max(...allPoints.map(p=>p.latitude)) + 2;
+    minLon = Math.min(...allPoints.map(p=>p.longitude)) - 2;
+    maxLon = Math.max(...allPoints.map(p=>p.longitude)) + 2;
+  }
+  // Ensure minimum range
+  if (maxLat - minLat < 1) { minLat -= 0.5; maxLat += 0.5; }
+  if (maxLon - minLon < 1) { minLon -= 0.5; maxLon += 0.5; }
+
+  const toX = lon => pad.left + ((lon - minLon) / (maxLon - minLon)) * cw;
+  const toY = lat => pad.top + ((maxLat - lat) / (maxLat - minLat)) * ch; // flip Y
+
+  // Background
+  ctx.fillStyle = '#080c18';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1a2035';
+  ctx.lineWidth = 1;
+  const latStep = niceStep(maxLat - minLat, 6);
+  const lonStep = niceStep(maxLon - minLon, 8);
+  ctx.font = '11px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+  ctx.fillStyle = '#475569';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let lat = Math.ceil(minLat/latStep)*latStep; lat <= maxLat; lat += latStep) {
+    const y = toY(lat);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W-pad.right, y); ctx.stroke();
+    ctx.fillText(lat.toFixed(latStep < 1 ? 1 : 0) + '°', pad.left - 6, y);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let lon = Math.ceil(minLon/lonStep)*lonStep; lon <= maxLon; lon += lonStep) {
+    const x = toX(lon);
+    ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H-pad.bottom); ctx.stroke();
+    ctx.fillText(lon.toFixed(lonStep < 1 ? 1 : 0) + '°', x, H - pad.bottom + 6);
+  }
+
+  // Axes border
+  ctx.strokeStyle = '#2d3a52';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad.left, pad.top, cw, ch);
+
+  // Bounding box overlay
+  if (queryMeta && queryMeta.type === 'bbox') {
+    const b = queryMeta.bbox;
+    const x1 = toX(b.minLon), y1 = toY(b.maxLat), x2 = toX(b.maxLon), y2 = toY(b.minLat);
+    ctx.fillStyle = 'rgba(56,189,248,0.06)';
+    ctx.fillRect(x1, y1, x2-x1, y2-y1);
+    ctx.strokeStyle = 'rgba(56,189,248,0.4)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,4]);
+    ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+    ctx.setLineDash([]);
+  }
+
+  // Radius circle overlay
+  if (queryMeta && queryMeta.type === 'nearby') {
+    const c = queryMeta.centre;
+    const cx = toX(c.lon), cy = toY(c.lat);
+    const rDeg = queryMeta.radius / 111.32;
+    const rx = Math.abs(toX(c.lon + rDeg) - cx);
+    const ry = Math.abs(toY(c.lat + rDeg) - cy);
+    ctx.fillStyle = 'rgba(34,197,94,0.06)';
+    ctx.strokeStyle = 'rgba(34,197,94,0.4)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    // Centre cross
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx-8,cy); ctx.lineTo(cx+8,cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx,cy-8); ctx.lineTo(cx,cy+8); ctx.stroke();
+  }
+
+  // Points
+  const pointPositions = [];
+  for (const p of allPoints) {
+    const x = toX(p.longitude);
+    const y = toY(p.latitude);
+    if (x < pad.left || x > W-pad.right || y < pad.top || y > H-pad.bottom) continue;
+    const color = ptColor(p.category);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    pointPositions.push({ x, y, p });
+  }
+
+  // Labels for small datasets
+  if (allPoints.length <= 30) {
+    ctx.font = '10px ' + getComputedStyle(document.documentElement).getPropertyValue('--sans');
+    ctx.fillStyle = '#cbd5e1';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    for (const {x,y,p} of pointPositions) {
+      ctx.fillText(p.name, x+7, y-2);
+    }
+  }
+
+  // Store positions for tooltip
+  canvas._pointPositions = pointPositions;
+}
+
+function niceStep(range, maxTicks) {
+  const rough = range / maxTicks;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  let step;
+  if (norm <= 1.5) step = 1;
+  else if (norm <= 3.5) step = 2;
+  else if (norm <= 7.5) step = 5;
+  else step = 10;
+  return step * mag;
+}
+
+// Tooltip on hover
+$('mapCanvas').addEventListener('mousemove', e => {
+  const canvas = $('mapCanvas');
+  const positions = canvas._pointPositions;
+  if (!positions) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  let hit = null;
+  let minD = 12;
+  for (const pp of positions) {
+    const d = Math.hypot(pp.x - mx, pp.y - my);
+    if (d < minD) { minD = d; hit = pp; }
+  }
+  const tip = $('mapTooltip');
+  if (hit) {
+    tip.style.display = 'block';
+    tip.style.left = (hit.x + 12) + 'px';
+    tip.style.top = (hit.y - 8) + 'px';
+    let html = `<strong>${esc(hit.p.name)}</strong><br>`;
+    html += `<span style="color:var(--muted)">${hit.p.latitude.toFixed(4)}, ${hit.p.longitude.toFixed(4)}</span>`;
+    if (hit.p.category) html += `<br><span class="badge ${badgeClass(hit.p.category)}" style="margin-top:3px">${esc(hit.p.category)}</span>`;
+    if (hit.p.distanceKm !== undefined && hit.p.distanceKm > 0) html += `<br><span style="color:var(--dim)">${fmtDist(hit.p.distanceKm)}</span>`;
+    tip.innerHTML = html;
+  } else {
+    tip.style.display = 'none';
+  }
+});
+$('mapCanvas').addEventListener('mouseleave', () => { $('mapTooltip').style.display = 'none'; });
+
+/* ── Init & resize ─────────────────────────────── */
+window.addEventListener('resize', () => { if (allPoints.length) drawMap(); });
+refreshCount();
+drawMap();
+</script>
+</body>
+</html>

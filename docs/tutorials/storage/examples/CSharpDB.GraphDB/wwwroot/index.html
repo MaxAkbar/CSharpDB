@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CSharpDB — Graph Database</title>
+<style>
+:root{
+  --bg:#0a0f1e;--panel:#111827;--panel-alt:#0d1424;--border:#1e293b;
+  --accent:#38bdf8;--accent-dim:rgba(56,189,248,.12);--accent-glow:rgba(56,189,248,.35);
+  --success:#22c55e;--danger:#f87171;--warn:#fbbf24;
+  --text:#e2e8f0;--muted:#94a3b8;--dim:#475569;
+  --mono:'Cascadia Code',Consolas,'Courier New',monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --radius:10px;--radius-lg:14px;
+  --shadow:0 4px 24px rgba(0,0,0,.3);
+  --transition:150ms ease;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.55}
+body{min-height:100vh}
+
+.shell{display:grid;grid-template-columns:350px 1fr;min-height:100vh}
+@media(max-width:1024px){.shell{grid-template-columns:1fr}.sidebar{position:relative;max-height:none}}
+.sidebar{background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow-y:auto;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:12px}
+.content{padding:24px 28px;overflow-y:auto}
+
+.brand{text-align:center;padding:12px 0 6px}
+.brand h1{font-size:18px;letter-spacing:.5px;color:var(--accent)}
+.brand small{color:var(--muted);font-size:11px;display:block;margin-top:2px}
+
+.panel{background:var(--panel-alt);border:1px solid var(--border);border-radius:var(--radius)}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none;font-weight:600;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.panel-header:hover{color:var(--text)}
+.panel-header .chevron{transition:transform var(--transition);font-size:11px;color:var(--dim)}
+.panel-header[aria-expanded="false"] .chevron{transform:rotate(-90deg)}
+.panel-body{padding:10px 14px 14px;display:flex;flex-direction:column;gap:8px}
+.panel-body.collapsed{display:none}
+label{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:600}
+input,select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;outline:none;transition:border var(--transition)}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+
+.btn{padding:8px 14px;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;transition:all var(--transition);font-family:var(--sans)}
+.btn-primary{background:var(--accent);color:#0a0f1e}.btn-primary:hover{filter:brightness(1.15)}
+.btn-success{background:var(--success);color:#0a0f1e}.btn-success:hover{filter:brightness(1.15)}
+.btn-danger{background:var(--danger);color:#0a0f1e}.btn-danger:hover{filter:brightness(1.15)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted)}.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn-block{width:100%}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+@media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center}
+.stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:4px}
+.stat .value{font-size:26px;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.stat .sub{font-size:11px;color:var(--dim);margin-top:2px}
+
+.graph-section{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px}
+.graph-section h2{font-size:15px;color:var(--muted);margin-bottom:10px;font-weight:600}
+.graph-container{position:relative;width:100%;height:460px;background:var(--bg);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
+.graph-container canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.graph-tooltip{position:absolute;display:none;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 12px;pointer-events:none;z-index:10;font-size:12px;box-shadow:var(--shadow);max-width:240px}
+.graph-legend{display:flex;gap:18px;margin-top:10px;flex-wrap:wrap}
+.graph-legend span{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}
+.graph-legend .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+
+.results-section{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px}
+.results-section h2{font-size:15px;color:var(--muted);margin-bottom:10px;font-weight:600}
+.query-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.query-stat{background:var(--bg);border-radius:6px;padding:10px;text-align:center}
+.query-stat .qs-label{font-size:10px;text-transform:uppercase;color:var(--dim);letter-spacing:.3px}
+.query-stat .qs-value{font-size:18px;font-weight:700;font-family:var(--mono);margin-top:2px;color:var(--accent)}
+
+.tbl-wrap{overflow-x:auto;max-height:400px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:var(--panel);text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border-bottom:2px solid var(--border)}
+td{padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+tr:hover td{background:rgba(56,189,248,.04)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.badge-person{background:rgba(56,189,248,.15);color:#38bdf8}
+.badge-city{background:rgba(251,191,36,.15);color:#fbbf24}
+.badge-company{background:rgba(244,114,182,.15);color:#f472b6}
+.badge-default{background:rgba(148,163,184,.15);color:#94a3b8}
+.badge-edge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;letter-spacing:.3px}
+.badge-KNOWS{background:rgba(56,189,248,.12);color:#38bdf8}
+.badge-LIVES_IN{background:rgba(34,197,94,.12);color:#22c55e}
+.badge-WORKS_AT{background:rgba(244,114,182,.12);color:#f472b6}
+.badge-ROAD_TO{background:rgba(251,191,36,.12);color:#fbbf24}
+
+.toast-container{position:fixed;top:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;color:#fff;animation:slideIn 250ms ease;box-shadow:var(--shadow)}
+.toast.ok{background:#166534}.toast.error{background:#991b1b}
+@keyframes slideIn{from{opacity:0;transform:translateX(60px)}to{opacity:1;transform:translateX(0)}}
+@keyframes fadeOut{to{opacity:0;transform:translateX(60px)}}
+
+.empty{text-align:center;padding:40px;color:var(--dim);font-size:14px}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- ════════════════ SIDEBAR ════════════════ -->
+<aside class="sidebar">
+  <div class="brand">
+    <h1>CSharpDB Graph Database</h1>
+    <small>Three B+trees &bull; Nodes + Edges + Reverse Index</small>
+  </div>
+
+  <!-- ── Add Node ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x2795; Add Node</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div><label>Label</label><input id="nodeLabel" placeholder="Alice"/></div>
+      <div><label>Type</label>
+        <select id="nodeType"><option value="">— none —</option><option>person</option><option>city</option><option>company</option></select>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="addNode()">Add Node</button>
+    </div>
+  </div>
+
+  <!-- ── Add Edge ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x27A1; Add Edge</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Source ID</label><input id="edgeSrc" type="number" placeholder="1"/></div>
+        <div><label>Target ID</label><input id="edgeTgt" type="number" placeholder="2"/></div>
+      </div>
+      <div class="row">
+        <div><label>Label</label>
+          <select id="edgeLabel"><option>KNOWS</option><option>LIVES_IN</option><option>WORKS_AT</option><option>ROAD_TO</option></select>
+        </div>
+        <div><label>Weight</label><input id="edgeWeight" type="number" step="any" value="0"/></div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="addEdge()">Add Edge</button>
+    </div>
+  </div>
+
+  <!-- ── Edge Scan ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x1F50D; Edge Scan</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Node ID</label><input id="scanNodeId" type="number" placeholder="1"/></div>
+        <div><label>Direction</label>
+          <select id="scanDir"><option value="outgoing">Outgoing</option><option value="incoming">Incoming</option></select>
+        </div>
+      </div>
+      <div><label>Label Filter</label><input id="scanLabel" placeholder="optional, e.g. KNOWS"/></div>
+      <button class="btn btn-primary btn-block" onclick="scanEdges()">Scan Edges</button>
+    </div>
+  </div>
+
+  <!-- ── Traversal ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="true" onclick="togglePanel(this)">
+      <span>&#x1F310; Traversal</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <div><label>Start Node</label><input id="bfsStart" type="number" placeholder="1"/></div>
+        <div><label>Max Depth</label><input id="bfsDepth" type="number" value="3"/></div>
+      </div>
+      <div class="row">
+        <div><label>Direction</label>
+          <select id="bfsDir"><option value="outgoing">Outgoing</option><option value="incoming">Incoming</option><option value="both">Both</option></select>
+        </div>
+        <div><label>Edge Label</label><input id="bfsLabel" placeholder="optional"/></div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="traverseBfs()">BFS Traversal</button>
+    </div>
+  </div>
+
+  <!-- ── Shortest Path ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x1F6E4; Shortest Path</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <div class="row">
+        <div><label>From Node</label><input id="pathFrom" type="number" placeholder="1"/></div>
+        <div><label>To Node</label><input id="pathTo" type="number" placeholder="7"/></div>
+      </div>
+      <div><label>Edge Label</label><input id="pathLabel" placeholder="optional, e.g. KNOWS"/></div>
+      <button class="btn btn-primary btn-block" onclick="shortestPath()">Find Path</button>
+    </div>
+  </div>
+
+  <!-- ── Data Management ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x2699; Data Management</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <button class="btn btn-success btn-block" onclick="loadSampleData()">Load Sample Graph</button>
+      <button class="btn btn-danger btn-block" onclick="resetDatabase()">Reset Database</button>
+    </div>
+  </div>
+
+  <!-- ── Quick Demos ── -->
+  <div class="panel">
+    <div class="panel-header" aria-expanded="false" onclick="togglePanel(this)">
+      <span>&#x26A1; Quick Demos</span><span class="chevron">&#9660;</span>
+    </div>
+    <div class="panel-body collapsed">
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickBfs(1,2,'KNOWS','outgoing')">Alice's KNOWS (depth 2)</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickBfs(1,3,null,'outgoing')">Alice's full network (depth 3)</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickPath(1,7)">Shortest: Alice → Grace</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickPath(1,8)">Shortest: Alice → Heidi</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickBfs(9,3,'ROAD_TO','outgoing')">City routes from NYC</button>
+      <button class="btn btn-outline btn-block btn-sm" onclick="quickScan(15,'incoming',null)">Who works at Acme?</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ════════════════ CONTENT ════════════════ -->
+<main class="content">
+  <div class="stats">
+    <div class="stat"><div class="label">Nodes</div><div class="value" id="statNodes">—</div></div>
+    <div class="stat"><div class="label">Edges</div><div class="value" id="statEdges">—</div></div>
+    <div class="stat"><div class="label">Last Operation</div><div class="value" id="statOp">—</div><div class="sub" id="statOpDesc"></div></div>
+    <div class="stat"><div class="label">Cursor Scans</div><div class="value" id="statScans">—</div><div class="sub" id="statScansDesc"></div></div>
+  </div>
+
+  <!-- Graph Visualization -->
+  <div class="graph-section">
+    <h2>Graph Visualization</h2>
+    <div class="graph-container" id="graphContainer">
+      <canvas id="graphCanvas"></canvas>
+      <div class="graph-tooltip" id="graphTooltip"></div>
+    </div>
+    <div class="graph-legend">
+      <span><span class="dot" style="background:#38bdf8"></span> Person</span>
+      <span><span class="dot" style="background:#fbbf24"></span> City</span>
+      <span><span class="dot" style="background:#f472b6"></span> Company</span>
+      <span><span class="dot" style="background:#94a3b8"></span> Other</span>
+      <span style="color:var(--dim)">Edges: <span style="color:#38bdf8">KNOWS</span> <span style="color:#22c55e">LIVES_IN</span> <span style="color:#f472b6">WORKS_AT</span> <span style="color:#fbbf24">ROAD_TO</span></span>
+    </div>
+  </div>
+
+  <!-- Query Statistics -->
+  <div class="results-section" id="queryStatsSection" style="display:none">
+    <h2>Query Statistics</h2>
+    <div class="query-stats" id="queryStats"></div>
+  </div>
+
+  <!-- Results Tables -->
+  <div class="results-section">
+    <h2>Results <span id="resultCount" style="color:var(--dim);font-weight:400"></span></h2>
+    <div class="tbl-wrap" id="tableWrap">
+      <div class="empty">No data yet. Load the sample graph or add nodes and edges to get started.</div>
+    </div>
+  </div>
+</main>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+const fmt = n => typeof n === 'number' ? n.toLocaleString() : n;
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : null;
+}
+async function postJson(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : null;
+}
+async function deleteJson(url) {
+  const r = await fetch(url, { method:'DELETE' });
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+}
+
+function toast(msg, ok=true) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'ok' : 'error');
+  el.textContent = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.style.animation = 'fadeOut 200ms ease forwards'; setTimeout(() => el.remove(), 220); }, 3500);
+}
+
+function togglePanel(header) {
+  const expanded = header.getAttribute('aria-expanded') === 'true';
+  header.setAttribute('aria-expanded', !expanded);
+  header.nextElementSibling.classList.toggle('collapsed', expanded);
+}
+
+/* ── State ───────────────────────────────── */
+let graphNodes = [];    // [{id,label,type,...}]
+let graphEdges = [];    // [{sourceId,targetId,label,weight,...}]
+let highlightPath = []; // node IDs to highlight
+let nodePositions = {}; // id -> {x, y} computed by layout
+
+/* ── API calls ───────────────────────────── */
+async function refreshCounts() {
+  try {
+    const [nc, ec] = await Promise.all([
+      fetchJson('/api/graph/nodes/count'),
+      fetchJson('/api/graph/edges/count')
+    ]);
+    $('statNodes').textContent = fmt(nc);
+    $('statEdges').textContent = fmt(ec);
+  } catch {}
+}
+
+async function loadFullGraph() {
+  try {
+    graphNodes = await fetchJson('/api/graph/nodes?maxResults=500') || [];
+    // Load edges for each node
+    graphEdges = [];
+    const seen = new Set();
+    for (const node of graphNodes) {
+      const result = await fetchJson(`/api/graph/edges/outgoing/${node.id}`);
+      if (result && result.edges) {
+        for (const e of result.edges) {
+          const key = `${e.sourceId}-${e.targetId}-${e.label}`;
+          if (!seen.has(key)) { seen.add(key); graphEdges.push(e); }
+        }
+      }
+    }
+    layoutGraph();
+    drawGraph();
+  } catch {}
+}
+
+async function addNode() {
+  const label = $('nodeLabel').value.trim();
+  if (!label) { toast('Label is required.', false); return; }
+  try {
+    const type = $('nodeType').value || null;
+    const node = await postJson('/api/graph/nodes', { label, type, properties: null });
+    toast(`Added node "${label}" (ID ${node.id})`);
+    $('nodeLabel').value = '';
+    refreshCounts();
+    await loadFullGraph();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function addEdge() {
+  const src = parseInt($('edgeSrc').value);
+  const tgt = parseInt($('edgeTgt').value);
+  const label = $('edgeLabel').value;
+  const weight = parseFloat($('edgeWeight').value) || 0;
+  if (isNaN(src) || isNaN(tgt)) { toast('Source and Target IDs are required.', false); return; }
+  try {
+    await postJson('/api/graph/edges', { sourceId: src, targetId: tgt, label, weight, properties: null });
+    toast(`Added edge ${src} → ${tgt} [${label}]`);
+    refreshCounts();
+    await loadFullGraph();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function scanEdges() {
+  const nodeId = parseInt($('scanNodeId').value);
+  if (isNaN(nodeId)) { toast('Node ID is required.', false); return; }
+  const dir = $('scanDir').value;
+  const label = $('scanLabel').value.trim() || undefined;
+  try {
+    let url = `/api/graph/edges/${dir}/${nodeId}`;
+    if (label) url += `?label=${encodeURIComponent(label)}`;
+    const result = await fetchJson(url);
+    $('statOp').textContent = 'Edge Scan';
+    $('statOpDesc').textContent = `${dir} from node ${nodeId}`;
+    $('statScans').textContent = result.scanned;
+    $('statScansDesc').textContent = `${result.edges.length} results`;
+    showEdgeTable(result.edges, result.scanned);
+    // Highlight the involved nodes
+    highlightPath = [nodeId, ...result.edges.map(e => dir === 'outgoing' ? e.targetId : e.sourceId)];
+    drawGraph();
+    toast(`${dir}: ${result.edges.length} edges (${result.scanned} scanned)`);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function traverseBfs() {
+  const start = parseInt($('bfsStart').value);
+  const depth = parseInt($('bfsDepth').value) || 3;
+  if (isNaN(start)) { toast('Start Node ID is required.', false); return; }
+  const dir = $('bfsDir').value;
+  const label = $('bfsLabel').value.trim() || undefined;
+  try {
+    let url = `/api/graph/traverse/bfs?startNodeId=${start}&maxDepth=${depth}&direction=${dir}`;
+    if (label) url += `&edgeLabel=${encodeURIComponent(label)}`;
+    const result = await fetchJson(url);
+    showTraversalStats(result.statistics, 'BFS');
+    showTraversalTable(result);
+    highlightPath = result.nodes.map(n => n.node.id);
+    drawGraph();
+    toast(`BFS: ${result.statistics.totalNodes} nodes, ${result.statistics.totalEdges} edges`);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function shortestPath() {
+  const from = parseInt($('pathFrom').value);
+  const to = parseInt($('pathTo').value);
+  if (isNaN(from) || isNaN(to)) { toast('From and To Node IDs are required.', false); return; }
+  const label = $('pathLabel').value.trim() || undefined;
+  try {
+    let url = `/api/graph/traverse/shortest-path?sourceId=${from}&targetId=${to}&maxDepth=10`;
+    if (label) url += `&edgeLabel=${encodeURIComponent(label)}`;
+    const result = await fetchJson(url);
+    showTraversalStats(result.statistics, 'Shortest Path');
+    showTraversalTable(result);
+    highlightPath = result.nodes.map(n => n.node.id);
+    drawGraph();
+    if (result.nodes.length === 0) toast('No path found.', false);
+    else toast(`Path: ${result.nodes.length} nodes, ${result.statistics.maxDepth} hops`);
+  } catch (e) { toast(e.message, false); }
+}
+
+/* ── Quick demos ────────────────────────── */
+function quickBfs(start, depth, label, dir) {
+  $('bfsStart').value = start; $('bfsDepth').value = depth; $('bfsDir').value = dir;
+  $('bfsLabel').value = label || '';
+  traverseBfs();
+}
+function quickPath(from, to) {
+  $('pathFrom').value = from; $('pathTo').value = to; $('pathLabel').value = 'KNOWS';
+  shortestPath();
+}
+function quickScan(nodeId, dir, label) {
+  $('scanNodeId').value = nodeId; $('scanDir').value = dir; $('scanLabel').value = label || '';
+  scanEdges();
+}
+
+/* ── Sample Data ────────────────────────── */
+async function loadSampleData() {
+  try {
+    await postJson('/api/graph/reset');
+    // People
+    const people = ['Alice','Bob','Carol','Dave','Eve','Frank','Grace','Heidi'];
+    for (const name of people) await postJson('/api/graph/nodes', { label: name, type: 'person', properties: null });
+    // Cities
+    const cities = ['New York','London','Paris','Berlin','Tokyo','San Francisco'];
+    for (const name of cities) await postJson('/api/graph/nodes', { label: name, type: 'city', properties: null });
+    // Companies
+    const companies = ['Acme Corp','Globex','Initech'];
+    for (const name of companies) await postJson('/api/graph/nodes', { label: name, type: 'company', properties: null });
+
+    // KNOWS edges
+    const knows = [[1,2,0.9],[1,3,0.7],[2,4,0.5],[2,5,0.8],[3,4,0.6],[3,6,0.4],[4,7,0.7],[5,6,0.3],[6,7,0.6],[7,8,0.9],[8,1,0.5]];
+    for (const [s,t,w] of knows) await postJson('/api/graph/edges', { sourceId:s, targetId:t, label:'KNOWS', weight:w });
+
+    // LIVES_IN edges
+    const livesIn = [[1,9],[2,10],[3,11],[4,12],[5,13],[6,14],[7,9],[8,10]];
+    for (const [s,t] of livesIn) await postJson('/api/graph/edges', { sourceId:s, targetId:t, label:'LIVES_IN', weight:0 });
+
+    // WORKS_AT edges
+    const worksAt = [[1,15],[2,15],[3,16],[4,16],[5,17],[6,17],[7,15],[8,15]];
+    for (const [s,t] of worksAt) await postJson('/api/graph/edges', { sourceId:s, targetId:t, label:'WORKS_AT', weight:0 });
+
+    // ROAD_TO edges
+    const roads = [[9,10,5570],[10,11,460],[11,12,1050],[12,10,930],[9,14,4130],[14,13,8270],[13,10,9560]];
+    for (const [s,t,w] of roads) await postJson('/api/graph/edges', { sourceId:s, targetId:t, label:'ROAD_TO', weight:w });
+
+    toast(`Loaded ${people.length + cities.length + companies.length} nodes, ${knows.length + livesIn.length + worksAt.length + roads.length} edges`);
+    refreshCounts();
+    await loadFullGraph();
+    // Auto-run BFS from Alice
+    $('bfsStart').value = '1'; $('bfsDepth').value = '2'; $('bfsLabel').value = 'KNOWS'; $('bfsDir').value = 'outgoing';
+    traverseBfs();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function resetDatabase() {
+  if (!confirm('Reset the database? All graph data will be deleted.')) return;
+  try {
+    await postJson('/api/graph/reset');
+    graphNodes = []; graphEdges = []; highlightPath = []; nodePositions = {};
+    $('statNodes').textContent = '0'; $('statEdges').textContent = '0';
+    $('statOp').textContent = '—'; $('statOpDesc').textContent = '';
+    $('statScans').textContent = '—'; $('statScansDesc').textContent = '';
+    $('queryStatsSection').style.display = 'none';
+    $('tableWrap').innerHTML = '<div class="empty">No data.</div>';
+    drawGraph();
+    toast('Database reset.');
+  } catch (e) { toast(e.message, false); }
+}
+
+/* ── Stats & Tables ─────────────────────── */
+function showTraversalStats(stats, type) {
+  $('statOp').textContent = type;
+  $('statOpDesc').textContent = `${stats.totalNodes} nodes, depth ${stats.maxDepth}`;
+  $('statScans').textContent = stats.cursorSeeks;
+  $('statScansDesc').textContent = `${stats.entriesScanned} entries scanned`;
+  const sec = $('queryStatsSection');
+  sec.style.display = '';
+  let html = '';
+  html += qsStat('Nodes', stats.totalNodes);
+  html += qsStat('Edges', stats.totalEdges);
+  html += qsStat('Max Depth', stats.maxDepth);
+  html += qsStat('Cursor Seeks', stats.cursorSeeks);
+  html += qsStat('Entries Scanned', stats.entriesScanned);
+  $('queryStats').innerHTML = html;
+}
+
+function qsStat(label, value) {
+  return `<div class="query-stat"><div class="qs-label">${esc(label)}</div><div class="qs-value">${esc(String(value))}</div></div>`;
+}
+
+function showEdgeTable(edges, scanned) {
+  $('resultCount').textContent = edges.length > 0 ? `(${edges.length} edges, ${scanned} scanned)` : '';
+  $('queryStatsSection').style.display = 'none';
+  if (!edges.length) { $('tableWrap').innerHTML = '<div class="empty">No edges found.</div>'; return; }
+  let html = '<table><thead><tr><th>Source</th><th>Target</th><th>Label</th><th>Weight</th></tr></thead><tbody>';
+  for (const e of edges) {
+    const srcLabel = nodeLabel(e.sourceId);
+    const tgtLabel = nodeLabel(e.targetId);
+    html += `<tr>
+      <td style="font-family:var(--mono)">${e.sourceId} <span style="color:var(--dim)">${esc(srcLabel)}</span></td>
+      <td style="font-family:var(--mono)">${e.targetId} <span style="color:var(--dim)">${esc(tgtLabel)}</span></td>
+      <td><span class="badge-edge badge-${esc(e.label)}">${esc(e.label)}</span></td>
+      <td style="font-family:var(--mono)">${e.weight > 0 ? e.weight.toFixed(1) : '—'}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  $('tableWrap').innerHTML = html;
+}
+
+function showTraversalTable(result) {
+  $('resultCount').textContent = result.nodes.length > 0 ? `(${result.nodes.length} nodes)` : '';
+  if (!result.nodes.length) { $('tableWrap').innerHTML = '<div class="empty">No path found.</div>'; return; }
+  let html = '<table><thead><tr><th>Depth</th><th>ID</th><th>Label</th><th>Type</th></tr></thead><tbody>';
+  for (const n of result.nodes) {
+    const badge = badgeClass(n.node.type);
+    html += `<tr>
+      <td style="font-family:var(--mono);text-align:center">${n.depth}</td>
+      <td style="font-family:var(--mono)">${n.node.id}</td>
+      <td><strong>${esc(n.node.label)}</strong></td>
+      <td><span class="badge ${badge}">${esc(n.node.type||'—')}</span></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+
+  // Add path visualization
+  if (result.edges && result.edges.length > 0 && result.edges.length <= 30) {
+    html += '<div style="margin-top:14px;padding:12px;background:var(--bg);border-radius:6px;font-family:var(--mono);font-size:12px;color:var(--muted)">';
+    html += '<div style="font-size:11px;text-transform:uppercase;color:var(--dim);margin-bottom:6px;letter-spacing:.4px">Path</div>';
+    for (const e of result.edges) {
+      const srcL = nodeLabel(e.sourceId);
+      const tgtL = nodeLabel(e.targetId);
+      const w = e.weight > 0 ? ` (${e.weight.toFixed(1)})` : '';
+      html += `<div style="margin:3px 0"><span style="color:var(--accent)">[${esc(srcL)}]</span> <span style="color:var(--dim)">──${esc(e.label)}${w}──▶</span> <span style="color:var(--accent)">[${esc(tgtL)}]</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  $('tableWrap').innerHTML = html;
+}
+
+function badgeClass(type) {
+  if (!type) return 'badge-default';
+  switch(type.toLowerCase()) {
+    case 'person': return 'badge-person';
+    case 'city': return 'badge-city';
+    case 'company': return 'badge-company';
+    default: return 'badge-default';
+  }
+}
+
+function nodeLabel(id) {
+  const n = graphNodes.find(n => n.id === id);
+  return n ? n.label : `#${id}`;
+}
+
+/* ── Force-Directed Graph Layout ────────── */
+function layoutGraph() {
+  if (graphNodes.length === 0) { nodePositions = {}; return; }
+  const W = 800, H = 460, pad = 50;
+
+  // Init positions in a circle
+  const cx = W / 2, cy = H / 2, r = Math.min(W, H) / 2 - pad;
+  const pos = {};
+  graphNodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i) / graphNodes.length;
+    pos[n.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  });
+
+  // Simple force-directed layout (50 iterations)
+  const k = Math.sqrt((W * H) / Math.max(graphNodes.length, 1));
+  for (let iter = 0; iter < 80; iter++) {
+    const disp = {};
+    graphNodes.forEach(n => { disp[n.id] = { dx: 0, dy: 0 }; });
+
+    // Repulsion
+    for (let i = 0; i < graphNodes.length; i++) {
+      for (let j = i + 1; j < graphNodes.length; j++) {
+        const a = graphNodes[i], b = graphNodes[j];
+        let dx = pos[a.id].x - pos[b.id].x;
+        let dy = pos[a.id].y - pos[b.id].y;
+        const dist = Math.max(Math.sqrt(dx*dx + dy*dy), 0.1);
+        const force = (k * k) / dist;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        disp[a.id].dx += fx; disp[a.id].dy += fy;
+        disp[b.id].dx -= fx; disp[b.id].dy -= fy;
+      }
+    }
+
+    // Attraction along edges
+    for (const e of graphEdges) {
+      if (!pos[e.sourceId] || !pos[e.targetId]) continue;
+      let dx = pos[e.targetId].x - pos[e.sourceId].x;
+      let dy = pos[e.targetId].y - pos[e.sourceId].y;
+      const dist = Math.max(Math.sqrt(dx*dx + dy*dy), 0.1);
+      const force = (dist * dist) / k;
+      const fx = (dx / dist) * force * 0.15;
+      const fy = (dy / dist) * force * 0.15;
+      disp[e.sourceId].dx += fx; disp[e.sourceId].dy += fy;
+      disp[e.targetId].dx -= fx; disp[e.targetId].dy -= fy;
+    }
+
+    // Apply with temperature
+    const temp = Math.max(2, 30 * (1 - iter / 80));
+    graphNodes.forEach(n => {
+      const d = disp[n.id];
+      const dist = Math.max(Math.sqrt(d.dx*d.dx + d.dy*d.dy), 0.1);
+      pos[n.id].x += (d.dx / dist) * Math.min(dist, temp);
+      pos[n.id].y += (d.dy / dist) * Math.min(dist, temp);
+      pos[n.id].x = Math.max(pad, Math.min(W - pad, pos[n.id].x));
+      pos[n.id].y = Math.max(pad, Math.min(H - pad, pos[n.id].y));
+    });
+  }
+
+  nodePositions = pos;
+}
+
+/* ── Canvas Rendering ────────────────────── */
+const typeColors = { person:'#38bdf8', city:'#fbbf24', company:'#f472b6' };
+const edgeColors = { KNOWS:'#38bdf8', LIVES_IN:'#22c55e', WORKS_AT:'#f472b6', ROAD_TO:'#fbbf24' };
+const defaultColor = '#94a3b8';
+
+function drawGraph() {
+  const canvas = $('graphCanvas');
+  const container = $('graphContainer');
+  const dpr = window.devicePixelRatio || 1;
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // Background
+  ctx.fillStyle = '#080c18';
+  ctx.fillRect(0, 0, W, H);
+
+  if (graphNodes.length === 0) {
+    ctx.fillStyle = '#475569';
+    ctx.font = '14px ' + getComputedStyle(document.documentElement).getPropertyValue('--sans');
+    ctx.textAlign = 'center';
+    ctx.fillText('Load sample data or add nodes to visualize the graph.', W/2, H/2);
+    return;
+  }
+
+  // Scale positions to canvas
+  const scaleX = W / 800, scaleY = H / 460;
+  const sp = (id) => {
+    const p = nodePositions[id];
+    return p ? { x: p.x * scaleX, y: p.y * scaleY } : null;
+  };
+
+  const highlightSet = new Set(highlightPath);
+
+  // Draw edges
+  for (const e of graphEdges) {
+    const s = sp(e.sourceId), t = sp(e.targetId);
+    if (!s || !t) continue;
+
+    const isHighlighted = highlightSet.has(e.sourceId) && highlightSet.has(e.targetId);
+    const color = edgeColors[e.label] || '#334155';
+    ctx.strokeStyle = isHighlighted ? color : (color + '40');
+    ctx.lineWidth = isHighlighted ? 2 : 1;
+
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(t.x, t.y);
+    ctx.stroke();
+
+    // Arrow head
+    const angle = Math.atan2(t.y - s.y, t.x - s.x);
+    const headLen = isHighlighted ? 10 : 7;
+    const nodeR = isHighlighted ? 18 : 14;
+    const ax = t.x - Math.cos(angle) * nodeR;
+    const ay = t.y - Math.sin(angle) * nodeR;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - headLen * Math.cos(angle - 0.35), ay - headLen * Math.sin(angle - 0.35));
+    ctx.lineTo(ax - headLen * Math.cos(angle + 0.35), ay - headLen * Math.sin(angle + 0.35));
+    ctx.closePath();
+    ctx.fill();
+
+    // Edge label (only if highlighted and short)
+    if (isHighlighted && graphEdges.length <= 50) {
+      const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
+      ctx.font = '9px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const lbl = e.weight > 0 ? `${e.label} (${e.weight})` : e.label;
+      ctx.fillText(lbl, mx, my - 3);
+    }
+  }
+
+  // Draw nodes
+  const drawnPositions = [];
+  for (const node of graphNodes) {
+    const p = sp(node.id);
+    if (!p) continue;
+
+    const isHighlighted = highlightSet.has(node.id);
+    const color = typeColors[(node.type||'').toLowerCase()] || defaultColor;
+    const r = isHighlighted ? 16 : 12;
+
+    // Glow for highlighted
+    if (isHighlighted) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
+    }
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Border
+    ctx.strokeStyle = isHighlighted ? '#fff' : 'rgba(0,0,0,.4)';
+    ctx.lineWidth = isHighlighted ? 2 : 1;
+    ctx.stroke();
+
+    // ID inside node
+    ctx.fillStyle = '#0a0f1e';
+    ctx.font = `bold ${isHighlighted ? 11 : 9}px ` + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(node.id, p.x, p.y);
+
+    // Label below
+    ctx.fillStyle = isHighlighted ? '#e2e8f0' : '#94a3b8';
+    ctx.font = `${isHighlighted ? 11 : 10}px ` + getComputedStyle(document.documentElement).getPropertyValue('--sans');
+    ctx.textBaseline = 'top';
+    ctx.fillText(node.label, p.x, p.y + r + 3);
+
+    drawnPositions.push({ x: p.x, y: p.y, r, node });
+  }
+
+  canvas._nodePositions = drawnPositions;
+}
+
+// Tooltip
+$('graphCanvas').addEventListener('mousemove', e => {
+  const canvas = $('graphCanvas');
+  const positions = canvas._nodePositions;
+  if (!positions) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let hit = null;
+  for (const pp of positions) {
+    if (Math.hypot(pp.x - mx, pp.y - my) < pp.r + 4) { hit = pp; break; }
+  }
+  const tip = $('graphTooltip');
+  if (hit) {
+    tip.style.display = 'block';
+    tip.style.left = (hit.x + 18) + 'px';
+    tip.style.top = (hit.y - 8) + 'px';
+    let html = `<strong>${esc(hit.node.label)}</strong> <span style="color:var(--dim)">#${hit.node.id}</span><br>`;
+    html += `<span class="badge ${badgeClass(hit.node.type)}">${esc(hit.node.type||'—')}</span>`;
+    if (hit.node.properties) {
+      html += '<div style="margin-top:4px;font-size:11px;color:var(--dim)">';
+      for (const [k,v] of Object.entries(hit.node.properties)) html += `${esc(k)}: ${esc(v)}<br>`;
+      html += '</div>';
+    }
+    tip.innerHTML = html;
+  } else { tip.style.display = 'none'; }
+});
+$('graphCanvas').addEventListener('mouseleave', () => { $('graphTooltip').style.display = 'none'; });
+
+/* ── Init ────────────────────────────────── */
+window.addEventListener('resize', () => { if (graphNodes.length) drawGraph(); });
+refreshCounts();
+drawGraph();
+</script>
+</body>
+</html>

@@ -65,6 +65,7 @@ Advanced features and fundamental architecture enhancements.
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Planned |
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
 | **Advanced collection storage path** | Extend document storage beyond UTF-8 JSON payloads with direct binary hydration and richer expression/path indexes | Planned |
+| **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
 | **SQL batched row transport** | Introduce true internal row-batch transport between operators as the foundation for batch-oriented/vectorized scan-heavy execution | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
@@ -152,6 +153,7 @@ Major features already implemented:
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Advanced Collection Storage Plan](advanced-collection-storage/README.md) — `v3` binary collection payloads, direct hydration, path indexes, and migration tooling
+- [Source-Generated Collection Fast Path](source-generated-collections/README.md) — No-reflection typed collection models, generated codecs, and trim/AOT-safe collection access
 - [SQL Performance Plan](sql-performance/README.md) — SQL-specific performance priorities centered on index coverage, predicate pushdown, and lower row materialization overhead
 - [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
 - [Performance Phasing Plan](performance-phasing/README.md) — Shared phases across SQL and collection performance work, from common foundations to separate implementation tracks

@@ -10,7 +10,8 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ Hosts / Applications                                               │
-│ CSharpDB.Api   CSharpDB.Admin   CSharpDB.Cli   CSharpDB.Mcp        │
+│ CSharpDB.Api   CSharpDB.Daemon   CSharpDB.Admin   CSharpDB.Cli     │
+│ CSharpDB.Mcp                                                       │
 ├────────────────────────────────────────────────────────────────────┤
 │ Consumer Access Layer                                              │
 │ CSharpDB.Client                     CSharpDB.Data                  │
@@ -25,7 +26,7 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 │ CSharpDB.Sql                  │ CSharpDB.Storage                   │
 │ Tokenizer, Parser, AST        │ Pager, B+Tree, WAL, RecordCodec    │
 ├───────────────────────────────┴────────────────────────────────────┤
-│ CSharpDB.Primitives                                                      │
+│ CSharpDB.Primitives                                                │
 │ DbValue, DbType, Schema, ErrorCodes                                │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -34,13 +35,13 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 
 ```
 Api     → Client
+Daemon  → Client
 Admin   → Client
 Cli     → Client
 Cli     → Engine              (local-only helpers)
 Cli     → Sql
 Cli     → Storage.Diagnostics
-Mcp     → Service → Client
-Service → Sql                 (compatibility change notifications)
+Mcp     → Client
 Data    → Engine
 Client  → Engine
 Client  → Sql
@@ -237,7 +238,7 @@ Interior pages also store a "rightmost child" pointer in the page header. Leaf p
 
 **Operations:**
 - **Insert**: Descend to the correct leaf, insert the cell. If the leaf overflows, split it and propagate the split key upward. If the root splits, create a new root.
-- **Delete**: Descend to the leaf, remove the cell. (Simplified — no rebalancing/merging of underflowed pages.)
+- **Delete**: Descend to the leaf, remove the cell, rebalance underflowed pages by borrowing or merging when needed, and collapse an empty interior root back to its child.
 - **Find**: Descend from root to leaf following routing keys in interior pages.
 - **Scan**: The `BTreeCursor` starts at the leftmost leaf and follows next-leaf pointers.
 
@@ -396,17 +397,19 @@ The `ExpressionEvaluator` is a static class that recursively evaluates an `Expre
 
 | File | Purpose |
 |------|---------|
-| `Database.cs` | Top-level API: open/create database, execute SQL, manage transactions, checkpoint, reader sessions |
+| `Database.cs` | Top-level API: file-backed, in-memory, and hybrid open modes; execute SQL; manage transactions, checkpoints, and reader sessions |
+| `Collection.cs` | Typed document collection API backed by storage-engine B+trees |
 
 The `Database` class ties all layers together:
 
-1. **Open**: Creates the storage device, WAL, WAL index, and pager. Runs crash recovery if a WAL file exists. Loads the schema catalog.
+1. **Open**: Opens the database in file-backed, fully in-memory, or hybrid lazy-resident mode. Creates the storage device, WAL, WAL index, and pager as needed, runs crash recovery if a WAL file exists, and loads the schema catalog.
 2. **ExecuteAsync**: Parses SQL → dispatches to QueryPlanner → returns `QueryResult`
 3. **Auto-commit**: Non-SELECT statements automatically begin and commit a transaction if none is active
 4. **Explicit transactions**: `BeginTransactionAsync` / `CommitAsync` / `RollbackAsync` for multi-statement atomicity
 5. **CheckpointAsync**: Manually triggers a WAL checkpoint (copies committed WAL pages to DB file)
 6. **CreateReaderSession**: Returns an independent `ReaderSession` that sees a snapshot of the database at the current point in time. Multiple reader sessions can coexist with an active writer.
-7. **Dispose**: Rolls back any uncommitted transaction, checkpoints, deletes WAL file, and closes the pager
+7. **Collections**: `GetCollectionAsync<T>` exposes the typed document path beside SQL, including collection indexing and direct payload fast paths
+8. **Dispose**: Rolls back any uncommitted transaction, checkpoints, deletes WAL file, and closes the pager
 
 ---
 
@@ -489,7 +492,17 @@ while (await reader.ReadAsync())
 
 ---
 
-## Layer 8: REST API (`CSharpDB.Api`)
+## Layer 8: Remote Hosts (`CSharpDB.Api` + `CSharpDB.Daemon`)
+
+The remote host split is intentional today:
+
+- `CSharpDB.Api` is the REST/HTTP host
+- `CSharpDB.Daemon` is the gRPC host
+
+Both inject `ICSharpDbClient` directly and stay above the authoritative
+`CSharpDB.Client` contract instead of exposing engine internals.
+
+### REST API (`CSharpDB.Api`)
 
 The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.
 
@@ -503,7 +516,18 @@ Components:
 The API now injects `ICSharpDbClient` directly. It does not depend on
 `CSharpDB.Data` or engine internals directly.
 
-See the [REST API Reference](../docs/rest-api.md) for the complete endpoint documentation.
+### gRPC Host (`CSharpDB.Daemon`)
+
+The daemon exposes explicit generated gRPC methods over the same client-facing
+contract. It is a thin transport host, not a separate database engine.
+
+Components:
+- **Generated protobuf contract** — `csharpdb_rpc.proto` in `CSharpDB.Client`
+- **GrpcTransportClient** — remote client implementation in `CSharpDB.Client`
+- **CSharpDbRpcService** — gRPC method host in `CSharpDB.Daemon`
+- **Startup validation** — resolves `ICSharpDbClient` and validates the configured database during host startup
+
+See the [REST API Reference](rest-api.md) for HTTP details and the [Daemon README](../src/CSharpDB.Daemon/README.md) for the gRPC host design.
 
 ---
 

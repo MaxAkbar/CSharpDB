@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "CSharpDB.SpatialIndex": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:62488;http://localhost:62489"
+    }
+  }
+}
