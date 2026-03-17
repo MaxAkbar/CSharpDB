@@ -44,6 +44,42 @@ public sealed class BTree
         _rootPageId = rootPageId;
     }
 
+    internal async ValueTask WarmOwnedPagesAsync(CancellationToken ct = default)
+    {
+        if (_rootPageId == PageConstants.NullPageId)
+            return;
+
+        var visited = new HashSet<uint>();
+        var pending = new Stack<uint>();
+        pending.Push(_rootPageId);
+
+        while (pending.Count > 0)
+        {
+            uint pageId = pending.Pop();
+            if (pageId == PageConstants.NullPageId || !visited.Add(pageId))
+                continue;
+
+            var page = await _pager.GetPageAsync(pageId, ct);
+            var sp = new SlottedPage(page, pageId);
+
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+                continue;
+
+            if (sp.PageType != PageConstants.PageTypeInterior)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Cannot warm B+tree page {pageId}: unexpected page type 0x{sp.PageType:X2}.");
+            }
+
+            if (sp.RightChildOrNextLeaf != PageConstants.NullPageId)
+                pending.Push(sp.RightChildOrNextLeaf);
+
+            for (int i = sp.CellCount - 1; i >= 0; i--)
+                pending.Push(ReadInteriorLeftChild(sp, i));
+        }
+    }
+
     /// <summary>
     /// Create a new empty B+tree and return its root page ID.
     /// </summary>

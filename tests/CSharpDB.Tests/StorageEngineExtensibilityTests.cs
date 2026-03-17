@@ -259,7 +259,46 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public void DatabaseOptions_ConfigureStorageEngine_AppliesLookupOptimizedPreset()
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesDirectLookupOptimizedPreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDirectLookupOptimizedPreset());
+
+        Assert.Null(options.StorageEngineOptions.PagerOptions.MaxCachedPages);
+        Assert.Equal(0, options.StorageEngineOptions.PagerOptions.MaxCachedWalReadPages);
+        Assert.False(options.StorageEngineOptions.PagerOptions.UseMemoryMappedReads);
+        Assert.True(options.StorageEngineOptions.PagerOptions.EnableSequentialLeafReadAhead);
+        Assert.IsType<BTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesDirectColdFileLookupPreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDirectColdFileLookupPreset());
+
+        Assert.Null(options.StorageEngineOptions.PagerOptions.MaxCachedPages);
+        Assert.Equal(0, options.StorageEngineOptions.PagerOptions.MaxCachedWalReadPages);
+        Assert.True(options.StorageEngineOptions.PagerOptions.UseMemoryMappedReads);
+        Assert.True(options.StorageEngineOptions.PagerOptions.EnableSequentialLeafReadAhead);
+        Assert.IsType<BTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesHybridFileCachePreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseHybridFileCachePreset());
+
+        Assert.Equal(2048, options.StorageEngineOptions.PagerOptions.MaxCachedPages);
+        Assert.Equal(256, options.StorageEngineOptions.PagerOptions.MaxCachedWalReadPages);
+        Assert.True(options.StorageEngineOptions.PagerOptions.UseMemoryMappedReads);
+        Assert.True(options.StorageEngineOptions.PagerOptions.EnableSequentialLeafReadAhead);
+        Assert.IsType<BTreeIndexProvider>(options.StorageEngineOptions.IndexProvider);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesLookupOptimizedPresetAlias()
     {
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder => builder.UseLookupOptimizedPreset());

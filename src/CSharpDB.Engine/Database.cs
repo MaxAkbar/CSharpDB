@@ -20,6 +20,7 @@ public sealed class Database : IAsyncDisposable
     private readonly QueryPlanner _planner;
     private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
+    private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private long _observedSchemaVersion;
     private bool _inTransaction;
@@ -39,11 +40,13 @@ public sealed class Database : IAsyncDisposable
     private Database(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer recordSerializer)
+        IRecordSerializer recordSerializer,
+        HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
+        _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
@@ -79,6 +82,82 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer);
+    }
+
+    /// <summary>
+    /// Open a lazy-resident hybrid database that persists committed state to the specified backing file.
+    /// Existing file and WAL contents are read on demand while touched pages remain resident according
+    /// to the pager cache policy; snapshot mode preserves the older full-image in-memory export behavior.
+    /// </summary>
+    public static async ValueTask<Database> OpenHybridAsync(
+        string filePath,
+        CancellationToken ct = default)
+    {
+        return await OpenHybridAsync(filePath, new DatabaseOptions(), new HybridDatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Open a lazy-resident hybrid database that persists committed state to the specified backing file
+    /// using explicit storage composition and persistence behavior.
+    /// </summary>
+    public static async ValueTask<Database> OpenHybridAsync(
+        string filePath,
+        DatabaseOptions options,
+        HybridDatabaseOptions hybridOptions,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(hybridOptions);
+        ValidateHybridHotSetOptions(options, hybridOptions);
+
+        string fullPath = Path.GetFullPath(filePath);
+        if (hybridOptions.PersistenceMode == HybridPersistenceMode.Snapshot)
+        {
+            StorageEngineContext snapshotContext;
+
+            if (File.Exists(fullPath))
+            {
+                byte[] databaseBytes = await File.ReadAllBytesAsync(fullPath, ct);
+                string walPath = fullPath + ".wal";
+                byte[] walBytes = File.Exists(walPath)
+                    ? await File.ReadAllBytesAsync(walPath, ct)
+                    : Array.Empty<byte>();
+
+                snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(
+                    options.StorageEngineOptions,
+                    databaseBytes,
+                    walBytes,
+                    ct);
+            }
+            else
+            {
+                snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
+            }
+
+            var snapshotDatabase = new Database(
+                snapshotContext.Pager,
+                snapshotContext.Catalog,
+                snapshotContext.RecordSerializer,
+                new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
+            return snapshotDatabase;
+        }
+
+        var context = await HybridStorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
+        var database = new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
+        try
+        {
+            await database.WarmHybridHotSetAsync(hybridOptions, ct);
+            return database;
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -290,8 +369,9 @@ public sealed class Database : IAsyncDisposable
     {
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
-        await CommitWithCatalogSyncAsync(ct);
+        await CommitWithCatalogSyncAsync(ct, persistHybridState: false);
         _inTransaction = false;
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
     /// <summary>
@@ -312,6 +392,7 @@ public sealed class Database : IAsyncDisposable
     public async ValueTask CheckpointAsync(CancellationToken ct = default)
     {
         await _pager.CheckpointAsync(ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Checkpoint, ct);
     }
 
     /// <summary>
@@ -472,7 +553,8 @@ public sealed class Database : IAsyncDisposable
             catalogName,
             tree,
             _recordSerializer,
-            () => _inTransaction);
+            () => _inTransaction,
+            ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct));
         _collectionCache[catalogName] = collection;
         return collection;
     }
@@ -507,6 +589,101 @@ public sealed class Database : IAsyncDisposable
         return span.Slice(pos, keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool HasHybridHotSet(HybridDatabaseOptions hybridOptions)
+        => hybridOptions.HotTableNames.Count > 0 || hybridOptions.HotCollectionNames.Count > 0;
+
+    private static void ValidateHybridHotSetOptions(DatabaseOptions options, HybridDatabaseOptions hybridOptions)
+    {
+        if (!HasHybridHotSet(hybridOptions))
+            return;
+
+        if (hybridOptions.PersistenceMode != HybridPersistenceMode.IncrementalDurable)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming is supported only for incremental-durable hybrid mode.",
+                nameof(hybridOptions));
+        }
+
+        PagerOptions pagerOptions = options.StorageEngineOptions.PagerOptions;
+        if (pagerOptions.MaxCachedPages is not null)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming requires the default unbounded pager cache. Remove MaxCachedPages to enable it.",
+                nameof(options));
+        }
+
+        if (pagerOptions.PageCacheFactory is not null)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming requires the default pager cache. Remove PageCacheFactory to enable it.",
+                nameof(options));
+        }
+    }
+
+    private async ValueTask WarmHybridHotSetAsync(HybridDatabaseOptions hybridOptions, CancellationToken ct)
+    {
+        if (!HasHybridHotSet(hybridOptions))
+            return;
+
+        var warmedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string tableName in EnumerateNormalizedNames(hybridOptions.HotTableNames))
+        {
+            await WarmSqlTableAsync(tableName, ct);
+            warmedTables.Add(tableName);
+        }
+
+        foreach (string collectionName in EnumerateNormalizedNames(hybridOptions.HotCollectionNames))
+        {
+            string catalogName = NormalizeCollectionCatalogName(collectionName);
+            if (!warmedTables.Add(catalogName))
+                continue;
+
+            if (_catalog.GetTable(catalogName) is null)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Collection '{collectionName}' not found.");
+            }
+
+            await _catalog.GetTableTree(catalogName).WarmOwnedPagesAsync(ct);
+        }
+    }
+
+    private async ValueTask WarmSqlTableAsync(string tableName, CancellationToken ct)
+    {
+        if (_catalog.GetTable(tableName) is null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TableNotFound,
+                $"Table '{tableName}' not found.");
+        }
+
+        await _catalog.GetTableTree(tableName).WarmOwnedPagesAsync(ct);
+
+        foreach (var index in _catalog.GetIndexesForTable(tableName))
+            await new BTree(_pager, _catalog.GetIndexStore(index.IndexName).RootPageId).WarmOwnedPagesAsync(ct);
+    }
+
+    private static IEnumerable<string> EnumerateNormalizedNames(IReadOnlyList<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in names)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            string trimmed = name.Trim();
+            if (seen.Add(trimmed))
+                yield return trimmed;
+        }
+    }
+
+    private static string NormalizeCollectionCatalogName(string collectionName)
+    {
+        return collectionName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
+            ? collectionName
+            : $"{CollectionPrefix}{collectionName}";
+    }
+
     private void InvalidateCachesIfSchemaChanged()
     {
         long currentVersion = _catalog.SchemaVersion;
@@ -518,11 +695,13 @@ public sealed class Database : IAsyncDisposable
         _observedSchemaVersion = currentVersion;
     }
 
-    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
+    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct, bool persistHybridState = true)
     {
         await _catalog.PersistDirtyTableStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
         await _pager.CommitAsync(ct);
+        if (persistHybridState)
+            await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
     private async ValueTask CommitInsertWithCatalogSyncAsync(string tableName, CancellationToken ct)
@@ -530,6 +709,15 @@ public sealed class Database : IAsyncDisposable
         await _catalog.PersistDirtyTableStatisticsAsync(ct);
         await _catalog.PersistRootPageChangesAsync(tableName, ct);
         await _pager.CommitAsync(ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+    }
+
+    private ValueTask PersistHybridStateAsync(HybridPersistenceTriggers trigger, CancellationToken ct)
+    {
+        if (_hybridPersistenceCoordinator is null)
+            return ValueTask.CompletedTask;
+
+        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -537,8 +725,18 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
         {
             try { await _pager.RollbackAsync(); } catch { }
+            _inTransaction = false;
         }
-        await _pager.DisposeAsync();
+
+        try
+        {
+            await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+        }
+        finally
+        {
+            await _pager.DisposeAsync();
+            _hybridPersistenceCoordinator?.Dispose();
+        }
     }
 
     /// <summary>

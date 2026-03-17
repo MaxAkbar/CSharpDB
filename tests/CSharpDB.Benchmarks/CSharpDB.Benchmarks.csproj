@@ -10,10 +10,13 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0-preview.*" />
     <PackageReference Include="Microsoft.VisualStudio.DiagnosticsHub.BenchmarkDotNetDiagnosers" Version="18.3.36812.1" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Execution\CSharpDB.Execution.csproj" />

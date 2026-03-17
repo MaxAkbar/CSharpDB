@@ -23,6 +23,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
     private readonly string _databasePath;
+    private readonly DatabaseOptions _directDatabaseOptions;
+    private readonly HybridDatabaseOptions? _hybridDatabaseOptions;
     private readonly Func<string, CancellationToken, Task<Database>> _openDatabaseAsync;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _databaseGate = new();
@@ -31,22 +33,33 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private TaskCompletionSource? _databaseReleaseCompletion;
     private bool _catalogsInitialized;
 
-    public EngineTransportClient(string databasePath)
+    public EngineTransportClient(
+        string databasePath,
+        DatabaseOptions? directDatabaseOptions = null,
+        HybridDatabaseOptions? hybridDatabaseOptions = null)
         : this(
             databasePath,
-            static (path, ct) => Database.OpenAsync(path, ct).AsTask())
+            CreateOpenDatabaseAsync(directDatabaseOptions, hybridDatabaseOptions),
+            directDatabaseOptions,
+            hybridDatabaseOptions)
     {
     }
 
     internal EngineTransportClient(
         string databasePath,
-        Func<string, CancellationToken, Task<Database>> openDatabaseAsync)
+        Func<string, CancellationToken, Task<Database>> openDatabaseAsync,
+        DatabaseOptions? directDatabaseOptions = null,
+        HybridDatabaseOptions? hybridDatabaseOptions = null)
     {
         _databasePath = Path.GetFullPath(databasePath);
+        _directDatabaseOptions = directDatabaseOptions ?? new DatabaseOptions();
+        _hybridDatabaseOptions = hybridDatabaseOptions;
         _openDatabaseAsync = openDatabaseAsync ?? throw new ArgumentNullException(nameof(openDatabaseAsync));
     }
 
     public string DataSource => _databasePath;
+    internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
+    internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => GetInfoCoreAsync(ct);
@@ -417,6 +430,16 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             // ignore lazy-init failures during dispose
         }
         _lock.Dispose();
+    }
+
+    private static Func<string, CancellationToken, Task<Database>> CreateOpenDatabaseAsync(
+        DatabaseOptions? directDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions)
+    {
+        var options = directDatabaseOptions ?? new DatabaseOptions();
+        return hybridDatabaseOptions is null
+            ? (path, ct) => Database.OpenAsync(path, options, ct).AsTask()
+            : (path, ct) => Database.OpenHybridAsync(path, options, hybridDatabaseOptions, ct).AsTask();
     }
 
     private async Task<Database> GetDatabaseAsync(CancellationToken ct)

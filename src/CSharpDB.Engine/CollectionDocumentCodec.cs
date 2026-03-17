@@ -42,6 +42,12 @@ internal sealed class CollectionDocumentCodec<T>
             ]);
         }
 
+        if (typeof(T) == typeof(JsonElement))
+        {
+            byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes((JsonElement)(object)document!, s_jsonOptions);
+            return CollectionPayloadCodec.Encode(key, jsonUtf8);
+        }
+
         byte[] binaryDocument = CollectionBinaryDocumentCodec.Encode(document);
         return CollectionPayloadCodec.EncodeBinary(key, binaryDocument);
     }

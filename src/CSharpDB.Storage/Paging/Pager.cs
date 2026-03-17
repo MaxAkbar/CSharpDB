@@ -706,7 +706,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async ValueTask RefreshStateAfterCheckpointCompletionAsync(CancellationToken ct)
     {
-        _buffers.ClearCache();
+        _buffers.InvalidateCheckpointTransientReads(_options.PreserveOwnedPagesOnCheckpoint);
         RefreshPageReadProviderMapping();
         if (_device.Length >= PageConstants.PageSize)
             await ReadFileHeaderAsync(ct);

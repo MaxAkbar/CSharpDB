@@ -1,3 +1,5 @@
+using CSharpDB.Engine;
+
 namespace CSharpDB.Client;
 
 public sealed class CSharpDbClientOptions
@@ -7,4 +9,6 @@ public sealed class CSharpDbClientOptions
     public string? ConnectionString { get; init; }
     public string? DataSource { get; init; }
     public HttpClient? HttpClient { get; init; }
+    public DatabaseOptions? DirectDatabaseOptions { get; init; }
+    public HybridDatabaseOptions? HybridDatabaseOptions { get; init; }
 }

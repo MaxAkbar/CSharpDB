@@ -449,6 +449,26 @@ internal sealed class PageBufferManager
         _cache.Clear();
     }
 
+    public void InvalidateCheckpointTransientReads(bool preserveOwnedPages)
+    {
+        _walReadCache?.Clear();
+
+        if (!preserveOwnedPages)
+        {
+            _readOnlyPages.Clear();
+            _cache.Clear();
+            return;
+        }
+
+        if (_readOnlyPages.Count == 0)
+            return;
+
+        uint[] readOnlyPageIds = _readOnlyPages.Keys.ToArray();
+        _readOnlyPages.Clear();
+        foreach (uint pageId in readOnlyPageIds)
+            _cache.Remove(pageId);
+    }
+
     private async ValueTask EnsurePageInCacheAndPinAsync(
         uint pageId,
         Func<uint, CancellationToken, ValueTask<byte[]>> getPageAsync,

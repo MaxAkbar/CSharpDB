@@ -27,6 +27,7 @@ public sealed class Collection<
     private readonly string _catalogTableName;
     private readonly BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
     private long _observedSchemaVersion;
@@ -37,7 +38,8 @@ public sealed class Collection<
         string catalogTableName,
         BTree tree,
         IRecordSerializer recordSerializer,
-        Func<bool> isInTransaction)
+        Func<bool> isInTransaction,
+        Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
     {
         _pager = pager;
         _catalog = catalog;
@@ -45,6 +47,7 @@ public sealed class Collection<
         _tree = tree;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
         _observedSchemaVersion = catalog.SchemaVersion;
         ReloadCollectionIndexes();
     }
@@ -1096,6 +1099,7 @@ public sealed class Collection<
             if (rootBefore != rootAfter || _indexes.Count > 0)
                 await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
+            await _afterImplicitCommitAsync(ct);
         }
         catch
         {

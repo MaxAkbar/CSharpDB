@@ -18,7 +18,14 @@ Create the client with `CSharpDbClientOptions`:
 var client = CSharpDbClient.Create(new CSharpDbClientOptions
 {
     Transport = CSharpDbTransport.Direct,
-    DataSource = "csharpdb.db"
+    DataSource = "csharpdb.db",
+    HybridDatabaseOptions = new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+        HotTableNames = ["users"],
+        HotCollectionNames = ["session_cache"]
+    },
+    DirectDatabaseOptions = new DatabaseOptions()
 });
 ```
 
@@ -30,17 +37,44 @@ Direct resolution currently accepts:
 - `Endpoint` as `file://...`
 - `DataSource`
 - `ConnectionString` containing `Data Source=...`
+- optional `HybridDatabaseOptions` for the lazy-resident hybrid direct mode
+- optional `DirectDatabaseOptions` for direct transport engine/pager tuning
 
 Resolution rules:
 
 - direct is the default when transport cannot be inferred from a network endpoint
 - supplied direct inputs must resolve to the same target
+- `HybridDatabaseOptions` is supported only for direct transport and is rejected for `Http`, `Grpc`, and `NamedPipes`
+- `DirectDatabaseOptions` is supported only for direct transport and is rejected for `Http`, `Grpc`, and `NamedPipes`
 - `http://` and `https://` infer `Http` unless `Transport = CSharpDbTransport.Grpc` is set explicitly
 - `pipe://` and `npipe://` infer `NamedPipes`
 - `Grpc` uses `http://` or `https://` endpoints and talks to `CSharpDB.Daemon`
 - `Http` uses `http://` or `https://` endpoints and talks to `CSharpDB.Api`
 - `NamedPipes` still validates its endpoint shape and then fails with a not-implemented error
 - `HttpClient` is supported for both `Http` and `Grpc`
+
+Use `HybridDatabaseOptions` when the direct client should run with a lazy
+resident page cache while persisting committed state back to the resolved file
+path. Typical patterns are:
+- default `IncrementalDurable` for durable hybrid direct usage with on-demand page warming
+- `IncrementalDurable` plus `HotTableNames` / `HotCollectionNames` when selected read-mostly objects should be preloaded into the hybrid cache at open
+- `Snapshot` plus `Dispose` when the process wants explicit full-image export behavior on close
+- `Snapshot` plus `None` when the process will call `SaveToFileAsync(...)` manually
+
+Hot-set warming is a hybrid-only runtime hint. In v1 it:
+- warms SQL table B+trees plus SQL secondary indexes
+- warms collection backing tables only
+- is supported only for `IncrementalDurable`
+- requires the default unbounded pager cache and is rejected for bounded/custom cache setups
+
+Use `DirectDatabaseOptions` when the in-process engine should open with explicit
+storage tuning. Typical patterns are:
+- `UseDirectLookupOptimizedPreset()` for hot local direct workloads
+- `UseDirectColdFileLookupPreset()` for cache-pressured direct file reads
+- `UseHybridFileCachePreset()` only for explicit bounded file-cache experiments
+
+Remote transports do not accept either direct-only property because those
+settings must be configured on the host process instead.
 
 Example HTTP selection:
 

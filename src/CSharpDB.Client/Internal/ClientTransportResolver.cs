@@ -1,3 +1,4 @@
+using CSharpDB.Engine;
 using System.Data.Common;
 
 namespace CSharpDB.Client.Internal;
@@ -11,7 +12,10 @@ internal static class ClientTransportResolver
         var resolution = Resolve(options);
         return resolution.Transport switch
         {
-            CSharpDbTransport.Direct => new EngineTransportClient(resolution.DatabasePath!),
+            CSharpDbTransport.Direct => new EngineTransportClient(
+                resolution.DatabasePath!,
+                resolution.DirectDatabaseOptions,
+                resolution.HybridDatabaseOptions),
             CSharpDbTransport.Http => new HttpTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.Grpc => new GrpcTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
@@ -75,6 +79,8 @@ internal static class ClientTransportResolver
         {
             Transport = CSharpDbTransport.Direct,
             DatabasePath = resolvedPath,
+            DirectDatabaseOptions = options.DirectDatabaseOptions,
+            HybridDatabaseOptions = options.HybridDatabaseOptions,
         };
     }
 
@@ -157,6 +163,18 @@ internal static class ClientTransportResolver
 
     private static void EnsureNoDirectInputs(CSharpDbClientOptions options, CSharpDbTransport transport)
     {
+        if (options.DirectDatabaseOptions is not null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                $"Transport '{transport}' does not support DirectDatabaseOptions.");
+        }
+
+        if (options.HybridDatabaseOptions is not null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                $"Transport '{transport}' does not support HybridDatabaseOptions.");
+        }
+
         if (!string.IsNullOrWhiteSpace(options.DataSource) || !string.IsNullOrWhiteSpace(options.ConnectionString))
         {
             throw new CSharpDbClientConfigurationException(
@@ -225,5 +243,7 @@ internal static class ClientTransportResolver
         public required CSharpDbTransport Transport { get; init; }
         public string? DatabasePath { get; init; }
         public Uri? EndpointUri { get; init; }
+        public DatabaseOptions? DirectDatabaseOptions { get; init; }
+        public HybridDatabaseOptions? HybridDatabaseOptions { get; init; }
     }
 }

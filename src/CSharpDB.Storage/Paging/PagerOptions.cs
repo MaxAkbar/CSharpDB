@@ -79,6 +79,13 @@ public sealed class PagerOptions
     /// </summary>
     public bool EnableSequentialLeafReadAhead { get; init; } = true;
 
+    /// <summary>
+    /// When true, owned main-file pages already materialized into the shared page
+    /// cache remain resident after checkpoint completes. Transient WAL and
+    /// memory-mapped read views are still invalidated.
+    /// </summary>
+    public bool PreserveOwnedPagesOnCheckpoint { get; init; }
+
     internal IPageCache CreatePageCache()
     {
         if (PageCacheFactory != null)

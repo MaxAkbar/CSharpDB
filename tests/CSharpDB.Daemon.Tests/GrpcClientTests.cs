@@ -300,8 +300,11 @@ public sealed class GrpcClientTests : IAsyncLifetime
         });
 
     private HttpClient CreateGrpcHttpClient()
+        => CreateGrpcHttpClient(_factory);
+
+    private static HttpClient CreateGrpcHttpClient(TestDaemonFactory factory)
     {
-        return new HttpClient(_factory.Server.CreateHandler())
+        return new HttpClient(factory.Server.CreateHandler())
         {
             BaseAddress = new Uri("http://localhost"),
             DefaultRequestVersion = HttpVersion.Version20,
@@ -309,17 +312,27 @@ public sealed class GrpcClientTests : IAsyncLifetime
         };
     }
 
-    private sealed class TestDaemonFactory(string dbPath) : WebApplicationFactory<Program>
+    private sealed class TestDaemonFactory(
+        string dbPath,
+        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
             builder.ConfigureAppConfiguration((_, config) =>
             {
-                config.AddInMemoryCollection(new Dictionary<string, string?>
+                var values = new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:CSharpDB"] = $"Data Source={dbPath}",
-                });
+                };
+
+                if (extraConfig is not null)
+                {
+                    foreach (var pair in extraConfig)
+                        values[pair.Key] = pair.Value;
+                }
+
+                config.AddInMemoryCollection(values);
             });
         }
     }
