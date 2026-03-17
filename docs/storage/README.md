@@ -1,8 +1,8 @@
 # CSharpDB.Storage
 
-A low-level, high-performance storage engine for .NET 10 built on top of `RandomAccess` and `SafeFileHandle`. It provides random-access, async I/O to a binary file and is the foundation for the B+tree page cache and write-ahead log (WAL) layers.
+A low-level, high-performance storage engine for .NET 10 built on top of `RandomAccess` and `SafeFileHandle`. It provides random-access async I/O, page caching, write-ahead logging (WAL), crash recovery, and the B+tree/index primitives that power the SQL engine and collection API.
 
-For the guided storage tutorial track, start with [docs/tutorials/storage/README.md](../tutorials/storage/README.md).
+For the guided storage tutorial track, including the new advanced standalone examples, start with [docs/tutorials/storage/README.md](../tutorials/storage/README.md). For the package-oriented storage API overview and tuning presets, see [src/CSharpDB.Storage/README.md](../../src/CSharpDB.Storage/README.md).
 
 ---
 
@@ -113,6 +113,12 @@ For the guided storage tutorial track, start with [docs/tutorials/storage/README
 │         (FileStorageDevice / memory)                 │
 └──────────────────────────────────────────────────────┘
 ```
+
+Current storage builds can also enable a few newer read-path behaviors on top of this core layout:
+
+- **Memory-mapped reads** for clean main-file pages when the storage device supports it
+- **Speculative B+tree leaf read-ahead** during sequential forward scans
+- **Checkpoint residency preservation** so already-owned main-file pages stay hot across checkpoint in lazy-resident hybrid engine mode
 
 **Page Layout:**
 ```
@@ -502,7 +508,7 @@ pager.ReleaseReaderSnapshot();
 
 ### P7. Manual Checkpoint
 
-Copy all committed WAL frames to the main database file, then reset the WAL.
+Copy all committed WAL frames to the main database file, then reset the WAL. This invalidates transient WAL-backed reads, and can also invalidate transient memory-mapped views; with `PreserveOwnedPagesOnCheckpoint = true`, already-owned main-file pages can remain resident in the shared cache.
 
 ```csharp
 await pager.CheckpointAsync();
@@ -516,11 +522,14 @@ var options = new PagerOptions
     CheckpointPolicy = new AnyCheckpointPolicy(
         new FrameCountCheckpointPolicy(threshold: 500),
         new TimeIntervalCheckpointPolicy(TimeSpan.FromMinutes(5))
-    )
+    ),
+    AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+    AutoCheckpointMaxPagesPerStep = 64
 };
 
 var pager = await Pager.CreateAsync(device, wal, walIndex, options);
-// Auto-checkpoint triggers after 500 frames OR 5 minutes, whichever comes first
+// Auto-checkpoint triggers after 500 frames OR 5 minutes, whichever comes first.
+// In background mode, the checkpoint runs after commit in smaller slices.
 ```
 
 Built-in policies:
@@ -536,7 +545,7 @@ Built-in policies:
 
 ## B+Tree
 
-B+tree keyed by `long` rowid. Leaf pages store `(key, payload)` pairs; interior pages store routing keys and child pointers. Supports forward-only cursor iteration and cache-only fast paths.
+B+tree keyed by signed 64-bit `long` keys. Leaf pages store `(key, payload)` pairs; interior pages store routing keys and child pointers. Supports forward-only cursor iteration, cache-only fast paths, and page-level rebalance/merge on delete.
 
 ### B1. Create a New B+Tree
 
@@ -569,7 +578,7 @@ if (result is not null)
 
 ### B4. Cache-Only Fast Path
 
-Avoids async I/O when all pages are cached (50-70% hit rate typical).
+Avoids async I/O when all required pages are already cached.
 
 ```csharp
 if (tree.TryFindCached(key: 42, out byte[]? payload))
@@ -1007,7 +1016,7 @@ await catalog.PersistAllRootPageChangesAsync();
 
 ## Folder & File Storage
 
-`FileStorageDevice` is a raw byte device. To build a **folder/file storage system** on top of it, use the higher-level `Database` + `Collection<T>` API from `CSharpDB.Engine`. A single `.cdb` file (backed by one `FileStorageDevice`) holds all folders and files as typed JSON documents in B+tree-backed collections.
+`FileStorageDevice` is a raw byte device. To build a **folder/file storage system** on top of it, use the higher-level `Database` + `Collection<T>` API from `CSharpDB.Engine`. A single `.cdb` file (backed by one `FileStorageDevice`) holds all folders and files as typed collection documents in B+tree-backed collections.
 
 > **Add the Engine reference** to your project if it is not already there:
 > ```xml
@@ -1053,9 +1062,24 @@ var files   = await db.GetCollectionAsync<FileEntry>("files");
 
 Everything -- the B+tree pages, the WAL, and the page cache -- is managed by the single `FileStorageDevice` that `Database.OpenAsync` creates internally.
 
+For a long-lived process that should keep touched pages hot while remaining durable on disk, use hybrid lazy-resident mode instead:
+
+```csharp
+await using var db = await Database.OpenHybridAsync(
+    "storage.cdb",
+    new DatabaseOptions(),
+    new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+        HotCollectionNames = ["folders", "files"]
+    });
+```
+
+That opens from disk lazily, keeps touched pages resident by cache policy, and can preload selected hot collections into the hybrid pager cache at startup.
+
 ### F2. Create a Folder
 
-Use the folder's path as the collection key so lookups are O(1) hash-based.
+Use the folder's path as the collection key so point lookups stay efficient; collection keys are hashed internally before probing the backing trees.
 
 ```csharp
 async Task CreateFolderAsync(string path, string? description = null)
@@ -1382,13 +1406,16 @@ foreach (var (_, volume) in volumes)
 | Concern | Detail |
 |---|---|
 | **No shared file pointer** | `RandomAccess` APIs are stateless w.r.t. position, so concurrent reads at different offsets are safe without locking. |
-| **Async-first** | All I/O is issued via `RandomAccess.ReadAsync` / `WriteAsync`, wiring directly into the OS async I/O (IOCP on Windows, io_uring on Linux). |
+| **Async-first** | All I/O is issued via `RandomAccess.ReadAsync` / `WriteAsync`, keeping the storage graph on the platform async file-I/O path. |
 | **Zero-fill on short reads** | `ReadAsync` always fills the entire buffer. Pages beyond EOF are returned as zeros, matching an uninitialized page convention used by the `Pager`. |
 | **fsync on flush** | `FlushAsync` calls `RandomAccess.FlushToDisk` which maps to `FlushFileBuffers` (Windows) or `fsync` (Linux/macOS), guaranteeing crash durability. |
 | **FileShare.Read** | Other processes can open the file read-only concurrently; write access is exclusive to the owning `FileStorageDevice` instance. |
 | **IDisposable + IAsyncDisposable** | Both patterns are supported; prefer `await using` in async code. |
 | **4 KB page size** | All pages are `PageConstants.PageSize` (4096 bytes). Page 0 reserves 100 bytes for the file header. |
 | **Single writer, multiple readers** | The `TransactionCoordinator` enforces a single writer via `SemaphoreSlim`. Readers use WAL snapshots for isolation. |
+| **Optional memory-mapped reads** | The pager can use memory-mapped reads for clean main-file pages when `PagerOptions.UseMemoryMappedReads` is enabled and the storage device supports it. |
+| **Sequential scan read-ahead** | The pager can speculatively pull the next B+tree leaf page during forward scans when `EnableSequentialLeafReadAhead` is enabled. |
+| **Checkpoint residency preservation** | With `PagerOptions.PreserveOwnedPagesOnCheckpoint`, already-owned main-file pages can stay resident across checkpoint. This is what the engine's lazy-resident hybrid mode relies on. |
 | **B+tree leaf linking** | Leaf pages are linked via `RightChildOrNextLeaf` pointers, enabling efficient forward-only cursor scans without interior I/O. |
 | **Pluggable checkpoint policies** | `ICheckpointPolicy` allows frame-count, WAL-size, time-interval, or custom composite triggers. |
 | **Schema versioning** | `SchemaCatalog.SchemaVersion` increments on every DDL operation, enabling cache invalidation in upper layers. |
@@ -1399,5 +1426,10 @@ foreach (var (_, volume) in volumes)
 ## See Also
 
 - [Architecture Guide](../architecture.md)
+- [Storage Package README](../../src/CSharpDB.Storage/README.md)
+- [Storage Tutorial Track](../tutorials/storage/README.md)
+- [Advanced Storage Examples](../tutorials/storage/examples/README.md)
+- [Engine README](../../src/CSharpDB.Engine/README.md)
+- [Storage Diagnostics README](../../src/CSharpDB.Storage.Diagnostics/README.md)
 - [Benchmark Suite](../../tests/CSharpDB.Benchmarks/README.md)
 - [Roadmap](../roadmap.md)
