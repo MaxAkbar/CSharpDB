@@ -450,6 +450,15 @@ public sealed class StorageEngineExtensibilityTests
             return ValueTask.CompletedTask;
         }
 
+        public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        {
+            if (!_data.ContainsKey(key))
+                return ValueTask.FromResult(false);
+
+            _data[key] = payload.ToArray();
+            return ValueTask.FromResult(true);
+        }
+
         public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
         {
             bool removed = _data.Remove(key);
@@ -513,6 +522,18 @@ public sealed class StorageEngineExtensibilityTests
             }
 
             return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        {
+            lock (_data.Gate)
+            {
+                if (!_data.Entries.ContainsKey(key))
+                    return ValueTask.FromResult(false);
+
+                _data.Entries[key] = payload.ToArray();
+                return ValueTask.FromResult(true);
+            }
         }
 
         public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)

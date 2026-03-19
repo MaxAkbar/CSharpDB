@@ -7,6 +7,8 @@ internal static class InspectorEngine
     internal const long IndexCatalogSentinel = long.MaxValue;
     internal const long ViewCatalogSentinel = long.MaxValue - 1;
     internal const long TriggerCatalogSentinel = long.MaxValue - 2;
+    internal const long TableStatsCatalogSentinel = long.MaxValue - 3;
+    internal const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
 
     internal sealed class ParsedLeafCell
     {

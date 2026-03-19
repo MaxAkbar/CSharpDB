@@ -228,6 +228,35 @@ public sealed class BTree
     }
 
     /// <summary>
+    /// Replace the payload for an existing key. Returns false if the key is not present.
+    /// </summary>
+    public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    {
+        var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, ct);
+        if (!result.Found)
+            return false;
+
+        if (result.InsertResult.Split)
+        {
+            uint newRootId = await _pager.AllocatePageAsync(ct);
+            var newRoot = await _pager.GetPageAsync(newRootId, ct);
+            var sp = new SlottedPage(newRoot, newRootId);
+            sp.Initialize(PageConstants.PageTypeInterior);
+            sp.RightChildOrNextLeaf = result.InsertResult.NewPageId;
+
+            Span<byte> rootCell = stackalloc byte[13];
+            WriteInteriorCell(rootCell, _rootPageId, result.InsertResult.SplitKey);
+            sp.InsertCell(0, rootCell);
+            await _pager.MarkDirtyAsync(newRootId, ct);
+
+            _rootPageId = newRootId;
+        }
+
+        _hintValid = false;
+        return true;
+    }
+
+    /// <summary>
     /// Delete a key. Returns true if the key was found and deleted.
     /// </summary>
     public async ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
@@ -320,6 +349,18 @@ public sealed class BTree
         public uint NewPageId; // the new right sibling
     }
 
+    private readonly struct ReplaceResult
+    {
+        public ReplaceResult(bool found, InsertResult insertResult)
+        {
+            Found = found;
+            InsertResult = insertResult;
+        }
+
+        public bool Found { get; }
+        public InsertResult InsertResult { get; }
+    }
+
     private async ValueTask<InsertResult> InsertRecursiveAsync(uint pageId, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         var page = await _pager.GetPageAsync(pageId, ct);
@@ -341,6 +382,42 @@ public sealed class BTree
             // Child was split — insert the new separator key into this interior page
             return await InsertIntoInteriorAsync(pageId, page, sp, childResult.SplitKey, childResult.NewPageId, childIdx, ct);
         }
+    }
+
+    private async ValueTask<ReplaceResult> ReplaceRecursiveAsync(uint pageId, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        var page = await _pager.GetPageAsync(pageId, ct);
+        var sp = new SlottedPage(page, pageId);
+
+        if (sp.PageType == PageConstants.PageTypeLeaf)
+        {
+            int idx = FindKeyInLeaf(sp, key);
+            if (idx < 0)
+                return default;
+
+            sp.DeleteCell(idx);
+            sp.Defragment();
+            var insertResult = await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
+            return new ReplaceResult(found: true, insertResult);
+        }
+
+        uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
+        var childResult = await ReplaceRecursiveAsync(childPageId, key, payload, ct);
+        if (!childResult.Found)
+            return default;
+
+        if (!childResult.InsertResult.Split)
+            return childResult;
+
+        var interiorInsertResult = await InsertIntoInteriorAsync(
+            pageId,
+            page,
+            sp,
+            childResult.InsertResult.SplitKey,
+            childResult.InsertResult.NewPageId,
+            childIdx,
+            ct);
+        return new ReplaceResult(found: true, interiorInsertResult);
     }
 
     private async ValueTask<InsertResult> InsertIntoLeafAsync(uint pageId, byte[] page, SlottedPage sp, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
@@ -773,19 +850,10 @@ public sealed class BTree
         if (childSp.CellCount >= MinInteriorCells)
             return;
 
-        uint replacementChildPageId = childSp.RightChildOrNextLeaf;
-        if (replacementChildPageId == PageConstants.NullPageId)
-        {
-            int keyIndexToRemove = childIndex == 0 ? 0 : childIndex - 1;
-            RemoveInteriorKeyAndChild(parentSp, keyIndexToRemove, childIndex);
-        }
-        else
-        {
-            ReplaceInteriorChildPointer(parentSp, childIndex, replacementChildPageId);
-        }
-
-        await _pager.MarkDirtyAsync(parentPageId, ct);
-        await _pager.FreePageAsync(childPageId, ct);
+        // Collapsing a non-root interior child into one of its descendants creates mixed-height
+        // siblings under the parent. Keep the underfull interior page in place until full
+        // interior-node redistribution/merge exists.
+        await _pager.MarkDirtyAsync(childPageId, ct);
     }
 
     private async ValueTask CollapseRootIfNeededAsync(CancellationToken ct)

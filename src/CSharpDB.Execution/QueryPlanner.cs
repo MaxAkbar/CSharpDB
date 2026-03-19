@@ -104,6 +104,7 @@ public sealed class QueryPlanner
     private readonly SchemaCatalog _catalog;
     private readonly IRecordSerializer _recordSerializer;
     private readonly IRecordSerializer? _collectionReadSerializer;
+    private readonly Func<string, long?>? _tableRowCountProvider;
 
     /// <summary>
     /// CTE materialized results, scoped to the current WITH query execution.
@@ -176,7 +177,8 @@ public sealed class QueryPlanner
     public QueryPlanner(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        Func<string, long?>? tableRowCountProvider = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -184,6 +186,7 @@ public sealed class QueryPlanner
         _collectionReadSerializer = _recordSerializer is DefaultRecordSerializer
             ? new CollectionAwareRecordSerializer(_recordSerializer)
             : null;
+        _tableRowCountProvider = tableRowCountProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
     }
 
@@ -290,6 +293,21 @@ public sealed class QueryPlanner
         _selectPlanInsertionOrder.Clear();
 
         _observedSchemaVersion = currentVersion;
+    }
+
+    private bool TryGetTableRowCount(string tableName, out long rowCount)
+    {
+        if (_tableRowCountProvider is not null)
+        {
+            long? provided = _tableRowCountProvider(tableName);
+            if (provided.HasValue)
+            {
+                rowCount = provided.Value;
+                return true;
+            }
+        }
+
+        return _catalog.TryGetTableRowCount(tableName, out rowCount);
     }
 
     #region DDL — Tables
@@ -3334,7 +3352,7 @@ public sealed class QueryPlanner
             },
         };
 
-        if (_catalog.TryGetTableRowCount(simpleRef.TableName, out long rowCount))
+        if (TryGetTableRowCount(simpleRef.TableName, out long rowCount))
         {
             result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
@@ -4260,7 +4278,7 @@ public sealed class QueryPlanner
             if (_cteData != null && _cteData.ContainsKey(simple.TableName))
                 return false;
 
-            if (_catalog.TryGetTableRowCount(simple.TableName, out count))
+            if (TryGetTableRowCount(simple.TableName, out count))
                 return true;
 
             try
@@ -4767,7 +4785,7 @@ public sealed class QueryPlanner
         estimatedRows = 0;
         tableRowCount = 0;
 
-        if (!_catalog.TryGetTableRowCount(tableName, out tableRowCount) ||
+        if (!TryGetTableRowCount(tableName, out tableRowCount) ||
             tableRowCount <= 0 ||
             !_catalog.TryGetFreshColumnStatistics(tableName, columnName, out var stats) ||
             stats.DistinctCount <= 0)
@@ -6124,8 +6142,7 @@ public sealed class QueryPlanner
             var newPayload = new byte[existing.Length + 8];
             existing.CopyTo(newPayload, 0);
             BitConverter.TryWriteBytes(newPayload.AsSpan(existing.Length), rowId);
-            await indexStore.DeleteAsync(indexKey, ct);
-            await indexStore.InsertAsync(indexKey, newPayload, ct);
+            await indexStore.ReplaceAsync(indexKey, newPayload, ct);
         }
         else
         {
@@ -6159,9 +6176,10 @@ public sealed class QueryPlanner
                 ms.Write(BitConverter.GetBytes(id));
         }
 
-        await indexStore.DeleteAsync(indexKey, ct);
         if (ms.Length > 0)
-            await indexStore.InsertAsync(indexKey, ms.ToArray(), ct);
+            await indexStore.ReplaceAsync(indexKey, ms.ToArray(), ct);
+        else
+            await indexStore.DeleteAsync(indexKey, ct);
     }
 
     #endregion

@@ -83,8 +83,7 @@ internal static class IndexMaintenanceHelper
         if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
             return;
 
-        await indexStore.DeleteAsync(indexKey, ct);
-        await indexStore.InsertAsync(indexKey, newPayload, ct);
+        await indexStore.ReplaceAsync(indexKey, newPayload, ct);
     }
 
     public static async ValueTask DeleteRowIdAsync(
@@ -100,9 +99,10 @@ internal static class IndexMaintenanceHelper
         if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
             return;
 
-        await indexStore.DeleteAsync(indexKey, ct);
         if (newPayload != null)
-            await indexStore.InsertAsync(indexKey, newPayload, ct);
+            await indexStore.ReplaceAsync(indexKey, newPayload, ct);
+        else
+            await indexStore.DeleteAsync(indexKey, ct);
     }
 
     public static bool TryResolveIndexColumnIndices(

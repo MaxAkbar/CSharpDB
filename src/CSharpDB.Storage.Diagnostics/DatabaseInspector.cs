@@ -46,6 +46,8 @@ public static class DatabaseInspector
             ValidateRootPage(roots.IndexCatalogRootPage, "index-catalog", snapshot, issues);
             ValidateRootPage(roots.ViewCatalogRootPage, "view-catalog", snapshot, issues);
             ValidateRootPage(roots.TriggerCatalogRootPage, "trigger-catalog", snapshot, issues);
+            ValidateRootPage(roots.TableStatsCatalogRootPage, "table-stats-catalog", snapshot, issues);
+            ValidateRootPage(roots.ColumnStatsCatalogRootPage, "column-stats-catalog", snapshot, issues);
 
             foreach (var tableRoot in roots.TableRoots)
                 ValidateRootPage(tableRoot.RootPage, $"table:{tableRoot.Name}", snapshot, issues);
@@ -233,6 +235,8 @@ public static class DatabaseInspector
         public uint IndexCatalogRootPage { get; init; }
         public uint ViewCatalogRootPage { get; init; }
         public uint TriggerCatalogRootPage { get; init; }
+        public uint TableStatsCatalogRootPage { get; init; }
+        public uint ColumnStatsCatalogRootPage { get; init; }
 
         public required List<NamedRoot> TableRoots { get; init; }
         public required List<NamedRoot> IndexRoots { get; init; }
@@ -249,6 +253,8 @@ public static class DatabaseInspector
         uint indexCatalogRoot = 0;
         uint viewCatalogRoot = 0;
         uint triggerCatalogRoot = 0;
+        uint tableStatsCatalogRoot = 0;
+        uint columnStatsCatalogRoot = 0;
         var tableRoots = new List<NamedRoot>();
 
         foreach (uint pageId in schemaTreePages)
@@ -294,6 +300,18 @@ public static class DatabaseInspector
                     continue;
                 }
 
+                if (cell.Key.Value == InspectorEngine.TableStatsCatalogSentinel)
+                {
+                    tableStatsCatalogRoot = rootPage;
+                    continue;
+                }
+
+                if (cell.Key.Value == InspectorEngine.ColumnStatsCatalogSentinel)
+                {
+                    columnStatsCatalogRoot = rootPage;
+                    continue;
+                }
+
                 try
                 {
                     TableSchema tableSchema = SchemaSerializer.Deserialize(cell.Payload.AsSpan(4));
@@ -322,6 +340,8 @@ public static class DatabaseInspector
             IndexCatalogRootPage = indexCatalogRoot,
             ViewCatalogRootPage = viewCatalogRoot,
             TriggerCatalogRootPage = triggerCatalogRoot,
+            TableStatsCatalogRootPage = tableStatsCatalogRoot,
+            ColumnStatsCatalogRootPage = columnStatsCatalogRoot,
             TableRoots = tableRoots,
             IndexRoots = indexRoots,
             ViewRoots = viewRoots,
