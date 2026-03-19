@@ -837,6 +837,9 @@ internal sealed class CollectionIndexBinding<
         public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
             => throw new NotSupportedException("Transient collection index bindings do not support writes.");
 
+        public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+            => throw new NotSupportedException("Transient collection index bindings do not support writes.");
+
         public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
             => throw new NotSupportedException("Transient collection index bindings do not support writes.");
 

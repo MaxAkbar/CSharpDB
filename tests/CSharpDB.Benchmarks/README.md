@@ -646,6 +646,15 @@ The master table below separates embedded engine runs from client/hosted runs so
 | PouchDB | JavaScript | Document + sync | ~4-6K (bulk) | ~4-6K docs/sec | N/A | N/A |
 | TinyDB | Python | Document (JSON) | ~1-5K ops/sec | ~26K batch | N/A | N/A |
 
+Hot-cache point-lookup reference for CSharpDB:
+
+| Database | Point Lookup (hot cache) |
+|----------|---------------------------|
+| CSharpDB SQL (file-backed) | ~4.16M ops/sec |
+| CSharpDB SQL (in-memory) | ~4.21M ops/sec |
+| CSharpDB Collection (file-backed) | ~2.63M ops/sec |
+| CSharpDB Collection (in-memory) | ~2.79M ops/sec |
+
 ### Sources for Competitor Numbers
 
 | Database | Sources |

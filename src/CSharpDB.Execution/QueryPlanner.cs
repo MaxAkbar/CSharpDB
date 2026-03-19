@@ -104,6 +104,7 @@ public sealed class QueryPlanner
     private readonly SchemaCatalog _catalog;
     private readonly IRecordSerializer _recordSerializer;
     private readonly IRecordSerializer? _collectionReadSerializer;
+    private readonly Func<string, long?>? _tableRowCountProvider;
 
     /// <summary>
     /// CTE materialized results, scoped to the current WITH query execution.
@@ -177,7 +178,8 @@ public sealed class QueryPlanner
     public QueryPlanner(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        Func<string, long?>? tableRowCountProvider = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -185,6 +187,7 @@ public sealed class QueryPlanner
         _collectionReadSerializer = _recordSerializer is DefaultRecordSerializer
             ? new CollectionAwareRecordSerializer(_recordSerializer)
             : null;
+        _tableRowCountProvider = tableRowCountProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
     }
 
@@ -291,6 +294,21 @@ public sealed class QueryPlanner
         _selectPlanInsertionOrder.Clear();
 
         _observedSchemaVersion = currentVersion;
+    }
+
+    private bool TryGetTableRowCount(string tableName, out long rowCount)
+    {
+        if (_tableRowCountProvider is not null)
+        {
+            long? provided = _tableRowCountProvider(tableName);
+            if (provided.HasValue)
+            {
+                rowCount = provided.Value;
+                return true;
+            }
+        }
+
+        return _catalog.TryGetTableRowCount(tableName, out rowCount);
     }
 
     #region DDL — Tables
@@ -5478,7 +5496,7 @@ public sealed class QueryPlanner
             if (_cteData != null && _cteData.ContainsKey(simple.TableName))
                 return false;
 
-            if (_catalog.TryGetTableRowCount(simple.TableName, out count))
+            if (TryGetTableRowCount(simple.TableName, out count))
                 return true;
 
             try
@@ -6004,7 +6022,7 @@ public sealed class QueryPlanner
         estimatedRows = 0;
         tableRowCount = 0;
 
-        if (!_catalog.TryGetTableRowCount(tableName, out tableRowCount) ||
+        if (!TryGetTableRowCount(tableName, out tableRowCount) ||
             tableRowCount <= 0 ||
             !_catalog.TryGetFreshColumnStatistics(tableName, columnName, out var stats) ||
             stats.DistinctCount <= 0)
@@ -7458,6 +7476,74 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left == null || right == null)
+            return false;
+        if (left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+            if (DbValue.Compare(left[i], right[i]) != 0)
+                return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Inserts a rowid into a non-unique index entry. The index stores a list of rowids as the payload.
+    /// </summary>
+    private static async ValueTask InsertIntoIndexAsync(IIndexStore indexStore, long indexKey, long rowId, CancellationToken ct)
+    {
+        var existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing != null)
+        {
+            // Append rowId to existing list
+            var newPayload = new byte[existing.Length + 8];
+            existing.CopyTo(newPayload, 0);
+            BitConverter.TryWriteBytes(newPayload.AsSpan(existing.Length), rowId);
+            await indexStore.ReplaceAsync(indexKey, newPayload, ct);
+        }
+        else
+        {
+            var payload = new byte[8];
+            BitConverter.TryWriteBytes(payload, rowId);
+            await indexStore.InsertAsync(indexKey, payload, ct);
+        }
+    }
+
+    /// <summary>
+    /// Removes a rowid from an index entry. If it was the last rowid, deletes the entire entry.
+    /// </summary>
+    private static async ValueTask DeleteFromIndexAsync(IIndexStore indexStore, long indexKey, long rowId, CancellationToken ct)
+    {
+        var existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null) return;
+
+        int count = existing.Length / 8;
+        if (count <= 1)
+        {
+            await indexStore.DeleteAsync(indexKey, ct);
+            return;
+        }
+
+        // Remove the specific rowId from the list
+        var ms = new MemoryStream();
+        for (int i = 0; i < count; i++)
+        {
+            long id = BitConverter.ToInt64(existing, i * 8);
+            if (id != rowId)
+                ms.Write(BitConverter.GetBytes(id));
+        }
+
+        if (ms.Length > 0)
+            await indexStore.ReplaceAsync(indexKey, ms.ToArray(), ct);
+        else
+            await indexStore.DeleteAsync(indexKey, ct);
     }
 
     #endregion

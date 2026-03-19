@@ -50,6 +50,16 @@ public sealed class CachingIndexStore : IIndexStore, ICacheAwareIndexStore, IRec
         Cache(key, payload.ToArray());
     }
 
+    public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    {
+        bool replaced = await _inner.ReplaceAsync(key, payload, ct);
+        if (replaced)
+            Cache(key, payload.ToArray());
+        else
+            Remove(key);
+        return replaced;
+    }
+
     public async ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
     {
         bool removed = await _inner.DeleteAsync(key, ct);

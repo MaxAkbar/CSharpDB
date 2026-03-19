@@ -23,6 +23,9 @@ public sealed class BTreeIndexStore : IIndexStore, IReclaimableIndexStore
     public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
         _tree.InsertAsync(key, payload, ct);
 
+    public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
+        _tree.ReplaceAsync(key, payload, ct);
+
     public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default) =>
         _tree.DeleteAsync(key, ct);
 

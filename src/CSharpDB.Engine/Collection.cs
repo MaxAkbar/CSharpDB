@@ -79,7 +79,10 @@ public sealed class Collection<
                 {
                     await _tree.InsertAsync(probeHash, newPayload, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
-                    await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
+                    if (HasZeroCachedRowCount())
+                        await SyncRowCountAsync(ct);
+                    else
+                        await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
                     mutated = true;
                     return;
                 }
@@ -89,9 +92,10 @@ public sealed class Collection<
                     if (_indexes.Count > 0)
                         await DeleteFromIndexesAsync(probeHash, existingPayload, ct);
 
-                    await _tree.DeleteAsync(probeHash, ct);
-                    await _tree.InsertAsync(probeHash, newPayload, ct);
+                    await _tree.ReplaceAsync(probeHash, newPayload, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
+                    if (ShouldReconcileRowCount(existingPayload.Span))
+                        await SyncRowCountAsync(ct);
                     mutated = true;
                     return;
                 }
@@ -158,7 +162,10 @@ public sealed class Collection<
                         await DeleteFromIndexesAsync(probeHash, payloadMemory, ct);
 
                     await _tree.DeleteAsync(probeHash, ct);
-                    await _catalog.AdjustTableRowCountAsync(_catalogTableName, -1, ct);
+                    if (ShouldReconcileRowCount(payloadMemory.Span))
+                        await SyncRowCountAsync(ct);
+                    else
+                        await _catalog.AdjustTableRowCountAsync(_catalogTableName, -1, ct);
                     deleted = true;
                     return;
                 }
@@ -175,7 +182,7 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount)
+        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount > 0
             ? rowCount
             : await _tree.CountEntriesAsync(ct);
 
@@ -660,8 +667,7 @@ public sealed class Collection<
         if (!changed)
             return;
 
-        await indexStore.DeleteAsync(indexKey, ct);
-        await indexStore.InsertAsync(indexKey, newPayload, ct);
+        await indexStore.ReplaceAsync(indexKey, newPayload, ct);
     }
 
     private static async ValueTask DeleteRowIdAsync(
@@ -677,11 +683,26 @@ public sealed class Collection<
         if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
             return;
 
-        await indexStore.DeleteAsync(indexKey, ct);
         if (newPayload == null)
+        {
+            await indexStore.DeleteAsync(indexKey, ct);
             return;
+        }
 
-        await indexStore.InsertAsync(indexKey, newPayload, ct);
+        await indexStore.ReplaceAsync(indexKey, newPayload, ct);
+    }
+
+    private bool HasZeroCachedRowCount()
+        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount == 0;
+
+    private bool ShouldReconcileRowCount(ReadOnlySpan<byte> payload)
+        => HasZeroCachedRowCount() ||
+           (_codec.UsesDirectPayloadFormat && !CollectionPayloadCodec.IsDirectPayload(payload));
+
+    private async ValueTask SyncRowCountAsync(CancellationToken ct)
+    {
+        long rowCount = await _tree.CountEntriesAsync(ct);
+        await _catalog.SetTableRowCountAsync(_catalogTableName, rowCount, ct);
     }
 
     private static async ValueTask DeleteTextRowIdAsync(

@@ -657,6 +657,14 @@ public sealed class InMemoryIndexStore : IIndexStore
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    {
+        if (!_data.ContainsKey(key))
+            return ValueTask.FromResult(false);
+        _data[key] = payload.ToArray();
+        return ValueTask.FromResult(true);
+    }
+
     public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
     {
         return ValueTask.FromResult(_data.Remove(key));

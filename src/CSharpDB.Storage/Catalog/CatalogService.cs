@@ -637,7 +637,12 @@ internal sealed class CatalogService
         {
             rowCount = checked(existing.RowCount + delta);
             if (rowCount < 0)
-                throw new InvalidOperationException($"Table '{tableName}' row count would become negative.");
+            {
+                long actualRowCount = await GetTableTree(tableName).CountEntriesAsync(ct);
+                rowCount = checked(actualRowCount + delta);
+                if (rowCount < 0)
+                    throw new InvalidOperationException($"Table '{tableName}' row count would become negative.");
+            }
             hasStaleColumns = existing.HasStaleColumns;
         }
         else

@@ -414,12 +414,23 @@ public sealed class Database : IAsyncDisposable
     public ReaderSession CreateReaderSession()
     {
         var snapshot = _pager.AcquireReaderSnapshot();
+        var snapshotRowCounts = CaptureSnapshotRowCounts();
         return new ReaderSession(
             _pager,
             _catalog,
             _recordSerializer,
             snapshot,
-            _statementCache);
+            _statementCache,
+            snapshotRowCounts);
+    }
+
+    private Dictionary<string, long> CaptureSnapshotRowCounts()
+    {
+        var snapshotRowCounts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var stats in _catalog.GetTableStatistics())
+            snapshotRowCounts[stats.TableName] = stats.RowCount;
+
+        return snapshotRowCounts;
     }
 
     /// <summary>
@@ -763,7 +774,8 @@ public sealed class Database : IAsyncDisposable
             SchemaCatalog catalog,
             IRecordSerializer recordSerializer,
             WalSnapshot snapshot,
-            StatementCache statementCache)
+            StatementCache statementCache,
+            IReadOnlyDictionary<string, long> snapshotRowCounts)
         {
             _pager = pager;
             _catalog = catalog;
@@ -773,6 +785,12 @@ public sealed class Database : IAsyncDisposable
                 : null;
             _statementCache = statementCache;
             _snapshot = snapshot;
+            _snapshotPager = pager.CreateSnapshotReader(snapshot);
+            _planner = new QueryPlanner(
+                _snapshotPager,
+                catalog,
+                recordSerializer,
+                tableName => snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
         }
 
         /// <summary>
