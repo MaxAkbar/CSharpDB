@@ -32,6 +32,12 @@ public sealed class CollectionBinaryDocumentCodecTests
         DateOnly EventDate,
         TimeOnly StartTime,
         string Name);
+    private sealed record BenchUInt64Doc(
+        string Name,
+        ulong Sequence);
+    private sealed record BenchDateTimeDoc(
+        string Name,
+        DateTime UpdatedAt);
 
     private sealed record BenchProfile(string Segment, BenchAddress Address);
 
@@ -73,6 +79,20 @@ public sealed class CollectionBinaryDocumentCodecTests
 
         Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
         Assert.Equal("doc:temporal", actual.Key);
+        Assert.Equal(expected, actual.Document);
+    }
+
+    [Fact]
+    public void BinaryCollectionPayload_RoundTripsUInt64PastSignedRange()
+    {
+        var codec = new CollectionDocumentCodec<BenchUInt64Doc>(new DefaultRecordSerializer());
+        var expected = new BenchUInt64Doc("Alice Example", ulong.MaxValue - 7);
+
+        byte[] payload = codec.Encode("doc:uint64", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("doc:uint64", actual.Key);
         Assert.Equal(expected, actual.Document);
     }
 
@@ -294,6 +314,23 @@ public sealed class CollectionBinaryDocumentCodecTests
         DbValue[] actual = serializer.Decode(payload);
 
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void CollectionDocumentCodec_FallsBackToJsonForUnsupportedTypedDocuments()
+    {
+        var codec = new CollectionDocumentCodec<BenchDateTimeDoc>(new DefaultRecordSerializer());
+        var expected = new BenchDateTimeDoc(
+            "Alice Example",
+            new DateTime(2026, 3, 20, 15, 45, 12, DateTimeKind.Utc));
+
+        byte[] payload = codec.Encode("doc:datetime", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsDirectPayload(payload));
+        Assert.False(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("doc:datetime", actual.Key);
+        Assert.Equal(expected, actual.Document);
     }
 
     private sealed class BinaryMarkerPrefixRecordSerializer : IRecordSerializer
