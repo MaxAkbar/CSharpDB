@@ -1,0 +1,1506 @@
+@using CSharpDB.Pipelines.Models
+@using CSharpDB.Pipelines.Serialization
+@using ClientModels = CSharpDB.Client.Models
+@using PrimitiveDbType = CSharpDB.Primitives.DbType
+@inject ICSharpDbClient DbClient
+
+<div class="pipeline-designer-shell">
+    <aside class="pipeline-designer-toolbox">
+        <div class="pipeline-designer-toolbox-section">
+            <div class="pipeline-designer-toolbox-title">Pipeline Shape</div>
+            <button type="button" class="pipeline-designer-tool"
+                    @onclick="() => SelectPanel(PipelineDesignerPanel.Package)"
+                    title="Edit pipeline name, version, and description">
+                <span class="pipeline-designer-tool-icon meta"><i class="bi bi-diagram-3"></i></span>
+                <span>
+                    <strong>Metadata</strong>
+                    <small>Name, version, description</small>
+                </span>
+            </button>
+            <button type="button" class="pipeline-designer-tool"
+                    @onclick="() => SelectPanel(PipelineDesignerPanel.Source)"
+                    title="Edit the pipeline source">
+                <span class="pipeline-designer-tool-icon source"><i class="bi bi-box-arrow-in-down"></i></span>
+                <span>
+                    <strong>Source</strong>
+                    <small>CSV, JSON, table, or SQL query</small>
+                </span>
+            </button>
+            <button type="button" class="pipeline-designer-tool"
+                    @onclick="() => SelectPanel(PipelineDesignerPanel.Destination)"
+                    title="Edit the pipeline destination">
+                <span class="pipeline-designer-tool-icon destination"><i class="bi bi-box-arrow-up"></i></span>
+                <span>
+                    <strong>Destination</strong>
+                    <small>Table, CSV, or JSON output</small>
+                </span>
+            </button>
+            <button type="button" class="pipeline-designer-tool"
+                    @onclick="() => SelectPanel(PipelineDesignerPanel.Options)"
+                    title="Edit batch, checkpoint, and incremental settings">
+                <span class="pipeline-designer-tool-icon options"><i class="bi bi-sliders"></i></span>
+                <span>
+                    <strong>Options</strong>
+                    <small>Execution and incremental controls</small>
+                </span>
+            </button>
+        </div>
+
+        <div class="pipeline-designer-toolbox-section">
+            <div class="pipeline-designer-toolbox-title">Transforms</div>
+            @foreach (var transformKind in SupportedTransformKinds)
+            {
+                <button type="button" class="pipeline-designer-tool"
+                        @onclick="() => AddTransform(transformKind)"
+                        title="@GetTransformDescription(transformKind)">
+                    <span class="pipeline-designer-tool-icon transform"><i class="@GetTransformIcon(transformKind)"></i></span>
+                    <span>
+                        <strong>@GetTransformLabel(transformKind)</strong>
+                        <small>@GetTransformDescription(transformKind)</small>
+                    </span>
+                </button>
+            }
+        </div>
+    </aside>
+
+    <section class="pipeline-designer-canvas">
+        @if (_loadError is not null)
+        {
+            <div class="query-error">
+                <i class="bi bi-exclamation-triangle"></i> @_loadError
+            </div>
+        }
+        else
+        {
+            <div class="pipeline-designer-header">
+                <div>
+                    <h3>@DisplayName</h3>
+                    <p>@DisplayDescription</p>
+                </div>
+                <div class="pipeline-designer-header-badges">
+                    <span class="pipeline-designer-badge">v@(_state.VersionOrDefault)</span>
+                    <span class="pipeline-designer-badge">@_state.Transforms.Count transform@( _state.Transforms.Count == 1 ? "" : "s")</span>
+                </div>
+            </div>
+
+            <div class="pipeline-flow">
+                <button type="button"
+                        class="pipeline-stage-card @PanelClass(PipelineDesignerPanel.Source)"
+                        @onclick="() => SelectPanel(PipelineDesignerPanel.Source)">
+                    <span class="pipeline-stage-icon source"><i class="bi bi-box-arrow-in-down"></i></span>
+                    <div class="pipeline-stage-body">
+                        <div class="pipeline-stage-title">Source</div>
+                        <div class="pipeline-stage-summary">@GetSourceSummary()</div>
+                    </div>
+                </button>
+
+                <div class="pipeline-flow-arrow"><i class="bi bi-arrow-down"></i></div>
+
+                <div class="pipeline-stage-stack @PanelClass(PipelineDesignerPanel.Transforms)">
+                    <div class="pipeline-stage-stack-header">
+                        <div>
+                            <div class="pipeline-stage-title">Transform Group</div>
+                            <div class="pipeline-stage-summary">Ordered runtime transforms executed between source and destination.</div>
+                        </div>
+                        <button type="button" class="toolbar-btn"
+                                @onclick="() => SelectPanel(PipelineDesignerPanel.Transforms)">
+                            <i class="bi bi-pencil"></i> Edit
+                        </button>
+                    </div>
+
+                    @if (_state.Transforms.Count == 0)
+                    {
+                        <div class="pipeline-transform-empty">
+                            <i class="bi bi-layers"></i>
+                            <span>No transforms yet. Add one from the toolbox.</span>
+                        </div>
+                    }
+                    else
+                    {
+                        @for (var i = 0; i < _state.Transforms.Count; i++)
+                        {
+                            var transform = _state.Transforms[i];
+                            <button type="button"
+                                    class="pipeline-transform-card @(IsSelectedTransform(i) ? "selected" : null)"
+                                    @onclick="() => SelectTransform(i)">
+                                <span class="pipeline-transform-order">@((i + 1).ToString())</span>
+                                <span class="pipeline-transform-icon"><i class="@GetTransformIcon(transform.Kind)"></i></span>
+                                <span class="pipeline-transform-copy">
+                                    <strong>@GetTransformLabel(transform.Kind)</strong>
+                                    <small>@GetTransformSummary(transform)</small>
+                                </span>
+                            </button>
+                        }
+                    }
+                </div>
+
+                <div class="pipeline-flow-arrow"><i class="bi bi-arrow-down"></i></div>
+
+                <button type="button"
+                        class="pipeline-stage-card @PanelClass(PipelineDesignerPanel.Destination)"
+                        @onclick="() => SelectPanel(PipelineDesignerPanel.Destination)">
+                    <span class="pipeline-stage-icon destination"><i class="bi bi-box-arrow-up"></i></span>
+                    <div class="pipeline-stage-body">
+                        <div class="pipeline-stage-title">Destination</div>
+                        <div class="pipeline-stage-summary">@GetDestinationSummary()</div>
+                    </div>
+                </button>
+
+                <div class="pipeline-flow-arrow"><i class="bi bi-arrow-down"></i></div>
+
+                <button type="button"
+                        class="pipeline-stage-card compact @PanelClass(PipelineDesignerPanel.Options)"
+                        @onclick="() => SelectPanel(PipelineDesignerPanel.Options)">
+                    <span class="pipeline-stage-icon options"><i class="bi bi-sliders"></i></span>
+                    <div class="pipeline-stage-body">
+                        <div class="pipeline-stage-title">Execution</div>
+                        <div class="pipeline-stage-summary">@GetOptionsSummary()</div>
+                    </div>
+                </button>
+            </div>
+        }
+    </section>
+
+    <aside class="pipeline-designer-inspector">
+        @if (_loadError is null)
+        {
+            @if (_tableLoadError is not null)
+            {
+                <div class="query-error">
+                    <i class="bi bi-exclamation-triangle"></i> @_tableLoadError
+                </div>
+            }
+            @switch (CurrentPanel)
+            {
+                case PipelineDesignerPanel.Package:
+                    <div class="pipeline-inspector-section">
+                        <h3>Pipeline Metadata</h3>
+                        <p>These values are stored in the package and shown across CLI, API, and Admin surfaces.</p>
+                        <div class="schema-edit-grid cols-2">
+                            <div class="schema-field">
+                                <label>Name</label>
+                                <input class="schema-input"
+                                       @bind="_state.Name"
+                                       @bind:event="oninput"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                            <div class="schema-field">
+                                <label>Version</label>
+                                <input class="schema-input"
+                                       @bind="_state.Version"
+                                       @bind:event="oninput"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                        </div>
+                        <div class="schema-field">
+                            <label>Description</label>
+                            <textarea class="schema-textarea"
+                                      @bind="_state.Description"
+                                      @bind:event="oninput"
+                                      @bind:after="PublishPackageAsync"></textarea>
+                        </div>
+                    </div>
+                    break;
+
+                case PipelineDesignerPanel.Source:
+                    <div class="pipeline-inspector-section">
+                        <h3>Source</h3>
+                        <p>Choose the supported runtime source and configure only the fields that apply to that kind.</p>
+                        <div class="schema-field">
+                            <label>Source Kind</label>
+                            <select class="schema-input" value="@_state.Source.Kind" @onchange="OnSourceKindChanged">
+                                @foreach (var sourceKind in Enum.GetValues<PipelineSourceKind>())
+                                {
+                                    <option value="@sourceKind">@GetSourceKindLabel(sourceKind)</option>
+                                }
+                            </select>
+                        </div>
+                        @if (_state.Source.Kind is PipelineSourceKind.CsvFile or PipelineSourceKind.JsonFile)
+                        {
+                            <div class="schema-field">
+                                <label>Path</label>
+                                <input class="schema-input mono"
+                                       @bind="_state.Source.Path"
+                                       @bind:event="oninput"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                        }
+                        @if (_state.Source.Kind is PipelineSourceKind.CSharpDbTable)
+                        {
+                            <div class="schema-field">
+                                <label>Table Name</label>
+                                <div class="pipeline-table-picker">
+                                    <input class="schema-input"
+                                           list="pipeline-table-list"
+                                           value="@_state.Source.TableName"
+                                           @onchange="OnSourceTableChanged" />
+                                    <button type="button" class="schema-icon-btn" title="Refresh table list" @onclick="RefreshTablesAsync">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            @if (GetSchemaPreview(_state.Source.TableName) is { } sourceSchema)
+                            {
+                                @RenderSchemaPreview(sourceSchema)
+                            }
+                        }
+                        @if (_state.Source.Kind is PipelineSourceKind.SqlQuery)
+                        {
+                            <div class="schema-field">
+                                <label>SQL Query</label>
+                                <textarea class="schema-textarea"
+                                          @bind="_state.Source.QueryText"
+                                          @bind:event="oninput"
+                                          @bind:after="PublishPackageAsync"></textarea>
+                            </div>
+                            @if (_tableNames.Count > 0)
+                            {
+                                <div class="pipeline-inspector-subsection">
+                                    <h4>Available Tables</h4>
+                                    <div class="pipeline-table-chip-row">
+                                        @foreach (var tableName in _tableNames.Take(10))
+                                        {
+                                            <button type="button" class="pipeline-table-chip" @onclick="() => AppendTableNameToQueryAsync(tableName)">
+                                                @tableName
+                                            </button>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        }
+                        @if (_state.Source.Kind is PipelineSourceKind.CsvFile)
+                        {
+                            <label class="schema-check">
+                                <input type="checkbox"
+                                       @bind="_state.Source.HasHeaderRow"
+                                       @bind:after="PublishPackageAsync" />
+                                Header row present
+                            </label>
+                        }
+                    </div>
+                    break;
+
+                case PipelineDesignerPanel.Transforms:
+                    <div class="pipeline-inspector-section">
+                        <h3>Transforms</h3>
+                        <p>The runtime executes transforms in order. Reorder or remove them here.</p>
+
+                        @if (_state.Transforms.Count == 0)
+                        {
+                            <p class="schema-empty">No transforms configured yet.</p>
+                        }
+                        else
+                        {
+                            @for (var i = 0; i < _state.Transforms.Count; i++)
+                            {
+                                var transform = _state.Transforms[i];
+                                <div class="pipeline-inspector-transform-row @(IsSelectedTransform(i) ? "selected" : null)">
+                                    <button type="button" class="pipeline-inspector-transform-main" @onclick="() => SelectTransform(i)">
+                                        <span class="pipeline-transform-order">@((i + 1).ToString())</span>
+                                        <span>
+                                            <strong>@GetTransformLabel(transform.Kind)</strong>
+                                            <small>@GetTransformSummary(transform)</small>
+                                        </span>
+                                    </button>
+                                    <div class="pipeline-inspector-transform-actions">
+                                        <button type="button" class="schema-icon-btn" title="Move up" disabled="@(i == 0)" @onclick="() => MoveTransform(i, -1)">
+                                            <i class="bi bi-arrow-up"></i>
+                                        </button>
+                                        <button type="button" class="schema-icon-btn" title="Move down" disabled="@(i == _state.Transforms.Count - 1)" @onclick="() => MoveTransform(i, 1)">
+                                            <i class="bi bi-arrow-down"></i>
+                                        </button>
+                                        <button type="button" class="schema-icon-btn danger" title="Remove transform" @onclick="() => RemoveTransform(i)">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        }
+
+                        @if (SelectedTransform is not null)
+                        {
+                            <div class="pipeline-inspector-subsection">
+                                <h4>@GetTransformLabel(SelectedTransform.Kind) Settings</h4>
+                                <p>@GetTransformDescription(SelectedTransform.Kind)</p>
+
+                                <div class="schema-field">
+                                    <label>Transform Kind</label>
+                                    <select class="schema-input" value="@SelectedTransform.Kind" @onchange="OnSelectedTransformKindChanged">
+                                        @foreach (var transformKind in SupportedTransformKinds)
+                                        {
+                                            <option value="@transformKind">@GetTransformLabel(transformKind)</option>
+                                        }
+                                    </select>
+                                </div>
+
+                                @switch (SelectedTransform.Kind)
+                                {
+                                    case PipelineTransformKind.Select:
+                                        <div class="schema-field">
+                                            <label>Columns</label>
+                                            <textarea class="schema-textarea"
+                                                      @bind="SelectedTransform.SelectColumnsText"
+                                                      @bind:event="oninput"
+                                                      @bind:after="PublishPackageAsync"></textarea>
+                                        </div>
+                                        @if (SchemaColumns.Count > 0)
+                                        {
+                                            <div class="pipeline-inspector-subsection">
+                                                <h4>Available Source Columns</h4>
+                                                <div class="pipeline-table-chip-row">
+                                                    @foreach (var column in SchemaColumns)
+                                                    {
+                                                        <button type="button"
+                                                                class="pipeline-table-chip @(ContainsLineValue(SelectedTransform.SelectColumnsText, column.Name) ? "selected" : null)"
+                                                                @onclick="() => ToggleLineValueAsync(column.Name, true)">
+                                                            @column.Name
+                                                        </button>
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                        break;
+
+                                    case PipelineTransformKind.Filter:
+                                        <div class="schema-field">
+                                            <label>Expression</label>
+                                            <textarea class="schema-textarea"
+                                                      @bind="SelectedTransform.FilterExpression"
+                                                      @bind:event="oninput"
+                                                      @bind:after="PublishPackageAsync"></textarea>
+                                        </div>
+                                        break;
+
+                                    case PipelineTransformKind.Deduplicate:
+                                        <div class="schema-field">
+                                            <label>Key Columns</label>
+                                            <textarea class="schema-textarea"
+                                                      @bind="SelectedTransform.DeduplicateKeysText"
+                                                      @bind:event="oninput"
+                                                      @bind:after="PublishPackageAsync"></textarea>
+                                        </div>
+                                        @if (SchemaColumns.Count > 0)
+                                        {
+                                            <div class="pipeline-inspector-subsection">
+                                                <h4>Pick Key Columns</h4>
+                                                <div class="pipeline-table-chip-row">
+                                                    @foreach (var column in SchemaColumns)
+                                                    {
+                                                        <button type="button"
+                                                                class="pipeline-table-chip @(ContainsLineValue(SelectedTransform.DeduplicateKeysText, column.Name) ? "selected" : null)"
+                                                                @onclick="() => ToggleLineValueAsync(column.Name, false)">
+                                                            @column.Name
+                                                        </button>
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                        break;
+
+                                    case PipelineTransformKind.Rename:
+                                        <div class="pipeline-mapping-list">
+                                            @for (var i = 0; i < SelectedTransform.RenameMappings.Count; i++)
+                                            {
+                                                var rename = SelectedTransform.RenameMappings[i];
+                                                <div class="pipeline-mapping-row">
+                                                    <input class="schema-input mono"
+                                                           value="@rename.Source"
+                                                           @oninput="e => UpdateRenameMapping(i, true, e.Value?.ToString())"
+                                                           list="pipeline-column-list" />
+                                                    <span><i class="bi bi-arrow-right"></i></span>
+                                                    <input class="schema-input mono"
+                                                           value="@rename.Target"
+                                                           @oninput="e => UpdateRenameMapping(i, false, e.Value?.ToString())" />
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveRenameMapping(i)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </div>
+                                            }
+                                            <button type="button" class="toolbar-btn" @onclick="AddRenameMapping">
+                                                <i class="bi bi-plus"></i> Add Mapping
+                                            </button>
+                                            @if (SchemaColumns.Count > 0)
+                                            {
+                                                <div class="pipeline-table-chip-row">
+                                                    @foreach (var column in SchemaColumns)
+                                                    {
+                                                        <button type="button" class="pipeline-table-chip" @onclick="() => AddRenameMappingFromColumnAsync(column.Name)">
+                                                            @column.Name
+                                                        </button>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                        break;
+
+                                    case PipelineTransformKind.Cast:
+                                        <div class="pipeline-mapping-list">
+                                            @for (var i = 0; i < SelectedTransform.CastMappings.Count; i++)
+                                            {
+                                                var cast = SelectedTransform.CastMappings[i];
+                                                <div class="pipeline-mapping-row cast">
+                                                    <input class="schema-input mono"
+                                                           value="@cast.Column"
+                                                           @oninput="e => UpdateCastMappingColumn(i, e.Value?.ToString())"
+                                                           list="pipeline-column-list" />
+                                                    <select class="schema-input"
+                                                            value="@cast.TargetType"
+                                                            @onchange="e => UpdateCastMappingType(i, e.Value?.ToString())">
+                                                        @foreach (var dbType in Enum.GetValues<PrimitiveDbType>())
+                                                        {
+                                                            <option value="@dbType">@dbType</option>
+                                                        }
+                                                    </select>
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveCastMapping(i)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </div>
+                                            }
+                                            <button type="button" class="toolbar-btn" @onclick="AddCastMapping">
+                                                <i class="bi bi-plus"></i> Add Cast
+                                            </button>
+                                            @if (SchemaColumns.Count > 0)
+                                            {
+                                                <div class="pipeline-table-chip-row">
+                                                    @foreach (var column in SchemaColumns)
+                                                    {
+                                                        <button type="button" class="pipeline-table-chip" @onclick="() => AddCastMappingFromColumnAsync(column)">
+                                                            @column.Name : @column.Type
+                                                        </button>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                        break;
+
+                                    case PipelineTransformKind.Derive:
+                                        <div class="pipeline-mapping-list">
+                                            @for (var i = 0; i < SelectedTransform.DerivedColumns.Count; i++)
+                                            {
+                                                var derived = SelectedTransform.DerivedColumns[i];
+                                                <div class="pipeline-derived-row">
+                                                    <input class="schema-input"
+                                                           value="@derived.Name"
+                                                           @oninput="e => UpdateDerivedColumnName(i, e.Value?.ToString())" />
+                                                    <textarea class="schema-textarea"
+                                                              value="@derived.Expression"
+                                                              @oninput="e => UpdateDerivedColumnExpression(i, e.Value?.ToString())"></textarea>
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveDerivedColumn(i)">
+                                                        <i class="bi bi-trash"></i>
+                                                    </button>
+                                                </div>
+                                            }
+                                            <button type="button" class="toolbar-btn" @onclick="AddDerivedColumn">
+                                                <i class="bi bi-plus"></i> Add Derived Column
+                                            </button>
+                                        </div>
+                                        break;
+                                }
+                            </div>
+                        }
+                    </div>
+                    break;
+
+                case PipelineDesignerPanel.Destination:
+                    <div class="pipeline-inspector-section">
+                        <h3>Destination</h3>
+                        <p>Configure where transformed rows will be written.</p>
+                        <div class="schema-field">
+                            <label>Destination Kind</label>
+                            <select class="schema-input" value="@_state.Destination.Kind" @onchange="OnDestinationKindChanged">
+                                @foreach (var destinationKind in Enum.GetValues<PipelineDestinationKind>())
+                                {
+                                    <option value="@destinationKind">@GetDestinationKindLabel(destinationKind)</option>
+                                }
+                            </select>
+                        </div>
+                        @if (_state.Destination.Kind is PipelineDestinationKind.CsvFile or PipelineDestinationKind.JsonFile)
+                        {
+                            <div class="schema-field">
+                                <label>Path</label>
+                                <input class="schema-input mono"
+                                       @bind="_state.Destination.Path"
+                                       @bind:event="oninput"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                        }
+                        @if (_state.Destination.Kind is PipelineDestinationKind.CSharpDbTable)
+                        {
+                            <div class="schema-field">
+                                <label>Table Name</label>
+                                <div class="pipeline-table-picker">
+                                    <input class="schema-input"
+                                           list="pipeline-table-list"
+                                           value="@_state.Destination.TableName"
+                                           @onchange="OnDestinationTableChanged" />
+                                    <button type="button" class="schema-icon-btn" title="Refresh table list" @onclick="RefreshTablesAsync">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            @if (GetSchemaPreview(_state.Destination.TableName) is { } destinationSchema)
+                            {
+                                @RenderSchemaPreview(destinationSchema)
+                            }
+                        }
+                        <label class="schema-check">
+                            <input type="checkbox"
+                                   @bind="_state.Destination.Overwrite"
+                                   @bind:after="PublishPackageAsync" />
+                            Overwrite destination before write
+                        </label>
+                    </div>
+                    break;
+
+                case PipelineDesignerPanel.Options:
+                    <div class="pipeline-inspector-section">
+                        <h3>Execution Options</h3>
+                        <p>These settings control batch behavior, checkpointing, rejects, and incremental watermarking.</p>
+                        <div class="schema-edit-grid cols-2">
+                            <div class="schema-field">
+                                <label>Batch Size</label>
+                                <input class="schema-input"
+                                       type="number"
+                                       min="1"
+                                       @bind="_state.Options.BatchSize"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                            <div class="schema-field">
+                                <label>Checkpoint Interval</label>
+                                <input class="schema-input"
+                                       type="number"
+                                       min="1"
+                                       @bind="_state.Options.CheckpointInterval"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                            <div class="schema-field">
+                                <label>Error Mode</label>
+                                <select class="schema-input" @bind="_state.Options.ErrorMode" @bind:after="PublishPackageAsync">
+                                    @foreach (var errorMode in Enum.GetValues<PipelineErrorMode>())
+                                    {
+                                        <option value="@errorMode">@errorMode</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="schema-field">
+                                <label>Max Rejects</label>
+                                <input class="schema-input"
+                                       type="number"
+                                       min="0"
+                                       @bind="_state.Options.MaxRejects"
+                                       @bind:after="PublishPackageAsync" />
+                            </div>
+                        </div>
+                        <div class="pipeline-inspector-subsection">
+                            <h4>Incremental</h4>
+                            <label class="schema-check">
+                                <input type="checkbox"
+                                       @bind="_state.IncrementalEnabled"
+                                       @bind:after="PublishPackageAsync" />
+                                Enable incremental watermark tracking
+                            </label>
+                            @if (_state.IncrementalEnabled)
+                            {
+                                <div class="schema-field">
+                                    <label>Watermark Column</label>
+                                    <input class="schema-input"
+                                           @bind="_state.IncrementalWatermarkColumn"
+                                           @bind:event="oninput"
+                                           @bind:after="PublishPackageAsync" />
+                                </div>
+                                <div class="schema-field">
+                                    <label>Last Processed Value</label>
+                                    <input class="schema-input"
+                                           @bind="_state.IncrementalLastProcessedValue"
+                                           @bind:event="oninput"
+                                           @bind:after="PublishPackageAsync" />
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    break;
+            }
+        }
+    </aside>
+</div>
+
+<datalist id="pipeline-table-list">
+    @foreach (var tableName in _tableNames)
+    {
+        <option value="@tableName"></option>
+    }
+</datalist>
+
+<datalist id="pipeline-column-list">
+    @foreach (var column in SchemaColumns)
+    {
+        <option value="@column.Name"></option>
+    }
+</datalist>
+
+@code {
+    private static readonly PipelineTransformKind[] SupportedTransformKinds =
+    [
+        PipelineTransformKind.Select,
+        PipelineTransformKind.Rename,
+        PipelineTransformKind.Cast,
+        PipelineTransformKind.Filter,
+        PipelineTransformKind.Derive,
+        PipelineTransformKind.Deduplicate,
+    ];
+
+    [Parameter] public string PackageJson { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> PackageJsonChanged { get; set; }
+
+    private readonly PipelineDesignerState _state = new();
+    private readonly Dictionary<string, ClientModels.TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
+    private string? _lastLoadedJson;
+    private string? _loadError;
+    private string? _tableLoadError;
+    private IReadOnlyList<string> _tableNames = [];
+    private PipelineDesignerPanel CurrentPanel { get; set; } = PipelineDesignerPanel.Source;
+    private int? SelectedTransformIndex { get; set; }
+
+    private string DisplayName => string.IsNullOrWhiteSpace(_state.Name) ? "New Pipeline" : _state.Name;
+    private string DisplayDescription => string.IsNullOrWhiteSpace(_state.Description)
+        ? "Build a supported linear ETL package and keep raw JSON available when needed."
+        : _state.Description;
+    private IReadOnlyList<ClientModels.ColumnDefinition> SchemaColumns =>
+        GetSchemaPreview(_state.Source.TableName)?.Columns ?? [];
+
+    private MutableTransformDefinition? SelectedTransform =>
+        SelectedTransformIndex is int index && index >= 0 && index < _state.Transforms.Count
+            ? _state.Transforms[index]
+            : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTableNamesAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.Equals(PackageJson, _lastLoadedJson, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            var package = PipelinePackageSerializer.Deserialize(PackageJson);
+            LoadFromPackage(package);
+            _loadError = null;
+            _lastLoadedJson = PackageJson;
+        }
+        catch
+        {
+            var fallbackPackage = CreateDefaultPackage();
+            string fallbackJson = PipelinePackageSerializer.Serialize(fallbackPackage);
+            LoadFromPackage(fallbackPackage);
+            _loadError = null;
+            _lastLoadedJson = fallbackJson;
+
+            if (!string.Equals(fallbackJson, PackageJson, StringComparison.Ordinal))
+            {
+                await PackageJsonChanged.InvokeAsync(fallbackJson);
+            }
+        }
+    }
+
+    private void LoadFromPackage(PipelinePackageDefinition package)
+    {
+        _state.Name = package.Name;
+        _state.Version = package.Version;
+        _state.Description = package.Description ?? string.Empty;
+
+        _state.Source.Kind = package.Source.Kind;
+        _state.Source.Path = package.Source.Path ?? string.Empty;
+        _state.Source.TableName = package.Source.TableName ?? string.Empty;
+        _state.Source.QueryText = package.Source.QueryText ?? string.Empty;
+        _state.Source.HasHeaderRow = package.Source.HasHeaderRow;
+
+        _state.Destination.Kind = package.Destination.Kind;
+        _state.Destination.Path = package.Destination.Path ?? string.Empty;
+        _state.Destination.TableName = package.Destination.TableName ?? string.Empty;
+        _state.Destination.Overwrite = package.Destination.Overwrite;
+
+        _state.Options.BatchSize = package.Options.BatchSize;
+        _state.Options.CheckpointInterval = package.Options.CheckpointInterval;
+        _state.Options.ErrorMode = package.Options.ErrorMode;
+        _state.Options.MaxRejects = package.Options.MaxRejects;
+
+        _state.IncrementalEnabled = package.Incremental is not null;
+        _state.IncrementalWatermarkColumn = package.Incremental?.WatermarkColumn ?? string.Empty;
+        _state.IncrementalLastProcessedValue = package.Incremental?.LastProcessedValue ?? string.Empty;
+
+        _state.Transforms.Clear();
+        foreach (var transform in package.Transforms)
+        {
+            _state.Transforms.Add(new MutableTransformDefinition
+            {
+                Kind = transform.Kind,
+                SelectColumnsText = JoinLines(transform.SelectColumns),
+                FilterExpression = transform.FilterExpression ?? string.Empty,
+                DeduplicateKeysText = JoinLines(transform.DeduplicateKeys),
+                RenameMappings = transform.RenameMappings?.Select(static mapping => new MutableRenameMapping
+                {
+                    Source = mapping.Source,
+                    Target = mapping.Target,
+                }).ToList() ?? [],
+                CastMappings = transform.CastMappings?.Select(static mapping => new MutableCastMapping
+                {
+                    Column = mapping.Column,
+                    TargetType = mapping.TargetType,
+                }).ToList() ?? [],
+                DerivedColumns = transform.DerivedColumns?.Select(static column => new MutableDerivedColumn
+                {
+                    Name = column.Name,
+                    Expression = column.Expression,
+                }).ToList() ?? [],
+            });
+        }
+
+        if (_state.Transforms.Count == 0)
+        {
+            SelectedTransformIndex = null;
+        }
+        else if (SelectedTransformIndex is null || SelectedTransformIndex.Value >= _state.Transforms.Count)
+        {
+            SelectedTransformIndex = 0;
+        }
+
+        _ = EnsureSchemaLoadedAsync(_state.Source.TableName);
+        _ = EnsureSchemaLoadedAsync(_state.Destination.TableName);
+    }
+
+    private void SelectPanel(PipelineDesignerPanel panel)
+    {
+        CurrentPanel = panel;
+        if (panel != PipelineDesignerPanel.Transforms)
+        {
+            SelectedTransformIndex = null;
+        }
+    }
+
+    private void SelectTransform(int index)
+    {
+        CurrentPanel = PipelineDesignerPanel.Transforms;
+        SelectedTransformIndex = index;
+    }
+
+    private async Task OnSourceKindChanged(ChangeEventArgs args)
+    {
+        if (args.Value is null || !Enum.TryParse<PipelineSourceKind>(args.Value.ToString(), out var sourceKind))
+        {
+            return;
+        }
+
+        _state.Source.Kind = sourceKind;
+        if (sourceKind != PipelineSourceKind.CSharpDbTable)
+        {
+            _state.Source.TableName = sourceKind == PipelineSourceKind.SqlQuery ? _state.Source.TableName : string.Empty;
+        }
+
+        if (sourceKind == PipelineSourceKind.CSharpDbTable)
+        {
+            await EnsureSchemaLoadedAsync(_state.Source.TableName);
+        }
+
+        await PublishPackageAsync();
+    }
+
+    private async Task OnDestinationKindChanged(ChangeEventArgs args)
+    {
+        if (args.Value is null || !Enum.TryParse<PipelineDestinationKind>(args.Value.ToString(), out var destinationKind))
+        {
+            return;
+        }
+
+        _state.Destination.Kind = destinationKind;
+        if (destinationKind == PipelineDestinationKind.CSharpDbTable)
+        {
+            await EnsureSchemaLoadedAsync(_state.Destination.TableName);
+        }
+
+        await PublishPackageAsync();
+    }
+
+    private async Task OnSourceTableChanged(ChangeEventArgs args)
+    {
+        _state.Source.TableName = args.Value?.ToString() ?? string.Empty;
+        await EnsureSchemaLoadedAsync(_state.Source.TableName);
+        await PublishPackageAsync();
+    }
+
+    private async Task OnDestinationTableChanged(ChangeEventArgs args)
+    {
+        _state.Destination.TableName = args.Value?.ToString() ?? string.Empty;
+        await EnsureSchemaLoadedAsync(_state.Destination.TableName);
+        await PublishPackageAsync();
+    }
+
+    private async Task AppendTableNameToQueryAsync(string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            return;
+        }
+
+        _state.Source.QueryText = string.IsNullOrWhiteSpace(_state.Source.QueryText)
+            ? $"SELECT * FROM {tableName}"
+            : $"{_state.Source.QueryText.TrimEnd()}{Environment.NewLine}-- source table: {tableName}";
+
+        await PublishPackageAsync();
+    }
+
+    private bool IsSelectedTransform(int index) =>
+        CurrentPanel == PipelineDesignerPanel.Transforms && SelectedTransformIndex == index;
+
+    private string PanelClass(PipelineDesignerPanel panel) =>
+        CurrentPanel == panel ? "selected" : string.Empty;
+
+    private void AddTransform(PipelineTransformKind kind)
+    {
+        _state.Transforms.Add(CreateDefaultTransform(kind));
+        SelectedTransformIndex = _state.Transforms.Count - 1;
+        CurrentPanel = PipelineDesignerPanel.Transforms;
+        _ = PublishPackageAsync();
+    }
+
+    private static MutableTransformDefinition CreateDefaultTransform(PipelineTransformKind kind) => kind switch
+    {
+        PipelineTransformKind.Select => new() { Kind = kind, SelectColumnsText = "id\nname" },
+        PipelineTransformKind.Rename => new()
+        {
+            Kind = kind,
+            RenameMappings = [new MutableRenameMapping { Source = "old_name", Target = "new_name" }],
+        },
+        PipelineTransformKind.Cast => new()
+        {
+            Kind = kind,
+            CastMappings = [new MutableCastMapping { Column = "amount", TargetType = PrimitiveDbType.Real }],
+        },
+        PipelineTransformKind.Filter => new() { Kind = kind, FilterExpression = "status == 'active'" },
+        PipelineTransformKind.Derive => new()
+        {
+            Kind = kind,
+            DerivedColumns = [new MutableDerivedColumn { Name = "full_name", Expression = "first_name + ' ' + last_name" }],
+        },
+        PipelineTransformKind.Deduplicate => new() { Kind = kind, DeduplicateKeysText = "id" },
+        _ => new() { Kind = kind },
+    };
+
+    private async Task PublishPackageAsync()
+    {
+        try
+        {
+            string json = PipelinePackageSerializer.Serialize(BuildPackage());
+            _loadError = null;
+            _lastLoadedJson = json;
+            if (!string.Equals(json, PackageJson, StringComparison.Ordinal))
+            {
+                await PackageJsonChanged.InvokeAsync(json);
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+    }
+
+    private PipelinePackageDefinition BuildPackage()
+    {
+        return new PipelinePackageDefinition
+        {
+            Name = _state.Name.Trim(),
+            Version = _state.Version.Trim(),
+            Description = NullIfBlank(_state.Description),
+            Source = new PipelineSourceDefinition
+            {
+                Kind = _state.Source.Kind,
+                Path = UsesSourcePath(_state.Source.Kind) ? NullIfBlank(_state.Source.Path) : null,
+                TableName = _state.Source.Kind == PipelineSourceKind.CSharpDbTable ? NullIfBlank(_state.Source.TableName) : null,
+                QueryText = _state.Source.Kind == PipelineSourceKind.SqlQuery ? NullIfBlank(_state.Source.QueryText) : null,
+                HasHeaderRow = _state.Source.HasHeaderRow,
+            },
+            Transforms = _state.Transforms.Select(BuildTransform).ToArray(),
+            Destination = new PipelineDestinationDefinition
+            {
+                Kind = _state.Destination.Kind,
+                Path = UsesDestinationPath(_state.Destination.Kind) ? NullIfBlank(_state.Destination.Path) : null,
+                TableName = _state.Destination.Kind == PipelineDestinationKind.CSharpDbTable ? NullIfBlank(_state.Destination.TableName) : null,
+                Overwrite = _state.Destination.Overwrite,
+            },
+            Options = new PipelineExecutionOptions
+            {
+                BatchSize = Math.Max(1, _state.Options.BatchSize),
+                CheckpointInterval = Math.Max(1, _state.Options.CheckpointInterval),
+                ErrorMode = _state.Options.ErrorMode,
+                MaxRejects = Math.Max(0, _state.Options.MaxRejects),
+            },
+            Incremental = _state.IncrementalEnabled
+                ? new PipelineIncrementalOptions
+                {
+                    WatermarkColumn = _state.IncrementalWatermarkColumn.Trim(),
+                    LastProcessedValue = NullIfBlank(_state.IncrementalLastProcessedValue),
+                }
+                : null,
+        };
+    }
+
+    private static PipelineTransformDefinition BuildTransform(MutableTransformDefinition transform) => new()
+    {
+        Kind = transform.Kind,
+        SelectColumns = transform.Kind == PipelineTransformKind.Select ? SplitLines(transform.SelectColumnsText) : null,
+        RenameMappings = transform.Kind == PipelineTransformKind.Rename
+            ? transform.RenameMappings
+                .Where(static mapping => !string.IsNullOrWhiteSpace(mapping.Source) && !string.IsNullOrWhiteSpace(mapping.Target))
+                .Select(static mapping => new PipelineRenameMapping { Source = mapping.Source.Trim(), Target = mapping.Target.Trim() })
+                .ToArray()
+            : null,
+        CastMappings = transform.Kind == PipelineTransformKind.Cast
+            ? transform.CastMappings
+                .Where(static mapping => !string.IsNullOrWhiteSpace(mapping.Column))
+                .Select(static mapping => new PipelineCastMapping { Column = mapping.Column.Trim(), TargetType = mapping.TargetType })
+                .ToArray()
+            : null,
+        FilterExpression = transform.Kind == PipelineTransformKind.Filter ? NullIfBlank(transform.FilterExpression) : null,
+        DerivedColumns = transform.Kind == PipelineTransformKind.Derive
+            ? transform.DerivedColumns
+                .Where(static column => !string.IsNullOrWhiteSpace(column.Name) && !string.IsNullOrWhiteSpace(column.Expression))
+                .Select(static column => new PipelineDerivedColumn { Name = column.Name.Trim(), Expression = column.Expression.Trim() })
+                .ToArray()
+            : null,
+        DeduplicateKeys = transform.Kind == PipelineTransformKind.Deduplicate ? SplitLines(transform.DeduplicateKeysText) : null,
+    };
+
+    private async Task MoveTransform(int index, int direction)
+    {
+        int targetIndex = index + direction;
+        if (targetIndex < 0 || targetIndex >= _state.Transforms.Count)
+        {
+            return;
+        }
+
+        (_state.Transforms[index], _state.Transforms[targetIndex]) = (_state.Transforms[targetIndex], _state.Transforms[index]);
+        SelectedTransformIndex = targetIndex;
+        await PublishPackageAsync();
+    }
+
+    private async Task RemoveTransform(int index)
+    {
+        _state.Transforms.RemoveAt(index);
+        if (_state.Transforms.Count == 0)
+        {
+            SelectedTransformIndex = null;
+        }
+        else if (SelectedTransformIndex is not null)
+        {
+            SelectedTransformIndex = Math.Min(index, _state.Transforms.Count - 1);
+        }
+
+        await PublishPackageAsync();
+    }
+
+    private async Task OnSelectedTransformKindChanged(ChangeEventArgs args)
+    {
+        if (SelectedTransform is null || args.Value is null)
+        {
+            return;
+        }
+
+        if (Enum.TryParse<PipelineTransformKind>(args.Value.ToString(), out var transformKind))
+        {
+            _state.Transforms[SelectedTransformIndex!.Value] = CreateDefaultTransform(transformKind);
+            await PublishPackageAsync();
+        }
+    }
+
+    private void AddRenameMapping()
+    {
+        SelectedTransform?.RenameMappings.Add(new MutableRenameMapping());
+        _ = PublishPackageAsync();
+    }
+
+    private Task AddRenameMappingFromColumnAsync(string columnName)
+    {
+        if (SelectedTransform is null || string.IsNullOrWhiteSpace(columnName))
+        {
+            return Task.CompletedTask;
+        }
+
+        SelectedTransform.RenameMappings.Add(new MutableRenameMapping
+        {
+            Source = columnName,
+            Target = columnName,
+        });
+
+        return PublishPackageAsync();
+    }
+
+    private void UpdateRenameMapping(int index, bool sourceField, string? value)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.RenameMappings.Count)
+        {
+            return;
+        }
+
+        if (sourceField)
+        {
+            SelectedTransform.RenameMappings[index].Source = value ?? string.Empty;
+        }
+        else
+        {
+            SelectedTransform.RenameMappings[index].Target = value ?? string.Empty;
+        }
+
+        _ = PublishPackageAsync();
+    }
+
+    private void RemoveRenameMapping(int index)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.RenameMappings.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.RenameMappings.RemoveAt(index);
+        _ = PublishPackageAsync();
+    }
+
+    private void AddCastMapping()
+    {
+        SelectedTransform?.CastMappings.Add(new MutableCastMapping());
+        _ = PublishPackageAsync();
+    }
+
+    private Task AddCastMappingFromColumnAsync(ClientModels.ColumnDefinition column)
+    {
+        if (SelectedTransform is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        SelectedTransform.CastMappings.Add(new MutableCastMapping
+        {
+            Column = column.Name,
+            TargetType = MapPrimitiveDbType(column.Type),
+        });
+
+        return PublishPackageAsync();
+    }
+
+    private void UpdateCastMappingColumn(int index, string? value)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.CastMappings.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.CastMappings[index].Column = value ?? string.Empty;
+        _ = PublishPackageAsync();
+    }
+
+    private void UpdateCastMappingType(int index, string? value)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.CastMappings.Count || value is null)
+        {
+            return;
+        }
+
+        if (Enum.TryParse<PrimitiveDbType>(value, out var targetType))
+        {
+            SelectedTransform.CastMappings[index].TargetType = targetType;
+            _ = PublishPackageAsync();
+        }
+    }
+
+    private void RemoveCastMapping(int index)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.CastMappings.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.CastMappings.RemoveAt(index);
+        _ = PublishPackageAsync();
+    }
+
+    private void AddDerivedColumn()
+    {
+        SelectedTransform?.DerivedColumns.Add(new MutableDerivedColumn());
+        _ = PublishPackageAsync();
+    }
+
+    private void UpdateDerivedColumnName(int index, string? value)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.DerivedColumns.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.DerivedColumns[index].Name = value ?? string.Empty;
+        _ = PublishPackageAsync();
+    }
+
+    private void UpdateDerivedColumnExpression(int index, string? value)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.DerivedColumns.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.DerivedColumns[index].Expression = value ?? string.Empty;
+        _ = PublishPackageAsync();
+    }
+
+    private void RemoveDerivedColumn(int index)
+    {
+        if (SelectedTransform is null || index < 0 || index >= SelectedTransform.DerivedColumns.Count)
+        {
+            return;
+        }
+
+        SelectedTransform.DerivedColumns.RemoveAt(index);
+        _ = PublishPackageAsync();
+    }
+
+    private Task ToggleLineValueAsync(string value, bool selectColumns)
+    {
+        if (SelectedTransform is null || string.IsNullOrWhiteSpace(value))
+        {
+            return Task.CompletedTask;
+        }
+
+        string current = selectColumns ? SelectedTransform.SelectColumnsText : SelectedTransform.DeduplicateKeysText;
+        var values = SplitLines(current).ToList();
+        int existingIndex = values.FindIndex(v => string.Equals(v, value, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
+        {
+            values.RemoveAt(existingIndex);
+        }
+        else
+        {
+            values.Add(value);
+        }
+
+        string updated = string.Join(Environment.NewLine, values);
+        if (selectColumns)
+        {
+            SelectedTransform.SelectColumnsText = updated;
+        }
+        else
+        {
+            SelectedTransform.DeduplicateKeysText = updated;
+        }
+
+        return PublishPackageAsync();
+    }
+
+    private async Task RefreshTablesAsync()
+    {
+        await LoadTableNamesAsync();
+        await EnsureSchemaLoadedAsync(_state.Source.TableName);
+        await EnsureSchemaLoadedAsync(_state.Destination.TableName);
+    }
+
+    private async Task LoadTableNamesAsync()
+    {
+        try
+        {
+            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(static name => name).ToArray();
+            _tableLoadError = null;
+        }
+        catch (Exception ex)
+        {
+            _tableNames = [];
+            _tableLoadError = $"Table discovery failed: {ex.Message}";
+        }
+    }
+
+    private async Task EnsureSchemaLoadedAsync(string? tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName) || _tableSchemas.ContainsKey(tableName))
+        {
+            return;
+        }
+
+        try
+        {
+            var schema = await DbClient.GetTableSchemaAsync(tableName);
+            if (schema is not null)
+            {
+                _tableSchemas[tableName] = schema;
+                _tableLoadError = null;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            _tableLoadError = $"Schema preview for '{tableName}' failed: {ex.Message}";
+        }
+    }
+
+    private ClientModels.TableSchema? GetSchemaPreview(string? tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            return null;
+        }
+
+        return _tableSchemas.TryGetValue(tableName, out var schema) ? schema : null;
+    }
+
+    private RenderFragment RenderSchemaPreview(ClientModels.TableSchema schema) => @<div class="pipeline-schema-preview">
+        <div class="pipeline-schema-preview-header">
+            <strong>@schema.TableName</strong>
+            <span>@schema.Columns.Count column@(schema.Columns.Count == 1 ? "" : "s")</span>
+        </div>
+        <div class="pipeline-schema-preview-columns">
+            @foreach (var column in schema.Columns.Take(8))
+            {
+                <span class="pipeline-schema-chip">@(column.IsPrimaryKey ? "PK " : string.Empty)@column.Name : @column.Type</span>
+            }
+        </div>
+    </div>;
+
+    private string GetSourceSummary() => _state.Source.Kind switch
+    {
+        PipelineSourceKind.CsvFile => $"CSV file: {DisplayValue(_state.Source.Path, "set file path")}",
+        PipelineSourceKind.JsonFile => $"JSON file: {DisplayValue(_state.Source.Path, "set file path")}",
+        PipelineSourceKind.CSharpDbTable => $"CSharpDB table: {DisplayValue(_state.Source.TableName, "choose table")}",
+        PipelineSourceKind.SqlQuery => string.IsNullOrWhiteSpace(_state.Source.QueryText)
+            ? "SQL query source not configured"
+            : Truncate(_state.Source.QueryText.ReplaceLineEndings(" "), 78),
+        _ => "Configure source",
+    };
+
+    private string GetDestinationSummary() => _state.Destination.Kind switch
+    {
+        PipelineDestinationKind.CsvFile => $"CSV file: {DisplayValue(_state.Destination.Path, "set output path")}",
+        PipelineDestinationKind.JsonFile => $"JSON file: {DisplayValue(_state.Destination.Path, "set output path")}",
+        PipelineDestinationKind.CSharpDbTable => $"CSharpDB table: {DisplayValue(_state.Destination.TableName, "choose table")}",
+        _ => "Configure destination",
+    };
+
+    private string GetOptionsSummary()
+    {
+        string incremental = _state.IncrementalEnabled
+            ? $"incremental on {_state.IncrementalWatermarkColumn}"
+            : "full load";
+        return $"batch {_state.Options.BatchSize}, checkpoint {_state.Options.CheckpointInterval}, {incremental}";
+    }
+
+    private static string DisplayValue(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..Math.Max(0, maxLength - 1)] + "...";
+
+    private static bool UsesSourcePath(PipelineSourceKind kind) =>
+        kind is PipelineSourceKind.CsvFile or PipelineSourceKind.JsonFile;
+
+    private static bool UsesDestinationPath(PipelineDestinationKind kind) =>
+        kind is PipelineDestinationKind.CsvFile or PipelineDestinationKind.JsonFile;
+
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string JoinLines(IReadOnlyList<string>? values) =>
+        values is null ? string.Empty : string.Join(Environment.NewLine, values);
+
+    private static string[] SplitLines(string? text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : text.Split(['\r', '\n', ','], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+    private static string GetSourceKindLabel(PipelineSourceKind kind) => kind switch
+    {
+        PipelineSourceKind.CsvFile => "CSV File",
+        PipelineSourceKind.JsonFile => "JSON File",
+        PipelineSourceKind.CSharpDbTable => "CSharpDB Table",
+        PipelineSourceKind.SqlQuery => "SQL Query",
+        _ => kind.ToString(),
+    };
+
+    private static string GetDestinationKindLabel(PipelineDestinationKind kind) => kind switch
+    {
+        PipelineDestinationKind.CSharpDbTable => "CSharpDB Table",
+        PipelineDestinationKind.CsvFile => "CSV File",
+        PipelineDestinationKind.JsonFile => "JSON File",
+        _ => kind.ToString(),
+    };
+
+    private static string GetTransformLabel(PipelineTransformKind kind) => kind switch
+    {
+        PipelineTransformKind.Select => "Select",
+        PipelineTransformKind.Rename => "Rename",
+        PipelineTransformKind.Cast => "Cast",
+        PipelineTransformKind.Filter => "Filter",
+        PipelineTransformKind.Derive => "Derive",
+        PipelineTransformKind.Deduplicate => "Deduplicate",
+        _ => kind.ToString(),
+    };
+
+    private static string GetTransformDescription(PipelineTransformKind kind) => kind switch
+    {
+        PipelineTransformKind.Select => "Keep only the listed columns.",
+        PipelineTransformKind.Rename => "Rename source columns to target names.",
+        PipelineTransformKind.Cast => "Convert columns to target CSharpDB types.",
+        PipelineTransformKind.Filter => "Keep rows that satisfy a supported expression.",
+        PipelineTransformKind.Derive => "Create derived columns from expressions.",
+        PipelineTransformKind.Deduplicate => "Remove duplicate rows by key columns.",
+        _ => "Transform rows in sequence.",
+    };
+
+    private static string GetTransformIcon(PipelineTransformKind kind) => kind switch
+    {
+        PipelineTransformKind.Select => "bi bi-layout-text-window-reverse",
+        PipelineTransformKind.Rename => "bi bi-input-cursor-text",
+        PipelineTransformKind.Cast => "bi bi-arrow-left-right",
+        PipelineTransformKind.Filter => "bi bi-funnel",
+        PipelineTransformKind.Derive => "bi bi-magic",
+        PipelineTransformKind.Deduplicate => "bi bi-copy",
+        _ => "bi bi-sliders",
+    };
+
+    private static string GetTransformSummary(MutableTransformDefinition transform) => transform.Kind switch
+    {
+        PipelineTransformKind.Select => DescribeCount(transform.SelectColumnsText, "column"),
+        PipelineTransformKind.Rename => DescribeCount(transform.RenameMappings.Count, "mapping"),
+        PipelineTransformKind.Cast => DescribeCount(transform.CastMappings.Count, "cast"),
+        PipelineTransformKind.Filter => string.IsNullOrWhiteSpace(transform.FilterExpression)
+            ? "No expression configured"
+            : Truncate(transform.FilterExpression.ReplaceLineEndings(" "), 64),
+        PipelineTransformKind.Derive => DescribeCount(transform.DerivedColumns.Count, "derived column"),
+        PipelineTransformKind.Deduplicate => DescribeCount(transform.DeduplicateKeysText, "key"),
+        _ => "Configured",
+    };
+
+    private static string DescribeCount(string? text, string noun) => DescribeCount(SplitLines(text).Length, noun);
+
+    private static string DescribeCount(int count, string noun) =>
+        count == 0 ? $"No {noun}s configured" : $"{count} {noun}{(count == 1 ? string.Empty : "s")}";
+
+    private static PipelinePackageDefinition CreateDefaultPackage() => new()
+    {
+        Name = "sample-pipeline",
+        Version = "1.0.0",
+        Description = "Edit this package and run it from Admin.",
+        Source = new PipelineSourceDefinition
+        {
+            Kind = PipelineSourceKind.CsvFile,
+            Path = "data/input.csv",
+            HasHeaderRow = true,
+        },
+        Transforms =
+        [
+            new PipelineTransformDefinition
+            {
+                Kind = PipelineTransformKind.Select,
+                SelectColumns = ["id", "name"],
+            },
+        ],
+        Destination = new PipelineDestinationDefinition
+        {
+            Kind = PipelineDestinationKind.JsonFile,
+            Path = "data/output.json",
+        },
+        Options = new PipelineExecutionOptions
+        {
+            BatchSize = 100,
+            CheckpointInterval = 10,
+            ErrorMode = PipelineErrorMode.SkipBadRows,
+            MaxRejects = 10,
+        },
+    };
+
+    private static bool ContainsLineValue(string? text, string value) =>
+        SplitLines(text).Any(v => string.Equals(v, value, StringComparison.OrdinalIgnoreCase));
+
+    private static PrimitiveDbType MapPrimitiveDbType(ClientModels.DbType dbType) => dbType switch
+    {
+        ClientModels.DbType.Integer => PrimitiveDbType.Integer,
+        ClientModels.DbType.Real => PrimitiveDbType.Real,
+        ClientModels.DbType.Blob => PrimitiveDbType.Blob,
+        _ => PrimitiveDbType.Text,
+    };
+
+    private sealed class PipelineDesignerState
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Version { get; set; } = "1.0.0";
+        public string Description { get; set; } = string.Empty;
+        public MutableSourceDefinition Source { get; } = new();
+        public MutableDestinationDefinition Destination { get; } = new();
+        public MutableExecutionOptions Options { get; } = new();
+        public List<MutableTransformDefinition> Transforms { get; } = [];
+        public bool IncrementalEnabled { get; set; }
+        public string IncrementalWatermarkColumn { get; set; } = string.Empty;
+        public string IncrementalLastProcessedValue { get; set; } = string.Empty;
+        public string VersionOrDefault => string.IsNullOrWhiteSpace(Version) ? "1.0.0" : Version;
+    }
+
+    private sealed class MutableSourceDefinition
+    {
+        public PipelineSourceKind Kind { get; set; } = PipelineSourceKind.CsvFile;
+        public string Path { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public string QueryText { get; set; } = string.Empty;
+        public bool HasHeaderRow { get; set; } = true;
+    }
+
+    private sealed class MutableDestinationDefinition
+    {
+        public PipelineDestinationKind Kind { get; set; } = PipelineDestinationKind.JsonFile;
+        public string Path { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public bool Overwrite { get; set; }
+    }
+
+    private sealed class MutableExecutionOptions
+    {
+        public int BatchSize { get; set; } = 100;
+        public int CheckpointInterval { get; set; } = 10;
+        public PipelineErrorMode ErrorMode { get; set; } = PipelineErrorMode.SkipBadRows;
+        public int MaxRejects { get; set; } = 10;
+    }
+
+    private sealed class MutableTransformDefinition
+    {
+        public PipelineTransformKind Kind { get; set; }
+        public string SelectColumnsText { get; set; } = string.Empty;
+        public List<MutableRenameMapping> RenameMappings { get; set; } = [];
+        public List<MutableCastMapping> CastMappings { get; set; } = [];
+        public string FilterExpression { get; set; } = string.Empty;
+        public List<MutableDerivedColumn> DerivedColumns { get; set; } = [];
+        public string DeduplicateKeysText { get; set; } = string.Empty;
+    }
+
+    private sealed class MutableRenameMapping
+    {
+        public string Source { get; set; } = string.Empty;
+        public string Target { get; set; } = string.Empty;
+    }
+
+    private sealed class MutableCastMapping
+    {
+        public string Column { get; set; } = string.Empty;
+        public PrimitiveDbType TargetType { get; set; } = PrimitiveDbType.Text;
+    }
+
+    private sealed class MutableDerivedColumn
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Expression { get; set; } = string.Empty;
+    }
+
+    private enum PipelineDesignerPanel
+    {
+        Package,
+        Source,
+        Transforms,
+        Destination,
+        Options,
+    }
+}

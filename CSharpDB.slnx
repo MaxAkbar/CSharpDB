@@ -8,6 +8,7 @@
   <Folder Name="/src/">
     <Project Path="src/CSharpDB/CSharpDB.csproj" />
     <Project Path="src/CSharpDB.Primitives/CSharpDB.Primitives.csproj" />
+    <Project Path="src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj" />
     <Project Path="src/CSharpDB.Client/CSharpDB.Client.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
@@ -23,6 +24,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CSharpDB.Tests/CSharpDB.Tests.csproj" />
+    <Project Path="tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj" />
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />

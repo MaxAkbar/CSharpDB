@@ -24,16 +24,38 @@
                 <i class="bi @(_expandedGroups.Contains("tables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-table icon-table"></i>
                 <span>User Tables</span>
-                <span class="group-count">@(_tableNames?.Count ?? 0)</span>
+                <span class="group-count">@(_userTableNames?.Count ?? 0)</span>
             </div>
-            @if (_expandedGroups.Contains("tables") && _tableNames is not null)
+            @if (_expandedGroups.Contains("tables") && _userTableNames is not null)
             {
                 <div class="tree-items">
-                    @foreach (var name in FilterItems(_tableNames))
+                    @foreach (var name in FilterItems(_userTableNames))
                     {
                         <div class="tree-item @(IsActive("table", name) ? "active" : "")"
                              @onclick="() => TabManager.OpenTableTab(name)">
                             <i class="bi bi-table icon-table"></i>
+                            <span class="item-label">@name</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="tree-group">
+            <div class="tree-group-header" @onclick='() => ToggleGroup("systemTables")'>
+                <i class="bi @(_expandedGroups.Contains("systemTables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-hdd-stack icon-system"></i>
+                <span>System Tables</span>
+                <span class="group-count">@(_systemTableNames?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("systemTables") && _systemTableNames is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var name in FilterItems(_systemTableNames))
+                    {
+                        <div class="tree-item @(IsActive("table", name) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableTab(name)">
+                            <i class="bi bi-hdd-stack icon-system"></i>
                             <span class="item-label">@name</span>
                         </div>
                     }
@@ -46,7 +68,7 @@
             <div class="tree-group-header" @onclick='() => ToggleGroup("system")'>
                 <i class="bi @(_expandedGroups.Contains("system") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-hdd-stack icon-system"></i>
-                <span>System (Virtual)</span>
+                <span>System Catalog</span>
                 <span class="group-count">@s_systemCatalogItems.Count</span>
             </div>
             @if (_expandedGroups.Contains("system"))
@@ -167,6 +189,9 @@
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenNewProcedureTab()" title="New Procedure">
             <i class="bi bi-gear-wide-connected"></i> New Procedure
         </button>
+        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenPipelineTab()" title="New Pipeline">
+            <i class="bi bi-diagram-3"></i> Pipeline
+        </button>
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenStorageTab()" title="Storage Inspector">
             <i class="bi bi-hdd-stack"></i> Storage
         </button>
@@ -191,7 +216,8 @@
         new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
     };
 
-    private IReadOnlyCollection<string>? _tableNames;
+    private IReadOnlyCollection<string>? _userTableNames;
+    private IReadOnlyCollection<string>? _systemTableNames;
     private IReadOnlyCollection<string>? _viewNames;
     private IReadOnlyList<IndexSchema>? _indexes;
     private IReadOnlyList<TriggerSchema>? _triggers;
@@ -218,7 +244,9 @@
     {
         try
         {
-            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            var allTables = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _userTableNames = allTables.Where(static n => !IsSystemTableName(n)).ToList();
+            _systemTableNames = allTables.Where(IsSystemTableName).ToList();
             _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
             _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
             _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
@@ -226,7 +254,8 @@
         }
         catch
         {
-            _tableNames = null;
+            _userTableNames = null;
+            _systemTableNames = null;
             _viewNames = null;
             _indexes = null;
             _triggers = null;
@@ -315,4 +344,7 @@
         Changes.Changed -= OnChanged;
         TabManager.StateChanged -= OnTabChanged;
     }
+
+    private static bool IsSystemTableName(string name) =>
+        name.StartsWith("_", StringComparison.Ordinal);
 }

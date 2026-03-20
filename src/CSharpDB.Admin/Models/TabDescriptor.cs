@@ -7,6 +7,7 @@ public enum TabKind
     TableData,
     ViewData,
     Procedure,
+    Pipeline,
     Storage
 }
 
@@ -47,5 +48,11 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("DesignerStateJson", out var v) ? v as string : null;
         set => State["DesignerStateJson"] = value;
+    }
+
+    public string? PipelinePackageJson
+    {
+        get => State.TryGetValue("PipelinePackageJson", out var v) ? v as string : null;
+        set => State["PipelinePackageJson"] = value;
     }
 }
