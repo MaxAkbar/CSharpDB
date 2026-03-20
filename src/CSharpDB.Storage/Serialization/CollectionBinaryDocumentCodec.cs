@@ -1106,7 +1106,7 @@ internal static class CollectionBinaryDocumentCodec
                 return ReadInt64(payload, ref position);
             case MemberValueKind.UInt64:
                 EnsureTag(tag, IntegerTag);
-                return checked((ulong)ReadInt64(payload, ref position));
+                return unchecked((ulong)ReadInt64(payload, ref position));
             case MemberValueKind.Single:
                 EnsureTag(tag, DoubleTag);
                 return (float)ReadDouble(payload, ref position);
