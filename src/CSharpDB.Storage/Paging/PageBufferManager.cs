@@ -90,6 +90,18 @@ internal sealed class PageBufferManager
         return null;
     }
 
+    public byte[]? TryGetCachedPageAndRecordRead(uint pageId)
+    {
+        byte[]? page = TryGetCachedPage(pageId);
+        if (page is null)
+            return null;
+
+        if (_hasInterceptor)
+            _interceptor.OnAfterReadAsync(pageId, PageReadSource.Cache, CancellationToken.None).GetAwaiter().GetResult();
+
+        return page;
+    }
+
     public bool TryGetCachedPageReadBuffer(uint pageId, out PageReadBuffer page)
     {
         var cachedKind = TryGetCachedEntry(pageId, out var cached, out var readOnlyPage);
@@ -119,6 +131,22 @@ internal sealed class PageBufferManager
 
         page = default;
         return false;
+    }
+
+    public bool TryGetCachedPageReadBufferAndRecordRead(uint pageId, out PageReadBuffer page)
+    {
+        if (!TryGetCachedPageReadBuffer(pageId, out page))
+            return false;
+
+        if (_hasInterceptor)
+        {
+            PageReadSource source = page.TryGetOwnedBuffer(out _)
+                ? PageReadSource.Cache
+                : GetCachedReadSource(pageId);
+            _interceptor.OnAfterReadAsync(pageId, source, CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        return true;
     }
 
     public bool TryGetSnapshotCachedPageReadBuffer(uint pageId, WalSnapshot snapshot, out PageReadBuffer page)

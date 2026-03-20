@@ -394,10 +394,17 @@ internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBa
                 continue;
 
             selection.Add(rowIndex);
-            Span<DbValue> destinationRow = destination.GetWritableRowSpan(destination.Count);
-            for (int i = 0; i < _projections.Length; i++)
-                destinationRow[i] = _projections[i].Evaluate(row);
-            destination.CommitWrittenRow(destination.Count);
+        }
+
+        ReadOnlySpan<int> selectedRows = selection.AsSpan();
+        for (int i = 0; i < selectedRows.Length; i++)
+        {
+            ReadOnlySpan<DbValue> row = sourceBatch.GetRowSpan(selectedRows[i]);
+            int destinationRowIndex = destination.Count;
+            Span<DbValue> destinationRow = destination.GetWritableRowSpan(destinationRowIndex);
+            for (int projectionIndex = 0; projectionIndex < _projections.Length; projectionIndex++)
+                destinationRow[projectionIndex] = _projections[projectionIndex].Evaluate(row);
+            destination.CommitWrittenRow(destinationRowIndex);
         }
 
         return destination.Count;

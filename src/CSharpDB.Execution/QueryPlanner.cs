@@ -4237,7 +4237,7 @@ public sealed class QueryPlanner
 
     private bool TryBuildTableRowCountQuery(string tableName, ColumnDefinition[] outputSchema, out QueryResult result)
     {
-        if (_catalog.TryGetTableRowCount(tableName, out long rowCount))
+        if (TryGetTableRowCount(tableName, out long rowCount))
         {
             result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
@@ -6610,7 +6610,7 @@ public sealed class QueryPlanner
                     if (remainingWhere != null)
                         compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
 
-                    result = new QueryResult(compactOp);
+                    result = CreateQueryResult(compactOp);
                     return true;
                 }
             }
@@ -6632,7 +6632,7 @@ public sealed class QueryPlanner
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
@@ -6654,7 +6654,7 @@ public sealed class QueryPlanner
             if (remainingWhere != null)
                 compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
 
-            result = new QueryResult(compactExpressionOp);
+            result = CreateQueryResult(compactExpressionOp);
             return true;
         }
 
@@ -6717,7 +6717,7 @@ public sealed class QueryPlanner
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 

@@ -383,6 +383,12 @@ public sealed class Database : IAsyncDisposable
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
         await _pager.RollbackAsync(ct);
         await _catalog.ReloadAsync(ct);
+        foreach (var cached in _collectionCache.Values)
+        {
+            if (cached is ICollectionTreeRefresh refreshable)
+                refreshable.RefreshTreeFromCatalog();
+        }
+        _statementCache.Clear();
         _inTransaction = false;
     }
 
@@ -762,6 +768,7 @@ public sealed class Database : IAsyncDisposable
         private readonly IRecordSerializer? _collectionReadSerializer;
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
+        private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
         private string? _lastSql;
@@ -785,12 +792,13 @@ public sealed class Database : IAsyncDisposable
                 : null;
             _statementCache = statementCache;
             _snapshot = snapshot;
+            _snapshotRowCounts = snapshotRowCounts;
             _snapshotPager = pager.CreateSnapshotReader(snapshot);
             _planner = new QueryPlanner(
                 _snapshotPager,
                 catalog,
                 recordSerializer,
-                tableName => snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
+                tableName => _snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
         }
 
         /// <summary>
@@ -918,7 +926,13 @@ public sealed class Database : IAsyncDisposable
                 },
             ];
 
-            if (_catalog.TryGetTableRowCount(simpleRef.TableName, out long rowCount))
+            if (_snapshotRowCounts.TryGetValue(simpleRef.TableName, out long rowCount))
+            {
+                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                return true;
+            }
+
+            if (_catalog.TryGetTableRowCount(simpleRef.TableName, out rowCount))
             {
                 result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
                 return true;

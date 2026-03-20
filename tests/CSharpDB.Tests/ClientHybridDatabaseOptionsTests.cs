@@ -101,11 +101,26 @@ public sealed class ClientHybridDatabaseOptionsTests
 
     private static void CopyDatabaseFiles(string sourcePath, string destinationPath)
     {
-        File.WriteAllBytes(destinationPath, File.ReadAllBytes(sourcePath));
+        CopyFileAllowingSharedWrites(sourcePath, destinationPath);
 
         string sourceWalPath = sourcePath + ".wal";
         if (File.Exists(sourceWalPath))
-            File.WriteAllBytes(destinationPath + ".wal", File.ReadAllBytes(sourceWalPath));
+            CopyFileAllowingSharedWrites(sourceWalPath, destinationPath + ".wal");
+    }
+
+    private static void CopyFileAllowingSharedWrites(string sourcePath, string destinationPath)
+    {
+        using var source = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var destination = new FileStream(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None);
+        source.CopyTo(destination);
     }
 
     private static void DeleteIfExists(string path)

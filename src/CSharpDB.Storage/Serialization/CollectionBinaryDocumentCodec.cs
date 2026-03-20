@@ -311,8 +311,7 @@ internal static class CollectionBinaryDocumentCodec
         bool[] pathArraySegments,
         List<DbValue> values)
     {
-        if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
-            (tag != ArrayTag && tag != ObjectTag))
+        if (!TryFindCurrentValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength))
         {
             return false;
         }
@@ -353,8 +352,7 @@ internal static class CollectionBinaryDocumentCodec
         bool[] pathArraySegments,
         DbValue expectedValue)
     {
-        if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
-            (tag != ArrayTag && tag != ObjectTag))
+        if (!TryFindCurrentValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength))
         {
             return false;
         }
@@ -517,6 +515,41 @@ internal static class CollectionBinaryDocumentCodec
         out int valueStart,
         out int valueLength)
     {
+        if (!TryFindCurrentValue(payload, pathIndex, pathSegmentsUtf8, out tag, out valueStart, out valueLength))
+            return false;
+
+        if (pathIndex == pathSegmentsUtf8.Length - 1)
+            return true;
+
+        if (tag != ObjectTag)
+        {
+            tag = default;
+            valueStart = 0;
+            valueLength = 0;
+            return false;
+        }
+
+        if (TryFindValue(payload.Slice(valueStart, valueLength), pathIndex + 1, pathSegmentsUtf8, out tag, out int nestedValueStart, out int nestedValueLength))
+        {
+            valueStart += nestedValueStart;
+            valueLength = nestedValueLength;
+            return true;
+        }
+
+        tag = default;
+        valueStart = 0;
+        valueLength = 0;
+        return false;
+    }
+
+    private static bool TryFindCurrentValue(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        out byte tag,
+        out int valueStart,
+        out int valueLength)
+    {
         int position = 0;
         ulong fieldCount = ReadVarint(payload, ref position);
         for (ulong i = 0; i < fieldCount; i++)
@@ -530,19 +563,7 @@ internal static class CollectionBinaryDocumentCodec
                 continue;
             }
 
-            if (pathIndex == pathSegmentsUtf8.Length - 1)
-                return TryReadValuePayload(payload, ref position, out tag, out valueStart, out valueLength);
-
-            if (!TryReadNestedObject(payload, ref position, out int nestedStart, out int nestedLength))
-                break;
-
-            if (TryFindValue(payload.Slice(nestedStart, nestedLength), pathIndex + 1, pathSegmentsUtf8, out tag, out valueStart, out valueLength))
-            {
-                valueStart += nestedStart;
-                return true;
-            }
-
-            break;
+            return TryReadValuePayload(payload, ref position, out tag, out valueStart, out valueLength);
         }
 
         tag = default;

@@ -320,14 +320,20 @@ public class BatchEvaluationContractTests
         await op.OpenAsync(ct);
         Assert.True(await op.MoveNextBatchAsync(ct));
 
-        var batch = ((IBatchOperator)op).CurrentBatch;
-        Assert.Equal(3, batch.Count);
-        Assert.Equal(2L, batch.GetRowSpan(0)[0].AsInteger);
-        Assert.Equal(22L, batch.GetRowSpan(0)[1].AsInteger);
-        Assert.Equal(3L, batch.GetRowSpan(1)[0].AsInteger);
-        Assert.Equal(33L, batch.GetRowSpan(1)[1].AsInteger);
-        Assert.Equal(4L, batch.GetRowSpan(2)[0].AsInteger);
-        Assert.Equal(44L, batch.GetRowSpan(2)[1].AsInteger);
+        var firstBatch = ((IBatchOperator)op).CurrentBatch;
+        Assert.Equal(1, firstBatch.Count);
+        Assert.Equal(2L, firstBatch.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(22L, firstBatch.GetRowSpan(0)[1].AsInteger);
+
+        Assert.True(await op.MoveNextBatchAsync(ct));
+
+        var secondBatch = ((IBatchOperator)op).CurrentBatch;
+        Assert.Equal(2, secondBatch.Count);
+        Assert.Equal(3L, secondBatch.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(33L, secondBatch.GetRowSpan(0)[1].AsInteger);
+        Assert.Equal(4L, secondBatch.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(44L, secondBatch.GetRowSpan(1)[1].AsInteger);
+        Assert.False(await op.MoveNextBatchAsync(ct));
     }
 
     private static RowBatch CreateBatch(params DbValue[][] rows)

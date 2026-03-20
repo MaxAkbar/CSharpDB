@@ -209,6 +209,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         await _device.FlushAsync(ct);
         _buffers.SetCached(0, page0);
         RefreshPageReadProviderMapping();
+        if (!_wal.IsOpen)
+            await _wal.OpenAsync(PageCount, ct);
     }
 
     private async ValueTask ReadFileHeaderAsync(CancellationToken ct = default)
@@ -255,9 +257,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return _buffers.TryGetCachedPage(pageId);
     }
 
+    internal byte[]? TryGetCachedPageAndRecordRead(uint pageId)
+    {
+        return _buffers.TryGetCachedPageAndRecordRead(pageId);
+    }
+
     internal bool TryGetCachedPageReadBuffer(uint pageId, out PageReadBuffer page)
     {
         return _buffers.TryGetCachedPageReadBuffer(pageId, out page);
+    }
+
+    internal bool TryGetCachedPageReadBufferAndRecordRead(uint pageId, out PageReadBuffer page)
+    {
+        return _buffers.TryGetCachedPageReadBufferAndRecordRead(pageId, out page);
     }
 
     public ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
@@ -331,6 +343,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot begin transactions on a read-only snapshot pager.");
         await WaitForBackgroundCheckpointAsync(ct);
+        if (!_wal.IsOpen)
+            await _wal.OpenAsync(PageCount, ct);
         await _transactions!.BeginAsync(_wal, _options.WriterLockTimeout, ct);
     }
 

@@ -538,10 +538,11 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         Assert.True(matcher.TryBuildKeyFromValue("green", out long indexKey));
         byte[] payload = await binding.IndexStore.FindAsync(indexKey, ct)
             ?? throw new InvalidOperationException("Expected array collection index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, "green", out ReadOnlyMemory<byte> rowIdPayload));
 
         Assert.Single(matches);
         Assert.Equal("u:1", matches[0].Key);
-        Assert.Equal(1, RowIdPayloadCodec.GetCount(payload));
+        Assert.Equal(1, RowIdPayloadCodec.GetCount(rowIdPayload.Span));
     }
 
     [Fact]

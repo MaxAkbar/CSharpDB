@@ -9,6 +9,7 @@ namespace CSharpDB.Storage.Serialization;
 public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 {
     private readonly IRecordSerializer _inner;
+    private readonly bool _supportsDirectCollectionPayloads;
 
     public CollectionAwareRecordSerializer()
         : this(new DefaultRecordSerializer())
@@ -18,13 +19,14 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
     public CollectionAwareRecordSerializer(IRecordSerializer inner)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _supportsDirectCollectionPayloads = inner is DefaultRecordSerializer;
     }
 
     public byte[] Encode(ReadOnlySpan<DbValue> values) => _inner.Encode(values);
 
     public DbValue[] Decode(ReadOnlySpan<byte> buffer)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.Decode(buffer);
 
         return
@@ -39,7 +41,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeInto(buffer, destination);
 
         int decodeCount = Math.Min(2, destination.Length);
@@ -60,7 +62,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
         {
             _inner.DecodeSelectedInto(buffer, destination, selectedColumnIndices);
             return;
@@ -94,7 +96,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
         {
             _inner.DecodeSelectedCompactInto(buffer, destination, selectedColumnIndices);
             return;
@@ -116,7 +118,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeUpTo(buffer, maxColumnIndexInclusive);
 
         if (maxColumnIndexInclusive < 0)
@@ -133,7 +135,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public DbValue DecodeColumn(ReadOnlySpan<byte> buffer, int columnIndex)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeColumn(buffer, columnIndex);
 
         return columnIndex switch
@@ -146,7 +148,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public bool TryColumnTextEquals(ReadOnlySpan<byte> buffer, int columnIndex, ReadOnlySpan<byte> expectedUtf8, out bool equals)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.TryColumnTextEquals(buffer, columnIndex, expectedUtf8, out equals);
 
         equals = columnIndex switch
@@ -161,7 +163,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public bool IsColumnNull(ReadOnlySpan<byte> buffer, int columnIndex)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
             return _inner.IsColumnNull(buffer, columnIndex);
 
         return columnIndex is not 0 and not 1;
@@ -174,7 +176,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         out double realValue,
         out bool isReal)
     {
-        if (!CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
             return _inner.TryDecodeNumericColumn(buffer, columnIndex, out intValue, out realValue, out isReal);
 
         intValue = 0;

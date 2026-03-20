@@ -195,7 +195,7 @@ public sealed class HybridDatabaseTests : IDisposable
 
         Assert.Equal(10L, cachedRow[0].AsInteger);
         Assert.Equal(0, interceptor.GetReadSourceCount(PageReadSource.StorageDevice));
-        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0);
+        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0, interceptor.DescribeReadSources());
     }
 
     [Fact]
@@ -332,7 +332,7 @@ public sealed class HybridDatabaseTests : IDisposable
 
         Assert.Equal(10L, row[0].AsInteger);
         Assert.Equal(0, interceptor.GetReadSourceCount(PageReadSource.StorageDevice));
-        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0);
+        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0, interceptor.DescribeReadSources());
     }
 
     [Fact]
@@ -408,7 +408,7 @@ public sealed class HybridDatabaseTests : IDisposable
 
         Assert.Equal(10L, rereadRow[0].AsInteger);
         Assert.Equal(0, interceptor.GetReadSourceCount(PageReadSource.StorageDevice));
-        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0);
+        Assert.True(interceptor.GetReadSourceCount(PageReadSource.Cache) > 0, interceptor.DescribeReadSources());
     }
 
     [Fact]
@@ -484,11 +484,26 @@ public sealed class HybridDatabaseTests : IDisposable
 
     private static void CopyDatabaseFiles(string sourcePath, string destinationPath)
     {
-        File.WriteAllBytes(destinationPath, File.ReadAllBytes(sourcePath));
+        CopyFileAllowingSharedWrites(sourcePath, destinationPath);
 
         string sourceWalPath = sourcePath + ".wal";
         if (File.Exists(sourceWalPath))
-            File.WriteAllBytes(destinationPath + ".wal", File.ReadAllBytes(sourceWalPath));
+            CopyFileAllowingSharedWrites(sourceWalPath, destinationPath + ".wal");
+    }
+
+    private static void CopyFileAllowingSharedWrites(string sourcePath, string destinationPath)
+    {
+        using var source = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var destination = new FileStream(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None);
+        source.CopyTo(destination);
     }
 
     private static void TryDelete(string path)
@@ -573,5 +588,13 @@ public sealed class HybridDatabaseTests : IDisposable
 
         public int GetReadSourceCount(PageReadSource source)
             => _readSources.TryGetValue(source, out int count) ? count : 0;
+
+        public string DescribeReadSources()
+        {
+            return string.Join(
+                ", ",
+                Enum.GetValues<PageReadSource>()
+                    .Select(source => $"{source}={GetReadSourceCount(source)}"));
+        }
     }
 }

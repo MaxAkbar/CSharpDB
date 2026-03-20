@@ -941,7 +941,9 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.IsType<ScalarAggregateOperator>(GetRootOperator(result));
+        // The planner now uses the specialized ScalarAggregateTableOperator fast path
+        // for single-aggregate queries over a simple table scan.
+        Assert.IsType<ScalarAggregateTableOperator>(GetRootOperator(result));
 
         var rows = await result.ToListAsync(ct);
         Assert.Single(rows);
@@ -1314,9 +1316,11 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
+        // The planner now pushes the filter into the TableScanOperator as a pre-decode
+        // filter, so the root operator is TableScanOperator rather than a separate FilterOperator.
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterOperator>(GetStoredOperator(result));
-        Assert.IsType<FilterOperator>(GetRootOperator(result));
+        Assert.IsType<TableScanOperator>(GetStoredOperator(result));
+        Assert.IsType<TableScanOperator>(GetRootOperator(result));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -1431,8 +1435,10 @@ public class IntegrationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.False(UsesDirectBatchStorage(result));
-        Assert.IsType<IndexOrderedScanOperator>(GetRootOperator(result));
+        // For uncovered SELECT * without LIMIT, the planner currently prefers a sort over
+        // an index-ordered lookup path that would require random table fetches.
+        var rootOp = GetRootOperator(result);
+        Assert.IsType<SortOperator>(rootOp);
 
         var rows = await result.ToListAsync(ct);
         Assert.Equal(new long[] { 10, 20, 30 }, rows.Select(r => r[1].AsInteger).ToArray());

@@ -33,7 +33,7 @@ internal static class CollectionPayloadCodec
 
             return TryReadBinaryHeader(payload, out header);
         }
-        catch (Exception ex) when (ex is ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is CSharpDbException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
         {
             header = default;
             return false;
@@ -181,7 +181,7 @@ internal static class CollectionPayloadCodec
 
             return false;
         }
-        catch (Exception ex) when (ex is ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is CSharpDbException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
         {
             return false;
         }

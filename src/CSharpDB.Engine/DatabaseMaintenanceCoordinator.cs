@@ -15,8 +15,6 @@ public static class DatabaseMaintenanceCoordinator
     private const string CollectionIndexPrefix = "_cidx_";
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
-    private const string ProcedureEnabledIndexName = "idx___procedures_is_enabled";
-    private const string SavedQueryNameIndexName = "idx___saved_queries_name";
 
     public static async ValueTask<DatabaseMaintenanceReport> GetMaintenanceReportAsync(
         string databasePath,
@@ -146,7 +144,6 @@ public static class DatabaseMaintenanceCoordinator
         StorageEngineContext? destination = null;
         DatabaseInspectReport? beforeReport = null;
         bool deleteBackupFiles = false;
-        ClientMetadataSnapshot metadataSnapshot = await ReadClientMetadataSnapshotAsync(fullPath, ct);
 
         try
         {
@@ -158,6 +155,7 @@ public static class DatabaseMaintenanceCoordinator
             try
             {
                 await CopyDatabaseAsync(source, destination, ct);
+                await destination.Catalog.PersistDirtyTableStatisticsAsync(ct);
                 await destination.Catalog.PersistAllRootPageChangesAsync(ct);
                 await destination.Pager.CommitAsync(ct);
             }
@@ -170,7 +168,11 @@ public static class DatabaseMaintenanceCoordinator
             await destination.Pager.DisposeAsync();
             destination = null;
 
-            await RestoreClientMetadataAsync(tempPath, metadataSnapshot, ct);
+            // The vacuum copy path (CopyDatabaseAsync → CopyMetadataTableRowsAsync) already
+            // preserves __saved_queries and __procedures rows with correct row counts.
+            // Calling RestoreClientMetadataAsync here would DELETE+INSERT the same data,
+            // triggering row-count guard violations. Skip the restore since the copy
+            // handles metadata preservation.
 
             await source.Pager.DisposeAsync();
             source = null;
@@ -641,185 +643,6 @@ public static class DatabaseMaintenanceCoordinator
         return string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase);
     }
-
-    private static async ValueTask<ClientMetadataSnapshot> ReadClientMetadataSnapshotAsync(string databasePath, CancellationToken ct)
-    {
-        await using var db = await Database.OpenAsync(databasePath, ct);
-        return new ClientMetadataSnapshot(
-            await ReadSavedQueriesAsync(db, ct),
-            await ReadProceduresAsync(db, ct));
-    }
-
-    private static async ValueTask<IReadOnlyList<SavedQueryRow>> ReadSavedQueriesAsync(Database db, CancellationToken ct)
-    {
-        try
-        {
-            await using var result = await db.ExecuteAsync(
-                $"SELECT id, name, sql_text, created_utc, updated_utc FROM {SavedQueryTableName} ORDER BY id;",
-                ct);
-            var rows = await result.ToListAsync(ct);
-            return rows.Select(row => new SavedQueryRow(
-                row[0].AsInteger,
-                row[1].AsText,
-                row[2].AsText,
-                row[3].AsText,
-                row[4].AsText)).ToArray();
-        }
-        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TableNotFound)
-        {
-            return [];
-        }
-    }
-
-    private static async ValueTask<IReadOnlyList<ProcedureRow>> ReadProceduresAsync(Database db, CancellationToken ct)
-    {
-        try
-        {
-            await using var result = await db.ExecuteAsync(
-                $"SELECT name, body_sql, params_json, description, is_enabled, created_utc, updated_utc FROM {ProcedureTableName} ORDER BY name;",
-                ct);
-            var rows = await result.ToListAsync(ct);
-            return rows.Select(row => new ProcedureRow(
-                row[0].AsText,
-                row[1].AsText,
-                row[2].AsText,
-                row[3].IsNull ? null : row[3].AsText,
-                !row[4].IsNull && row[4].AsInteger != 0,
-                row[5].AsText,
-                row[6].AsText)).ToArray();
-        }
-        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TableNotFound)
-        {
-            return [];
-        }
-    }
-
-    private static async ValueTask RestoreClientMetadataAsync(
-        string databasePath,
-        ClientMetadataSnapshot snapshot,
-        CancellationToken ct)
-    {
-        if (snapshot.SavedQueries.Count == 0 && snapshot.Procedures.Count == 0)
-            return;
-
-        await using var db = await Database.OpenAsync(databasePath, ct);
-        await db.BeginTransactionAsync(ct);
-        try
-        {
-            await EnsureClientMetadataTablesAsync(db, ct);
-            await ExecuteStatementAsync(db, $"DELETE FROM {SavedQueryTableName};", ct);
-            await ExecuteStatementAsync(db, $"DELETE FROM {ProcedureTableName};", ct);
-
-            foreach (var savedQuery in snapshot.SavedQueries)
-            {
-                await ExecuteStatementAsync(
-                    db,
-                    $"""
-                    INSERT INTO {SavedQueryTableName} (id, name, sql_text, created_utc, updated_utc)
-                    VALUES ({savedQuery.Id}, {FormatSqlLiteral(savedQuery.Name)}, {FormatSqlLiteral(savedQuery.SqlText)}, {FormatSqlLiteral(savedQuery.CreatedUtc)}, {FormatSqlLiteral(savedQuery.UpdatedUtc)});
-                    """,
-                    ct);
-            }
-
-            foreach (var procedure in snapshot.Procedures)
-            {
-                string descriptionLiteral = procedure.Description is null ? "NULL" : FormatSqlLiteral(procedure.Description);
-                await ExecuteStatementAsync(
-                    db,
-                    $"""
-                    INSERT INTO {ProcedureTableName} (name, body_sql, params_json, description, is_enabled, created_utc, updated_utc)
-                    VALUES ({FormatSqlLiteral(procedure.Name)}, {FormatSqlLiteral(procedure.BodySql)}, {FormatSqlLiteral(procedure.ParamsJson)}, {descriptionLiteral}, {(procedure.IsEnabled ? 1 : 0)}, {FormatSqlLiteral(procedure.CreatedUtc)}, {FormatSqlLiteral(procedure.UpdatedUtc)});
-                    """,
-                    ct);
-            }
-
-            await db.CommitAsync(ct);
-        }
-        catch
-        {
-            await db.RollbackAsync(ct);
-            throw;
-        }
-    }
-
-    private static async ValueTask EnsureClientMetadataTablesAsync(Database db, CancellationToken ct)
-    {
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE TABLE IF NOT EXISTS {ProcedureTableName} (
-                name TEXT PRIMARY KEY,
-                body_sql TEXT NOT NULL,
-                params_json TEXT NOT NULL,
-                description TEXT,
-                is_enabled INTEGER NOT NULL,
-                created_utc TEXT NOT NULL,
-                updated_utc TEXT NOT NULL
-            );
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE INDEX IF NOT EXISTS {ProcedureEnabledIndexName}
-            ON {ProcedureTableName} (is_enabled);
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE TABLE IF NOT EXISTS {SavedQueryTableName} (
-                id INTEGER PRIMARY KEY IDENTITY,
-                name TEXT NOT NULL,
-                sql_text TEXT NOT NULL,
-                created_utc TEXT NOT NULL,
-                updated_utc TEXT NOT NULL
-            );
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE UNIQUE INDEX IF NOT EXISTS {SavedQueryNameIndexName}
-            ON {SavedQueryTableName} (name);
-            """,
-            ct);
-    }
-
-    private static string FormatSqlLiteral(string value)
-    {
-        return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
-    }
-
-    private static async ValueTask ExecuteStatementAsync(Database db, string sql, CancellationToken ct)
-    {
-        await using var result = await db.ExecuteAsync(sql, ct);
-        if (result.IsQuery)
-            _ = await result.ToListAsync(ct);
-    }
-
-    private sealed record ClientMetadataSnapshot(
-        IReadOnlyList<SavedQueryRow> SavedQueries,
-        IReadOnlyList<ProcedureRow> Procedures);
-
-    private sealed record SavedQueryRow(
-        long Id,
-        string Name,
-        string SqlText,
-        string CreatedUtc,
-        string UpdatedUtc);
-
-    private sealed record ProcedureRow(
-        string Name,
-        string BodySql,
-        string ParamsJson,
-        string? Description,
-        bool IsEnabled,
-        string CreatedUtc,
-        string UpdatedUtc);
 
     private static void TryDeleteFile(string path)
     {

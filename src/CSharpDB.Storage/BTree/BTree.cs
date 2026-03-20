@@ -261,7 +261,7 @@ public sealed class BTree
         {
             if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
             {
-                var hintPage = _pager.TryGetCachedPage(_hintLeafPageId);
+                var hintPage = _pager.TryGetCachedPageAndRecordRead(_hintLeafPageId);
                 if (hintPage == null)
                     return false;
 
@@ -284,7 +284,7 @@ public sealed class BTree
             uint mutablePageId = _rootPageId;
             while (true)
             {
-                var page = _pager.TryGetCachedPage(mutablePageId);
+                var page = _pager.TryGetCachedPageAndRecordRead(mutablePageId);
                 if (page == null)
                     return false;
 
@@ -311,7 +311,7 @@ public sealed class BTree
         // Try leaf hint cache first
         if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
         {
-            if (!_pager.TryGetCachedPageReadBuffer(_hintLeafPageId, out var hintPage))
+            if (!_pager.TryGetCachedPageReadBufferAndRecordRead(_hintLeafPageId, out var hintPage))
                 return false; // cache miss → fallback
 
             var hintSp = new ReadOnlySlottedPage(hintPage.Memory, _hintLeafPageId);
@@ -333,7 +333,7 @@ public sealed class BTree
         uint pageId = _rootPageId;
         while (true)
         {
-            if (!_pager.TryGetCachedPageReadBuffer(pageId, out var page))
+            if (!_pager.TryGetCachedPageReadBufferAndRecordRead(pageId, out var page))
                 return false; // cache miss → fallback
 
             var sp = new ReadOnlySlottedPage(page.Memory, pageId);

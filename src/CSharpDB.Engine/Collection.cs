@@ -9,6 +9,14 @@ using CSharpDB.Storage.Serialization;
 namespace CSharpDB.Engine;
 
 /// <summary>
+/// Internal interface for refreshing collection tree references after rollback.
+/// </summary>
+internal interface ICollectionTreeRefresh
+{
+    void RefreshTreeFromCatalog();
+}
+
+/// <summary>
 /// A typed document collection backed by a B+tree.
 /// Documents are serialized as JSON and stored with string keys hashed to long B+tree keys.
 /// Provides a NoSQL-style API that bypasses the SQL parser/planner entirely.
@@ -17,7 +25,7 @@ namespace CSharpDB.Engine;
 [RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
 public sealed class Collection<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
-    T>
+    T> : ICollectionTreeRefresh
 {
     private const int MaxProbeDistance = 128;
     private const string CollectionIndexPrefix = "_cidx_";
@@ -25,7 +33,7 @@ public sealed class Collection<
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly string _catalogTableName;
-    private readonly BTree _tree;
+    private BTree _tree;
     private readonly Func<bool> _isInTransaction;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
@@ -49,6 +57,16 @@ public sealed class Collection<
         _isInTransaction = isInTransaction;
         _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
         _observedSchemaVersion = catalog.SchemaVersion;
+        ReloadCollectionIndexes();
+    }
+
+    /// <summary>
+    /// Refresh the underlying BTree reference from the catalog after rollback.
+    /// </summary>
+    void ICollectionTreeRefresh.RefreshTreeFromCatalog()
+    {
+        _tree = _catalog.GetTableTree(_catalogTableName);
+        _observedSchemaVersion = _catalog.SchemaVersion;
         ReloadCollectionIndexes();
     }
 
@@ -1114,11 +1132,9 @@ public sealed class Collection<
         await _pager.BeginTransactionAsync(ct);
         try
         {
-            uint rootBefore = _tree.RootPageId;
             await action();
-            uint rootAfter = _tree.RootPageId;
-            if (rootBefore != rootAfter || _indexes.Count > 0)
-                await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            await _catalog.PersistDirtyTableStatisticsAsync(ct);
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
             await _afterImplicitCommitAsync(ct);
         }

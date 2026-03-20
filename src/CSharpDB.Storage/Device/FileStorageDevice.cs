@@ -15,7 +15,7 @@ public sealed class FileStorageDevice : IStorageDevice
             filePath,
             createNew ? FileMode.CreateNew : FileMode.OpenOrCreate,
             FileAccess.ReadWrite,
-            FileShare.Read,
+            FileShare.ReadWrite,
             FileOptions.Asynchronous | FileOptions.RandomAccess);
 
         _sequentialReadHandle = new Lazy<SafeFileHandle?>(CreateSequentialReadHandle, isThreadSafe: true);
@@ -81,7 +81,7 @@ public sealed class FileStorageDevice : IStorageDevice
                 _filePath,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.Read,
+                FileShare.ReadWrite,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
         }
         catch

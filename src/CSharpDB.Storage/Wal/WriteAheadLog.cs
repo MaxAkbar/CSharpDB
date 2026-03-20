@@ -77,6 +77,9 @@ public sealed class WriteAheadLog : IWriteAheadLog
     /// </summary>
     public async ValueTask OpenAsync(uint currentDbPageCount, CancellationToken cancellationToken = default)
     {
+        if (_stream != null)
+            return;
+
         if (File.Exists(_walPath))
         {
             await RecoverAsync(cancellationToken);
@@ -98,7 +101,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _index.Reset();
 
             _stream = new FileStream(_walPath, FileMode.Create, FileAccess.ReadWrite,
-                FileShare.Read, bufferSize: WalStreamBufferSize, useAsync: true);
+                FileShare.ReadWrite, bufferSize: WalStreamBufferSize, useAsync: true);
 
             _salt1 = (uint)Random.Shared.Next();
             _salt2 = (uint)Random.Shared.Next();
@@ -319,7 +322,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _index.Reset();
 
             _stream = new FileStream(_walPath, FileMode.Open, FileAccess.ReadWrite,
-                FileShare.Read, bufferSize: WalStreamBufferSize, useAsync: true);
+                FileShare.ReadWrite, bufferSize: WalStreamBufferSize, useAsync: true);
 
             var header = _walHeaderBuffer;
             if (await _stream.ReadAsync(header.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken) != PageConstants.WalHeaderSize)
