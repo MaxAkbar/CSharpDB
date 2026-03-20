@@ -126,8 +126,6 @@ CSharpDB.GraphDB/
 │   │   └── PrefixedReplCommand.cs
 │   └── Repl/
 │       └── ReplHost.cs
-├── wwwroot/
-│   └── index.html                # Web dashboard (force-directed graph, traversal UI)
 └── Program.cs                    # Entry point
 ```
 

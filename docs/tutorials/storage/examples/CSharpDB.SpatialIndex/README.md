@@ -110,8 +110,6 @@ CSharpDB.SpatialIndex/
 │   │   └── PrefixedReplCommand.cs
 │   └── Repl/
 │       └── ReplHost.cs
-├── wwwroot/
-│   └── index.html               # Web dashboard (canvas scatter plot, query forms)
 └── Program.cs                    # Entry point
 ```
 

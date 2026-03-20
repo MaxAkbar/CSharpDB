@@ -204,5 +204,3 @@ It is a better fit than trying to remove reflection from "the whole engine" beca
 ## See Also
 
 - [Roadmap](../roadmap.md)
-- [Advanced Collection Storage Plan](../advanced-collection-storage/README.md)
-- [Performance Phasing Plan](../performance-phasing/README.md)

@@ -331,8 +331,6 @@ CSharpDB.TimeSeries/
 │   ├── Commands/                      # REPL command implementations
 │   └── Repl/
 │       └── ReplHost.cs                # Interactive command loop
-├── wwwroot/
-│   └── index.html                     # Single-page dashboard with canvas chart
 ├── Program.cs                         # Entry point (CLI or serve mode)
 └── CSharpDB.TimeSeries.csproj
 ```

@@ -258,8 +258,6 @@ CSharpDB.VirtualFS/
 │   ├── Commands/                          # REPL command implementations
 │   └── Repl/
 │       └── ReplHost.cs                    # Interactive command loop
-├── wwwroot/
-│   └── index.html                         # Single-page web dashboard
 ├── Program.cs                             # Entry point (CLI or serve mode)
 └── CSharpDB.VirtualFS.csproj
 ```

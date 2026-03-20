@@ -1,55 +1,59 @@
 # What's New
 
-## v2.0.1 (Unreleased)
+## v2.2.0 (Unreleased)
 
-### NuGet README Link Rewriting
+### SQL Read-Path Performance
 
-- Added `scripts/fix-nuget-readme-links.sh` — a pre-pack step that rewrites relative markdown links in project README files to absolute GitHub blob URLs so they resolve correctly when displayed on NuGet.org.
-- The release workflow passes the git tag (e.g. `v2.0.1`) as the blob ref, so NuGet README links point to the exact tagged source.
-- The CI workflow uses `main` as the ref for artifact-only packs.
-- Links to docs, sibling projects, and local source files are all rewritten; absolute URLs, anchors, and badge images are left unchanged.
+- Added storage read-path optimizations for pager and WAL hot paths.
+- Narrowed reader and write-path regressions introduced during earlier tuning.
+- Reduced insert metadata churn and front-door overhead.
+- Expanded composite and grouped index fast paths.
+- Added composite grouped index aggregates for single-pass grouped queries.
+- Broadened join lookup and covered join paths to reduce intermediate row copies.
+- Optimized correlated `EXISTS` and `IN` filter evaluation.
+- Optimized correlated `NOT IN` filters.
+- Fused scan filter and projection paths to avoid unnecessary row materialization.
+- Added filtered scalar aggregate fast path for single-pass aggregate queries.
+- Added compact scan projection path and compact indexed range projection paths.
+- Batched compact scan expression projections.
+- Batched generic expression projection operators.
+- Extended batch transport through generic projections.
+- Batched aggregate and join consumers.
+- Checkpoint SQL batched transport groundwork (internal executor-level batching; the full public batch transport is forward-looking design work).
 
-### Visual Query Designer
+### Collection Storage and Indexing
 
-- Added a **Designer mode** toggle to the existing query tab, alongside the existing SQL mode. Switching to Designer opens the visual query builder without leaving the query workspace.
-- Added a source canvas with draggable table node cards. Each card lists the table's columns with type labels and primary-key indicators. Nodes can be repositioned by dragging the header.
-- Added SVG bezier join lines rendered over the canvas. Lines are clickable to open an inline edit popup for changing join type (`INNER`, `LEFT`, `RIGHT`, `FULL OUTER`) or removing the join.
-- Added an **Add Join** dialog in the designer toolbar that lets users pick left table/column, right table/column, and join type without drawing lines by hand.
-- Added a design grid with per-column rows covering: `Column`, `Alias`, `Table`, output toggle (`Out`), sort direction, sort order number, and filter expression. Checking a column on the canvas automatically adds it to the grid; unchecking removes it.
-- Added a live SQL preview panel below the design grid that updates on every state change and displays the `SELECT … FROM … JOIN … WHERE … ORDER BY` statement the designer would produce.
-- Added collapsible section headers for the Canvas, Design Grid, and Results sections so users can focus on the area they need.
-- Added save and load for designer layouts stored as named entries in the existing saved-query store using the `__designer_layout:` prefix. Saved layouts are filtered out of the regular saved-query dropdown in SQL mode.
-- Added **Copy SQL to Editor** button that sends the generated SQL to the SQL editor and switches the tab back to SQL mode.
-- Added `QueryDesignerState`, `DesignerTableNode`, `DesignerColumn`, `DesignerJoin`, and `DesignerGridRow` model classes in `CSharpDB.Admin`.
-- Added `QueryDesignerSqlBuilder` — a pure static SQL generator that converts the designer state into a valid `SELECT` statement.
-- Designer state is persisted to `TabDescriptor.State` so it survives tab switching within the same session.
-- JS drag is handled by a single set of document-level `mousedown` / `mousemove` / `mouseup` listeners initialized once on first render, avoiding re-render interference between Blazor's SignalR cycle and active drag operations.
+- Added binary collection payload read path and faster binary collection hydration.
+- Added path-based collection index APIs (`EnsureIndexAsync`, `FindByPathAsync`, `FindByPathRangeAsync`).
+- Added multi-value array collection indexes for terminal array-element indexing.
+- Added collection path query API with string-path forms such as `FindByPathAsync("$.address.city", ...)` and `FindByPathAsync("$.tags[]", ...)`.
+- Added collection path range queries for integer and text paths.
+- Added nested array path collection indexes for `$.orders[].sku`-style paths.
+- Added ordered text collection indexes for index-backed text equality and text range queries.
+- Added Guid and temporal (DateTime) collection path indexing.
 
-## v2.0.0 (Unreleased)
+### Hybrid Storage Mode
 
-### SQL Query Expansion
-- Added `UNION`, `INTERSECT`, and `EXCEPT` for combining `SELECT` results, including use inside top-level queries, views, and CTE query bodies.
-- Added scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`.
-- Added correlated subquery evaluation for `WHERE`, non-aggregate projection expressions, and `UPDATE`/`DELETE` expressions.
-- Correlated subqueries are still rejected in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections, and `UNION ALL` is not implemented yet.
+- Redesigned hybrid mode around lazy-resident durable storage.
+- Added gRPC tunable file-cache hybrid mode documentation and configuration options.
 
-### Statistics And Planning
-- Added `sys.column_stats` alongside `sys.table_stats`.
-- Added exact `distinct_count`, `non_null_count`, `min_value`, and `max_value` refresh during `ANALYZE`.
-- Added stale tracking for persisted column stats after writes, with rollback/reopen and VACUUM copy preserving catalog correctness.
-- Added initial planner use of fresh column stats to avoid obviously low-selectivity non-unique equality lookups and prefer more selective lookup terms.
+### Client-Wide Backup and Restore
 
-### Client Transport Completion
-- Added the REST-backed `Http` transport implementation for `CSharpDB.Client`, so the unified client now has working Direct, HTTP, and gRPC paths.
-- Completed the API coverage needed by the HTTP client for collections, saved queries, procedures, transaction sessions, checkpointing, maintenance, and storage inspection flows.
-- Updated client/CLI endpoint resolution so `http://` and `https://` endpoints map cleanly to the dedicated `CSharpDB.Api` host, while `CSharpDB.Daemon` remains the gRPC host.
+- `ICSharpDbClient` now exposes `BackupAsync` and `RestoreAsync` as first-class operations.
+- Backup and restore work across Direct, HTTP, gRPC, CLI, and Admin flows.
+- `CSharpDB.Api` exposes `/api/maintenance/backup` and `/api/maintenance/restore`.
+- CLI `.backup` / `.restore` now route through `ICSharpDbClient` instead of calling engine helpers directly.
 
-### Breaking Transport Cleanup
-- Removed the unsupported `Tcp` transport placeholder from the public client transport model, CLI parsing, and related docs so the contract matches the transports that actually exist.
-- Left `NamedPipes` as the only planned additional client transport for future same-machine daemon scenarios.
+### Index Store
 
-### Compatibility Surface Cleanup
-- Removed the legacy `CSharpDB.Service` and `CSharpDB.Core` compatibility projects from the `v2.0` repo and solution.
-- Removed `CSharpDB.Service` from the all-in-one `CSharpDB` package so the `v2.0` entry package only pulls in the primary client, engine, ADO.NET, and diagnostics surface.
-- Updated the active docs to point legacy consumers directly to `CSharpDB.Client` and `CSharpDB.Primitives`.
+- Implemented `ReplaceAsync` method for index stores and updated related logic across the codebase.
 
+### Documentation and Maintenance
+
+- Added SQL batched row transport design document (forward-looking design for next phase).
+- Refreshed architecture docs and published storage advanced examples.
+- Expanded v2.2.0 collection release notes and broadened v2.2.0 release notes.
+- Added benchmark results for CSharpDB v2.2 and v2.0 comparison results.
+- Cleaned up trim warnings and normalized line endings.
+- Updated `.gitignore` to include `tmp/` directory.
+- Deleted old benchmarks.

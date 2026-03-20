@@ -124,6 +124,65 @@ foreach (var statement in SqlScriptSplitter.SplitExecutableStatements(workbook))
     await client.ExecuteSqlAsync(statement);
 ```
 
+## v2.2.0 API Examples
+
+The SQL samples above cover the relational surface. The following snippets show v2.2.0 features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
+
+### Collection Path Indexing and Queries
+
+Collection path indexes and queries are engine-level APIs on `Database` and `Collection<T>`:
+
+```csharp
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("sample.db");
+var users = await db.GetCollectionAsync<User>("users");
+
+// Create path indexes
+await users.EnsureIndexAsync("Email");
+await users.EnsureIndexAsync("$.address.city");
+await users.EnsureIndexAsync("$.tags[]");
+await users.EnsureIndexAsync("$.orders[].sku");
+
+// Query by scalar path
+await foreach (var kv in users.FindByPathAsync<string>("$.address.city", "Seattle"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+
+// Query by array element path
+await foreach (var kv in users.FindByPathAsync<string>("$.tags[]", "premium"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+
+// Range query on an ordered text index
+await foreach (var kv in users.FindByPathRangeAsync<string>("Email", "a@", "m@"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+```
+
+### Backup and Restore
+
+Backup and restore are first-class `ICSharpDbClient` operations across Direct, HTTP, gRPC, and CLI:
+
+```csharp
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "production.db",
+});
+
+// Backup
+var backupResult = await client.BackupAsync(new BackupRequest
+{
+    DestinationPath = "backups/production-2026-03-19.db",
+});
+
+// Restore
+var restoreResult = await client.RestoreAsync(new RestoreRequest
+{
+    SourcePath = "backups/production-2026-03-19.db",
+});
+```
+
 ## Notes
 
 - The SQL samples are setup scripts, not migrations. Re-running them against the same database will fail on existing objects.
