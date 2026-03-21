@@ -24,10 +24,10 @@
         </button>
         <div class="toolbar-separator"></div>
         <div class="view-switcher">
-            <button class="@GetEditorModeClass(PipelineEditorMode.Visual)" @onclick="() => SetEditorMode(PipelineEditorMode.Visual)">
+            <button class="@GetEditorModeClass(PipelineEditorMode.Visual)" @onclick="() => SetEditorModeAsync(PipelineEditorMode.Visual)">
                 <i class="bi bi-diagram-3"></i> Visual
             </button>
-            <button class="@GetEditorModeClass(PipelineEditorMode.Json)" @onclick="() => SetEditorMode(PipelineEditorMode.Json)">
+            <button class="@GetEditorModeClass(PipelineEditorMode.Json)" @onclick="() => SetEditorModeAsync(PipelineEditorMode.Json)">
                 <i class="bi bi-braces"></i> JSON
             </button>
         </div>
@@ -59,7 +59,10 @@
             </div>
             @if (_editorMode == PipelineEditorMode.Visual)
             {
-                <PipelineDesigner PackageJson="_packageJson" PackageJsonChanged="OnPackageJsonChanged" />
+                <PipelineDesigner @ref="_designer"
+                                  @key="_designerReloadVersion"
+                                  PackageJson="@_visualPackageJson"
+                                  PackageJsonChanged="@OnPackageJsonChanged" />
             }
             else
             {
@@ -330,6 +333,7 @@
     private string? _error;
     private string? _message;
     private string _packageJson = string.Empty;
+    private string _visualPackageJson = string.Empty;
     private string _pipelineName = string.Empty;
     private PipelineRunResult? _result;
     private IReadOnlyList<PipelineRunResult> _runs = [];
@@ -343,26 +347,32 @@
     private PipelineRunResult? _selectedRunDetail;
     private IReadOnlyList<PipelineRejectRecord> _selectedRunRejects = [];
     private PipelineEditorMode _editorMode = PipelineEditorMode.Visual;
+    private PipelineDesigner? _designer;
+    private int _designerReloadVersion;
 
     protected override async Task OnParametersSetAsync()
     {
-        string? candidateJson = string.IsNullOrWhiteSpace(_packageJson)
-            ? Tab?.PipelinePackageJson
-            : _packageJson;
-        string normalizedJson = NormalizePackageJson(candidateJson, out var resetMessage);
-        if (!string.Equals(normalizedJson, _packageJson, StringComparison.Ordinal))
+        string? candidateJson = Tab?.PipelinePackageJson;
+        if (!string.IsNullOrWhiteSpace(candidateJson) && !string.Equals(candidateJson, _packageJson, StringComparison.Ordinal))
         {
-            _packageJson = normalizedJson;
-            _pipelineName = TryGetPackageName(_packageJson);
-            if (Tab is not null)
+            _packageJson = candidateJson;
+            if (TryGetPackageName(candidateJson) is { Length: > 0 } packageName)
             {
-                Tab.PipelinePackageJson = _packageJson;
+                _pipelineName = packageName;
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(resetMessage) && string.IsNullOrWhiteSpace(_error))
+        if (TryGetValidPackageJson(_packageJson, out var validPackageJson))
         {
-            _message = resetMessage;
+            if (!string.Equals(validPackageJson, _visualPackageJson, StringComparison.Ordinal))
+            {
+                _visualPackageJson = validPackageJson;
+                _designerReloadVersion++;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(_visualPackageJson) && _editorMode == PipelineEditorMode.Visual && string.IsNullOrWhiteSpace(_error))
+        {
+            _message = "No pipeline schema is loaded yet. Load a pipeline or enter a valid package JSON to use the visual designer.";
         }
 
         if (_runs.Count == 0)
@@ -384,7 +394,7 @@
 
         try
         {
-            PipelinePackageDefinition package = PipelinePackageSerializer.Deserialize(_packageJson);
+            PipelinePackageDefinition package = await GetCurrentPackageAsync();
             _pipelineName = string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName;
             var runner = new CSharpDbPipelineRunner(DbClient);
             _result = await runner.RunPackageAsync(package, mode);
@@ -416,26 +426,37 @@
         }
     }
 
-    private void ResetTemplate()
+    private async Task ResetTemplate()
     {
-        _packageJson = CreateDefaultTemplate();
-        _pipelineName = TryGetPackageName(_packageJson);
-        Tab?.PipelinePackageJson = _packageJson;
+        await SetLoadedPackageAsync(CreateDefaultTemplate());
         _result = null;
         _error = null;
         _message = null;
     }
 
-    private void SetEditorMode(PipelineEditorMode mode)
+    private async Task SetEditorModeAsync(PipelineEditorMode mode)
     {
         if (mode == PipelineEditorMode.Visual)
         {
-            _packageJson = NormalizePackageJson(_packageJson, out var resetMessage);
-            _pipelineName = TryGetPackageName(_packageJson);
-            Tab?.PipelinePackageJson = _packageJson;
-            if (!string.IsNullOrWhiteSpace(resetMessage))
+            if (TryGetValidPackageJson(_packageJson, out var validPackageJson))
             {
-                _message = resetMessage;
+                if (!string.Equals(validPackageJson, _visualPackageJson, StringComparison.Ordinal))
+                {
+                    _visualPackageJson = validPackageJson;
+                    _designerReloadVersion++;
+                }
+
+                _pipelineName = TryGetPackageName(validPackageJson);
+                Tab?.PipelinePackageJson = _packageJson;
+                await SyncDesignerAsync();
+            }
+            else if (string.IsNullOrWhiteSpace(_visualPackageJson))
+            {
+                _message = "No pipeline schema is loaded yet. Load a pipeline or enter a valid package JSON to use the visual designer.";
+            }
+            else
+            {
+                _message = "Current JSON is not a valid ETL package. The visual designer is showing the last loaded schema.";
             }
         }
 
@@ -448,6 +469,7 @@
     private Task OnPackageJsonChanged(string json)
     {
         _packageJson = json;
+        _visualPackageJson = json;
         _pipelineName = TryGetPackageName(json);
         if (Tab is not null)
         {
@@ -505,7 +527,7 @@
 
         try
         {
-            PipelinePackageDefinition package = PipelinePackageSerializer.Deserialize(_packageJson);
+            PipelinePackageDefinition package = await GetCurrentPackageAsync();
             var catalog = new CSharpDbPipelineCatalogClient(DbClient);
             var summary = await catalog.SavePipelineAsync(package, string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName);
             _pipelineName = summary.Name;
@@ -540,9 +562,7 @@
                 return;
             }
 
-            _packageJson = PipelinePackageSerializer.Serialize(package);
-            _pipelineName = name;
-            Tab?.PipelinePackageJson = _packageJson;
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), name);
             _message = $"Loaded pipeline {name}.";
             await SelectPipelineAsync(name);
         }
@@ -650,11 +670,9 @@
                 return;
             }
 
-            _packageJson = PipelinePackageSerializer.Serialize(package);
-            _pipelineName = package.Name;
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), package.Name);
             _selectedPipelineName = name;
             _selectedPipelineRevision = revision;
-            Tab?.PipelinePackageJson = _packageJson;
             _message = $"Loaded pipeline {name} revision {revision}.";
         }
         catch (Exception ex)
@@ -739,9 +757,7 @@
                 return;
             }
 
-            _packageJson = PipelinePackageSerializer.Serialize(package);
-            _pipelineName = package.Name;
-            Tab?.PipelinePackageJson = _packageJson;
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), package.Name);
             _editorMode = PipelineEditorMode.Visual;
             _message = $"Loaded package from run {runId} into the editor.";
             await SelectRunAsync(runId);
@@ -810,26 +826,62 @@
         }
     }
 
-    private static string NormalizePackageJson(string? json, out string? resetMessage)
+    private async Task<PipelinePackageDefinition> GetCurrentPackageAsync()
+    {
+        string currentJson = _editorMode == PipelineEditorMode.Visual && _designer is not null
+            ? await _designer.GetPackageJsonAsync()
+            : _packageJson;
+
+        if (!TryGetValidPackageJson(currentJson, out var validPackageJson))
+        {
+            throw new InvalidOperationException("Current package JSON is not a valid ETL package.");
+        }
+
+        _packageJson = validPackageJson;
+        _visualPackageJson = validPackageJson;
+        _pipelineName = TryGetPackageName(_packageJson);
+        if (Tab is not null)
+        {
+            Tab.PipelinePackageJson = _packageJson;
+        }
+
+        return PipelinePackageSerializer.Deserialize(_packageJson);
+    }
+
+    private async Task SetLoadedPackageAsync(string json, string? packageName = null)
+    {
+        _packageJson = json;
+        _visualPackageJson = json;
+        _pipelineName = string.IsNullOrWhiteSpace(packageName) ? TryGetPackageName(json) : packageName;
+        Tab?.PipelinePackageJson = json;
+        _designerReloadVersion++;
+        await SyncDesignerAsync();
+    }
+
+    private async Task SyncDesignerAsync()
+    {
+        if (_editorMode == PipelineEditorMode.Visual && _designer is not null)
+        {
+            await _designer.LoadPackageJsonAsync(_visualPackageJson);
+        }
+    }
+
+    private static bool TryGetValidPackageJson(string? json, out string validPackageJson)
     {
         if (!string.IsNullOrWhiteSpace(json))
         {
             try
             {
-                _ = PipelinePackageSerializer.Deserialize(json);
-                resetMessage = null;
-                return json;
+                validPackageJson = PipelinePackageSerializer.Serialize(PipelinePackageSerializer.Deserialize(json));
+                return true;
             }
             catch
             {
-                // Fall through to reset with a safe template.
             }
         }
 
-        resetMessage = string.IsNullOrWhiteSpace(json)
-            ? null
-            : "The previous pipeline tab state was not a valid ETL package. The editor was reset to a new template.";
-        return CreateDefaultTemplate();
+        validPackageJson = string.Empty;
+        return false;
     }
 
     private enum PipelineEditorMode

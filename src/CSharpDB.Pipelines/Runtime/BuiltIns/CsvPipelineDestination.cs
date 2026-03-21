@@ -7,6 +7,7 @@ public sealed class CsvPipelineDestination : IPipelineDestination
     private readonly PipelineDestinationDefinition _definition;
     private string[]? _headers;
     private bool _headerWritten;
+    private string? _resolvedPath;
 
     public CsvPipelineDestination(PipelineDestinationDefinition definition)
     {
@@ -20,15 +21,17 @@ public sealed class CsvPipelineDestination : IPipelineDestination
             throw new InvalidOperationException("CSV destination path is required.");
         }
 
-        string? directory = Path.GetDirectoryName(_definition.Path);
+        _resolvedPath = PipelineFilePathResolver.ResolveOutputPath(_definition.Path);
+
+        string? directory = Path.GetDirectoryName(_resolvedPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        if (_definition.Overwrite && File.Exists(_definition.Path))
+        if (_definition.Overwrite && File.Exists(_resolvedPath))
         {
-            File.Delete(_definition.Path);
+            File.Delete(_resolvedPath);
         }
 
         return Task.CompletedTask;
@@ -43,7 +46,8 @@ public sealed class CsvPipelineDestination : IPipelineDestination
 
         _headers ??= batch.Rows[0].Keys.ToArray();
 
-        await using var stream = new FileStream(_definition.Path!, FileMode.Append, FileAccess.Write, FileShare.Read);
+        string path = _resolvedPath ?? PipelineFilePathResolver.ResolveOutputPath(_definition.Path!);
+        await using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
         await using var writer = new StreamWriter(stream);
 
         if (!_headerWritten)

@@ -85,6 +85,73 @@ public sealed class ClientPipelineRunnerTests
     }
 
     [Fact]
+    public async Task RunPackageAsync_AutoCastsCsvTextValues_ToDestinationSchema()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_test_{Guid.NewGuid():N}.db");
+        string csvPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_test_{Guid.NewGuid():N}.csv");
+
+        try
+        {
+            await File.WriteAllTextAsync(csvPath, "id,name,description\r\n6,Tablets,Touchscreen tablets and drawing tablets\r\n", ct);
+
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            await client.ExecuteSqlAsync("""
+                CREATE TABLE categories (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    description TEXT
+                );
+                """, ct);
+
+            var runner = new CSharpDbPipelineRunner(client);
+            PipelineRunResult result = await runner.RunPackageAsync(new PipelinePackageDefinition
+            {
+                Name = "csv-categories",
+                Version = "1.0.0",
+                Source = new PipelineSourceDefinition
+                {
+                    Kind = PipelineSourceKind.CsvFile,
+                    Path = csvPath,
+                    HasHeaderRow = true,
+                },
+                Destination = new PipelineDestinationDefinition
+                {
+                    Kind = PipelineDestinationKind.CSharpDbTable,
+                    TableName = "categories",
+                },
+                Options = new PipelineExecutionOptions
+                {
+                    BatchSize = 10,
+                    CheckpointInterval = 1,
+                    ErrorMode = PipelineErrorMode.FailFast,
+                    MaxRejects = 0,
+                },
+            }, ct: ct);
+
+            Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+
+            var query = await client.ExecuteSqlAsync("SELECT id, name, description FROM categories;", ct);
+            Assert.True(query.IsQuery);
+            Assert.NotNull(query.Rows);
+            Assert.Single(query.Rows);
+            Assert.Equal(6L, Convert.ToInt64(query.Rows[0][0]));
+            Assert.Equal("Tablets", query.Rows[0][1]);
+            Assert.Equal("Touchscreen tablets and drawing tablets", query.Rows[0][2]);
+        }
+        finally
+        {
+            DeleteIfExists(csvPath);
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task RunPackageAsync_WritesSqlQueryResults_ToJsonFile()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -315,6 +382,14 @@ public sealed class ClientPipelineRunnerTests
                     Kind = PipelineSourceKind.CSharpDbTable,
                     TableName = "customers_src",
                 },
+                Transforms =
+                [
+                    new PipelineTransformDefinition
+                    {
+                        Kind = PipelineTransformKind.Select,
+                        SelectColumns = ["id", "name", "status", "created_at"],
+                    },
+                ],
                 Destination = new PipelineDestinationDefinition
                 {
                     Kind = PipelineDestinationKind.CSharpDbTable,
@@ -339,6 +414,9 @@ public sealed class ClientPipelineRunnerTests
             var loaded = await catalog.GetPipelineAsync("stored-customers", ct);
             Assert.NotNull(loaded);
             Assert.Equal("Stored package", loaded!.Description);
+            Assert.Single(loaded.Transforms);
+            Assert.Equal(PipelineTransformKind.Select, loaded.Transforms[0].Kind);
+            Assert.Equal(["id", "name", "status", "created_at"], loaded.Transforms[0].SelectColumns);
 
             PipelineRunResult run = await catalog.RunStoredPipelineAsync("stored-customers", ct: ct);
             Assert.Equal(PipelineRunStatus.Succeeded, run.Status);

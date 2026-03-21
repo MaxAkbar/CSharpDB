@@ -3,6 +3,7 @@
 @using ClientModels = CSharpDB.Client.Models
 @using PrimitiveDbType = CSharpDB.Primitives.DbType
 @inject ICSharpDbClient DbClient
+@inject IWebHostEnvironment HostEnvironment
 
 <div class="pipeline-designer-shell">
     <aside class="pipeline-designer-toolbox">
@@ -119,11 +120,12 @@
                     {
                         @for (var i = 0; i < _state.Transforms.Count; i++)
                         {
+                            var transformIndex = i;
                             var transform = _state.Transforms[i];
                             <button type="button"
-                                    class="pipeline-transform-card @(IsSelectedTransform(i) ? "selected" : null)"
-                                    @onclick="() => SelectTransform(i)">
-                                <span class="pipeline-transform-order">@((i + 1).ToString())</span>
+                                    class="pipeline-transform-card @(IsSelectedTransform(transformIndex) ? "selected" : null)"
+                                    @onclick="() => SelectTransform(transformIndex)">
+                                <span class="pipeline-transform-order">@((transformIndex + 1).ToString())</span>
                                 <span class="pipeline-transform-icon"><i class="@GetTransformIcon(transform.Kind)"></i></span>
                                 <span class="pipeline-transform-copy">
                                     <strong>@GetTransformLabel(transform.Kind)</strong>
@@ -222,7 +224,7 @@
                                 <input class="schema-input mono"
                                        @bind="_state.Source.Path"
                                        @bind:event="oninput"
-                                       @bind:after="PublishPackageAsync" />
+                                       @bind:after="OnSourcePathChangedAsync" />
                             </div>
                         }
                         @if (_state.Source.Kind is PipelineSourceKind.CSharpDbTable)
@@ -273,9 +275,15 @@
                             <label class="schema-check">
                                 <input type="checkbox"
                                        @bind="_state.Source.HasHeaderRow"
-                                       @bind:after="PublishPackageAsync" />
+                                       @bind:after="OnCsvHeaderSettingsChangedAsync" />
                                 Header row present
                             </label>
+                            @if (_sourcePreviewError is not null)
+                            {
+                                <div class="query-error">
+                                    <i class="bi bi-exclamation-triangle"></i> @_sourcePreviewError
+                                </div>
+                            }
                         }
                     </div>
                     break;
@@ -293,23 +301,24 @@
                         {
                             @for (var i = 0; i < _state.Transforms.Count; i++)
                             {
+                                var transformIndex = i;
                                 var transform = _state.Transforms[i];
-                                <div class="pipeline-inspector-transform-row @(IsSelectedTransform(i) ? "selected" : null)">
-                                    <button type="button" class="pipeline-inspector-transform-main" @onclick="() => SelectTransform(i)">
-                                        <span class="pipeline-transform-order">@((i + 1).ToString())</span>
+                                <div class="pipeline-inspector-transform-row @(IsSelectedTransform(transformIndex) ? "selected" : null)">
+                                    <button type="button" class="pipeline-inspector-transform-main" @onclick="() => SelectTransform(transformIndex)">
+                                        <span class="pipeline-transform-order">@((transformIndex + 1).ToString())</span>
                                         <span>
                                             <strong>@GetTransformLabel(transform.Kind)</strong>
                                             <small>@GetTransformSummary(transform)</small>
                                         </span>
                                     </button>
                                     <div class="pipeline-inspector-transform-actions">
-                                        <button type="button" class="schema-icon-btn" title="Move up" disabled="@(i == 0)" @onclick="() => MoveTransform(i, -1)">
+                                        <button type="button" class="schema-icon-btn" title="Move up" disabled="@(transformIndex == 0)" @onclick="() => MoveTransform(transformIndex, -1)">
                                             <i class="bi bi-arrow-up"></i>
                                         </button>
-                                        <button type="button" class="schema-icon-btn" title="Move down" disabled="@(i == _state.Transforms.Count - 1)" @onclick="() => MoveTransform(i, 1)">
+                                        <button type="button" class="schema-icon-btn" title="Move down" disabled="@(transformIndex == _state.Transforms.Count - 1)" @onclick="() => MoveTransform(transformIndex, 1)">
                                             <i class="bi bi-arrow-down"></i>
                                         </button>
-                                        <button type="button" class="schema-icon-btn danger" title="Remove transform" @onclick="() => RemoveTransform(i)">
+                                        <button type="button" class="schema-icon-btn danger" title="Remove transform" @onclick="() => RemoveTransform(transformIndex)">
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </div>
@@ -319,7 +328,7 @@
 
                         @if (SelectedTransform is not null)
                         {
-                            <div class="pipeline-inspector-subsection">
+                            <div class="pipeline-inspector-subsection" @key="SelectedTransformIndex">
                                 <h4>@GetTransformLabel(SelectedTransform.Kind) Settings</h4>
                                 <p>@GetTransformDescription(SelectedTransform.Kind)</p>
 
@@ -339,9 +348,8 @@
                                         <div class="schema-field">
                                             <label>Columns</label>
                                             <textarea class="schema-textarea"
-                                                      @bind="SelectedTransform.SelectColumnsText"
-                                                      @bind:event="oninput"
-                                                      @bind:after="PublishPackageAsync"></textarea>
+                                                      value="@GetSelectedTransformColumnsText()"
+                                                      @oninput="OnSelectedTransformColumnsInput"></textarea>
                                         </div>
                                         @if (SchemaColumns.Count > 0)
                                         {
@@ -375,9 +383,8 @@
                                         <div class="schema-field">
                                             <label>Key Columns</label>
                                             <textarea class="schema-textarea"
-                                                      @bind="SelectedTransform.DeduplicateKeysText"
-                                                      @bind:event="oninput"
-                                                      @bind:after="PublishPackageAsync"></textarea>
+                                                      value="@GetSelectedTransformDeduplicateKeysText()"
+                                                      @oninput="OnSelectedTransformDeduplicateKeysInput"></textarea>
                                         </div>
                                         @if (SchemaColumns.Count > 0)
                                         {
@@ -401,17 +408,18 @@
                                         <div class="pipeline-mapping-list">
                                             @for (var i = 0; i < SelectedTransform.RenameMappings.Count; i++)
                                             {
+                                                var mappingIndex = i;
                                                 var rename = SelectedTransform.RenameMappings[i];
                                                 <div class="pipeline-mapping-row">
                                                     <input class="schema-input mono"
                                                            value="@rename.Source"
-                                                           @oninput="e => UpdateRenameMapping(i, true, e.Value?.ToString())"
+                                                           @oninput="e => UpdateRenameMapping(mappingIndex, true, e.Value?.ToString())"
                                                            list="pipeline-column-list" />
                                                     <span><i class="bi bi-arrow-right"></i></span>
                                                     <input class="schema-input mono"
                                                            value="@rename.Target"
-                                                           @oninput="e => UpdateRenameMapping(i, false, e.Value?.ToString())" />
-                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveRenameMapping(i)">
+                                                           @oninput="e => UpdateRenameMapping(mappingIndex, false, e.Value?.ToString())" />
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveRenameMapping(mappingIndex)">
                                                         <i class="bi bi-trash"></i>
                                                     </button>
                                                 </div>
@@ -437,21 +445,22 @@
                                         <div class="pipeline-mapping-list">
                                             @for (var i = 0; i < SelectedTransform.CastMappings.Count; i++)
                                             {
+                                                var mappingIndex = i;
                                                 var cast = SelectedTransform.CastMappings[i];
                                                 <div class="pipeline-mapping-row cast">
                                                     <input class="schema-input mono"
                                                            value="@cast.Column"
-                                                           @oninput="e => UpdateCastMappingColumn(i, e.Value?.ToString())"
+                                                           @oninput="e => UpdateCastMappingColumn(mappingIndex, e.Value?.ToString())"
                                                            list="pipeline-column-list" />
                                                     <select class="schema-input"
                                                             value="@cast.TargetType"
-                                                            @onchange="e => UpdateCastMappingType(i, e.Value?.ToString())">
+                                                            @onchange="e => UpdateCastMappingType(mappingIndex, e.Value?.ToString())">
                                                         @foreach (var dbType in Enum.GetValues<PrimitiveDbType>())
                                                         {
                                                             <option value="@dbType">@dbType</option>
                                                         }
                                                     </select>
-                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveCastMapping(i)">
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveCastMapping(mappingIndex)">
                                                         <i class="bi bi-trash"></i>
                                                     </button>
                                                 </div>
@@ -477,15 +486,16 @@
                                         <div class="pipeline-mapping-list">
                                             @for (var i = 0; i < SelectedTransform.DerivedColumns.Count; i++)
                                             {
+                                                var derivedIndex = i;
                                                 var derived = SelectedTransform.DerivedColumns[i];
                                                 <div class="pipeline-derived-row">
                                                     <input class="schema-input"
                                                            value="@derived.Name"
-                                                           @oninput="e => UpdateDerivedColumnName(i, e.Value?.ToString())" />
+                                                           @oninput="e => UpdateDerivedColumnName(derivedIndex, e.Value?.ToString())" />
                                                     <textarea class="schema-textarea"
                                                               value="@derived.Expression"
-                                                              @oninput="e => UpdateDerivedColumnExpression(i, e.Value?.ToString())"></textarea>
-                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveDerivedColumn(i)">
+                                                              @oninput="e => UpdateDerivedColumnExpression(derivedIndex, e.Value?.ToString())"></textarea>
+                                                    <button type="button" class="schema-icon-btn danger" @onclick="() => RemoveDerivedColumn(derivedIndex)">
                                                         <i class="bi bi-trash"></i>
                                                     </button>
                                                 </div>
@@ -654,8 +664,10 @@
 
     private readonly PipelineDesignerState _state = new();
     private readonly Dictionary<string, ClientModels.TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<ClientModels.ColumnDefinition> _sourceFileColumns = [];
     private string? _lastLoadedJson;
     private string? _loadError;
+    private string? _sourcePreviewError;
     private string? _tableLoadError;
     private IReadOnlyList<string> _tableNames = [];
     private PipelineDesignerPanel CurrentPanel { get; set; } = PipelineDesignerPanel.Source;
@@ -666,7 +678,12 @@
         ? "Build a supported linear ETL package and keep raw JSON available when needed."
         : _state.Description;
     private IReadOnlyList<ClientModels.ColumnDefinition> SchemaColumns =>
-        GetSchemaPreview(_state.Source.TableName)?.Columns ?? [];
+        _state.Source.Kind switch
+        {
+            PipelineSourceKind.CsvFile => _sourceFileColumns,
+            PipelineSourceKind.CSharpDbTable => GetSchemaPreview(_state.Source.TableName)?.Columns ?? [],
+            _ => [],
+        };
 
     private MutableTransformDefinition? SelectedTransform =>
         SelectedTransformIndex is int index && index >= 0 && index < _state.Transforms.Count
@@ -676,12 +693,21 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadTableNamesAsync();
+        await RefreshSourceColumnsAsync();
     }
 
     protected override async Task OnParametersSetAsync()
     {
         if (string.Equals(PackageJson, _lastLoadedJson, StringComparison.Ordinal))
         {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(PackageJson))
+        {
+            ClearState();
+            _loadError = "No pipeline schema is loaded. Load a pipeline or switch to JSON to enter a valid package.";
+            _lastLoadedJson = PackageJson;
             return;
         }
 
@@ -692,49 +718,75 @@
             _loadError = null;
             _lastLoadedJson = PackageJson;
         }
-        catch
+        catch (Exception ex)
         {
-            var fallbackPackage = CreateDefaultPackage();
-            string fallbackJson = PipelinePackageSerializer.Serialize(fallbackPackage);
-            LoadFromPackage(fallbackPackage);
-            _loadError = null;
-            _lastLoadedJson = fallbackJson;
-
-            if (!string.Equals(fallbackJson, PackageJson, StringComparison.Ordinal))
-            {
-                await PackageJsonChanged.InvokeAsync(fallbackJson);
-            }
+            ClearState();
+            _loadError = $"Package JSON could not be loaded in the visual designer: {ex.Message}";
         }
+    }
+
+    private void ClearState()
+    {
+        _state.Name = string.Empty;
+        _state.Version = string.Empty;
+        _state.Description = string.Empty;
+        _state.Source.Kind = PipelineSourceKind.CsvFile;
+        _state.Source.Path = string.Empty;
+        _state.Source.TableName = string.Empty;
+        _state.Source.QueryText = string.Empty;
+        _state.Source.HasHeaderRow = true;
+        _state.Destination.Kind = PipelineDestinationKind.CSharpDbTable;
+        _state.Destination.Path = string.Empty;
+        _state.Destination.TableName = string.Empty;
+        _state.Destination.Overwrite = false;
+        _state.Options.BatchSize = 1000;
+        _state.Options.CheckpointInterval = 1000;
+        _state.Options.ErrorMode = PipelineErrorMode.FailFast;
+        _state.Options.MaxRejects = 0;
+        _state.IncrementalEnabled = false;
+        _state.IncrementalWatermarkColumn = string.Empty;
+        _state.IncrementalLastProcessedValue = string.Empty;
+        _state.Transforms.Clear();
+        _sourceFileColumns = [];
+        _sourcePreviewError = null;
+        _tableLoadError = null;
+        SelectedTransformIndex = null;
+        CurrentPanel = PipelineDesignerPanel.Source;
     }
 
     private void LoadFromPackage(PipelinePackageDefinition package)
     {
+        var source = package.Source ?? new PipelineSourceDefinition();
+        var destination = package.Destination ?? new PipelineDestinationDefinition();
+        var options = package.Options ?? new PipelineExecutionOptions();
+        IReadOnlyList<PipelineTransformDefinition> transforms = package.Transforms ?? [];
+
         _state.Name = package.Name;
         _state.Version = package.Version;
         _state.Description = package.Description ?? string.Empty;
 
-        _state.Source.Kind = package.Source.Kind;
-        _state.Source.Path = package.Source.Path ?? string.Empty;
-        _state.Source.TableName = package.Source.TableName ?? string.Empty;
-        _state.Source.QueryText = package.Source.QueryText ?? string.Empty;
-        _state.Source.HasHeaderRow = package.Source.HasHeaderRow;
+        _state.Source.Kind = source.Kind;
+        _state.Source.Path = source.Path ?? string.Empty;
+        _state.Source.TableName = source.TableName ?? string.Empty;
+        _state.Source.QueryText = source.QueryText ?? string.Empty;
+        _state.Source.HasHeaderRow = source.HasHeaderRow;
 
-        _state.Destination.Kind = package.Destination.Kind;
-        _state.Destination.Path = package.Destination.Path ?? string.Empty;
-        _state.Destination.TableName = package.Destination.TableName ?? string.Empty;
-        _state.Destination.Overwrite = package.Destination.Overwrite;
+        _state.Destination.Kind = destination.Kind;
+        _state.Destination.Path = destination.Path ?? string.Empty;
+        _state.Destination.TableName = destination.TableName ?? string.Empty;
+        _state.Destination.Overwrite = destination.Overwrite;
 
-        _state.Options.BatchSize = package.Options.BatchSize;
-        _state.Options.CheckpointInterval = package.Options.CheckpointInterval;
-        _state.Options.ErrorMode = package.Options.ErrorMode;
-        _state.Options.MaxRejects = package.Options.MaxRejects;
+        _state.Options.BatchSize = options.BatchSize;
+        _state.Options.CheckpointInterval = options.CheckpointInterval;
+        _state.Options.ErrorMode = options.ErrorMode;
+        _state.Options.MaxRejects = options.MaxRejects;
 
         _state.IncrementalEnabled = package.Incremental is not null;
         _state.IncrementalWatermarkColumn = package.Incremental?.WatermarkColumn ?? string.Empty;
         _state.IncrementalLastProcessedValue = package.Incremental?.LastProcessedValue ?? string.Empty;
 
         _state.Transforms.Clear();
-        foreach (var transform in package.Transforms)
+        foreach (var transform in transforms)
         {
             _state.Transforms.Add(new MutableTransformDefinition
             {
@@ -769,7 +821,7 @@
             SelectedTransformIndex = 0;
         }
 
-        _ = EnsureSchemaLoadedAsync(_state.Source.TableName);
+        _ = RefreshSourceColumnsAsync();
         _ = EnsureSchemaLoadedAsync(_state.Destination.TableName);
     }
 
@@ -784,6 +836,11 @@
 
     private void SelectTransform(int index)
     {
+        if (index < 0 || index >= _state.Transforms.Count)
+        {
+            return;
+        }
+
         CurrentPanel = PipelineDesignerPanel.Transforms;
         SelectedTransformIndex = index;
     }
@@ -806,6 +863,7 @@
             await EnsureSchemaLoadedAsync(_state.Source.TableName);
         }
 
+        await RefreshSourceColumnsAsync();
         await PublishPackageAsync();
     }
 
@@ -829,6 +887,19 @@
     {
         _state.Source.TableName = args.Value?.ToString() ?? string.Empty;
         await EnsureSchemaLoadedAsync(_state.Source.TableName);
+        await RefreshSourceColumnsAsync();
+        await PublishPackageAsync();
+    }
+
+    private async Task OnSourcePathChangedAsync()
+    {
+        await RefreshSourceColumnsAsync();
+        await PublishPackageAsync();
+    }
+
+    private async Task OnCsvHeaderSettingsChangedAsync()
+    {
+        await RefreshSourceColumnsAsync();
         await PublishPackageAsync();
     }
 
@@ -869,7 +940,7 @@
 
     private static MutableTransformDefinition CreateDefaultTransform(PipelineTransformKind kind) => kind switch
     {
-        PipelineTransformKind.Select => new() { Kind = kind, SelectColumnsText = "id\nname" },
+        PipelineTransformKind.Select => new() { Kind = kind },
         PipelineTransformKind.Rename => new()
         {
             Kind = kind,
@@ -890,13 +961,27 @@
         _ => new() { Kind = kind },
     };
 
+    public Task<string> GetPackageJsonAsync()
+    {
+        string json = PipelinePackageSerializer.Serialize(BuildPackage());
+        _loadError = null;
+        _lastLoadedJson = json;
+        return Task.FromResult(json);
+    }
+
+    public async Task LoadPackageJsonAsync(string json)
+    {
+        PackageJson = json;
+        _lastLoadedJson = null;
+        await OnParametersSetAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
     private async Task PublishPackageAsync()
     {
         try
         {
-            string json = PipelinePackageSerializer.Serialize(BuildPackage());
-            _loadError = null;
-            _lastLoadedJson = json;
+            string json = await GetPackageJsonAsync();
             if (!string.Equals(json, PackageJson, StringComparison.Ordinal))
             {
                 await PackageJsonChanged.InvokeAsync(json);
@@ -976,6 +1061,11 @@
 
     private async Task MoveTransform(int index, int direction)
     {
+        if (index < 0 || index >= _state.Transforms.Count)
+        {
+            return;
+        }
+
         int targetIndex = index + direction;
         if (targetIndex < 0 || targetIndex >= _state.Transforms.Count)
         {
@@ -989,6 +1079,11 @@
 
     private async Task RemoveTransform(int index)
     {
+        if (index < 0 || index >= _state.Transforms.Count)
+        {
+            return;
+        }
+
         _state.Transforms.RemoveAt(index);
         if (_state.Transforms.Count == 0)
         {
@@ -1020,6 +1115,34 @@
     {
         SelectedTransform?.RenameMappings.Add(new MutableRenameMapping());
         _ = PublishPackageAsync();
+    }
+
+    private string GetSelectedTransformColumnsText() =>
+        SelectedTransform?.SelectColumnsText ?? string.Empty;
+
+    private string GetSelectedTransformDeduplicateKeysText() =>
+        SelectedTransform?.DeduplicateKeysText ?? string.Empty;
+
+    private Task OnSelectedTransformColumnsInput(ChangeEventArgs args)
+    {
+        if (SelectedTransform is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        SelectedTransform.SelectColumnsText = args.Value?.ToString() ?? string.Empty;
+        return PublishPackageAsync();
+    }
+
+    private Task OnSelectedTransformDeduplicateKeysInput(ChangeEventArgs args)
+    {
+        if (SelectedTransform is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        SelectedTransform.DeduplicateKeysText = args.Value?.ToString() ?? string.Empty;
+        return PublishPackageAsync();
     }
 
     private Task AddRenameMappingFromColumnAsync(string columnName)
@@ -1200,7 +1323,7 @@
     private async Task RefreshTablesAsync()
     {
         await LoadTableNamesAsync();
-        await EnsureSchemaLoadedAsync(_state.Source.TableName);
+        await RefreshSourceColumnsAsync();
         await EnsureSchemaLoadedAsync(_state.Destination.TableName);
     }
 
@@ -1249,6 +1372,179 @@
         }
 
         return _tableSchemas.TryGetValue(tableName, out var schema) ? schema : null;
+    }
+
+    private async Task RefreshSourceColumnsAsync()
+    {
+        _sourceFileColumns = [];
+        _sourcePreviewError = null;
+
+        switch (_state.Source.Kind)
+        {
+            case PipelineSourceKind.CSharpDbTable:
+                await EnsureSchemaLoadedAsync(_state.Source.TableName);
+                break;
+
+            case PipelineSourceKind.CsvFile:
+                await LoadCsvColumnsAsync();
+                break;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadCsvColumnsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_state.Source.Path))
+        {
+            return;
+        }
+
+        string? resolvedPath = ResolveSourceFilePath(_state.Source.Path);
+        if (resolvedPath is null)
+        {
+            _sourcePreviewError = $"CSV preview could not find '{_state.Source.Path}'.";
+            return;
+        }
+
+        try
+        {
+            using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            string? firstLine = await reader.ReadLineAsync();
+            if (string.IsNullOrWhiteSpace(firstLine))
+            {
+                _sourcePreviewError = $"CSV preview found no rows in '{resolvedPath}'.";
+                return;
+            }
+
+            var values = ParseDelimitedLine(firstLine);
+            if (values.Count == 0)
+            {
+                _sourcePreviewError = $"CSV preview could not detect any columns in '{resolvedPath}'.";
+                return;
+            }
+
+            string[] columnNames = _state.Source.HasHeaderRow
+                ? SanitizeColumnNames(values)
+                : Enumerable.Range(1, values.Count).Select(static i => $"Column{i}").ToArray();
+
+            _sourceFileColumns = columnNames
+                .Select(static name => new ClientModels.ColumnDefinition
+                {
+                    Name = name,
+                    Type = ClientModels.DbType.Text,
+                })
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            _sourcePreviewError = $"CSV preview for '{resolvedPath}' failed: {ex.Message}";
+        }
+    }
+
+    private string? ResolveSourceFilePath(string path)
+    {
+        string trimmedPath = path.Trim();
+        if (Path.IsPathRooted(trimmedPath))
+        {
+            return File.Exists(trimmedPath) ? trimmedPath : null;
+        }
+
+        foreach (string basePath in GetSourcePathRoots())
+        {
+            string candidate = Path.GetFullPath(Path.Combine(basePath, trimmedPath));
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private IEnumerable<string> GetSourcePathRoots()
+    {
+        yield return HostEnvironment.ContentRootPath;
+
+        string appBasePath = AppContext.BaseDirectory;
+        if (!string.Equals(appBasePath, HostEnvironment.ContentRootPath, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return appBasePath;
+        }
+
+        string currentDirectory = Directory.GetCurrentDirectory();
+        if (!string.Equals(currentDirectory, HostEnvironment.ContentRootPath, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(currentDirectory, appBasePath, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return currentDirectory;
+        }
+
+        DirectoryInfo? projectDirectory = new(HostEnvironment.ContentRootPath);
+        DirectoryInfo? solutionRoot = projectDirectory.Parent?.Parent;
+        if (solutionRoot is not null)
+        {
+            yield return solutionRoot.FullName;
+        }
+    }
+
+    private static List<string> ParseDelimitedLine(string line)
+    {
+        var values = new List<string>();
+        var builder = new System.Text.StringBuilder();
+        bool inQuotes = false;
+
+        for (int i = 0; i < line.Length; i++)
+        {
+            char current = line[i];
+            if (current == '"')
+            {
+                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                {
+                    builder.Append('"');
+                    i++;
+                }
+                else
+                {
+                    inQuotes = !inQuotes;
+                }
+
+                continue;
+            }
+
+            if (current == ',' && !inQuotes)
+            {
+                values.Add(builder.ToString().Trim());
+                builder.Clear();
+                continue;
+            }
+
+            builder.Append(current);
+        }
+
+        values.Add(builder.ToString().Trim());
+        return values;
+    }
+
+    private static string[] SanitizeColumnNames(IReadOnlyList<string> values)
+    {
+        var names = new string[values.Count];
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < values.Count; i++)
+        {
+            string baseName = string.IsNullOrWhiteSpace(values[i]) ? $"Column{i + 1}" : values[i].Trim();
+            string candidate = baseName;
+            int suffix = 2;
+            while (!seen.Add(candidate))
+            {
+                candidate = $"{baseName}_{suffix++}";
+            }
+
+            names[i] = candidate;
+        }
+
+        return names;
     }
 
     private RenderFragment RenderSchemaPreview(ClientModels.TableSchema schema) => @<div class="pipeline-schema-preview">

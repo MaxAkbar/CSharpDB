@@ -130,6 +130,54 @@ public sealed class PipelineOrchestratorTests
         Assert.Contains("Pipeline name is required.", result.ErrorSummary);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_TransformFailure_ReturnsStepAndBatchContext()
+    {
+        var source = new FakeSource([CreateBatch(3, 41, 42)]);
+        var transform = new ThrowingTransform("cast", "Cannot parse integer.");
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, new FakeDestination(), [transform]),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger());
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(),
+            Mode = PipelineExecutionMode.Run,
+        });
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.Contains("Step: transform", result.ErrorSummary);
+        Assert.Contains("Component: cast", result.ErrorSummary);
+        Assert.Contains("Batch: 3", result.ErrorSummary);
+        Assert.Contains("Starting row: 41", result.ErrorSummary);
+        Assert.Contains("Cannot parse integer.", result.ErrorSummary);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DestinationFailure_ReturnsStepAndComponentContext()
+    {
+        var source = new FakeSource([CreateBatch(1, 7)]);
+        var destination = new ThrowingDestination("Cannot read Text as Integer.");
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, destination, []),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger());
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(),
+            Mode = PipelineExecutionMode.Run,
+        });
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.Contains("Step: destination-write", result.ErrorSummary);
+        Assert.Contains("Component: table-destination:customers", result.ErrorSummary);
+        Assert.Contains("Batch: 1", result.ErrorSummary);
+        Assert.Contains("Starting row: 7", result.ErrorSummary);
+        Assert.Contains("Cannot read Text as Integer.", result.ErrorSummary);
+    }
+
     private static PipelinePackageDefinition CreatePackage() => new()
     {
         Name = "customers-import",
@@ -254,6 +302,22 @@ public sealed class PipelineOrchestratorTests
         }
     }
 
+    private sealed class ThrowingTransform : IPipelineTransform
+    {
+        private readonly string _message;
+
+        public ThrowingTransform(string name, string message)
+        {
+            Name = name;
+            _message = message;
+        }
+
+        public string Name { get; }
+
+        public ValueTask<PipelineRowBatch> TransformAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
+            => ValueTask.FromException<PipelineRowBatch>(new InvalidOperationException(_message));
+    }
+
     private sealed class RecordingCheckpointStore : IPipelineCheckpointStore
     {
         public string? LoadedRunId { get; private set; }
@@ -271,6 +335,25 @@ public sealed class PipelineOrchestratorTests
             Saved.Add(checkpoint);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class ThrowingDestination : IPipelineDestination
+    {
+        private readonly string _message;
+
+        public ThrowingDestination(string message)
+        {
+            _message = message;
+        }
+
+        public Task InitializeAsync(PipelineExecutionContext context, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task WriteBatchAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
+            => Task.FromException(new InvalidOperationException(_message));
+
+        public Task CompleteAsync(PipelineExecutionContext context, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 
     private sealed class RecordingRunLogger : IPipelineRunLogger

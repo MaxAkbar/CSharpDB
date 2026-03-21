@@ -6,6 +6,7 @@ namespace CSharpDB.Pipelines.Runtime.BuiltIns;
 public sealed class JsonPipelineSource : IPipelineSource
 {
     private readonly PipelineSourceDefinition _definition;
+    private string? _resolvedPath;
 
     public JsonPipelineSource(PipelineSourceDefinition definition)
     {
@@ -19,7 +20,8 @@ public sealed class JsonPipelineSource : IPipelineSource
             throw new InvalidOperationException("JSON source path is required.");
         }
 
-        if (!File.Exists(_definition.Path))
+        _resolvedPath = PipelineFilePathResolver.ResolveExistingFile(_definition.Path);
+        if (!File.Exists(_resolvedPath))
         {
             throw new FileNotFoundException("JSON source file was not found.", _definition.Path);
         }
@@ -31,7 +33,8 @@ public sealed class JsonPipelineSource : IPipelineSource
         PipelineExecutionContext context,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        string json = await File.ReadAllTextAsync(_definition.Path!, ct);
+        string path = _resolvedPath ?? PipelineFilePathResolver.ResolveExistingFile(_definition.Path!);
+        string json = await File.ReadAllTextAsync(path, ct);
         using var document = JsonDocument.Parse(json);
 
         if (document.RootElement.ValueKind != JsonValueKind.Array)

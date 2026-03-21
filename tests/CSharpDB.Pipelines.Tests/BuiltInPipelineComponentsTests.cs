@@ -44,6 +44,49 @@ public sealed class BuiltInPipelineComponentsTests
     }
 
     [Fact]
+    public async Task CsvPipelineSource_ResolvesRelativePathsFromAppBaseDirectory()
+    {
+        string dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
+        string path = Path.Combine(dataDirectory, $"csv-source-{Guid.NewGuid():N}.csv");
+        string relativePath = Path.GetRelativePath(AppContext.BaseDirectory, path);
+        Directory.CreateDirectory(dataDirectory);
+        await File.WriteAllLinesAsync(path,
+        [
+            "id,name",
+            "1,Alice",
+        ]);
+
+        string originalCurrentDirectory = Directory.GetCurrentDirectory();
+        string isolatedCurrentDirectory = Path.Combine(Path.GetTempPath(), $"csv-cwd-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(isolatedCurrentDirectory);
+
+        try
+        {
+            Directory.SetCurrentDirectory(isolatedCurrentDirectory);
+
+            var source = new CsvPipelineSource(new PipelineSourceDefinition
+            {
+                Kind = PipelineSourceKind.CsvFile,
+                Path = relativePath,
+                HasHeaderRow = true,
+            });
+
+            var context = CreateContext(batchSize: 10);
+            await source.OpenAsync(context);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+
+            Assert.Single(batches);
+            Assert.Equal("Alice", batches[0].Rows[0]["name"]);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCurrentDirectory);
+            File.Delete(path);
+            Directory.Delete(isolatedCurrentDirectory);
+        }
+    }
+
+    [Fact]
     public async Task JsonPipelineSource_ReadsObjectArray()
     {
         string path = Path.Combine(Path.GetTempPath(), $"json-source-{Guid.NewGuid():N}.json");
@@ -72,6 +115,48 @@ public sealed class BuiltInPipelineComponentsTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task JsonPipelineSource_ResolvesRelativePathsFromAppBaseDirectory()
+    {
+        string dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
+        string path = Path.Combine(dataDirectory, $"json-source-{Guid.NewGuid():N}.json");
+        string relativePath = Path.GetRelativePath(AppContext.BaseDirectory, path);
+        Directory.CreateDirectory(dataDirectory);
+        await File.WriteAllTextAsync(path, """
+[
+  { "id": 1, "name": "Alice" }
+]
+""");
+
+        string originalCurrentDirectory = Directory.GetCurrentDirectory();
+        string isolatedCurrentDirectory = Path.Combine(Path.GetTempPath(), $"json-cwd-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(isolatedCurrentDirectory);
+
+        try
+        {
+            Directory.SetCurrentDirectory(isolatedCurrentDirectory);
+
+            var source = new JsonPipelineSource(new PipelineSourceDefinition
+            {
+                Kind = PipelineSourceKind.JsonFile,
+                Path = relativePath,
+            });
+
+            var context = CreateContext(batchSize: 10);
+            await source.OpenAsync(context);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+
+            Assert.Single(batches);
+            Assert.Equal("Alice", batches[0].Rows[0]["name"]);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCurrentDirectory);
+            File.Delete(path);
+            Directory.Delete(isolatedCurrentDirectory);
         }
     }
 

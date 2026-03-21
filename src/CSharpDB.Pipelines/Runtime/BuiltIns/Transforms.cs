@@ -71,21 +71,33 @@ public sealed class CastPipelineTransform : IPipelineTransform
 
     public ValueTask<PipelineRowBatch> TransformAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
     {
-        var rows = batch.Rows.Select(row =>
+        var rows = new List<Dictionary<string, object?>>(batch.Rows.Count);
+        for (int rowIndex = 0; rowIndex < batch.Rows.Count; rowIndex++)
         {
+            var row = batch.Rows[rowIndex];
             var output = new Dictionary<string, object?>(row, StringComparer.OrdinalIgnoreCase);
             foreach (var mapping in _mappings)
             {
                 if (output.TryGetValue(mapping.Column, out var value))
                 {
-                    output[mapping.Column] = TransformSupport.ConvertValue(value, mapping.TargetType);
+                    try
+                    {
+                        output[mapping.Column] = TransformSupport.ConvertValue(value, mapping.TargetType);
+                    }
+                    catch (Exception ex)
+                    {
+                        long rowNumber = batch.StartingRowNumber + rowIndex;
+                        throw new InvalidOperationException(
+                            $"Cast transform failed for column '{mapping.Column}' to '{mapping.TargetType}' at row {rowNumber} (batch {batch.BatchNumber}). {ex.Message}",
+                            ex);
+                    }
                 }
             }
 
-            return output;
-        }).ToArray();
+            rows.Add(output);
+        }
 
-        return ValueTask.FromResult(PipelineBatchFactory.CreateBatch(batch, rows));
+        return ValueTask.FromResult(PipelineBatchFactory.CreateBatch(batch, rows.ToArray()));
     }
 }
 

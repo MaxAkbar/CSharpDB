@@ -5,6 +5,7 @@ namespace CSharpDB.Pipelines.Runtime.BuiltIns;
 public sealed class CsvPipelineSource : IPipelineSource
 {
     private readonly PipelineSourceDefinition _definition;
+    private string? _resolvedPath;
 
     public CsvPipelineSource(PipelineSourceDefinition definition)
     {
@@ -18,7 +19,8 @@ public sealed class CsvPipelineSource : IPipelineSource
             throw new InvalidOperationException("CSV source path is required.");
         }
 
-        if (!File.Exists(_definition.Path))
+        _resolvedPath = PipelineFilePathResolver.ResolveExistingFile(_definition.Path);
+        if (!File.Exists(_resolvedPath))
         {
             throw new FileNotFoundException("CSV source file was not found.", _definition.Path);
         }
@@ -30,7 +32,8 @@ public sealed class CsvPipelineSource : IPipelineSource
         PipelineExecutionContext context,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        using var reader = new StreamReader(_definition.Path!);
+        string path = _resolvedPath ?? PipelineFilePathResolver.ResolveExistingFile(_definition.Path!);
+        using var reader = new StreamReader(path);
 
         string[] headers = [];
         bool headerInitialized = false;

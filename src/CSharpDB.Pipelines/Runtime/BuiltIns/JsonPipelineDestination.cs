@@ -8,6 +8,7 @@ public sealed class JsonPipelineDestination : IPipelineDestination
 {
     private readonly PipelineDestinationDefinition _definition;
     private readonly List<Dictionary<string, object?>> _rows = [];
+    private string? _resolvedPath;
 
     private static readonly JsonSerializerOptions s_options = new()
     {
@@ -28,7 +29,9 @@ public sealed class JsonPipelineDestination : IPipelineDestination
             throw new InvalidOperationException("JSON destination path is required.");
         }
 
-        string? directory = Path.GetDirectoryName(_definition.Path);
+        _resolvedPath = PipelineFilePathResolver.ResolveOutputPath(_definition.Path);
+
+        string? directory = Path.GetDirectoryName(_resolvedPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
@@ -46,7 +49,8 @@ public sealed class JsonPipelineDestination : IPipelineDestination
 
     public async Task CompleteAsync(PipelineExecutionContext context, CancellationToken ct = default)
     {
-        await using var stream = File.Create(_definition.Path!);
+        string path = _resolvedPath ?? PipelineFilePathResolver.ResolveOutputPath(_definition.Path!);
+        await using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, _rows, s_options, ct);
     }
 }
