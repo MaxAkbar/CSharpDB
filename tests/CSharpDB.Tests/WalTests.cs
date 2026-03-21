@@ -850,6 +850,83 @@ public class WalTests : IAsyncLifetime
         Assert.Equal(1, device.FlushCount);
     }
 
+    [Fact]
+    public async Task FileWriteAheadLog_DurableMode_SelectsDurableFlushPolicy()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_flush_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(dbPath, new WalIndex(), durabilityMode: DurabilityMode.Durable);
+            Assert.IsType<DurableWalFlushPolicy>(wal.FlushPolicy);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_BufferedMode_SelectsBufferedFlushPolicy()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_flush_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(dbPath, new WalIndex(), durabilityMode: DurabilityMode.Buffered);
+            Assert.IsType<BufferedWalFlushPolicy>(wal.FlushPolicy);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_CommitAsync_InvokesConfiguredFlushPolicy()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_flush_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new TrackingWalFlushPolicy();
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy);
+            await wal.OpenAsync(currentDbPageCount: 1, ct);
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0x62), ct);
+
+            await wal.CommitAsync(newDbPageCount: 1, ct);
+
+            Assert.IsType<TrackingWalFlushPolicy>(wal.FlushPolicy);
+            Assert.True(policy.FlushCount > 0);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
     private static async Task WaitForWalLengthAsync(
         string walPath,
         long expectedLength,
@@ -990,5 +1067,19 @@ public class WalTests : IAsyncLifetime
         public ValueTask DisposeAsync() => _inner.DisposeAsync();
 
         public void Dispose() => _inner.Dispose();
+    }
+
+    private sealed class TrackingWalFlushPolicy : IWalFlushPolicy
+    {
+        private int _flushCount;
+
+        public int FlushCount => Volatile.Read(ref _flushCount);
+
+        public ValueTask FlushAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _flushCount);
+            return ValueTask.CompletedTask;
+        }
     }
 }

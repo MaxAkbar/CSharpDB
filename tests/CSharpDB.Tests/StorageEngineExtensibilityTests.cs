@@ -259,6 +259,23 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void StorageEngineOptions_DefaultsToDurableWalCommits()
+    {
+        var options = new StorageEngineOptions();
+
+        Assert.Equal(DurabilityMode.Durable, options.DurabilityMode);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_SetsDurabilityMode()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurabilityMode(DurabilityMode.Buffered));
+
+        Assert.Equal(DurabilityMode.Buffered, options.StorageEngineOptions.DurabilityMode);
+    }
+
+    [Fact]
     public void DatabaseOptions_ConfigureStorageEngine_AppliesDirectLookupOptimizedPreset()
     {
         var options = new DatabaseOptions()

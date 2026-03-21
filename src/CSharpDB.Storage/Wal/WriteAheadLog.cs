@@ -1,4 +1,5 @@
 using CSharpDB.Primitives;
+using CSharpDB.Storage.StorageEngine;
 using Microsoft.Win32.SafeHandles;
 using System.Buffers.Binary;
 
@@ -32,6 +33,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly WalIndex _index;
     private readonly IPageChecksumProvider _checksumProvider;
     private readonly bool _useAdditiveHeaderChecksum;
+    private readonly IWalFlushPolicy _flushPolicy;
 
     // WAL header fields
     private uint _salt1;
@@ -57,17 +59,29 @@ public sealed class WriteAheadLog : IWriteAheadLog
     public WriteAheadLog(
         string databasePath,
         WalIndex index,
-        IPageChecksumProvider? checksumProvider = null)
+        IPageChecksumProvider? checksumProvider = null,
+        DurabilityMode durabilityMode = DurabilityMode.Durable)
+        : this(databasePath, index, checksumProvider, WalFlushPolicy.Create(durabilityMode))
+    {
+    }
+
+    internal WriteAheadLog(
+        string databasePath,
+        WalIndex index,
+        IPageChecksumProvider? checksumProvider,
+        IWalFlushPolicy flushPolicy)
     {
         _walPath = databasePath + ".wal";
         _index = index;
         _checksumProvider = checksumProvider ?? new AdditiveChecksumProvider();
         _useAdditiveHeaderChecksum = _checksumProvider is AdditiveChecksumProvider;
+        _flushPolicy = flushPolicy;
     }
 
     public WalIndex Index => _index;
     public bool IsOpen => _stream != null;
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    internal IWalFlushPolicy FlushPolicy => _flushPolicy;
 
     // ============ Open / Create ============
 
@@ -108,7 +122,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             WriteWalHeader(_walHeaderBuffer, dbPageCount);
             await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
-            await _stream.FlushAsync(cancellationToken);
+            await FlushAsync(cancellationToken);
 
             _uncommittedStartOffset = _stream.Position;
             OpenReadHandle();
@@ -202,7 +216,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
-            await _stream.FlushAsync(cancellationToken);
+            await FlushAsync(cancellationToken);
             PublishCommittedFramesFromBatch(frames, firstFrameOffset);
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
@@ -255,7 +269,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _stream.Position = lastOffset + PageConstants.WalFrameSize;
 
             // Flush to disk — this is the commit point
-            await _stream.FlushAsync(cancellationToken);
+            await FlushAsync(cancellationToken);
 
             PublishCommittedFrames();
         }
@@ -278,7 +292,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         {
             _stream.SetLength(_uncommittedStartOffset);
             _stream.Position = _uncommittedStartOffset;
-            await _stream.FlushAsync(cancellationToken);
+            await FlushAsync(cancellationToken);
             _uncommittedFrames.Clear();
             _lastUncommittedDataChecksum = 0;
         }
@@ -1059,7 +1073,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         _stream.SetLength(PageConstants.WalHeaderSize + retainedByteCount);
         await RewriteWalHeaderAsync(pageCount, cancellationToken);
-        await _stream.FlushAsync(cancellationToken);
+        await FlushAsync(cancellationToken);
 
         _index.ReplaceCommittedState(retainedLatestPages, retainedFrameCount, retainedCommitCount);
         _uncommittedStartOffset = _stream.Length;
@@ -1082,7 +1096,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         WriteWalHeader(_walHeaderBuffer, pageCount);
         await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
         _stream.SetLength(PageConstants.WalHeaderSize);
-        await _stream.FlushAsync(cancellationToken);
+        await FlushAsync(cancellationToken);
         _uncommittedStartOffset = PageConstants.WalHeaderSize;
     }
 
@@ -1094,6 +1108,14 @@ public sealed class WriteAheadLog : IWriteAheadLog
         _stream.Position = 0;
         WriteWalHeader(_walHeaderBuffer, pageCount);
         await _stream.WriteAsync(_walHeaderBuffer.AsMemory(0, PageConstants.WalHeaderSize), cancellationToken);
+    }
+
+    private ValueTask FlushAsync(CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+
+        return _flushPolicy.FlushAsync(_stream, cancellationToken);
     }
 
     private static void CaptureRetainedFrameMetadata(

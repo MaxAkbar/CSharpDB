@@ -336,6 +336,9 @@ public sealed class ClientPipelineRunnerTests
             Assert.False(string.IsNullOrWhiteSpace(packageJsonResult.Rows[0][0] as string));
 
             await client.ExecuteSqlAsync("DELETE FROM customers_dest WHERE id = 2;", ct);
+            await client.ExecuteSqlAsync(
+                $"UPDATE _etl_checkpoints SET batch_number = 1 WHERE run_id = '{initial.RunId}';",
+                ct);
 
             PipelineRunResult resumed = await catalog.ResumeAsync(initial.RunId, ct);
             Assert.Equal(PipelineRunStatus.Succeeded, resumed.Status);

@@ -6,6 +6,7 @@ namespace CSharpDB.Storage.StorageEngine;
 public sealed class StorageEngineOptionsBuilder
 {
     private PagerOptions _pagerOptions;
+    private DurabilityMode _durabilityMode;
     private ISerializerProvider _serializerProvider;
     private IIndexProvider _indexProvider;
     private ICatalogStore _catalogStore;
@@ -21,6 +22,7 @@ public sealed class StorageEngineOptionsBuilder
         ArgumentNullException.ThrowIfNull(options);
 
         _pagerOptions = options.PagerOptions;
+        _durabilityMode = options.DurabilityMode;
         _serializerProvider = options.SerializerProvider;
         _indexProvider = options.IndexProvider;
         _catalogStore = options.CatalogStore;
@@ -31,6 +33,12 @@ public sealed class StorageEngineOptionsBuilder
     {
         ArgumentNullException.ThrowIfNull(pagerOptions);
         _pagerOptions = pagerOptions;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UseDurabilityMode(DurabilityMode durabilityMode)
+    {
+        _durabilityMode = durabilityMode;
         return this;
     }
 
@@ -271,6 +279,7 @@ public sealed class StorageEngineOptionsBuilder
     {
         return new StorageEngineOptions
         {
+            DurabilityMode = _durabilityMode,
             PagerOptions = _pagerOptions,
             SerializerProvider = _serializerProvider,
             IndexProvider = _indexProvider,

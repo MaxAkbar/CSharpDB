@@ -223,20 +223,22 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
 
     private Dictionary<string, object?> CoerceRowValues(IReadOnlyDictionary<string, object?> row)
     {
-        var writeRow = new Dictionary<string, object?>(row, StringComparer.OrdinalIgnoreCase);
         if (_tableSchema is null)
         {
-            return writeRow;
+            return new Dictionary<string, object?>(row, StringComparer.OrdinalIgnoreCase);
         }
 
+        var writeRow = new Dictionary<string, object?>(_tableSchema.Columns.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var column in _tableSchema.Columns)
         {
-            if (!writeRow.TryGetValue(column.Name, out var value) || value is null)
+            if (!row.TryGetValue(column.Name, out var value))
             {
                 continue;
             }
 
-            writeRow[column.Name] = CoerceValue(column.Type, value);
+            writeRow[column.Name] = value is null
+                ? null
+                : CoerceValue(column.Type, value);
         }
 
         return writeRow;
