@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Benchmarks — CSharpDB</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+    <style>
+        .bench-detail { color: var(--text-secondary); font-size: 14px; margin-top: 8px; line-height: 1.6; }
+        .bench-detail code { font-size: 13px; }
+        .bench-section { margin-bottom: 48px; }
+        .bench-explanation { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 16px 0 32px; }
+        .bench-explanation h4 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
+        .bench-explanation p { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.7; }
+        .bench-vs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+        .bench-vs-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; text-align: center; }
+        .bench-vs-card .bench-big { font-size: 28px; font-weight: 700; color: var(--accent); }
+        .bench-vs-card .bench-small { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+        .bench-vs-card.file .bench-big { color: var(--text-secondary); }
+        .bench-ratio { display: inline-block; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
+        @media (max-width: 600px) { .bench-vs { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <script>window.currentPage = 'benchmarks';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#overview">Overview</a></li>
+                        <li><a href="#point-lookups">Point Lookups</a></li>
+                        <li><a href="#cold-lookups">Cold Lookups (Cache Pressure)</a></li>
+                        <li><a href="#inserts">Single Inserts</a></li>
+                        <li><a href="#batch-inserts">Batch Inserts</a></li>
+                        <li><a href="#file-vs-memory">File vs In-Memory</a></li>
+                        <li><a href="#scan-patterns">Scan &amp; Query Patterns</a></li>
+                        <li><a href="#collection-api">Collection API</a></li>
+                        <li><a href="#mixed-workloads">Mixed Workloads</a></li>
+                        <li><a href="#methodology">Methodology</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Benchmarks</h1>
+                <p class="lead">Real performance numbers from BenchmarkDotNet running against the CSharpDB engine. All results are from the <a href="https://github.com/maxakbar/csharpdb/tree/main/tests/CSharpDB.Benchmarks"><code>CSharpDB.Benchmarks</code></a> project.</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     OVERVIEW
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="overview">At a Glance</h2>
+                <div class="bench-vs" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+                    <div class="bench-vs-card">
+                        <div class="bench-big">460 ns</div>
+                        <div class="bench-small">SQL Point Lookup</div>
+                    </div>
+                    <div class="bench-vs-card">
+                        <div class="bench-big">217 ns</div>
+                        <div class="bench-small">Collection Get</div>
+                    </div>
+                    <div class="bench-vs-card">
+                        <div class="bench-big">2.9 &mu;s</div>
+                        <div class="bench-small">SQL Insert (in-memory)</div>
+                    </div>
+                    <div class="bench-vs-card">
+                        <div class="bench-big">2.1 &mu;s</div>
+                        <div class="bench-small">Collection Put (in-memory)</div>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     POINT LOOKUPS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="point-lookups">Point Lookups</h2>
+                    <p>Single-row lookups by primary key on a warm 10,000-row dataset. This is the most common database operation and the one where CSharpDB's B+tree leaf-hint cache shines.</p>
+
+                    <div class="bench-chart-container">
+                        <div class="bench-chart">
+                            <div class="bench-bar-group">
+                                <div class="bench-label">SQL <code>SELECT WHERE id = ?</code></div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar" style="width: 20%">
+                                        <span class="bench-value">460.7 ns &plusmn; 15 ns</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">SQL <code>SELECT WHERE id = ?</code> (in-memory)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar bench-bar-accent" style="width: 20%">
+                                        <span class="bench-value">460.0 ns &plusmn; 13 ns</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">Collection <code>GetAsync(key)</code></div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar bench-bar-accent" style="width: 10%">
+                                        <span class="bench-value">220.1 ns &plusmn; 6.7 ns</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">Collection <code>GetAsync(key)</code> (in-memory)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar bench-bar-accent" style="width: 9.5%">
+                                        <span class="bench-value">216.8 ns &plusmn; 3.8 ns</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>Why are file-backed and in-memory reads identical?</h4>
+                        <p>On warm lookups, all pages are already cached in the <code>IPageCache</code>. The Pager resolves from cache without touching the storage device or WAL, so the I/O backend makes no difference. The B+tree leaf-hint cache often skips root-to-leaf traversal entirely for clustered access patterns, which is why lookups stay under 500 ns even at 10K rows.</p>
+                        <p style="margin-top: 8px;">The Collection API is ~2x faster than SQL because it bypasses SQL parsing, planning, and row decoding — it goes straight from key to B+tree to JSON deserialization.</p>
+                    </div>
+
+                    <p class="bench-detail"><strong>Allocations:</strong> SQL lookup allocates 1.05 KB per call (QueryResult + DbValue array). Collection get allocates just 208 bytes (deserialized object only).</p>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     COLD LOOKUPS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="cold-lookups">Cold Lookups (Under Cache Pressure)</h2>
+                    <p>What happens when your dataset does not fit in cache? This benchmark seeds 200,000 rows but limits the page cache to just 16 pages, forcing constant eviction and re-reads. Each iteration performs 256 randomized lookups.</p>
+
+                    <div class="bench-chart-container">
+                        <div class="bench-chart">
+                            <div class="bench-bar-group">
+                                <div class="bench-label">SQL cold lookup (file-backed)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar" style="width: 90%">
+                                        <span class="bench-value">32.4 &mu;s &plusmn; 1.04 &mu;s</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">SQL cold lookup (in-memory)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar bench-bar-accent" style="width: 6%">
+                                        <span class="bench-value">2.20 &mu;s &plusmn; 0.20 &mu;s</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">Collection cold get (file-backed)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar" style="width: 92%">
+                                        <span class="bench-value">32.9 &mu;s &plusmn; 1.02 &mu;s</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bench-bar-group">
+                                <div class="bench-label">Collection cold get (in-memory)</div>
+                                <div class="bench-bar-track">
+                                    <div class="bench-bar bench-bar-accent" style="width: 5%">
+                                        <span class="bench-value">1.86 &mu;s &plusmn; 0.13 &mu;s</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>Why the 15&ndash;18x difference?</h4>
+                        <p>With only 16 cached pages and 200K rows, almost every lookup is a cache miss. File-backed lookups must read 4 KB pages from the <code>FileStorageDevice</code> via <code>RandomAccess</code> — each page read involves a kernel syscall and disk I/O. In-memory lookups hit the <code>MemoryStorageDevice</code> which is a simple array copy, staying in user-space memory.</p>
+                        <p style="margin-top: 8px;">This benchmark uses <code>PagerOptions.MaxCachedPages = 16</code> to simulate cache pressure. In production, set <code>MaxCachedPages</code> large enough to hold your hot working set and you will see warm-cache performance (sub-500 ns) for most lookups.</p>
+                    </div>
+
+                    <p class="bench-detail"><strong>Allocations:</strong> Cold file-backed lookups allocate ~9.5 KB (page buffers for cache misses + result). In-memory cold lookups allocate ~8 KB (no page buffer copies needed).</p>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SINGLE INSERTS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="inserts">Single Inserts</h2>
+                    <p>Single-row INSERT with auto-commit on a 10,000-row table. Each insert is a complete transaction: parse &rarr; plan &rarr; B+tree insert &rarr; WAL append &rarr; commit &rarr; flush.</p>
+
+                    <div class="bench-vs">
+                        <div class="bench-vs-card file">
+                            <div class="bench-big">61.2 &mu;s</div>
+                            <div class="bench-small">SQL INSERT (file-backed)<br>~16,300 ops/s</div>
+                        </div>
+                        <div class="bench-vs-card">
+                            <div class="bench-big">2.86 &mu;s</div>
+                            <div class="bench-small">SQL INSERT (in-memory)<br>~349,000 ops/s</div>
+                        </div>
+                    </div>
+                    <div class="bench-vs">
+                        <div class="bench-vs-card file">
+                            <div class="bench-big">56.0 &mu;s</div>
+                            <div class="bench-small">Collection PUT (file-backed)<br>~17,900 ops/s</div>
+                        </div>
+                        <div class="bench-vs-card">
+                            <div class="bench-big">2.08 &mu;s</div>
+                            <div class="bench-small">Collection PUT (in-memory)<br>~481,000 ops/s</div>
+                        </div>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>Why is file-backed 21&ndash;27x slower for writes?</h4>
+                        <p>Every auto-committed write must durably flush the WAL to disk before returning. This means at minimum one <code>fsync</code> per insert — the dominant cost is waiting for the NVMe write to complete (~50&ndash;60 &mu;s on this hardware). In-memory mode skips the WAL entirely, so inserts are just B+tree mutations in RAM.</p>
+                        <p style="margin-top: 8px;"><strong>Optimization tip:</strong> If you need file-backed write throughput, batch multiple inserts into a single explicit transaction. The WAL flush cost is amortized across all rows in the batch (see <a href="#batch-inserts">Batch Inserts</a> below).</p>
+                    </div>
+
+                    <p class="bench-detail"><strong>Allocations:</strong> SQL insert allocates 2.63 KB (file) / 1.64 KB (in-memory). Collection put allocates 2.10 KB (file) / 1.14 KB (in-memory). The difference is WAL frame buffers.</p>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     BATCH INSERTS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="batch-inserts">Batch Inserts</h2>
+                    <p>Inserting 100 rows per transaction, repeated 256 times (25,600 total rows). Batching amortizes the WAL flush across many rows, dramatically improving file-backed throughput.</p>
+
+                    <div class="bench-vs">
+                        <div class="bench-vs-card file">
+                            <div class="bench-big">114.7 ms</div>
+                            <div class="bench-small">File-backed &bull; 25,600 rows<br>~223,000 rows/s</div>
+                        </div>
+                        <div class="bench-vs-card">
+                            <div class="bench-big">43.8 ms</div>
+                            <div class="bench-small">In-memory &bull; 25,600 rows<br>~584,000 rows/s</div>
+                        </div>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>The batching effect</h4>
+                        <p>Compare single inserts (16,300 ops/s file-backed) to batched inserts (223,000 rows/s file-backed) — that is a <strong>13.7x throughput improvement</strong> just from batching 100 rows per transaction. The cost of one WAL flush (~60 &mu;s) is now shared across 100 rows instead of paid per row.</p>
+                        <p style="margin-top: 8px;">In-memory mode sees a smaller improvement (349K &rarr; 584K) because the baseline was already fast. The remaining overhead per row is SQL parsing and B+tree page splits. Use the <code>PrepareInsertBatch</code> API to skip repeated parsing for maximum throughput.</p>
+                    </div>
+
+                    <p class="bench-detail"><strong>Allocations:</strong> ~10.9 MB total for 25,600 rows (~430 bytes per row including SQL strings, parsed AST, and B+tree operations).</p>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     FILE VS MEMORY COMPARISON
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="file-vs-memory">File-Backed vs In-Memory: When Does It Matter?</h2>
+                    <p>The storage mode only affects performance when I/O is involved. Here is the complete picture:</p>
+
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Operation</th>
+                                    <th>File-Backed</th>
+                                    <th>In-Memory</th>
+                                    <th>Ratio</th>
+                                    <th>Why</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>SQL point lookup (warm)</td>
+                                    <td>460.7 ns</td>
+                                    <td>460.0 ns</td>
+                                    <td><span class="bench-ratio">1.0x</span></td>
+                                    <td>Both served from page cache</td>
+                                </tr>
+                                <tr>
+                                    <td>Collection get (warm)</td>
+                                    <td>220.1 ns</td>
+                                    <td>216.8 ns</td>
+                                    <td><span class="bench-ratio">1.0x</span></td>
+                                    <td>Both served from page cache</td>
+                                </tr>
+                                <tr>
+                                    <td>SQL point lookup (cold)</td>
+                                    <td>32.4 &mu;s</td>
+                                    <td>2.20 &mu;s</td>
+                                    <td><span class="bench-ratio">14.7x</span></td>
+                                    <td>File I/O on cache miss</td>
+                                </tr>
+                                <tr>
+                                    <td>Collection get (cold)</td>
+                                    <td>32.9 &mu;s</td>
+                                    <td>1.86 &mu;s</td>
+                                    <td><span class="bench-ratio">17.7x</span></td>
+                                    <td>File I/O on cache miss</td>
+                                </tr>
+                                <tr>
+                                    <td>SQL single insert</td>
+                                    <td>61.2 &mu;s</td>
+                                    <td>2.86 &mu;s</td>
+                                    <td><span class="bench-ratio">21.4x</span></td>
+                                    <td>WAL flush + fsync</td>
+                                </tr>
+                                <tr>
+                                    <td>Collection single put</td>
+                                    <td>56.0 &mu;s</td>
+                                    <td>2.08 &mu;s</td>
+                                    <td><span class="bench-ratio">26.9x</span></td>
+                                    <td>WAL flush + fsync</td>
+                                </tr>
+                                <tr>
+                                    <td>Batch insert (100 rows/tx)</td>
+                                    <td>223K rows/s</td>
+                                    <td>584K rows/s</td>
+                                    <td><span class="bench-ratio">2.6x</span></td>
+                                    <td>WAL flush amortized</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>The takeaway</h4>
+                        <p><strong>Reads are free</strong> — once pages are cached, file-backed and in-memory are identical. The page cache is the performance equalizer.</p>
+                        <p style="margin-top: 8px;"><strong>Writes pay for durability</strong> — file-backed writes are 21&ndash;27x slower because each commit requires flushing the WAL to disk. Batching reduces the gap to 2.6x. If you do not need crash recovery, use in-memory mode for write-heavy workloads.</p>
+                        <p style="margin-top: 8px;"><strong>Cache sizing matters</strong> — if your hot working set fits in <code>MaxCachedPages</code>, even file-backed reads stay at ~460 ns. Cold reads are 15&ndash;18x slower because each cache miss is a kernel I/O call.</p>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCAN PATTERNS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="scan-patterns">Scan &amp; Query Patterns</h2>
+                    <p>The <code>ScanBenchmarks</code> suite tests 10 query patterns at 1K, 10K, and 100K row scales. These measure the full SQL pipeline: parse &rarr; plan &rarr; execute &rarr; iterate.</p>
+
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Pattern</th>
+                                    <th>What It Tests</th>
+                                    <th>Key Insight</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>SELECT *</code> (full scan)</td>
+                                    <td>BTreeCursor leaf-walk + full RecordEncoder decode</td>
+                                    <td>Baseline throughput — measures raw sequential read speed</td>
+                                </tr>
+                                <tr>
+                                    <td><code>WHERE value &lt; X</code> (20% selectivity)</td>
+                                    <td>Full scan + row-level predicate filter</td>
+                                    <td>Filter overhead is minimal — most cost is page I/O, not evaluation</td>
+                                </tr>
+                                <tr>
+                                    <td><code>WHERE value &lt; X</code> (1% selectivity)</td>
+                                    <td>Full scan with high rejection rate</td>
+                                    <td>Still scans all pages; index scan would be faster at 1%</td>
+                                </tr>
+                                <tr>
+                                    <td><code>ORDER BY value</code></td>
+                                    <td>Full materialization + in-memory sort</td>
+                                    <td>Sort cost grows with row count; dominates at 100K rows</td>
+                                </tr>
+                                <tr>
+                                    <td><code>ORDER BY (value + id)</code></td>
+                                    <td>Expression evaluation per row during sort</td>
+                                    <td>Expression overhead is small vs sort/materialization</td>
+                                </tr>
+                                <tr>
+                                    <td><code>ORDER BY value LIMIT 100</code></td>
+                                    <td>Top-N optimization with heap-based partial sort</td>
+                                    <td>Much faster than full sort — only materializes top 100</td>
+                                </tr>
+                                <tr>
+                                    <td><code>SELECT * LIMIT 100</code></td>
+                                    <td>Early termination after 100 rows</td>
+                                    <td>Constant time regardless of table size</td>
+                                </tr>
+                                <tr>
+                                    <td><code>COUNT(*)</code></td>
+                                    <td>Aggregate scan without row materialization</td>
+                                    <td>Faster than SELECT * — skips RecordEncoder decode</td>
+                                </tr>
+                                <tr>
+                                    <td><code>GROUP BY category</code></td>
+                                    <td>Hash-based grouping + COUNT + AVG aggregates</td>
+                                    <td>Aggregate cost grows linearly with input rows</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>What to expect at scale</h4>
+                        <p>All scan benchmarks run at three dataset sizes (1K, 10K, 100K rows) to show how performance scales. <strong>Full scans are O(n)</strong> — they touch every leaf page sequentially. <code>LIMIT</code> queries are effectively O(1) because they stop early. <code>ORDER BY + LIMIT</code> is O(n) but with a constant factor much smaller than full sort because only the top-N rows are retained in memory.</p>
+                        <p style="margin-top: 8px;">The <code>PointLookupBenchmarks</code> suite additionally tests indexed vs non-indexed column lookups, projected columns, and miss-path performance at the same three scales.</p>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     COLLECTION API
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="collection-api">Collection API Performance</h2>
+                    <p>The <code>CollectionBenchmark</code> macro suite runs 9 workloads for 15 seconds each, measuring sustained throughput and P50/P99 latencies.</p>
+
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Workload</th>
+                                    <th>Dataset</th>
+                                    <th>What It Measures</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Single Put (15s)</td>
+                                    <td>Growing</td>
+                                    <td>Sustained single-document insert throughput with auto-commit</td>
+                                </tr>
+                                <tr>
+                                    <td>Batch Put &times;100 (15s)</td>
+                                    <td>Growing</td>
+                                    <td>Batched puts in explicit transactions — amortized commit cost</td>
+                                </tr>
+                                <tr>
+                                    <td>Point Get (15s)</td>
+                                    <td>10K docs</td>
+                                    <td>Random key lookups on pre-seeded collection</td>
+                                </tr>
+                                <tr>
+                                    <td>80/20 Mixed (15s)</td>
+                                    <td>10K docs</td>
+                                    <td>Realistic read-heavy workload with concurrent writes</td>
+                                </tr>
+                                <tr>
+                                    <td>Full Scan (15s)</td>
+                                    <td>1K docs</td>
+                                    <td><code>ScanAsync</code> cursor iteration — measures deserialization throughput</td>
+                                </tr>
+                                <tr>
+                                    <td>Find ~20% Match (15s)</td>
+                                    <td>1K docs</td>
+                                    <td>Filtered scan with <code>FindByPathAsync</code> — ~20% selectivity</td>
+                                </tr>
+                                <tr>
+                                    <td>Indexed Find (15s)</td>
+                                    <td>10K docs</td>
+                                    <td><code>FindByIndexAsync</code> on secondary index — O(log n) lookup</td>
+                                </tr>
+                                <tr>
+                                    <td>Put with Index (15s)</td>
+                                    <td>Growing</td>
+                                    <td>Insert cost with secondary index maintenance overhead</td>
+                                </tr>
+                                <tr>
+                                    <td>SQL vs Collection (10s)</td>
+                                    <td>10K</td>
+                                    <td>Head-to-head: <code>SELECT WHERE id = ?</code> vs <code>GetAsync(key)</code></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>SQL vs Collection: which is faster?</h4>
+                        <p>For point operations, the Collection API is consistently ~2x faster than SQL (217 ns vs 461 ns for reads, 2.1 &mu;s vs 2.9 &mu;s for writes). The Collection API bypasses SQL parsing, AST construction, query planning, and row-level RecordEncoder decoding. It goes directly from key &rarr; B+tree lookup &rarr; JSON deserialization.</p>
+                        <p style="margin-top: 8px;">Use SQL when you need joins, aggregates, or complex predicates. Use the Collection API when you know the key and want maximum single-document throughput.</p>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     MIXED WORKLOADS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="mixed-workloads">Mixed Workloads</h2>
+                    <p>The <code>MixedWorkloadBenchmark</code> and <code>InMemoryWorkloadBenchmark</code> suites simulate realistic application patterns: 80% reads / 20% writes running for 10&ndash;15 seconds on 10,000 pre-seeded rows.</p>
+
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Workload</th>
+                                    <th>Mode</th>
+                                    <th>Reports</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>SQL 80/20 mix</td>
+                                    <td>File-backed</td>
+                                    <td>ops/sec, P50/P99 latency (reads and writes separately)</td>
+                                </tr>
+                                <tr>
+                                    <td>SQL 80/20 mix</td>
+                                    <td>In-memory</td>
+                                    <td>ops/sec, P50/P99 latency (reads and writes separately)</td>
+                                </tr>
+                                <tr>
+                                    <td>Collection 80/20 mix</td>
+                                    <td>File-backed</td>
+                                    <td>ops/sec, P50/P99 latency (reads and writes separately)</td>
+                                </tr>
+                                <tr>
+                                    <td>Collection 80/20 mix</td>
+                                    <td>In-memory</td>
+                                    <td>ops/sec, P50/P99 latency (reads and writes separately)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="bench-explanation">
+                        <h4>What to expect in production</h4>
+                        <p>In an 80/20 mix, read latency stays near warm-cache levels (~460 ns SQL, ~220 ns Collection) because the hot working set fits in cache. Write latency is dominated by WAL flush in file-backed mode (~60 &mu;s) or is near-instant in-memory mode (~2&ndash;3 &mu;s).</p>
+                        <p style="margin-top: 8px;">The single-writer lock means writes are serialized, but reads proceed concurrently via snapshot isolation. Read throughput scales linearly with reader count (verified by the <code>ReaderScalingBenchmark</code>), while write throughput remains constant.</p>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     METHODOLOGY
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="bench-section">
+                    <h2 id="methodology">Methodology &amp; Environment</h2>
+
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Detail</th>
+                                    <th>Value</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>Framework</td><td>BenchmarkDotNet v0.15.8</td></tr>
+                                <tr><td>Runtime</td><td>.NET 10.0.5 (SDK 10.0.201)</td></tr>
+                                <tr><td>OS</td><td>Windows 11 (10.0.26300.8068)</td></tr>
+                                <tr><td>CPU</td><td>11th Gen Intel Core i9-11900K 3.50 GHz (8C/16T)</td></tr>
+                                <tr><td>Storage</td><td>NVMe SSD</td></tr>
+                                <tr><td>RAM</td><td>32 GB</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3>Benchmark Categories</h3>
+                    <div class="bench-table-container">
+                        <table class="doc-table">
+                            <thead>
+                                <tr>
+                                    <th>Category</th>
+                                    <th>Suite</th>
+                                    <th>Method</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>Micro</strong></td>
+                                    <td>BenchmarkDotNet <code>[Benchmark]</code></td>
+                                    <td>Precise mean/error/stddev/allocated per operation. Uses warmup, pilot, and statistical analysis.</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Macro</strong></td>
+                                    <td>Custom <code>MacroBenchmarkRunner</code></td>
+                                    <td>Duration-based (10&ndash;15s). Reports total ops, ops/sec, P50/P99 latency histograms.</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Scaling</strong></td>
+                                    <td>Custom</td>
+                                    <td>Tests behavior at increasing dataset sizes (BTree depth, row count scaling).</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Stress</strong></td>
+                                    <td>Custom</td>
+                                    <td>Crash recovery correctness, WAL growth under sustained writes.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3>Running the Benchmarks</h3>
+                    <div class="code-block">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Terminal</span>
+                        </div>
+                        <pre><code><span class="cm"># Run all micro benchmarks (BenchmarkDotNet)</span>
+<span class="kw">cd</span> tests/CSharpDB.Benchmarks
+<span class="kw">dotnet run</span> -c Release -- --filter "*"
+
+<span class="cm"># Run a specific benchmark suite</span>
+<span class="kw">dotnet run</span> -c Release -- --filter "*ColdLookupBenchmarks*"
+<span class="kw">dotnet run</span> -c Release -- --filter "*InMemorySqlBenchmarks*"
+
+<span class="cm"># Run macro benchmarks (duration-based)</span>
+<span class="kw">dotnet run</span> -c Release -- --filter "*MixedWorkloadBenchmark*"
+<span class="kw">dotnet run</span> -c Release -- --filter "*CollectionBenchmark*"</code></pre>
+                    </div>
+
+                    <p class="bench-detail">Results are written to <code>BenchmarkDotNet.Artifacts/results/</code> in CSV, GitHub Markdown, and HTML formats. The full benchmark source is at <a href="https://github.com/maxakbar/csharpdb/tree/main/tests/CSharpDB.Benchmarks"><code>tests/CSharpDB.Benchmarks</code></a>.</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/components.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

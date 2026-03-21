@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETL Pipelines — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>ETL Pipelines</h1>
+                <p class="lead">Built-in pipeline runtime for Extract-Transform-Load workflows. Define pipelines as JSON packages, execute with validation and dry-run, and track run history.</p>
+
+                <h2>Overview</h2>
+                <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>.</p>
+
+                <div class="flow-container">
+                    <div class="flow-column">
+                        <h3>Pipeline Flow</h3>
+                        <div class="flow-steps">
+                            <div class="flow-step">Source (CSV, JSON, SQL, Table)</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Transform Chain</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Destination (CSV, JSON, Table)</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step flow-step-alt">Run History &amp; Diagnostics</div>
+                        </div>
+                    </div>
+                </div>
+
+                <h2>Sources</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Source</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>CsvPipelineSource</code></td><td>Read rows from CSV files with configurable delimiters and headers</td></tr>
+                        <tr><td><code>JsonPipelineSource</code></td><td>Read objects from JSON files or arrays</td></tr>
+                        <tr><td>SQL Query</td><td>Execute a SELECT statement and stream results</td></tr>
+                        <tr><td>CSharpDB Table</td><td>Read directly from a database table</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Transforms</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Transform</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>Projection</td><td>Select specific columns to pass through</td></tr>
+                        <tr><td>Column Rename</td><td>Rename columns in the data flow</td></tr>
+                        <tr><td>Type Coercion</td><td>Convert column types (e.g., text to integer)</td></tr>
+                        <tr><td>Row Filter</td><td>Include/exclude rows based on conditions</td></tr>
+                        <tr><td>Derived Column</td><td>Compute new columns from expressions</td></tr>
+                        <tr><td>Deduplication</td><td>Remove duplicate rows by key columns</td></tr>
+                        <tr><td>Ordered</td><td>Sort rows by specified columns</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Destinations</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Destination</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>CsvPipelineDestination</code></td><td>Write rows to a CSV file</td></tr>
+                        <tr><td><code>JsonPipelineDestination</code></td><td>Write objects to a JSON file</td></tr>
+                        <tr><td>CSharpDB Table</td><td>Insert rows into a database table</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Pipeline Package Definition</h2>
+                <p>Pipelines are defined as JSON packages that describe the source, transforms, and destination.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">pipeline.json</span>
+                    </div>
+                    <pre><code>{
+  <span class="str">"name"</span>: <span class="str">"import-products"</span>,
+  <span class="str">"source"</span>: {
+    <span class="str">"type"</span>: <span class="str">"csv"</span>,
+    <span class="str">"path"</span>: <span class="str">"products.csv"</span>,
+    <span class="str">"hasHeader"</span>: <span class="kw">true</span>
+  },
+  <span class="str">"transforms"</span>: [
+    { <span class="str">"type"</span>: <span class="str">"rename"</span>, <span class="str">"mappings"</span>: { <span class="str">"product_id"</span>: <span class="str">"Id"</span>, <span class="str">"product_name"</span>: <span class="str">"Name"</span> } },
+    { <span class="str">"type"</span>: <span class="str">"coerce"</span>, <span class="str">"columns"</span>: { <span class="str">"Id"</span>: <span class="str">"integer"</span>, <span class="str">"Price"</span>: <span class="str">"real"</span> } },
+    { <span class="str">"type"</span>: <span class="str">"filter"</span>, <span class="str">"expression"</span>: <span class="str">"Price > 0"</span> }
+  ],
+  <span class="str">"destination"</span>: {
+    <span class="str">"type"</span>: <span class="str">"table"</span>,
+    <span class="str">"table"</span>: <span class="str">"Products"</span>
+  }
+}</code></pre>
+                </div>
+
+                <h2>Execution Modes</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Mode</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Validate</strong></td><td>Check the pipeline definition for errors without executing</td></tr>
+                        <tr><td><strong>Dry Run</strong></td><td>Simulate execution, reporting row counts and potential issues</td></tr>
+                        <tr><td><strong>Execute</strong></td><td>Run the full pipeline, writing to the destination</td></tr>
+                        <tr><td><strong>Resume</strong></td><td>Resume a failed pipeline from the last checkpoint</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Management</h2>
+                <p>Pipelines can be managed through multiple interfaces:</p>
+                <ul style="color: var(--text-secondary); margin-bottom: 24px; padding-left: 24px;">
+                    <li><strong>Admin UI</strong> — Visual pipeline designer with drag-and-drop nodes, connection lines, and properties panel</li>
+                    <li><strong>REST API</strong> — Pipeline CRUD and execution endpoints</li>
+                    <li><strong>Client SDK</strong> — <code>CSharpDbPipelineRunner</code> and <code>CSharpDbPipelineStorage</code> classes</li>
+                    <li><strong>CLI</strong> — Command-line pipeline execution and inspection</li>
+                </ul>
+
+                <h2>Run History</h2>
+                <p>Every pipeline execution is tracked with metadata including start/end times, row counts, error details, and reject records. Failed rows are captured for inspection and recovery.</p>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="ecosystem.html" class="next-step-card">
+                            <h4>Tools & Ecosystem</h4>
+                            <p>Explore the Admin UI pipeline designer and other tools</p>
+                        </a>
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Use SQL queries as pipeline sources</p>
+                        </a>
+                        <a href="../api-reference.html" class="next-step-card">
+                            <h4>API Reference</h4>
+                            <p>PipelineOrchestrator and related APIs</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

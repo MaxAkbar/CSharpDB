@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Concepts — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Core Concepts</h1>
+                <p class="lead">The foundational types that power CSharpDB's type system and schema definitions.</p>
+
+                <h2>DbType</h2>
+                <p>CSharpDB supports five fundamental data types, inspired by SQLite's type affinity system:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Type</th><th>C# Mapping</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Null</code></td><td><code>null</code></td><td>Absence of value</td></tr>
+                        <tr><td><code>Integer</code></td><td><code>long</code></td><td>64-bit signed integer</td></tr>
+                        <tr><td><code>Real</code></td><td><code>double</code></td><td>64-bit IEEE floating point</td></tr>
+                        <tr><td><code>Text</code></td><td><code>string</code></td><td>UTF-8 encoded text</td></tr>
+                        <tr><td><code>Blob</code></td><td><code>byte[]</code></td><td>Raw binary data</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>DbValue</h2>
+                <p><code>DbValue</code> is a lightweight struct that represents a dynamically-typed database value. It wraps the five core types and provides type-safe access, comparison, and truthiness evaluation.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">DbValue Usage</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> id    = <span class="tp">DbValue</span>.FromInteger(<span class="num">42</span>);
+<span class="kw">var</span> name  = <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>);
+<span class="kw">var</span> score = <span class="tp">DbValue</span>.FromReal(<span class="num">98.5</span>);
+<span class="kw">var</span> empty = <span class="tp">DbValue</span>.Null;
+
+<span class="cm">// Type-safe access</span>
+<span class="kw">long</span> idVal     = id.AsInteger;    <span class="cm">// 42</span>
+<span class="kw">string</span> nameVal = name.AsText;     <span class="cm">// "Alice"</span>
+<span class="kw">bool</span> isNull    = empty.IsNull;    <span class="cm">// true</span>
+
+<span class="cm">// Comparison</span>
+<span class="kw">int</span> cmp = <span class="tp">DbValue</span>.Compare(id, <span class="tp">DbValue</span>.FromInteger(<span class="num">43</span>)); <span class="cm">// -1</span></code></pre>
+                </div>
+
+                <h2>TableSchema</h2>
+                <p>Defines the structure of a table: its name, columns, types, nullability, and primary key.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Schema Definition</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>(<span class="str">"Orders"</span>, [
+    <span class="kw">new</span>(<span class="str">"OrderId"</span>,   <span class="tp">DbType</span>.Integer, isPrimaryKey: <span class="kw">true</span>),
+    <span class="kw">new</span>(<span class="str">"CustomerId"</span>,<span class="tp">DbType</span>.Integer),
+    <span class="kw">new</span>(<span class="str">"Total"</span>,     <span class="tp">DbType</span>.Real),
+    <span class="kw">new</span>(<span class="str">"Notes"</span>,     <span class="tp">DbType</span>.Text, nullable: <span class="kw">true</span>),
+]);
+
+<span class="cm">// Access column info</span>
+<span class="kw">int</span> idx = schema.GetColumnIndex(<span class="str">"Total"</span>);  <span class="cm">// 2</span>
+<span class="kw">int</span> pk  = schema.PrimaryKeyColumnIndex;   <span class="cm">// 0</span></code></pre>
+                </div>
+
+                <h2>IndexSchema</h2>
+                <p><code>IndexSchema</code> defines secondary indexes on table columns. Indexes support composite keys, unique constraints, and efficient range scans via <code>BTreeIndexCursor</code>.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Index Definition</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> index = <span class="kw">new</span> <span class="tp">IndexSchema</span>(
+    name: <span class="str">"idx_orders_customer"</span>,
+    tableName: <span class="str">"Orders"</span>,
+    columns: [<span class="str">"CustomerId"</span>],
+    isUnique: <span class="kw">false</span>
+);</code></pre>
+                </div>
+
+                <h2>TriggerSchema</h2>
+                <p><code>TriggerSchema</code> stores trigger metadata — timing (BEFORE/AFTER), event (INSERT/UPDATE/DELETE), and the SQL body for execution by the query engine.</p>
+
+                <h2>ColumnDefinition</h2>
+                <p>Each column in a <code>TableSchema</code> is described by a <code>ColumnDefinition</code> that captures:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Property</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Name</code></td><td><code>string</code></td><td>Column name</td></tr>
+                        <tr><td><code>Type</code></td><td><code>DbType</code></td><td>Data type</td></tr>
+                        <tr><td><code>IsPrimaryKey</code></td><td><code>bool</code></td><td>Whether this is the primary key column</td></tr>
+                        <tr><td><code>Nullable</code></td><td><code>bool</code></td><td>Whether NULL values are allowed</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Learn the full SQL syntax supported by CSharpDB</p>
+                        </a>
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Engine</h4>
+                            <p>B+tree operations, transactions, and WAL</p>
+                        </a>
+                        <a href="../architecture.html" class="next-step-card">
+                            <h4>Architecture</h4>
+                            <p>Explore the layered architecture and file format</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

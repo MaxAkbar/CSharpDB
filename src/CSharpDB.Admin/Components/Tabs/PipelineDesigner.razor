@@ -79,6 +79,9 @@
                     <p>@DisplayDescription</p>
                 </div>
                 <div class="pipeline-designer-header-badges">
+                    <button type="button" class="toolbar-btn" @onclick="CreateNewPipelineAsync">
+                        <i class="bi bi-plus-circle"></i> New Pipeline
+                    </button>
                     <span class="pipeline-designer-badge">v@(_state.VersionOrDefault)</span>
                     <span class="pipeline-designer-badge">@_state.Transforms.Count transform@( _state.Transforms.Count == 1 ? "" : "s")</span>
                 </div>
@@ -974,6 +977,15 @@
         PackageJson = json;
         _lastLoadedJson = null;
         await OnParametersSetAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CreateNewPipelineAsync()
+    {
+        ClearState();
+        _loadError = null;
+        _lastLoadedJson = null;
+        await PublishPackageAsync();
         await InvokeAsync(StateHasChanged);
     }
 

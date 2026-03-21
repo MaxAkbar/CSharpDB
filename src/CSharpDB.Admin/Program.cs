@@ -49,6 +49,7 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/error");
 }
 
+app.MapStaticAssets();
 app.UseStaticFiles();
 app.UseAntiforgery();
 

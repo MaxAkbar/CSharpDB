@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage Engine — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Storage Engine</h1>
+                <p class="lead">The low-level storage layer: B+trees, paging, transactions, WAL, checkpointing, serialization, and diagnostics.</p>
+
+                <h2>Opening a Database</h2>
+                <p>The <code>DefaultStorageEngineFactory</code> creates or opens a database file and returns a <code>StorageEngineContext</code> with all initialized components.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Storage Engine</span>
+                    </div>
+                    <pre><code><span class="cm">// Default — suitable for most use cases</span>
+<span class="kw">await using var</span> ctx = <span class="kw">await</span> <span class="tp">DefaultStorageEngineFactory</span>
+    .OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// In-memory — fast, no persistence</span>
+<span class="kw">await using var</span> mem = <span class="kw">await</span> <span class="tp">InMemoryStorageEngineFactory</span>
+    .CreateAsync();
+
+<span class="cm">// Hybrid — lazy-resident with durable backing file</span>
+<span class="kw">await using var</span> hybrid = <span class="kw">await</span> <span class="tp">HybridStorageEngineFactory</span>
+    .OpenAsync(<span class="str">"myapp.db"</span>);</code></pre>
+                </div>
+
+                <h2>StorageEngineContext</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Property</th><th>Type</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Pager</code></td><td><code>Pager</code></td><td>Page I/O, transaction control, snapshot readers</td></tr>
+                        <tr><td><code>Catalog</code></td><td><code>SchemaCatalog</code></td><td>Table/index/view/trigger management</td></tr>
+                        <tr><td><code>RecordSerializer</code></td><td><code>IRecordSerializer</code></td><td>Row encoding/decoding</td></tr>
+                        <tr><td><code>IndexProvider</code></td><td><code>IIndexProvider</code></td><td>Secondary index creation and lookup</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Transactions</h2>
+                <p>CSharpDB uses a single-writer, multiple-reader concurrency model with snapshot isolation.</p>
+
+                <h3>Writer Transactions</h3>
+                <p>Only one write transaction can be active at a time. The writer acquires an exclusive lock and all page modifications are logged to the WAL before commit.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Write Transaction</span>
+                    </div>
+                    <pre><code><span class="kw">await</span> ctx.Pager.BeginWriteTransactionAsync();
+<span class="kw">try</span>
+{
+    <span class="kw">var</span> tree = ctx.Catalog.GetTableTree(<span class="str">"Events"</span>);
+    <span class="kw">await</span> tree.InsertAsync(<span class="num">1</span>, payload);
+    <span class="kw">await</span> ctx.Pager.CommitTransactionAsync();
+}
+<span class="kw">catch</span>
+{
+    ctx.Pager.RollbackTransaction();
+    <span class="kw">throw</span>;
+}</code></pre>
+                </div>
+
+                <h3>Snapshot Readers</h3>
+                <p>Readers see a consistent point-in-time snapshot. They never block the writer and the writer never blocks readers.</p>
+                <div class="callout callout-info">
+                    <strong>Key Insight:</strong> Readers capture the WAL state at the moment they start. Even as the writer commits new transactions, existing readers continue to see their original snapshot.
+                </div>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Snapshot Reader</span>
+                    </div>
+                    <pre><code><span class="kw">await using var</span> reader = ctx.Pager.CreateSnapshotReader();
+<span class="kw">var</span> readCatalog = <span class="kw">new</span> <span class="tp">SchemaCatalog</span>(reader, ...);
+<span class="kw">var</span> tree = readCatalog.GetTableTree(<span class="str">"Users"</span>);
+<span class="kw">var</span> data = <span class="kw">await</span> tree.FindAsync(<span class="num">42</span>);</code></pre>
+                </div>
+
+                <h2>B+Tree &amp; Cursors</h2>
+                <p>Each table's data is stored in a B+tree keyed by <code>long</code> rowid. Interior nodes hold routing keys and child pointers; leaf nodes hold key-payload pairs linked for sequential scans.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Cursor Iteration</span>
+                    </div>
+                    <pre><code><span class="kw">using var</span> cursor = <span class="kw">await</span> tree.CreateCursorAsync();
+<span class="kw">await</span> cursor.MoveToFirstAsync();
+
+<span class="kw">while</span> (cursor.HasCurrent)
+{
+    <span class="kw">var</span> (key, data) = cursor.Current;
+    <span class="kw">var</span> row = encoder.Decode(data, schema);
+    Console.WriteLine(<span class="str">$"Key {key}: {row[1].AsText}"</span>);
+    <span class="kw">await</span> cursor.MoveNextAsync();
+}</code></pre>
+                </div>
+
+                <h2>Schema Catalog</h2>
+                <p>The catalog stores all schema metadata in a dedicated B+tree. It manages tables, indexes, views, and triggers.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Catalog Operations</span>
+                    </div>
+                    <pre><code><span class="cm">// Create a table</span>
+<span class="kw">await</span> ctx.Catalog.CreateTableAsync(schema);
+
+<span class="cm">// Create an index</span>
+<span class="kw">await</span> ctx.Catalog.CreateIndexAsync(indexSchema);
+
+<span class="cm">// Query schema</span>
+<span class="kw">var</span> tableSchema = <span class="kw">await</span> ctx.Catalog.GetTableSchemaAsync(<span class="str">"Users"</span>);
+<span class="kw">var</span> tree = ctx.Catalog.GetTableTree(<span class="str">"Users"</span>);
+
+<span class="cm">// Drop</span>
+<span class="kw">await</span> ctx.Catalog.DropTableAsync(<span class="str">"Users"</span>);</code></pre>
+                </div>
+
+                <h2>Serialization</h2>
+                <p>The <code>RecordEncoder</code> uses varint-encoded type markers and lengths for space-efficient storage. Each cell in a slotted page contains one encoded record.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Record Encoding</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> encoder = ctx.RecordSerializer;
+
+<span class="cm">// Encode</span>
+<span class="kw">byte</span>[] bytes = encoder.Encode([
+    <span class="tp">DbValue</span>.FromInteger(<span class="num">42</span>),
+    <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>),
+]);
+
+<span class="cm">// Decode</span>
+<span class="tp">DbValue</span>[] row = encoder.Decode(bytes, schema);</code></pre>
+                </div>
+
+                <h2>Write-Ahead Log</h2>
+                <p>All page modifications are written to the WAL before being applied to the main database file. The WAL uses a 32-byte header and 24-byte frame headers with checksum validation.</p>
+
+                <h3>Checkpoint Policies</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Policy</th><th>Triggers When</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>FrameCountCheckpointPolicy</code></td><td>N frames committed (default: 1000)</td></tr>
+                        <tr><td><code>TimeIntervalCheckpointPolicy</code></td><td>N seconds elapsed since last checkpoint</td></tr>
+                        <tr><td><code>WalSizeCheckpointPolicy</code></td><td>WAL exceeds size threshold in bytes</td></tr>
+                        <tr><td><code>AnyCheckpointPolicy</code></td><td>Any sub-policy triggers (composite)</td></tr>
+                        <tr><td><code>ManualCheckpointPolicy</code></td><td>Only when explicitly requested</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Configuration</h2>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Custom Options</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">StorageEngineOptionsBuilder</span>()
+    .WithCacheSize(<span class="num">4096</span>)                        <span class="cm">// Page cache slots</span>
+    .WithLockTimeout(<span class="tp">TimeSpan</span>.FromSeconds(<span class="num">30</span>)) <span class="cm">// Write lock timeout</span>
+    .WithCheckpointPolicy(
+        <span class="kw">new</span> <span class="tp">AnyCheckpointPolicy</span>(
+            <span class="kw">new</span> <span class="tp">FrameCountCheckpointPolicy</span>(<span class="num">1000</span>),
+            <span class="kw">new</span> <span class="tp">WalSizeCheckpointPolicy</span>(<span class="num">10</span> * <span class="num">1024</span> * <span class="num">1024</span>)
+        ))
+    .Build();</code></pre>
+                </div>
+
+                <h2>Diagnostics</h2>
+                <p>Three inspector classes validate database integrity at different levels:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Inspector</th><th>Validates</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>DatabaseInspector</code></td><td>File header, page structure, B+tree consistency, page histograms</td></tr>
+                        <tr><td><code>WalInspector</code></td><td>WAL header, frame salts, checksums for each committed frame</td></tr>
+                        <tr><td><code>IndexInspector</code></td><td>Index root page validity, table/column references, B+tree reachability</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="../architecture.html" class="next-step-card">
+                            <h4>Architecture</h4>
+                            <p>Visual diagrams of layers, page format, and transaction flow</p>
+                        </a>
+                        <a href="../benchmarks.html" class="next-step-card">
+                            <h4>Benchmarks</h4>
+                            <p>Performance characteristics of the storage engine</p>
+                        </a>
+                        <a href="../api-reference.html" class="next-step-card">
+                            <h4>API Reference</h4>
+                            <p>Complete Pager, BTree, and WAL API surface</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

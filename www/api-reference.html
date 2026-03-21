@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Reference — CSharpDB</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'api-reference';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar" id="apiSidebar">
+                <div class="sidebar-header">API Reference</div>
+                <nav class="sidebar-nav">
+                    <span class="sidebar-group-label">CSharpDB.Engine</span>
+                    <a href="#" class="sidebar-link active" data-api="engine">Database &amp; Collections</a>
+                    <span class="sidebar-group-label">CSharpDB.Core</span>
+                    <a href="#" class="sidebar-link" data-api="core">Core Types</a>
+                    <span class="sidebar-group-label">CSharpDB.Storage</span>
+                    <a href="#" class="sidebar-link" data-api="paging">Paging</a>
+                    <a href="#" class="sidebar-link" data-api="btree">BTree</a>
+                    <a href="#" class="sidebar-link" data-api="catalog">Catalog</a>
+                    <a href="#" class="sidebar-link" data-api="indexing">Indexing</a>
+                    <a href="#" class="sidebar-link" data-api="wal">WAL</a>
+                    <a href="#" class="sidebar-link" data-api="serialization">Serialization</a>
+                    <span class="sidebar-group-label">CSharpDB.Data</span>
+                    <a href="#" class="sidebar-link" data-api="adonet">ADO.NET</a>
+                    <span class="sidebar-group-label">CSharpDB.Client</span>
+                    <a href="#" class="sidebar-link" data-api="client">Client SDK</a>
+                    <span class="sidebar-group-label">CSharpDB.Pipelines</span>
+                    <a href="#" class="sidebar-link" data-api="pipelines">Pipelines</a>
+                    <span class="sidebar-group-label">Diagnostics</span>
+                    <a href="#" class="sidebar-link" data-api="diagnostics">Inspectors</a>
+                </nav>
+            </aside>
+            <div class="doc-content">
+
+                <!-- Engine & Collections -->
+                <div class="api-section active" id="api-engine">
+                    <h1>CSharpDB.Engine</h1>
+                    <p class="lead">Top-level database API and typed Collection&lt;T&gt; for NoSQL access.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>Database</h3>
+                        </div>
+                        <p>The primary entry point for embedded database usage. Manages the storage engine, SQL execution, and collection access.</p>
+                        <div class="api-members">
+                            <h4>Static Factory Methods</h4>
+                            <div class="api-member"><code>OpenAsync(string path, StorageEngineOptions? options = null)</code> <span class="api-return">&rarr; Task&lt;Database&gt;</span></div>
+                            <div class="api-member"><code>OpenInMemoryAsync()</code> <span class="api-return">&rarr; Task&lt;Database&gt;</span></div>
+                            <div class="api-member"><code>OpenHybridAsync(string path)</code> <span class="api-return">&rarr; Task&lt;Database&gt;</span></div>
+                            <h4>SQL Execution</h4>
+                            <div class="api-member"><code>ExecuteAsync(string sql)</code> <span class="api-return">&rarr; Task&lt;QueryResult&gt;</span></div>
+                            <div class="api-member"><code>ExecuteAsync(string script)</code> <span class="api-return">&rarr; Task&lt;QueryResult&gt;</span></div>
+                            <h4>Collections</h4>
+                            <div class="api-member"><code>GetCollectionAsync&lt;T&gt;()</code> <span class="api-return">&rarr; Task&lt;Collection&lt;T&gt;&gt;</span></div>
+                            <h4>Transactions</h4>
+                            <div class="api-member"><code>BeginAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>CommitAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>RollbackAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                            <h4>Maintenance</h4>
+                            <div class="api-member"><code>BackupAsync(string destPath)</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>VacuumAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>AnalyzeAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>Collection&lt;T&gt;</h3>
+                        </div>
+                        <p>Typed NoSQL document collection with JSON serialization, indexing, and query support.</p>
+                        <div class="api-members">
+                            <h4>CRUD</h4>
+                            <div class="api-member"><code>PutAsync(long key, T document)</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>GetAsync(long key)</code> <span class="api-return">&rarr; Task&lt;T?&gt;</span></div>
+                            <div class="api-member"><code>DeleteAsync(long key)</code> <span class="api-return">&rarr; Task&lt;bool&gt;</span></div>
+                            <div class="api-member"><code>ScanAsync()</code> <span class="api-return">&rarr; IAsyncEnumerable&lt;(long, T)&gt;</span></div>
+                            <h4>Querying</h4>
+                            <div class="api-member"><code>FindAsync&lt;V&gt;(Expression&lt;Func&lt;T, V&gt;&gt; path, V value)</code> <span class="api-return">&rarr; Task&lt;List&lt;(long, T)&gt;&gt;</span></div>
+                            <div class="api-member"><code>FindRangeAsync&lt;V&gt;(Expression path, V min, V max)</code> <span class="api-return">&rarr; Task&lt;List&lt;(long, T)&gt;&gt;</span></div>
+                            <h4>Indexing</h4>
+                            <div class="api-member"><code>Index</code> <span class="api-return">&rarr; CollectionIndexBinding&lt;T&gt;</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CollectionIndexBinding&lt;T&gt;</h3>
+                        </div>
+                        <p>Manages indexes on a collection's document properties.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>OnAsync&lt;V&gt;(Expression&lt;Func&lt;T, V&gt;&gt; path)</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>OnEachAsync&lt;V&gt;(Expression&lt;Func&lt;T, V[]&gt;&gt; path)</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>DropAsync&lt;V&gt;(Expression&lt;Func&lt;T, V&gt;&gt; path)</code> <span class="api-return">&rarr; Task</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Core Types -->
+                <div class="api-section" id="api-core">
+                    <h1>CSharpDB.Core</h1>
+                    <p class="lead">Primitive types, schemas, and exceptions.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge">enum</span>
+                            <h3>DbType</h3>
+                        </div>
+                        <p>The five fundamental data types supported by the database.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>Null</code> <span class="api-sep">&mdash;</span> Absence of value</div>
+                            <div class="api-member"><code>Integer</code> <span class="api-sep">&mdash;</span> 64-bit signed integer</div>
+                            <div class="api-member"><code>Real</code> <span class="api-sep">&mdash;</span> 64-bit floating point</div>
+                            <div class="api-member"><code>Text</code> <span class="api-sep">&mdash;</span> UTF-8 string</div>
+                            <div class="api-member"><code>Blob</code> <span class="api-sep">&mdash;</span> Raw byte array</div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-struct">struct</span>
+                            <h3>DbValue</h3>
+                        </div>
+                        <p>A dynamically-typed database value wrapping one of the five core types.</p>
+                        <div class="api-members">
+                            <h4>Static Factory Methods</h4>
+                            <div class="api-member"><code>FromInteger(long value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <div class="api-member"><code>FromReal(double value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <div class="api-member"><code>FromText(string value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <div class="api-member"><code>FromBlob(byte[] value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <h4>Properties</h4>
+                            <div class="api-member"><code>Type</code> <span class="api-return">&rarr; DbType</span></div>
+                            <div class="api-member"><code>AsInteger</code> <span class="api-return">&rarr; long</span></div>
+                            <div class="api-member"><code>AsReal</code> <span class="api-return">&rarr; double</span></div>
+                            <div class="api-member"><code>AsText</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>AsBlob</code> <span class="api-return">&rarr; byte[]</span></div>
+                            <div class="api-member"><code>IsNull</code> <span class="api-return">&rarr; bool</span></div>
+                            <div class="api-member"><code>IsTruthy</code> <span class="api-return">&rarr; bool</span></div>
+                            <h4>Static Methods</h4>
+                            <div class="api-member"><code>Compare(DbValue a, DbValue b)</code> <span class="api-return">&rarr; int</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>TableSchema</h3>
+                        </div>
+                        <p>Defines the structure of a database table.</p>
+                        <div class="api-members">
+                            <h4>Constructor</h4>
+                            <div class="api-member"><code>TableSchema(string name, ColumnDefinition[] columns)</code></div>
+                            <h4>Properties</h4>
+                            <div class="api-member"><code>Name</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>Columns</code> <span class="api-return">&rarr; IReadOnlyList&lt;ColumnDefinition&gt;</span></div>
+                            <div class="api-member"><code>PrimaryKeyColumnIndex</code> <span class="api-return">&rarr; int</span></div>
+                            <h4>Methods</h4>
+                            <div class="api-member"><code>GetColumnIndex(string name)</code> <span class="api-return">&rarr; int</span></div>
+                            <div class="api-member"><code>CreateJoinSchema(TableSchema other)</code> <span class="api-return">&rarr; TableSchema</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>IndexSchema</h3>
+                        </div>
+                        <p>Defines a secondary index on table columns.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>Name</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>TableName</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>Columns</code> <span class="api-return">&rarr; string[]</span></div>
+                            <div class="api-member"><code>IsUnique</code> <span class="api-return">&rarr; bool</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Paging -->
+                <div class="api-section" id="api-paging">
+                    <h1>CSharpDB.Storage.Paging</h1>
+                    <p class="lead">Page I/O, transaction management, and buffer coordination.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>Pager</h3>
+                        </div>
+                        <p>Core page I/O manager. Handles single-writer transactions, WAL integration, and dirty page tracking.</p>
+                        <div class="api-members">
+                            <h4>Transaction Methods</h4>
+                            <div class="api-member"><code>BeginWriteTransactionAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>CommitTransactionAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>RollbackTransaction()</code> <span class="api-return">&rarr; void</span></div>
+                            <h4>Page Operations</h4>
+                            <div class="api-member"><code>GetPageAsync(uint pageNumber)</code> <span class="api-return">&rarr; ValueTask&lt;SlottedPage&gt;</span></div>
+                            <div class="api-member"><code>AllocatePageAsync()</code> <span class="api-return">&rarr; ValueTask&lt;uint&gt;</span></div>
+                            <div class="api-member"><code>MarkDirty(uint pageNumber)</code> <span class="api-return">&rarr; void</span></div>
+                            <h4>Snapshot</h4>
+                            <div class="api-member"><code>CreateSnapshotReader()</code> <span class="api-return">&rarr; SnapshotReader</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>SlottedPage</h3>
+                        </div>
+                        <p>In-memory page abstraction. 4096-byte slotted format with cell pointer array and cell data.</p>
+                    </div>
+                </div>
+
+                <!-- BTree -->
+                <div class="api-section" id="api-btree">
+                    <h1>CSharpDB.Storage.BTree</h1>
+                    <p class="lead">Persistent B+tree keyed by long rowid.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>BTree</h3>
+                        </div>
+                        <div class="api-members">
+                            <div class="api-member"><code>InsertAsync(long key, byte[] payload)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>FindAsync(long key)</code> <span class="api-return">&rarr; ValueTask&lt;byte[]?&gt;</span></div>
+                            <div class="api-member"><code>DeleteAsync(long key)</code> <span class="api-return">&rarr; ValueTask&lt;bool&gt;</span></div>
+                            <div class="api-member"><code>CreateCursorAsync()</code> <span class="api-return">&rarr; ValueTask&lt;BTreeCursor&gt;</span></div>
+                        </div>
+                    </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>BTreeCursor</h3>
+                        </div>
+                        <div class="api-members">
+                            <div class="api-member"><code>MoveToFirstAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>MoveNextAsync()</code> <span class="api-return">&rarr; ValueTask&lt;bool&gt;</span></div>
+                            <div class="api-member"><code>SeekAsync(long key)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>HasCurrent</code> <span class="api-return">&rarr; bool</span></div>
+                            <div class="api-member"><code>Current</code> <span class="api-return">&rarr; (long Key, byte[] Data)</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Catalog -->
+                <div class="api-section" id="api-catalog">
+                    <h1>CSharpDB.Storage.Catalog</h1>
+                    <p class="lead">Schema metadata management.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>SchemaCatalog</h3>
+                        </div>
+                        <div class="api-members">
+                            <h4>Tables</h4>
+                            <div class="api-member"><code>CreateTableAsync(TableSchema schema)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>GetTableSchemaAsync(string name)</code> <span class="api-return">&rarr; ValueTask&lt;TableSchema?&gt;</span></div>
+                            <div class="api-member"><code>DropTableAsync(string name)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>GetTableTree(string tableName)</code> <span class="api-return">&rarr; BTree</span></div>
+                            <h4>Indexes</h4>
+                            <div class="api-member"><code>CreateIndexAsync(IndexSchema schema)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>DropIndexAsync(string name)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <h4>Views &amp; Triggers</h4>
+                            <div class="api-member"><code>CreateViewAsync(ViewSchema schema)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>CreateTriggerAsync(TriggerSchema schema)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Indexing -->
+                <div class="api-section" id="api-indexing">
+                    <h1>CSharpDB.Storage.Indexing</h1>
+                    <p class="lead">Secondary index implementations with B+tree backing.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>BTreeIndexStore</h3>
+                        </div>
+                        <div class="api-members">
+                            <div class="api-member"><code>InsertAsync(DbValue[] key, long rowId)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>FindAsync(DbValue[] key)</code> <span class="api-return">&rarr; ValueTask&lt;long[]&gt;</span></div>
+                            <div class="api-member"><code>DeleteAsync(DbValue[] key, long rowId)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>CreateCursorAsync()</code> <span class="api-return">&rarr; ValueTask&lt;BTreeIndexCursor&gt;</span></div>
+                        </div>
+                    </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CachingIndexStore</h3>
+                        </div>
+                        <p>Wraps an <code>IIndexStore</code> with an in-memory cache for frequently accessed index entries.</p>
+                    </div>
+                </div>
+
+                <!-- WAL -->
+                <div class="api-section" id="api-wal">
+                    <h1>CSharpDB.Storage.Wal</h1>
+                    <p class="lead">Write-ahead log for durability and crash recovery.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>WriteAheadLog</h3>
+                        </div>
+                        <div class="api-members">
+                            <div class="api-member"><code>WriteFrameAsync(WalFrameWrite frame)</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>RecoverAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>CheckpointAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                        </div>
+                    </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CheckpointCoordinator</h3>
+                        </div>
+                        <p>Manages checkpoint scheduling based on configured policies.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>CheckpointIfNeededAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                            <div class="api-member"><code>ForceCheckpointAsync()</code> <span class="api-return">&rarr; ValueTask</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Serialization -->
+                <div class="api-section" id="api-serialization">
+                    <h1>CSharpDB.Storage.Serialization</h1>
+                    <p class="lead">Record and schema encoding/decoding.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>DefaultRecordSerializer</h3>
+                        </div>
+                        <div class="api-members">
+                            <div class="api-member"><code>Encode(DbValue[] values)</code> <span class="api-return">&rarr; byte[]</span></div>
+                            <div class="api-member"><code>Decode(byte[] data, TableSchema schema)</code> <span class="api-return">&rarr; DbValue[]</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ADO.NET -->
+                <div class="api-section" id="api-adonet">
+                    <h1>CSharpDB.Data</h1>
+                    <p class="lead">Standard ADO.NET provider for CSharpDB.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CSharpDbConnection</h3>
+                        </div>
+                        <p>Implements <code>DbConnection</code>. Connection string format: <code>Data Source=path.db</code></p>
+                        <div class="api-members">
+                            <div class="api-member"><code>CSharpDbConnection(string connectionString)</code></div>
+                            <div class="api-member"><code>OpenAsync()</code> <span class="api-return">&rarr; Task</span></div>
+                            <div class="api-member"><code>CreateCommand()</code> <span class="api-return">&rarr; CSharpDbCommand</span></div>
+                            <div class="api-member"><code>BeginTransactionAsync()</code> <span class="api-return">&rarr; Task&lt;CSharpDbTransaction&gt;</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CSharpDbCommand</h3>
+                        </div>
+                        <p>Implements <code>DbCommand</code>. Supports parameterized SQL execution.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>CommandText</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>Parameters</code> <span class="api-return">&rarr; CSharpDbParameterCollection</span></div>
+                            <div class="api-member"><code>ExecuteNonQueryAsync()</code> <span class="api-return">&rarr; Task&lt;int&gt;</span></div>
+                            <div class="api-member"><code>ExecuteReaderAsync()</code> <span class="api-return">&rarr; Task&lt;CSharpDbDataReader&gt;</span></div>
+                            <div class="api-member"><code>ExecuteScalarAsync()</code> <span class="api-return">&rarr; Task&lt;object?&gt;</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CSharpDbDataReader</h3>
+                        </div>
+                        <p>Implements <code>DbDataReader</code>. Provides column accessors for query results.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>ReadAsync()</code> <span class="api-return">&rarr; Task&lt;bool&gt;</span></div>
+                            <div class="api-member"><code>GetString(int ordinal)</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>GetInt64(int ordinal)</code> <span class="api-return">&rarr; long</span></div>
+                            <div class="api-member"><code>GetDouble(int ordinal)</code> <span class="api-return">&rarr; double</span></div>
+                            <div class="api-member"><code>IsDBNull(int ordinal)</code> <span class="api-return">&rarr; bool</span></div>
+                            <div class="api-member"><code>FieldCount</code> <span class="api-return">&rarr; int</span></div>
+                            <div class="api-member"><code>GetName(int ordinal)</code> <span class="api-return">&rarr; string</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CSharpDbConnectionPool</h3>
+                        </div>
+                        <p>Connection pooling for CSharpDbConnection instances.</p>
+                    </div>
+                </div>
+
+                <!-- Client SDK -->
+                <div class="api-section" id="api-client">
+                    <h1>CSharpDB.Client</h1>
+                    <p class="lead">Unified client SDK with pluggable transports.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>CSharpDbClient</h3>
+                        </div>
+                        <p>Unified client interface supporting Direct, HTTP, and gRPC transports.</p>
+                        <div class="api-members">
+                            <h4>Factory Methods</h4>
+                            <div class="api-member"><code>CreateDirect(string dbPath)</code> <span class="api-return">&rarr; ICSharpDbClient</span></div>
+                            <div class="api-member"><code>CreateHttp(string baseUrl)</code> <span class="api-return">&rarr; ICSharpDbClient</span></div>
+                            <div class="api-member"><code>CreateGrpc(string endpoint)</code> <span class="api-return">&rarr; ICSharpDbClient</span></div>
+                            <h4>Service Groups</h4>
+                            <div class="api-member"><code>Query</code> <span class="api-return">&rarr; IQueryClient</span> <span class="api-sep">&mdash;</span> SQL execution</div>
+                            <div class="api-member"><code>Schema</code> <span class="api-return">&rarr; ISchemaClient</span> <span class="api-sep">&mdash;</span> Table/index/view management</div>
+                            <div class="api-member"><code>Procedures</code> <span class="api-return">&rarr; IProcedureClient</span> <span class="api-sep">&mdash;</span> Stored procedures</div>
+                            <div class="api-member"><code>Collections</code> <span class="api-return">&rarr; ICollectionClient</span> <span class="api-sep">&mdash;</span> Document CRUD</div>
+                            <div class="api-member"><code>Transactions</code> <span class="api-return">&rarr; ITransactionClient</span> <span class="api-sep">&mdash;</span> Explicit transactions</div>
+                            <div class="api-member"><code>Maintenance</code> <span class="api-return">&rarr; IMaintenanceClient</span> <span class="api-sep">&mdash;</span> Backup, vacuum, analyze</div>
+                            <div class="api-member"><code>Pipelines</code> <span class="api-return">&rarr; IPipelineClient</span> <span class="api-sep">&mdash;</span> ETL management</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Pipelines -->
+                <div class="api-section" id="api-pipelines">
+                    <h1>CSharpDB.Pipelines</h1>
+                    <p class="lead">ETL pipeline orchestration and execution.</p>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>PipelineOrchestrator</h3>
+                        </div>
+                        <p>Executes pipeline packages from definition to completion.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>ValidateAsync(PipelinePackageDefinition pkg)</code> <span class="api-return">&rarr; Task&lt;ValidationResult&gt;</span></div>
+                            <div class="api-member"><code>DryRunAsync(PipelinePackageDefinition pkg)</code> <span class="api-return">&rarr; Task&lt;DryRunResult&gt;</span></div>
+                            <div class="api-member"><code>ExecuteAsync(PipelinePackageDefinition pkg)</code> <span class="api-return">&rarr; Task&lt;PipelineRunResult&gt;</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>PipelinePackageDefinition</h3>
+                        </div>
+                        <p>JSON-serializable pipeline definition with source, transforms, and destination.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>Name</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>Source</code> <span class="api-return">&rarr; PipelineSourceDefinition</span></div>
+                            <div class="api-member"><code>Transforms</code> <span class="api-return">&rarr; List&lt;PipelineTransformDefinition&gt;</span></div>
+                            <div class="api-member"><code>Destination</code> <span class="api-return">&rarr; PipelineDestinationDefinition</span></div>
+                        </div>
+                    </div>
+
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>PipelinePackageValidator</h3>
+                        </div>
+                        <p>Validates pipeline definitions for correctness before execution.</p>
+                    </div>
+                </div>
+
+                <!-- Diagnostics -->
+                <div class="api-section" id="api-diagnostics">
+                    <h1>CSharpDB.Storage.Diagnostics</h1>
+                    <p class="lead">Inspection and validation utilities.</p>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>DatabaseInspector</h3>
+                        </div>
+                        <p>Full database inspection: file header validation, page walks, B+tree consistency, page histograms.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>InspectAsync(string dbPath)</code> <span class="api-return">&rarr; Task&lt;DatabaseInspectReport&gt;</span></div>
+                        </div>
+                    </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>WalInspector</h3>
+                        </div>
+                        <p>Validates WAL header, frame salts, and checksums for each committed frame.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>InspectAsync(string walPath)</code> <span class="api-return">&rarr; Task&lt;WalReport&gt;</span></div>
+                        </div>
+                    </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-class">class</span>
+                            <h3>IndexInspector</h3>
+                        </div>
+                        <p>Verifies index root page validity, table/column references, and B+tree reachability.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>InspectAsync(string dbPath)</code> <span class="api-return">&rarr; Task&lt;IndexReport&gt;</span></div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/components.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

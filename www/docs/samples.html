@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Samples &amp; Tutorials — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Samples &amp; Tutorials</h1>
+                <p class="lead">Practical, end-to-end examples showing CSharpDB in real-world scenarios.</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SAMPLE 1: In-Memory Cache in ASP.NET
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2>In-Memory Database as a Cache in ASP.NET</h2>
+                <p>CSharpDB's in-memory mode makes an excellent structured cache for ASP.NET applications. Unlike <code>IMemoryCache</code> or <code>IDistributedCache</code>, you get full SQL queries, indexes, and typed collections over your cached data — with zero serialization overhead.</p>
+
+                <h3>Why use CSharpDB as a cache?</h3>
+                <ul style="color: var(--text-secondary); padding-left: 24px; margin-bottom: 24px;">
+                    <li><strong>Queryable:</strong> SQL and Collection API let you filter, join, and aggregate cached data — not just key-value lookups</li>
+                    <li><strong>Indexed:</strong> Secondary indexes on any property for O(log n) lookups across any field</li>
+                    <li><strong>Transactional:</strong> Atomic bulk updates — readers always see consistent state</li>
+                    <li><strong>No external service:</strong> No Redis, no network hop. Everything runs in-process</li>
+                    <li><strong>Snapshot persistence:</strong> Optionally save cache state to disk on shutdown and reload on startup</li>
+                </ul>
+
+                <h3>1. Register the Database as a Singleton</h3>
+                <p>Create a hosted service that manages the in-memory database lifecycle and registers it in DI.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">CacheDbHostedService.cs</span>
+                    </div>
+                    <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">public sealed class</span> <span class="tp">CacheDbHostedService</span> : <span class="tp">IHostedLifecycleService</span>, <span class="tp">IAsyncDisposable</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">ILogger</span>&lt;<span class="tp">CacheDbHostedService</span>&gt; _logger;
+    <span class="kw">private readonly</span> <span class="kw">string</span>? _snapshotPath;
+    <span class="kw">private</span> <span class="tp">Database</span>? _db;
+
+    <span class="kw">public</span> <span class="tp">Database</span> Db => _db
+        ?? <span class="kw">throw new</span> <span class="tp">InvalidOperationException</span>(<span class="str">"Cache not initialized"</span>);
+
+    <span class="kw">public</span> CacheDbHostedService(
+        <span class="tp">ILogger</span>&lt;<span class="tp">CacheDbHostedService</span>&gt; logger,
+        <span class="tp">IConfiguration</span> config)
+    {
+        _logger = logger;
+        _snapshotPath = config[<span class="str">"CacheDb:SnapshotPath"</span>];
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> StartingAsync(<span class="tp">CancellationToken</span> ct)
+    {
+        <span class="cm">// Load from snapshot if available, otherwise create fresh</span>
+        <span class="kw">if</span> (_snapshotPath <span class="kw">is not null</span> && <span class="tp">File</span>.Exists(_snapshotPath))
+        {
+            _logger.LogInformation(<span class="str">"Loading cache from {Path}"</span>, _snapshotPath);
+            _db = <span class="kw">await</span> <span class="tp">Database</span>.LoadIntoMemoryAsync(_snapshotPath, ct);
+        }
+        <span class="kw">else</span>
+        {
+            _db = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync(ct);
+        }
+
+        <span class="cm">// Create cache tables</span>
+        <span class="kw">await</span> _db.ExecuteAsync(<span class="str">@"
+            CREATE TABLE IF NOT EXISTS ProductCache (
+                Id       INTEGER PRIMARY KEY,
+                Sku      TEXT NOT NULL,
+                Name     TEXT NOT NULL,
+                Price    REAL,
+                Category TEXT,
+                CachedAt TEXT NOT NULL
+            )"</span>);
+
+        <span class="kw">await</span> _db.ExecuteAsync(
+            <span class="str">"CREATE INDEX IF NOT EXISTS idx_product_sku ON ProductCache (Sku)"</span>);
+        <span class="kw">await</span> _db.ExecuteAsync(
+            <span class="str">"CREATE INDEX IF NOT EXISTS idx_product_cat ON ProductCache (Category)"</span>);
+
+        _logger.LogInformation(<span class="str">"Cache database ready"</span>);
+    }
+
+    <span class="kw">public</span> <span class="tp">Task</span> StartAsync(<span class="tp">CancellationToken</span> ct) => <span class="tp">Task</span>.CompletedTask;
+    <span class="kw">public</span> <span class="tp">Task</span> StartedAsync(<span class="tp">CancellationToken</span> ct) => <span class="tp">Task</span>.CompletedTask;
+    <span class="kw">public</span> <span class="tp">Task</span> StoppingAsync(<span class="tp">CancellationToken</span> ct) => <span class="tp">Task</span>.CompletedTask;
+    <span class="kw">public</span> <span class="tp">Task</span> StopAsync(<span class="tp">CancellationToken</span> ct) => <span class="tp">Task</span>.CompletedTask;
+
+    <span class="kw">public async</span> <span class="tp">Task</span> StoppedAsync(<span class="tp">CancellationToken</span> ct)
+    {
+        <span class="cm">// Save snapshot on graceful shutdown</span>
+        <span class="kw">if</span> (_db <span class="kw">is not null</span> && _snapshotPath <span class="kw">is not null</span>)
+        {
+            _logger.LogInformation(<span class="str">"Saving cache snapshot to {Path}"</span>, _snapshotPath);
+            <span class="kw">await</span> _db.SaveToFileAsync(_snapshotPath, ct);
+        }
+    }
+
+    <span class="kw">public async</span> <span class="tp">ValueTask</span> DisposeAsync()
+    {
+        <span class="kw">if</span> (_db <span class="kw">is not null</span>)
+            <span class="kw">await</span> _db.DisposeAsync();
+    }
+}</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Program.cs — DI Registration</span>
+                    </div>
+                    <pre><code><span class="kw">var</span> builder = <span class="tp">WebApplication</span>.CreateBuilder(args);
+
+<span class="cm">// Register the cache database as a hosted service + singleton</span>
+builder.Services.AddSingleton&lt;<span class="tp">CacheDbHostedService</span>&gt;();
+builder.Services.AddHostedService(
+    sp => sp.GetRequiredService&lt;<span class="tp">CacheDbHostedService</span>&gt;());
+
+<span class="cm">// Expose the Database instance for injection</span>
+builder.Services.AddSingleton(
+    sp => sp.GetRequiredService&lt;<span class="tp">CacheDbHostedService</span>&gt;().Db);
+
+<span class="kw">var</span> app = builder.Build();
+</code></pre>
+                </div>
+
+                <h3>2. Build a Cache Service</h3>
+                <p>Wrap the in-memory database in a typed service that your controllers and endpoints can inject.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">ProductCacheService.cs</span>
+                    </div>
+                    <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">public sealed class</span> <span class="tp">ProductCacheService</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private readonly</span> <span class="tp">ILogger</span>&lt;<span class="tp">ProductCacheService</span>&gt; _logger;
+
+    <span class="kw">public</span> ProductCacheService(<span class="tp">Database</span> db, <span class="tp">ILogger</span>&lt;<span class="tp">ProductCacheService</span>&gt; logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
+
+    <span class="cm">/// &lt;summary&gt;Look up a product by SKU using the index.&lt;/summary&gt;</span>
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">CachedProduct</span>?&gt; GetBySkuAsync(<span class="kw">string</span> sku)
+    {
+        <span class="kw">var</span> result = <span class="kw">await</span> _db.ExecuteAsync(
+            <span class="str">$"SELECT Id, Sku, Name, Price, Category FROM ProductCache WHERE Sku = '{sku}'"</span>);
+
+        <span class="kw">var</span> rows = <span class="kw">await</span> result.ToListAsync();
+        <span class="kw">if</span> (rows.Count == <span class="num">0</span>) <span class="kw">return null</span>;
+
+        <span class="kw">var</span> r = rows[<span class="num">0</span>];
+        <span class="kw">return new</span> <span class="tp">CachedProduct</span>(
+            r[<span class="num">0</span>].AsInteger, r[<span class="num">1</span>].AsText, r[<span class="num">2</span>].AsText,
+            r[<span class="num">3</span>].AsReal, r[<span class="num">4</span>].AsText);
+    }
+
+    <span class="cm">/// &lt;summary&gt;Query products by category — uses the category index.&lt;/summary&gt;</span>
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">List</span>&lt;<span class="tp">CachedProduct</span>&gt;&gt; GetByCategoryAsync(<span class="kw">string</span> category)
+    {
+        <span class="kw">var</span> result = <span class="kw">await</span> _db.ExecuteAsync(
+            <span class="str">$"SELECT Id, Sku, Name, Price, Category FROM ProductCache WHERE Category = '{category}' ORDER BY Name"</span>);
+
+        <span class="kw">var</span> products = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">CachedProduct</span>&gt;();
+        <span class="kw">await foreach</span> (<span class="kw">var</span> r <span class="kw">in</span> result.GetRowsAsync())
+        {
+            products.Add(<span class="kw">new</span>(
+                r[<span class="num">0</span>].AsInteger, r[<span class="num">1</span>].AsText, r[<span class="num">2</span>].AsText,
+                r[<span class="num">3</span>].AsReal, r[<span class="num">4</span>].AsText));
+        }
+        <span class="kw">return</span> products;
+    }
+
+    <span class="cm">/// &lt;summary&gt;Aggregate cached data — avg price per category.&lt;/summary&gt;</span>
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">List</span>&lt;(<span class="kw">string</span> Category, <span class="kw">double</span> AvgPrice, <span class="kw">long</span> Count)&gt;&gt;
+        GetCategoryStatsAsync()
+    {
+        <span class="kw">var</span> result = <span class="kw">await</span> _db.ExecuteAsync(<span class="str">@"
+            SELECT Category, AVG(Price), COUNT(*)
+            FROM ProductCache
+            GROUP BY Category
+            ORDER BY COUNT(*) DESC"</span>);
+
+        <span class="kw">var</span> stats = <span class="kw">new</span> <span class="tp">List</span>&lt;(<span class="kw">string</span>, <span class="kw">double</span>, <span class="kw">long</span>)&gt;();
+        <span class="kw">await foreach</span> (<span class="kw">var</span> r <span class="kw">in</span> result.GetRowsAsync())
+            stats.Add((r[<span class="num">0</span>].AsText, r[<span class="num">1</span>].AsReal, r[<span class="num">2</span>].AsInteger));
+        <span class="kw">return</span> stats;
+    }
+
+    <span class="cm">/// &lt;summary&gt;Bulk-refresh the cache from an external source.&lt;/summary&gt;</span>
+    <span class="kw">public async</span> <span class="tp">Task</span> RefreshAsync(<span class="tp">IReadOnlyList</span>&lt;<span class="tp">CachedProduct</span>&gt; products)
+    {
+        _logger.LogInformation(<span class="str">"Refreshing cache with {Count} products"</span>, products.Count);
+
+        <span class="cm">// Atomic swap — readers see old data until commit</span>
+        <span class="kw">await</span> _db.ExecuteAsync(<span class="str">"DELETE FROM ProductCache"</span>);
+
+        <span class="kw">var</span> now = <span class="tp">DateTime</span>.UtcNow.ToString(<span class="str">"o"</span>);
+        <span class="kw">foreach</span> (<span class="kw">var</span> p <span class="kw">in</span> products)
+        {
+            <span class="kw">await</span> _db.ExecuteAsync(
+                <span class="str">$"INSERT INTO ProductCache VALUES ({p.Id}, '{p.Sku}', '{p.Name}', {p.Price}, '{p.Category}', '{now}')"</span>);
+        }
+
+        _logger.LogInformation(<span class="str">"Cache refresh complete"</span>);
+    }
+}
+
+<span class="kw">public record</span> <span class="tp">CachedProduct</span>(
+    <span class="kw">long</span> Id, <span class="kw">string</span> Sku, <span class="kw">string</span> Name,
+    <span class="kw">double</span> Price, <span class="kw">string</span> Category);</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Program.cs — Register the service</span>
+                    </div>
+                    <pre><code>builder.Services.AddSingleton&lt;<span class="tp">ProductCacheService</span>&gt;();</code></pre>
+                </div>
+
+                <h3>3. Use It from Endpoints</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Program.cs — Minimal API Endpoints</span>
+                    </div>
+                    <pre><code>app.MapGet(<span class="str">"/products/{sku}"</span>, <span class="kw">async</span> (<span class="kw">string</span> sku, <span class="tp">ProductCacheService</span> cache) =>
+{
+    <span class="kw">var</span> product = <span class="kw">await</span> cache.GetBySkuAsync(sku);
+    <span class="kw">return</span> product <span class="kw">is not null</span>
+        ? <span class="tp">Results</span>.Ok(product)
+        : <span class="tp">Results</span>.NotFound();
+});
+
+app.MapGet(<span class="str">"/products/category/{category}"</span>, <span class="kw">async</span> (
+    <span class="kw">string</span> category, <span class="tp">ProductCacheService</span> cache) =>
+{
+    <span class="kw">var</span> products = <span class="kw">await</span> cache.GetByCategoryAsync(category);
+    <span class="kw">return</span> <span class="tp">Results</span>.Ok(products);
+});
+
+app.MapGet(<span class="str">"/products/stats"</span>, <span class="kw">async</span> (<span class="tp">ProductCacheService</span> cache) =>
+{
+    <span class="kw">var</span> stats = <span class="kw">await</span> cache.GetCategoryStatsAsync();
+    <span class="kw">return</span> <span class="tp">Results</span>.Ok(stats);
+});</code></pre>
+                </div>
+
+                <h3>4. Background Cache Refresh</h3>
+                <p>Use a background service to periodically refresh the cache from your primary data source (e.g., an external API, primary database, or message queue).</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">CacheRefreshWorker.cs</span>
+                    </div>
+                    <pre><code><span class="kw">public sealed class</span> <span class="tp">CacheRefreshWorker</span> : <span class="tp">BackgroundService</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">ProductCacheService</span> _cache;
+    <span class="kw">private readonly</span> <span class="tp">IHttpClientFactory</span> _httpFactory;
+    <span class="kw">private readonly</span> <span class="tp">ILogger</span>&lt;<span class="tp">CacheRefreshWorker</span>&gt; _logger;
+    <span class="kw">private readonly</span> <span class="tp">TimeSpan</span> _interval = <span class="tp">TimeSpan</span>.FromMinutes(<span class="num">5</span>);
+
+    <span class="kw">public</span> CacheRefreshWorker(
+        <span class="tp">ProductCacheService</span> cache,
+        <span class="tp">IHttpClientFactory</span> httpFactory,
+        <span class="tp">ILogger</span>&lt;<span class="tp">CacheRefreshWorker</span>&gt; logger)
+    {
+        _cache = cache;
+        _httpFactory = httpFactory;
+        _logger = logger;
+    }
+
+    <span class="kw">protected override async</span> <span class="tp">Task</span> ExecuteAsync(<span class="tp">CancellationToken</span> ct)
+    {
+        <span class="kw">while</span> (!ct.IsCancellationRequested)
+        {
+            <span class="kw">try</span>
+            {
+                <span class="kw">var</span> client = _httpFactory.CreateClient(<span class="str">"ProductApi"</span>);
+                <span class="kw">var</span> products = <span class="kw">await</span> client
+                    .GetFromJsonAsync&lt;<span class="tp">List</span>&lt;<span class="tp">CachedProduct</span>&gt;&gt;(<span class="str">"/api/products"</span>, ct);
+
+                <span class="kw">if</span> (products <span class="kw">is not null</span>)
+                    <span class="kw">await</span> _cache.RefreshAsync(products);
+            }
+            <span class="kw">catch</span> (<span class="tp">Exception</span> ex)
+            {
+                _logger.LogError(ex, <span class="str">"Cache refresh failed"</span>);
+            }
+
+            <span class="kw">await</span> <span class="tp">Task</span>.Delay(_interval, ct);
+        }
+    }
+}</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Program.cs — Register the worker</span>
+                    </div>
+                    <pre><code>builder.Services.AddHttpClient(<span class="str">"ProductApi"</span>,
+    c => c.BaseAddress = <span class="kw">new</span> <span class="tp">Uri</span>(<span class="str">"https://api.example.com"</span>));
+builder.Services.AddHostedService&lt;<span class="tp">CacheRefreshWorker</span>&gt;();</code></pre>
+                </div>
+
+                <h3>5. Collection API as a Cache</h3>
+                <p>For typed object caching without SQL, use the Collection API instead. This is ideal when you want to cache complex objects and query by indexed properties.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SessionCacheService.cs</span>
+                    </div>
+                    <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">public record</span> <span class="tp">UserSession</span>(
+    <span class="kw">string</span> UserId,
+    <span class="kw">string</span> DisplayName,
+    <span class="kw">string</span>[] Roles,
+    <span class="kw">string</span> LastActivity);
+
+<span class="kw">public sealed class</span> <span class="tp">SessionCacheService</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private</span> <span class="tp">Collection</span>&lt;<span class="tp">UserSession</span>&gt;? _sessions;
+
+    <span class="kw">public</span> SessionCacheService(<span class="tp">Database</span> db) => _db = db;
+
+    <span class="kw">private async</span> <span class="tp">ValueTask</span>&lt;<span class="tp">Collection</span>&lt;<span class="tp">UserSession</span>&gt;&gt; GetCollectionAsync()
+    {
+        <span class="kw">if</span> (_sessions <span class="kw">is not null</span>) <span class="kw">return</span> _sessions;
+
+        _sessions = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">UserSession</span>&gt;(<span class="str">"sessions"</span>);
+
+        <span class="cm">// Index the UserId for fast lookups</span>
+        <span class="kw">await</span> _sessions.EnsureIndexAsync(s => s.UserId);
+        <span class="kw">return</span> _sessions;
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> SetSessionAsync(<span class="kw">string</span> sessionId, <span class="tp">UserSession</span> session)
+    {
+        <span class="kw">var</span> col = <span class="kw">await</span> GetCollectionAsync();
+        <span class="kw">await</span> col.PutAsync(sessionId, session);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">UserSession</span>?&gt; GetSessionAsync(<span class="kw">string</span> sessionId)
+    {
+        <span class="kw">var</span> col = <span class="kw">await</span> GetCollectionAsync();
+        <span class="kw">return await</span> col.GetAsync(sessionId);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> RemoveSessionAsync(<span class="kw">string</span> sessionId)
+    {
+        <span class="kw">var</span> col = <span class="kw">await</span> GetCollectionAsync();
+        <span class="kw">await</span> col.DeleteAsync(sessionId);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="kw">long</span>&gt; GetActiveCountAsync()
+    {
+        <span class="kw">var</span> col = <span class="kw">await</span> GetCollectionAsync();
+        <span class="kw">return await</span> col.CountAsync();
+    }
+}</code></pre>
+                </div>
+
+                <h3>Complete Program.cs</h3>
+                <p>Putting it all together:</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Program.cs — Full example</span>
+                    </div>
+                    <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">var</span> builder = <span class="tp">WebApplication</span>.CreateBuilder(args);
+
+<span class="cm">// ── CSharpDB in-memory cache ──</span>
+builder.Services.AddSingleton&lt;<span class="tp">CacheDbHostedService</span>&gt;();
+builder.Services.AddHostedService(
+    sp => sp.GetRequiredService&lt;<span class="tp">CacheDbHostedService</span>&gt;());
+builder.Services.AddSingleton(
+    sp => sp.GetRequiredService&lt;<span class="tp">CacheDbHostedService</span>&gt;().Db);
+
+<span class="cm">// ── Cache services ──</span>
+builder.Services.AddSingleton&lt;<span class="tp">ProductCacheService</span>&gt;();
+builder.Services.AddSingleton&lt;<span class="tp">SessionCacheService</span>&gt;();
+
+<span class="cm">// ── Background refresh ──</span>
+builder.Services.AddHttpClient(<span class="str">"ProductApi"</span>,
+    c => c.BaseAddress = <span class="kw">new</span> <span class="tp">Uri</span>(<span class="str">"https://api.example.com"</span>));
+builder.Services.AddHostedService&lt;<span class="tp">CacheRefreshWorker</span>&gt;();
+
+<span class="kw">var</span> app = builder.Build();
+
+<span class="cm">// ── Endpoints ──</span>
+app.MapGet(<span class="str">"/products/{sku}"</span>, <span class="kw">async</span> (<span class="kw">string</span> sku, <span class="tp">ProductCacheService</span> cache) =>
+{
+    <span class="kw">var</span> product = <span class="kw">await</span> cache.GetBySkuAsync(sku);
+    <span class="kw">return</span> product <span class="kw">is not null</span> ? <span class="tp">Results</span>.Ok(product) : <span class="tp">Results</span>.NotFound();
+});
+
+app.MapGet(<span class="str">"/products/category/{category}"</span>, <span class="kw">async</span> (
+    <span class="kw">string</span> category, <span class="tp">ProductCacheService</span> cache) =>
+    <span class="tp">Results</span>.Ok(<span class="kw">await</span> cache.GetByCategoryAsync(category)));
+
+app.MapGet(<span class="str">"/products/stats"</span>, <span class="kw">async</span> (<span class="tp">ProductCacheService</span> cache) =>
+    <span class="tp">Results</span>.Ok(<span class="kw">await</span> cache.GetCategoryStatsAsync()));
+
+app.MapGet(<span class="str">"/sessions/{id}"</span>, <span class="kw">async</span> (<span class="kw">string</span> id, <span class="tp">SessionCacheService</span> sessions) =>
+{
+    <span class="kw">var</span> session = <span class="kw">await</span> sessions.GetSessionAsync(id);
+    <span class="kw">return</span> session <span class="kw">is not null</span> ? <span class="tp">Results</span>.Ok(session) : <span class="tp">Results</span>.NotFound();
+});
+
+app.Run();</code></pre>
+                </div>
+
+                <div class="callout callout-info">
+                    <strong>Snapshot on shutdown:</strong> Set <code>"CacheDb:SnapshotPath"</code> in <code>appsettings.json</code> to persist cache state across restarts. The hosted service loads the snapshot on startup and saves on graceful shutdown.
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">appsettings.json</span>
+                    </div>
+                    <pre><code>{
+  <span class="str">"CacheDb"</span>: {
+    <span class="str">"SnapshotPath"</span>: <span class="str">"cache-snapshot.db"</span>
+  }
+}</code></pre>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     STORAGE ENGINE TUTORIALS & EXAMPLES
+                     ═══════════════════════════════════════════════════════════ -->
+                <hr style="border-color: var(--border); margin: 64px 0;">
+
+                <h2 id="storage-tutorials">Storage Engine Tutorials</h2>
+                <p class="lead">The <a href="https://github.com/maxakbar/csharpdb/tree/main/docs/tutorials/storage">storage tutorial track</a> is a guided path for learning <code>CSharpDB.Storage</code> — from architecture to extensibility to runnable code.</p>
+
+                <div class="callout callout-info">
+                    <strong>Prerequisites:</strong> Familiarity with .NET async patterns and clean architecture concepts. Read the <a href="database-modes.html">Database Modes</a> guide first for the high-level picture.
+                </div>
+
+                <h3>Guided Reading</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 32px;">
+                    <a href="architecture.html" class="next-step-card" style="text-decoration: none;">
+                        <h4>Architecture Deep Dive</h4>
+                        <p>How Pager, WAL, B+tree, and SchemaCatalog fit together. File format, transaction flow, and recovery walkthroughs.</p>
+                    </a>
+                    <a href="https://github.com/maxakbar/csharpdb/blob/main/docs/tutorials/storage/extensibility.md" class="next-step-card" style="text-decoration: none;">
+                        <h4>Usage &amp; Extensibility</h4>
+                        <p>Current extension points — custom storage devices, page caches, checkpoint policies, index providers, and more.</p>
+                    </a>
+                </div>
+
+                <h3>Study Examples</h3>
+                <p>Interactive REPL-based walkthroughs for learning storage concepts in guided slices. Run them all from the shared <code>StorageStudyExamples.Repl</code> host.</p>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 32px;">
+                    <div class="next-step-card">
+                        <h4>Config Store</h4>
+                        <p>Hierarchical key-value store with namespaces, versioning, and change history. Demonstrates multi-table schema design, indexed queries, and transactional consistency.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.ConfigStore</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Event Log</h4>
+                        <p>Append-only audit trail with severity filtering and analytics. Demonstrates bulk inserts, aggregate queries, and log rotation patterns.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.EventLog</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Task Queue</h4>
+                        <p>Persistent job queue with priority-based dequeue, state machine transitions, and retry logic. Demonstrates SQL-driven state machines.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.TaskQueue</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Virtual Drive</h4>
+                        <p>Virtual file system with folders, files, and shortcuts supporting path-based navigation. Demonstrates tree structures and BLOB handling.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.VirtualDrive</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Graph Store</h4>
+                        <p>Social network graph with directed edges and multi-hop traversal. Demonstrates composite indexes, JOINs, and set operations.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.GraphStore</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Storage Internals</h4>
+                        <p>9 hands-on demos of caching, checksums, interceptors, crash recovery, and checkpoint policies. Demonstrates storage engine tuning.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">StorageStudyExamples.StorageInternals</code>
+                    </div>
+                </div>
+
+                <h3>Advanced Standalone Examples</h3>
+                <p>Full domain applications built directly on <code>CSharpDB.Storage</code>, showing how to turn the storage package into a domain-specific engine. Each project includes a CLI REPL and REST API with Web UI.</p>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 32px;">
+                    <div class="next-step-card">
+                        <h4>Graph Database</h4>
+                        <p>Three B+trees (nodes, outEdges, inEdges) with composite key encoding for efficient bidirectional edge traversal, BFS, and shortest-path queries.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">CSharpDB.GraphDB</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Spatial Index</h4>
+                        <p>Geographic index using Hilbert space-filling curves to map 2D coordinates to 1D B+tree keys for proximity and bounding-box queries.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">CSharpDB.SpatialIndex</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Time Series Engine</h4>
+                        <p>Append-only time-series store where <code>DateTime.Ticks</code> serves as the natural B+tree key, with cursor-based range queries and aggregation.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">CSharpDB.TimeSeries</code>
+                    </div>
+                    <div class="next-step-card">
+                        <h4>Virtual File System</h4>
+                        <p>Four B+trees (entries, content, pathIndex, children) supporting full CRUD with hash-based path lookup and directory listing via cursor range scans.</p>
+                        <code style="font-size: 12px; color: var(--text-muted);">CSharpDB.VirtualFS</code>
+                    </div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Running the study examples</span>
+                    </div>
+                    <pre><code><span class="cm"># Clone and run the interactive REPL</span>
+<span class="kw">cd</span> docs/tutorials/storage/examples
+<span class="kw">dotnet run</span> --project StorageStudyExamples.Repl
+
+<span class="cm"># Or run any advanced example directly</span>
+<span class="kw">cd</span> docs/tutorials/storage/examples/CSharpDB.GraphDB
+<span class="kw">dotnet run</span></code></pre>
+                </div>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="database-modes.html" class="next-step-card">
+                            <h4>Database Modes</h4>
+                            <p>Deep dive into file-based, in-memory, and hybrid storage</p>
+                        </a>
+                        <a href="collections.html" class="next-step-card">
+                            <h4>Collection API</h4>
+                            <p>Typed document storage with nested path indexing</p>
+                        </a>
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Full SQL syntax for querying cached data</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>
