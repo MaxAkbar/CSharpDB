@@ -2,6 +2,8 @@
 bin/
 obj/
 publish/
+temp/
+tmp/
 
 ## User-specific files
 *.user
@@ -52,9 +54,14 @@ Desktop.ini
 .DS_Store
 
 ## CSharpDB runtime files
+*.cdb
 *.db
 *.db.journal
 *.wal
+
+## Local sample-only stray files
+docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.Primitives.csproj
+docs/tutorials/storage/examples/CSharpDB.VirtualFS/.github/copilot-instructions.md
 
 ## Node.js
 node_modules/

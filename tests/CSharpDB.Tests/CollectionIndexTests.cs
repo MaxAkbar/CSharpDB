@@ -4,6 +4,7 @@ using System.Reflection;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
@@ -35,6 +36,12 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     private record User(string Name, int Age, string Email);
+    private record Address(string City, int ZipCode);
+    private record UserWithAddress(string Name, Address Address);
+    private record UserWithTags(string Name, string[] Tags, List<int> Scores);
+    private record OrderLine(string Sku, int Quantity);
+    private record UserWithOrders(string Name, OrderLine[] Orders);
+    private record TemporalUser(string Name, Guid SessionId, DateOnly EventDate, TimeOnly StartTime);
 
     [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerField()
@@ -73,6 +80,47 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_WithManyDuplicateIntegerKeys()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        const int userCount = 20_000;
+        const int batchSize = 500;
+        for (int start = 0; start < userCount; start += batchSize)
+        {
+            await _db.BeginTransactionAsync(ct);
+            try
+            {
+                int end = Math.Min(start + batchSize, userCount);
+                for (int i = start; i < end; i++)
+                {
+                    await users.PutAsync(
+                        $"u:{i}",
+                        new User($"User{i}", i % 256, $"user{i}@example.com"),
+                        ct);
+                }
+
+                await _db.CommitAsync(ct);
+            }
+            catch
+            {
+                await _db.RollbackAsync(ct);
+                throw;
+            }
+        }
+
+        await users.EnsureIndexAsync(x => x.Age, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Age, 5, ct), ct);
+
+        int expectedCount = ((userCount - 1 - 5) / 256) + 1;
+        Assert.Equal(expectedCount, matches.Count);
+        Assert.All(matches, match => Assert.Equal(5, match.Value.Age));
+        Assert.Equal(expectedCount, matches.Select(match => match.Key).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
     public async Task FindByIndex_FallsBackToScan_WhenIndexDoesNotExist()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -85,6 +133,416 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         Assert.Single(matches);
         Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForNestedPathString()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+        await users.PutAsync("u:3", new UserWithAddress("Cara", new Address("Seattle", 98109)), ct);
+
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForGuidField()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<TemporalUser>("users_guid", ct);
+        Guid shared = Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0");
+
+        await users.PutAsync("u:1", new TemporalUser("Alice", shared, new DateOnly(2026, 3, 10), new TimeOnly(9, 0)), ct);
+        await users.PutAsync("u:2", new TemporalUser("Bob", Guid.Parse("37fa4200-acaf-4a56-81d2-b4a85de6c9d1"), new DateOnly(2026, 3, 11), new TimeOnly(10, 0)), ct);
+        await users.PutAsync("u:3", new TemporalUser("Cara", shared, new DateOnly(2026, 3, 12), new TimeOnly(11, 0)), ct);
+
+        await users.EnsureIndexAsync(x => x.SessionId, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.SessionId, shared, ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByIndex_PathString_ReusesSelectorIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        await users.EnsureIndexAsync(x => x.Address.City, ct);
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+
+        var catalog = GetCollectionCatalog(users);
+        Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(users)));
+    }
+
+    [Fact]
+    public async Task FindByPath_PathString_ReusesSelectorIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        await users.EnsureIndexAsync(x => x.Address.City, ct);
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+
+        var catalog = GetCollectionCatalog(users);
+        Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(users)));
+    }
+
+    [Fact]
+    public async Task FindByIndex_PathString_FallsBackToScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Portland", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPath_PathString_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithAddress("Alice", new Address("Seattle", 98101)), ct);
+        await users.PutAsync("u:2", new UserWithAddress("Bob", new Address("Portland", 97201)), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.address.city", "Portland", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForNestedArrayObjectPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+        await users.PutAsync("u:3", new UserWithOrders("Cara", [new OrderLine("sku-beta", 5)]), ct);
+
+        await users.EnsureIndexAsync("$.orders[].sku", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.orders[].sku", "sku-beta", ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_NestedArrayObjectPath_UsesIndexedContainsSemantics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+        await users.PutAsync("u:3", new UserWithOrders("Cara", [new OrderLine("sku-beta", 5)]), ct);
+        await users.EnsureIndexAsync("$.orders[].sku", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.orders[].sku", "sku-beta", ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_NestedArrayObjectPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithOrders>("users_nested_array_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithOrders("Alice", [new OrderLine("sku-alpha", 1), new OrderLine("sku-beta", 2)]), ct);
+        await users.PutAsync("u:2", new UserWithOrders("Bob", [new OrderLine("sku-gamma", 1)]), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("Orders[].Sku", "sku-beta", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPathRange_IntegerPath_UsesOrderedIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_age_range", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "cara@example.com"), ct);
+        await users.PutAsync("u:4", new User("Dana", 50, "dana@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+
+        var matches = await CollectAsync(users.FindByPathRangeAsync("Age", 25, 45, ct: ct), ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPathRange_IntegerPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_age_range_scan", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "cara@example.com"), ct);
+
+        var matches = await CollectAsync(users.FindByPathRangeAsync("Age", 25, 35, ct: ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:2", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPathRange_TextPath_UsesOrderedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_email_range", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "beta@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "charlie@example.com"), ct);
+        await users.PutAsync("u:4", new User("Dana", 50, "delta@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        var binding = GetBinding(users, nameof(User.Email));
+        long betaIndexKey = OrderedTextIndexKeyCodec.ComputeKey("beta@example.com");
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(betaIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
+        var matches = await CollectAsync(
+            users.FindByPathRangeAsync("Email", "beta@example.com", "charlie@example.com", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPathRange_DateOnlyPath_UsesOrderedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<TemporalUser>("users_event_date_range", ct);
+
+        await users.PutAsync("u:1", new TemporalUser("Alice", Guid.Parse("2f8c4c7e-0d1b-4d26-9b70-61c5d9342ef0"), new DateOnly(2026, 3, 10), new TimeOnly(9, 0)), ct);
+        await users.PutAsync("u:2", new TemporalUser("Bob", Guid.Parse("37fa4200-acaf-4a56-81d2-b4a85de6c9d1"), new DateOnly(2026, 3, 11), new TimeOnly(10, 0)), ct);
+        await users.PutAsync("u:3", new TemporalUser("Cara", Guid.Parse("3f826528-a8f8-4bb0-a58e-c9515ac1021f"), new DateOnly(2026, 3, 12), new TimeOnly(11, 0)), ct);
+        await users.PutAsync("u:4", new TemporalUser("Dana", Guid.Parse("5be0d5f8-22b1-43ed-b913-50255c4e8aa1"), new DateOnly(2026, 3, 13), new TimeOnly(12, 0)), ct);
+        await users.EnsureIndexAsync(x => x.EventDate, ct);
+
+        var binding = GetBinding(users, nameof(TemporalUser.EventDate));
+        long lowerKey = OrderedTextIndexKeyCodec.ComputeKey(new DateOnly(2026, 3, 11).ToString("O"));
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(lowerKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
+        var matches = await CollectAsync(
+            users.FindByPathRangeAsync("EventDate", new DateOnly(2026, 3, 11), new DateOnly(2026, 3, 12), ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_TextPath_HandlesOrderedPrefixBucketCollisions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_email_prefix_collisions", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 20, "prefix-alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "prefix-beta@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 40, "prefix-gamma@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, ct);
+
+        var exact = await CollectAsync(users.FindByPathAsync("Email", "prefix-beta@example.com", ct), ct);
+        Assert.Single(exact);
+        Assert.Equal("u:2", exact[0].Key);
+
+        var range = await CollectAsync(
+            users.FindByPathRangeAsync("Email", "prefix-beta@example.com", "prefix-gamma@example.com", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], range.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task EnsureIndex_PathString_RejectsArraySegments()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested", ct);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await users.EnsureIndexAsync("$.address[0].city", ct));
+
+        Assert.Contains("array", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForStringArrayPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [20, 30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green", "yellow"], [40]), ct);
+
+        await users.EnsureIndexAsync("$.tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForIntegerArrayPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_scores", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [20, 30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green"], [40]), ct);
+
+        await users.EnsureIndexAsync("Scores[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("Scores[]", 20, ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:2"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByIndex_ArrayPath_FallsBackToScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPath_ArrayPath_UsesContainsSemantics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_query", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green", "yellow"], [40]), ct);
+        await users.EnsureIndexAsync("$.tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.tags[]", "green", ct), ct);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPath_ArrayPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_scan", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("Tags[]", "green", ct), ct);
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task FindByPathRange_ArrayPath_RejectsArrayPaths()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_range", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await CollectAsync(users.FindByPathRangeAsync("Tags[]", "green", "yellow", ct: ct), ct));
+
+        Assert.Contains("scalar", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Put_UpdateExistingDocument_UpdatesArrayCollectionIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_update", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["red", "green"], [10, 20]), ct);
+        await users.EnsureIndexAsync("Tags[]", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["blue"], [10, 20]), ct);
+
+        Assert.Empty(await CollectAsync(users.FindByIndexAsync("Tags[]", "green", ct), ct));
+
+        var updated = await CollectAsync(users.FindByIndexAsync("Tags[]", "blue", ct), ct);
+        Assert.Single(updated);
+        Assert.Equal("u:1", updated[0].Key);
+    }
+
+    [Fact]
+    public async Task ArrayCollectionIndex_DeduplicatesDuplicateElementsPerDocument()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_dupes", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["green", "green", "green"], [10, 10]), ct);
+        await users.EnsureIndexAsync("Tags[]", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("Tags[]", "green", ct), ct);
+        var binding = GetBinding(users, "Tags[]");
+        var matcher = CollectionIndexBinding<UserWithTags>.CreateTransient("Tags[]");
+        Assert.True(matcher.TryBuildKeyFromValue("green", out long indexKey));
+        byte[] payload = await binding.IndexStore.FindAsync(indexKey, ct)
+            ?? throw new InvalidOperationException("Expected array collection index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, "green", out ReadOnlyMemory<byte> rowIdPayload));
+
+        Assert.Single(matches);
+        Assert.Equal("u:1", matches[0].Key);
+        Assert.Equal(1, RowIdPayloadCodec.GetCount(rowIdPayload.Span));
     }
 
     [Fact]
@@ -286,12 +744,54 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         Assert.True(binding.TryBuildKeyFromValue("alpha@example.com", out long alphaIndexKey));
 
         long wrongRowId = await FindStoredRowIdAsync(users, "u:2", ct);
-        await InsertRowIdAsync(binding.IndexStore, alphaIndexKey, wrongRowId, ct);
+        byte[] existingPayload = await binding.IndexStore.FindAsync(alphaIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        byte[] updatedPayload = OrderedTextIndexPayloadCodec.Insert(
+            existingPayload,
+            "alpha@example.com",
+            wrongRowId,
+            out bool changed);
+        Assert.True(changed);
+        await WriteIndexPayloadAsync(binding.IndexStore, alphaIndexKey, updatedPayload, ct);
 
         var matches = await CollectAsync(users.FindByIndexAsync(x => x.Email, "alpha@example.com", ct), ct);
 
         Assert.Single(matches);
         Assert.Equal("u:1", matches[0].Key);
+    }
+
+    [Fact]
+    public async Task CollectionIndexes_MaintainLegacyUnsortedRowIdPayloads()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "bob@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 30, "cara@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Age, ct);
+
+        var binding = GetBinding(users, nameof(User.Age));
+        byte[] existingPayload = await binding.IndexStore.FindAsync(30, ct)
+            ?? throw new InvalidOperationException("Expected collection index payload.");
+        byte[] legacyPayload = ReverseRowIdPayload(existingPayload);
+        await WriteIndexPayloadAsync(binding.IndexStore, 30, legacyPayload, ct);
+
+        await users.PutAsync("u:4", new User("Dana", 30, "dana@example.com"), ct);
+
+        var afterInsert = await CollectAsync(users.FindByIndexAsync(x => x.Age, 30, ct), ct);
+        Assert.Equal(4, afterInsert.Count);
+        Assert.Equal(
+            ["u:1", "u:2", "u:3", "u:4"],
+            afterInsert.Select(match => match.Key).OrderBy(key => key).ToArray());
+
+        Assert.True(await users.DeleteAsync("u:2", ct));
+
+        var afterDelete = await CollectAsync(users.FindByIndexAsync(x => x.Age, 30, ct), ct);
+        Assert.Equal(3, afterDelete.Count);
+        Assert.Equal(
+            ["u:1", "u:3", "u:4"],
+            afterDelete.Select(match => match.Key).OrderBy(key => key).ToArray());
     }
 
     [Fact]
@@ -356,12 +856,15 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         CancellationToken ct)
     {
         var tree = GetCollectionTree(collection);
+        var catalog = GetCollectionCatalog(collection);
+        string catalogTableName = GetCollectionCatalogTableName(collection);
         byte[] payload = CollectionPayloadCodec.Encode(key, Encoding.UTF8.GetBytes(json));
 
         await _db.BeginTransactionAsync(ct);
         try
         {
             await tree.InsertAsync(Collection<TDocument>.HashDocumentKey(key), payload, ct);
+            await catalog.AdjustTableRowCountAsync(catalogTableName, 1, ct);
             await _db.CommitAsync(ct);
         }
         catch
@@ -397,6 +900,22 @@ public sealed class CollectionIndexTests : IAsyncLifetime
             ?? throw new InvalidOperationException("Collection codec field not found.");
         return (CollectionDocumentCodec<TDocument>?)codecField.GetValue(collection)
             ?? throw new InvalidOperationException("Collection codec was not initialized.");
+    }
+
+    private static SchemaCatalog GetCollectionCatalog<TDocument>(Collection<TDocument> collection)
+    {
+        var catalogField = typeof(Collection<TDocument>).GetField("_catalog", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection catalog field not found.");
+        return (SchemaCatalog?)catalogField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection catalog was not initialized.");
+    }
+
+    private static string GetCollectionCatalogTableName<TDocument>(Collection<TDocument> collection)
+    {
+        var tableNameField = typeof(Collection<TDocument>).GetField("_catalogTableName", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Collection catalog table name field not found.");
+        return (string?)tableNameField.GetValue(collection)
+            ?? throw new InvalidOperationException("Collection catalog table name was not initialized.");
     }
 
     private static async Task<long> FindStoredRowIdAsync<TDocument>(
@@ -435,7 +954,7 @@ public sealed class CollectionIndexTests : IAsyncLifetime
             return;
         }
 
-        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] payload))
+        if (!RowIdPayloadCodec.TryInsert(existing, rowId, out byte[] payload))
             return;
 
         await _db.BeginTransactionAsync(ct);
@@ -450,6 +969,40 @@ public sealed class CollectionIndexTests : IAsyncLifetime
             await _db.RollbackAsync(ct);
             throw;
         }
+    }
+
+    private async Task WriteIndexPayloadAsync(
+        IIndexStore indexStore,
+        long indexKey,
+        byte[] payload,
+        CancellationToken ct)
+    {
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await indexStore.DeleteAsync(indexKey, ct);
+            await indexStore.InsertAsync(indexKey, payload, ct);
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private static byte[] ReverseRowIdPayload(ReadOnlySpan<byte> payload)
+    {
+        int count = RowIdPayloadCodec.GetCount(payload);
+        byte[] reversed = new byte[payload.Length];
+        for (int i = 0; i < count; i++)
+        {
+            long rowId = RowIdPayloadCodec.ReadAt(payload, count - 1 - i);
+            long destinationOffset = (long)i * RowIdPayloadCodec.RowIdSize;
+            BitConverter.TryWriteBytes(reversed.AsSpan((int)destinationOffset, RowIdPayloadCodec.RowIdSize), rowId);
+        }
+
+        return reversed;
     }
 
     private sealed class PrefixCollisionSerializerProvider : ISerializerProvider
@@ -480,6 +1033,9 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
             => _inner.DecodeSelectedInto(StripPrefix(buffer), destination, selectedColumnIndices);
+
+        public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
+            => _inner.DecodeSelectedCompactInto(StripPrefix(buffer), destination, selectedColumnIndices);
 
         public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
             => _inner.DecodeUpTo(StripPrefix(buffer), maxColumnIndexInclusive);

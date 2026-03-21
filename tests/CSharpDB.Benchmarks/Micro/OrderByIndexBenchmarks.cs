@@ -46,6 +46,14 @@ public class OrderByIndexBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "ORDER BY value (covered index-order scan)")]
+    public async Task OrderedCoveredScan_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT id, value FROM bench_idx ORDER BY value ASC");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "ORDER BY value + LIMIT 100 (no index)")]
     public async Task OrderedScan_NoIndex_TopN()
     {
@@ -59,6 +67,46 @@ public class OrderByIndexBenchmarks
     {
         await using var result = await _benchWithIndex.Db.ExecuteAsync(
             "SELECT * FROM bench_idx ORDER BY value ASC LIMIT 100");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "ORDER BY value + LIMIT 100 (covered index-order scan)")]
+    public async Task OrderedCoveredScan_WithIndex_TopN()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT id, value FROM bench_idx ORDER BY value ASC LIMIT 100");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (row fetch)")]
+    public async Task RangeScan_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT * FROM bench_idx WHERE value BETWEEN 250000 AND 750000");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (covered projection)")]
+    public async Task RangeCoveredScan_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT id, value FROM bench_idx WHERE value BETWEEN 250000 AND 750000");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (compact row projection)")]
+    public async Task RangeCompactProjection_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT id, category FROM bench_idx WHERE value BETWEEN 250000 AND 750000");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (compact expression projection)")]
+    public async Task RangeCompactExpressionProjection_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT id, value + id FROM bench_idx WHERE value BETWEEN 250000 AND 750000");
         await result.ToListAsync();
     }
 

@@ -8,6 +8,63 @@ namespace CSharpDB.Client.Internal;
 
 internal sealed partial class EngineTransportClient
 {
+    public async Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.DestinationPath);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!_transactions.IsEmpty)
+            {
+                throw new CSharpDbClientException(
+                    "Backup requires committed state. Commit or rollback active client-managed transactions and retry.");
+            }
+
+            var database = await GetDatabaseAsync(ct);
+            return MapBackupResult(await DatabaseBackupCoordinator.BackupAsync(
+                database,
+                _databasePath,
+                request.DestinationPath,
+                request.WithManifest,
+                ct));
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.SourcePath);
+
+        if (request.ValidateOnly)
+        {
+            return MapRestoreResult(await DatabaseBackupCoordinator.ValidateRestoreSourceAsync(
+                request.SourcePath,
+                ct));
+        }
+
+        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
+            ct,
+            "Restore requires exclusive access. Close active snapshot readers and retry.");
+
+        if (!_transactions.IsEmpty)
+        {
+            throw new CSharpDbClientException(
+                "Restore requires exclusive access. Commit or rollback active client-managed transactions and retry.");
+        }
+
+        return MapRestoreResult(await DatabaseBackupCoordinator.RestoreAsync(
+            request.SourcePath,
+            _databasePath,
+            static _ => ValueTask.CompletedTask,
+            ct));
+    }
+
     public async Task<CSharpDB.Client.Models.DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
         => MapMaintenanceReport(await DatabaseMaintenanceCoordinator.GetMaintenanceReportAsync(_databasePath, ct));
 
@@ -39,40 +96,32 @@ internal sealed partial class EngineTransportClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        await _lock.WaitAsync(ct);
-        try
+        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
+            ct,
+            "Maintenance requires exclusive access. Close active snapshot readers and retry.");
+
+        if (!_transactions.IsEmpty)
         {
-            await PrepareForExclusiveMaintenanceAsync(ct);
-            return MapReindexResult(await DatabaseMaintenanceCoordinator.ReindexAsync(_databasePath, MapReindexRequest(request), ct));
+            throw new CSharpDbClientException(
+                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
         }
-        finally
-        {
-            _lock.Release();
-        }
+
+        return MapReindexResult(await DatabaseMaintenanceCoordinator.ReindexAsync(_databasePath, MapReindexRequest(request), ct));
     }
 
     private async Task<VacuumResult> VacuumCoreAsync(CancellationToken ct)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await PrepareForExclusiveMaintenanceAsync(ct);
-            return MapVacuumResult(await DatabaseMaintenanceCoordinator.VacuumAsync(_databasePath, ct));
-        }
-        finally
-        {
-            _lock.Release();
-        }
-    }
-
-    private async Task PrepareForExclusiveMaintenanceAsync(CancellationToken ct)
-    {
-        if (!_transactions.IsEmpty)
-            throw new CSharpDbClientException("Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
-
-        await ReleaseCachedDatabaseCoreAsync(
+        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
             ct,
             "Maintenance requires exclusive access. Close active snapshot readers and retry.");
+
+        if (!_transactions.IsEmpty)
+        {
+            throw new CSharpDbClientException(
+                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
+        }
+
+        return MapVacuumResult(await DatabaseMaintenanceCoordinator.VacuumAsync(_databasePath, ct));
     }
 
     private async Task<SqlExecutionResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)
@@ -152,4 +201,34 @@ internal sealed partial class EngineTransportClient
         string path = string.IsNullOrWhiteSpace(databasePath) ? _databasePath : databasePath.Trim();
         return Path.GetFullPath(path);
     }
+
+    private static BackupResult MapBackupResult(CSharpDB.Engine.DatabaseBackupResult result)
+        => new()
+        {
+            SourcePath = result.SourcePath,
+            DestinationPath = result.DestinationPath,
+            ManifestPath = result.ManifestPath,
+            DatabaseFileBytes = result.DatabaseFileBytes,
+            PhysicalPageCount = result.PhysicalPageCount,
+            DeclaredPageCount = result.DeclaredPageCount,
+            ChangeCounter = result.ChangeCounter,
+            WarningCount = result.WarningCount,
+            ErrorCount = result.ErrorCount,
+            Sha256 = result.Sha256,
+        };
+
+    private static RestoreResult MapRestoreResult(CSharpDB.Engine.DatabaseRestoreResult result)
+        => new()
+        {
+            SourcePath = result.SourcePath,
+            DestinationPath = result.DestinationPath,
+            ValidateOnly = result.ValidateOnly,
+            DatabaseFileBytes = result.DatabaseFileBytes,
+            PhysicalPageCount = result.PhysicalPageCount,
+            DeclaredPageCount = result.DeclaredPageCount,
+            ChangeCounter = result.ChangeCounter,
+            SourceWalExists = result.SourceWalExists,
+            WarningCount = result.WarningCount,
+            ErrorCount = result.ErrorCount,
+        };
 }

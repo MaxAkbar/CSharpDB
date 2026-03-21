@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Indexing;
+using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Storage.BTrees;
 
@@ -42,6 +44,42 @@ public sealed class BTree
         _rootPageId = rootPageId;
     }
 
+    internal async ValueTask WarmOwnedPagesAsync(CancellationToken ct = default)
+    {
+        if (_rootPageId == PageConstants.NullPageId)
+            return;
+
+        var visited = new HashSet<uint>();
+        var pending = new Stack<uint>();
+        pending.Push(_rootPageId);
+
+        while (pending.Count > 0)
+        {
+            uint pageId = pending.Pop();
+            if (pageId == PageConstants.NullPageId || !visited.Add(pageId))
+                continue;
+
+            var page = await _pager.GetPageAsync(pageId, ct);
+            var sp = new SlottedPage(page, pageId);
+
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+                continue;
+
+            if (sp.PageType != PageConstants.PageTypeInterior)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Cannot warm B+tree page {pageId}: unexpected page type 0x{sp.PageType:X2}.");
+            }
+
+            if (sp.RightChildOrNextLeaf != PageConstants.NullPageId)
+                pending.Push(sp.RightChildOrNextLeaf);
+
+            for (int i = sp.CellCount - 1; i >= 0; i--)
+                pending.Push(ReadInteriorLeftChild(sp, i));
+        }
+    }
+
     /// <summary>
     /// Create a new empty B+tree and return its root page ID.
     /// </summary>
@@ -70,11 +108,58 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(long key, CancellationToken ct = default)
     {
+        if (!_pager.UsesReadOnlyPageViews)
+        {
+            // Keep the pre-mmap fast path on plain copy-based pagers.
+            if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
+            {
+                var hintPage = await _pager.GetPageAsync(_hintLeafPageId, ct);
+                var hintSp = new SlottedPage(hintPage, _hintLeafPageId);
+                if (hintSp.PageType == PageConstants.PageTypeLeaf && hintSp.CellCount > 0)
+                {
+                    long actualMin = ReadLeafKey(hintSp, 0);
+                    long actualMax = ReadLeafKey(hintSp, hintSp.CellCount - 1);
+                    if (key >= actualMin && key <= actualMax)
+                    {
+                        int idx = FindKeyInLeaf(hintSp, key);
+                        if (idx < 0) return null;
+                        return ReadLeafPayloadMemory(hintSp, idx);
+                    }
+                }
+
+                _hintValid = false;
+            }
+
+            uint mutablePageId = _rootPageId;
+            while (true)
+            {
+                var page = await _pager.GetPageAsync(mutablePageId, ct);
+                var sp = new SlottedPage(page, mutablePageId);
+
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                {
+                    if (sp.CellCount > 0)
+                    {
+                        _hintLeafPageId = mutablePageId;
+                        _hintLeafMinKey = ReadLeafKey(sp, 0);
+                        _hintLeafMaxKey = ReadLeafKey(sp, sp.CellCount - 1);
+                        _hintValid = true;
+                    }
+
+                    int idx = FindKeyInLeaf(sp, key);
+                    if (idx < 0) return null;
+                    return ReadLeafPayloadMemory(sp, idx);
+                }
+
+                mutablePageId = FindChildPage(sp, key);
+            }
+        }
+
         // Try leaf hint cache: if the key falls within the cached leaf's range, go directly to that leaf
         if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
         {
-            var hintPage = await _pager.GetPageAsync(_hintLeafPageId, ct);
-            var hintSp = new SlottedPage(hintPage, _hintLeafPageId);
+            var hintPage = await _pager.GetPageReadAsync(_hintLeafPageId, ct);
+            var hintSp = new ReadOnlySlottedPage(hintPage.Memory, _hintLeafPageId);
             if (hintSp.PageType == PageConstants.PageTypeLeaf && hintSp.CellCount > 0)
             {
                 // Validate the hint is still accurate (page may have been split by a concurrent write)
@@ -95,8 +180,8 @@ public sealed class BTree
 
         while (true)
         {
-            var page = await _pager.GetPageAsync(pageId, ct);
-            var sp = new SlottedPage(page, pageId);
+            var page = await _pager.GetPageReadAsync(pageId, ct);
+            var sp = new ReadOnlySlottedPage(page.Memory, pageId);
 
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
@@ -117,6 +202,33 @@ public sealed class BTree
             {
                 pageId = FindChildPage(sp, key);
             }
+        }
+    }
+
+    /// <summary>
+    /// Look up a single key against an explicit WAL snapshot without constructing a dedicated snapshot pager.
+    /// Callers should consume the returned memory immediately and not retain it across writes.
+    /// </summary>
+    public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(
+        long key,
+        WalSnapshot snapshot,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            var page = await _pager.GetSnapshotPageReadAsync(pageId, snapshot, ct);
+            var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+            {
+                int idx = FindKeyInLeaf(sp, key);
+                return idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : null;
+            }
+
+            pageId = FindChildPage(sp, key);
         }
     }
 
@@ -145,13 +257,64 @@ public sealed class BTree
     {
         payload = null;
 
+        if (!_pager.UsesReadOnlyPageViews)
+        {
+            if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
+            {
+                var hintPage = _pager.TryGetCachedPageAndRecordRead(_hintLeafPageId);
+                if (hintPage == null)
+                    return false;
+
+                var hintSp = new SlottedPage(hintPage, _hintLeafPageId);
+                if (hintSp.PageType == PageConstants.PageTypeLeaf && hintSp.CellCount > 0)
+                {
+                    long actualMin = ReadLeafKey(hintSp, 0);
+                    long actualMax = ReadLeafKey(hintSp, hintSp.CellCount - 1);
+                    if (key >= actualMin && key <= actualMax)
+                    {
+                        int idx = FindKeyInLeaf(hintSp, key);
+                        payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
+                        return true;
+                    }
+                }
+
+                _hintValid = false;
+            }
+
+            uint mutablePageId = _rootPageId;
+            while (true)
+            {
+                var page = _pager.TryGetCachedPageAndRecordRead(mutablePageId);
+                if (page == null)
+                    return false;
+
+                var sp = new SlottedPage(page, mutablePageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                {
+                    if (sp.CellCount > 0)
+                    {
+                        _hintLeafPageId = mutablePageId;
+                        _hintLeafMinKey = ReadLeafKey(sp, 0);
+                        _hintLeafMaxKey = ReadLeafKey(sp, sp.CellCount - 1);
+                        _hintValid = true;
+                    }
+
+                    int idx = FindKeyInLeaf(sp, key);
+                    payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                    return true;
+                }
+
+                mutablePageId = FindChildPage(sp, key);
+            }
+        }
+
         // Try leaf hint cache first
         if (_hintValid && key >= _hintLeafMinKey && key <= _hintLeafMaxKey)
         {
-            var hintPage = _pager.TryGetCachedPage(_hintLeafPageId);
-            if (hintPage == null) return false; // cache miss → fallback
+            if (!_pager.TryGetCachedPageReadBufferAndRecordRead(_hintLeafPageId, out var hintPage))
+                return false; // cache miss → fallback
 
-            var hintSp = new SlottedPage(hintPage, _hintLeafPageId);
+            var hintSp = new ReadOnlySlottedPage(hintPage.Memory, _hintLeafPageId);
             if (hintSp.PageType == PageConstants.PageTypeLeaf && hintSp.CellCount > 0)
             {
                 long actualMin = ReadLeafKey(hintSp, 0);
@@ -170,10 +333,10 @@ public sealed class BTree
         uint pageId = _rootPageId;
         while (true)
         {
-            var page = _pager.TryGetCachedPage(pageId);
-            if (page == null) return false; // cache miss → fallback
+            if (!_pager.TryGetCachedPageReadBufferAndRecordRead(pageId, out var page))
+                return false; // cache miss → fallback
 
-            var sp = new SlottedPage(page, pageId);
+            var sp = new ReadOnlySlottedPage(page.Memory, pageId);
 
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
@@ -194,6 +357,37 @@ public sealed class BTree
             {
                 pageId = FindChildPage(sp, key);
             }
+        }
+    }
+
+    /// <summary>
+    /// Cache-only lookup against an explicit WAL snapshot without constructing a dedicated snapshot pager.
+    /// Returns false if any required page is not immediately available from a safe shared cache.
+    /// </summary>
+    public bool TryFindSnapshotCachedMemory(
+        long key,
+        WalSnapshot snapshot,
+        out ReadOnlyMemory<byte>? payload)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        payload = null;
+        uint pageId = _rootPageId;
+
+        while (true)
+        {
+            if (!_pager.TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out var page))
+                return false;
+
+            var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+            {
+                int idx = FindKeyInLeaf(sp, key);
+                payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                return true;
+            }
+
+            pageId = FindChildPage(sp, key);
         }
     }
 
@@ -309,14 +503,77 @@ public sealed class BTree
 
         while (leafPageId != PageConstants.NullPageId)
         {
-            var page = await _pager.GetPageAsync(leafPageId, ct);
-            var sp = new SlottedPage(page, leafPageId);
-            count += sp.CellCount;
-            leafPageId = sp.RightChildOrNextLeaf;
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(leafPageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, leafPageId);
+                count += sp.CellCount;
+                leafPageId = sp.RightChildOrNextLeaf;
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(leafPageId, ct);
+                var sp = new SlottedPage(page, leafPageId);
+                count += sp.CellCount;
+                leafPageId = sp.RightChildOrNextLeaf;
+            }
         }
 
         _cachedEntryCount = count;
         return count;
+    }
+
+    /// <summary>
+    /// Finds the greatest key within the provided range without scanning forward from the start.
+    /// Returns null when the range contains no keys.
+    /// </summary>
+    public async ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+    {
+        if (!IsRangeSatisfiable(range))
+            return null;
+
+        var ancestors = new List<InteriorFrame>(8);
+        uint leafPageId = range.UpperBound.HasValue
+            ? await FindLeafForKeyAsync(range.UpperBound.Value, ancestors, ct)
+            : await FindRightmostLeafAsync(ancestors, ct);
+
+        while (leafPageId != PageConstants.NullPageId)
+        {
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(leafPageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, leafPageId);
+
+                int candidateIndex = FindMaxCandidateIndex(sp, range);
+                if (candidateIndex >= 0)
+                {
+                    long candidateKey = ReadLeafKey(sp, candidateIndex);
+                    if (SatisfiesLowerBound(candidateKey, range))
+                        return candidateKey;
+
+                    return null;
+                }
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(leafPageId, ct);
+                var sp = new SlottedPage(page, leafPageId);
+
+                int candidateIndex = FindMaxCandidateIndex(sp, range);
+                if (candidateIndex >= 0)
+                {
+                    long candidateKey = ReadLeafKey(sp, candidateIndex);
+                    if (SatisfiesLowerBound(candidateKey, range))
+                        return candidateKey;
+
+                    return null;
+                }
+            }
+
+            leafPageId = await FindPredecessorLeafAsync(ancestors, ct);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -927,6 +1184,14 @@ public sealed class BTree
         return BinaryPrimitives.ReadInt64LittleEndian(page.AsSpan(offset + headerBytes));
     }
 
+    internal static long ReadLeafKey(ReadOnlySlottedPage sp, int index)
+    {
+        ReadOnlyMemory<byte> page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        ReadVarintFast(page.Span[offset..], out int headerBytes);
+        return BinaryPrimitives.ReadInt64LittleEndian(page.Span[(offset + headerBytes)..]);
+    }
+
     internal static byte[] ReadLeafPayload(SlottedPage sp, int index)
     {
         return ReadLeafPayloadMemory(sp, index).ToArray();
@@ -939,6 +1204,15 @@ public sealed class BTree
         ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
         int payloadLength = (int)payloadSize - 8;
         return page.AsMemory(offset + headerBytes + 8, payloadLength);
+    }
+
+    internal static ReadOnlyMemory<byte> ReadLeafPayloadMemory(ReadOnlySlottedPage sp, int index)
+    {
+        ReadOnlyMemory<byte> page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        ulong payloadSize = ReadVarintFast(page.Span[offset..], out int headerBytes);
+        int payloadLength = (int)payloadSize - 8;
+        return page.Slice(offset + headerBytes + 8, payloadLength);
     }
 
     private static long ReadInteriorCellKey(ReadOnlySpan<byte> cell)
@@ -1028,11 +1302,25 @@ public sealed class BTree
         return BinaryPrimitives.ReadInt64LittleEndian(page.AsSpan(offset + InteriorCellKeyOffset));
     }
 
+    private static long ReadInteriorKey(ReadOnlySlottedPage sp, int index)
+    {
+        ReadOnlyMemory<byte> page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        return BinaryPrimitives.ReadInt64LittleEndian(page.Span[(offset + InteriorCellKeyOffset)..]);
+    }
+
     private static uint ReadInteriorLeftChild(SlottedPage sp, int index)
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
         return BinaryPrimitives.ReadUInt32LittleEndian(page.AsSpan(offset + InteriorCellLeftChildOffset));
+    }
+
+    private static uint ReadInteriorLeftChild(ReadOnlySlottedPage sp, int index)
+    {
+        ReadOnlyMemory<byte> page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        return BinaryPrimitives.ReadUInt32LittleEndian(page.Span[(offset + InteriorCellLeftChildOffset)..]);
     }
 
     private static void WriteInteriorKey(SlottedPage sp, int index, long key)
@@ -1154,6 +1442,12 @@ public sealed class BTree
         return idx < sp.CellCount && ReadLeafKey(sp, idx) == key ? idx : -1;
     }
 
+    private int FindKeyInLeaf(ReadOnlySlottedPage sp, long key)
+    {
+        int idx = LowerBoundLeaf(sp, key);
+        return idx < sp.CellCount && ReadLeafKey(sp, idx) == key ? idx : -1;
+    }
+
     private uint FindChildPage(SlottedPage sp, long key)
     {
         int childIndex = UpperBoundInterior(sp, key);
@@ -1162,7 +1456,23 @@ public sealed class BTree
             : sp.RightChildOrNextLeaf;
     }
 
+    private uint FindChildPage(ReadOnlySlottedPage sp, long key)
+    {
+        int childIndex = UpperBoundInterior(sp, key);
+        return childIndex < sp.CellCount
+            ? ReadInteriorLeftChild(sp, childIndex)
+            : sp.RightChildOrNextLeaf;
+    }
+
     private uint FindChildPageWithIndex(SlottedPage sp, long key, out int childIndex)
+    {
+        childIndex = UpperBoundInterior(sp, key);
+        return childIndex < sp.CellCount
+            ? ReadInteriorLeftChild(sp, childIndex)
+            : sp.RightChildOrNextLeaf;
+    }
+
+    private uint FindChildPageWithIndex(ReadOnlySlottedPage sp, long key, out int childIndex)
     {
         childIndex = UpperBoundInterior(sp, key);
         return childIndex < sp.CellCount
@@ -1185,7 +1495,67 @@ public sealed class BTree
         return lo;
     }
 
+    private static int LowerBoundLeaf(ReadOnlySlottedPage sp, long key)
+    {
+        int lo = 0;
+        int hi = sp.CellCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (ReadLeafKey(sp, mid) < key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+
+    private static int UpperBoundLeaf(SlottedPage sp, long key)
+    {
+        int lo = 0;
+        int hi = sp.CellCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (ReadLeafKey(sp, mid) <= key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+
+    private static int UpperBoundLeaf(ReadOnlySlottedPage sp, long key)
+    {
+        int lo = 0;
+        int hi = sp.CellCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (ReadLeafKey(sp, mid) <= key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+
     private static int UpperBoundInterior(SlottedPage sp, long key)
+    {
+        int lo = 0;
+        int hi = sp.CellCount;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (key < ReadInteriorKey(sp, mid))
+                hi = mid;
+            else
+                lo = mid + 1;
+        }
+        return lo;
+    }
+
+    private static int UpperBoundInterior(ReadOnlySlottedPage sp, long key)
     {
         int lo = 0;
         int hi = sp.CellCount;
@@ -1207,6 +1577,13 @@ public sealed class BTree
         return sp.RightChildOrNextLeaf;
     }
 
+    private uint FindChildAtIndex(ReadOnlySlottedPage sp, int index)
+    {
+        if (index < sp.CellCount)
+            return ReadInteriorLeftChild(sp, index);
+        return sp.RightChildOrNextLeaf;
+    }
+
     /// <summary>
     /// Find the leftmost leaf page.
     /// </summary>
@@ -1215,14 +1592,202 @@ public sealed class BTree
         uint pageId = _rootPageId;
         while (true)
         {
-            var page = await _pager.GetPageAsync(pageId, ct);
-            var sp = new SlottedPage(page, pageId);
-            if (sp.PageType == PageConstants.PageTypeLeaf)
-                return pageId;
-            if (sp.CellCount == 0)
-                return sp.RightChildOrNextLeaf;
-            pageId = ReadInteriorLeftChild(sp, 0);
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(pageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+                if (sp.CellCount == 0)
+                    return sp.RightChildOrNextLeaf;
+                pageId = ReadInteriorLeftChild(sp, 0);
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+                if (sp.CellCount == 0)
+                    return sp.RightChildOrNextLeaf;
+                pageId = ReadInteriorLeftChild(sp, 0);
+            }
         }
+    }
+
+    private readonly record struct InteriorFrame(uint PageId, int ChildIndex);
+
+    private async ValueTask<uint> FindLeafForKeyAsync(long key, List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        ancestors.Clear();
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(pageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                uint childPageId = FindChildPageWithIndex(sp, key, out int childIndex);
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = childPageId;
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                uint childPageId = FindChildPageWithIndex(sp, key, out int childIndex);
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = childPageId;
+            }
+        }
+    }
+
+    private async ValueTask<uint> FindRightmostLeafAsync(List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        ancestors.Clear();
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(pageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                int childIndex = sp.CellCount;
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = sp.RightChildOrNextLeaf;
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                int childIndex = sp.CellCount;
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = sp.RightChildOrNextLeaf;
+            }
+        }
+    }
+
+    private async ValueTask<uint> FindPredecessorLeafAsync(List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        while (ancestors.Count > 0)
+        {
+            var frame = ancestors[^1];
+            ancestors.RemoveAt(ancestors.Count - 1);
+            if (frame.ChildIndex <= 0)
+                continue;
+
+            uint predecessorSubtreePageId;
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var parentPage = await _pager.GetPageReadAsync(frame.PageId, ct);
+                var parentSp = new ReadOnlySlottedPage(parentPage.Memory, frame.PageId);
+                predecessorSubtreePageId = FindChildAtIndex(parentSp, frame.ChildIndex - 1);
+            }
+            else
+            {
+                var parentPage = await _pager.GetPageAsync(frame.PageId, ct);
+                var parentSp = new SlottedPage(parentPage, frame.PageId);
+                predecessorSubtreePageId = FindChildAtIndex(parentSp, frame.ChildIndex - 1);
+            }
+
+            ancestors.Add(new InteriorFrame(frame.PageId, frame.ChildIndex - 1));
+            return await DescendToRightmostLeafAsync(predecessorSubtreePageId, ancestors, ct);
+        }
+
+        return PageConstants.NullPageId;
+    }
+
+    private async ValueTask<uint> DescendToRightmostLeafAsync(uint pageId, List<InteriorFrame> ancestors, CancellationToken ct)
+    {
+        while (true)
+        {
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(pageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                int childIndex = sp.CellCount;
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = sp.RightChildOrNextLeaf;
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return pageId;
+
+                int childIndex = sp.CellCount;
+                ancestors.Add(new InteriorFrame(pageId, childIndex));
+                pageId = sp.RightChildOrNextLeaf;
+            }
+        }
+    }
+
+    private static int FindMaxCandidateIndex(SlottedPage sp, IndexScanRange range)
+    {
+        if (sp.CellCount == 0)
+            return -1;
+
+        if (!range.UpperBound.HasValue)
+            return sp.CellCount - 1;
+
+        return range.UpperInclusive
+            ? UpperBoundLeaf(sp, range.UpperBound.Value) - 1
+            : LowerBoundLeaf(sp, range.UpperBound.Value) - 1;
+    }
+
+    private static int FindMaxCandidateIndex(ReadOnlySlottedPage sp, IndexScanRange range)
+    {
+        if (sp.CellCount == 0)
+            return -1;
+
+        if (!range.UpperBound.HasValue)
+            return sp.CellCount - 1;
+
+        return range.UpperInclusive
+            ? UpperBoundLeaf(sp, range.UpperBound.Value) - 1
+            : LowerBoundLeaf(sp, range.UpperBound.Value) - 1;
+    }
+
+    private static bool SatisfiesLowerBound(long key, IndexScanRange range)
+    {
+        if (!range.LowerBound.HasValue)
+            return true;
+
+        return range.LowerInclusive
+            ? key >= range.LowerBound.Value
+            : key > range.LowerBound.Value;
+    }
+
+    private static bool IsRangeSatisfiable(IndexScanRange range)
+    {
+        if (!range.LowerBound.HasValue || !range.UpperBound.HasValue)
+            return true;
+
+        if (range.LowerBound.Value < range.UpperBound.Value)
+            return true;
+
+        if (range.LowerBound.Value > range.UpperBound.Value)
+            return false;
+
+        return range.LowerInclusive && range.UpperInclusive;
     }
 
     private async ValueTask ReclaimPageAsync(uint pageId, HashSet<uint> visited, CancellationToken ct)

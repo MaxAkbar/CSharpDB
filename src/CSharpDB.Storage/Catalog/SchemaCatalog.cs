@@ -96,6 +96,9 @@ public sealed class SchemaCatalog
     public ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default) =>
         _service.AdjustTableRowCountAsync(tableName, delta, ct);
 
+    public ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default) =>
+        _service.PersistDirtyTableStatisticsAsync(ct);
+
     public ValueTask ReplaceColumnStatisticsAsync(
         string tableName,
         IReadOnlyList<ColumnStatistics> columnStatistics,

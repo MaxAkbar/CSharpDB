@@ -2,6 +2,9 @@ using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
+using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Serialization;
+using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Engine;
 
@@ -17,6 +20,7 @@ public sealed class Database : IAsyncDisposable
     private readonly QueryPlanner _planner;
     private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
+    private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private long _observedSchemaVersion;
     private bool _inTransaction;
@@ -36,11 +40,13 @@ public sealed class Database : IAsyncDisposable
     private Database(
         Pager pager,
         SchemaCatalog catalog,
-        IRecordSerializer recordSerializer)
+        IRecordSerializer recordSerializer,
+        HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
+        _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
@@ -76,6 +82,82 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer);
+    }
+
+    /// <summary>
+    /// Open a lazy-resident hybrid database that persists committed state to the specified backing file.
+    /// Existing file and WAL contents are read on demand while touched pages remain resident according
+    /// to the pager cache policy; snapshot mode preserves the older full-image in-memory export behavior.
+    /// </summary>
+    public static async ValueTask<Database> OpenHybridAsync(
+        string filePath,
+        CancellationToken ct = default)
+    {
+        return await OpenHybridAsync(filePath, new DatabaseOptions(), new HybridDatabaseOptions(), ct);
+    }
+
+    /// <summary>
+    /// Open a lazy-resident hybrid database that persists committed state to the specified backing file
+    /// using explicit storage composition and persistence behavior.
+    /// </summary>
+    public static async ValueTask<Database> OpenHybridAsync(
+        string filePath,
+        DatabaseOptions options,
+        HybridDatabaseOptions hybridOptions,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(hybridOptions);
+        ValidateHybridHotSetOptions(options, hybridOptions);
+
+        string fullPath = Path.GetFullPath(filePath);
+        if (hybridOptions.PersistenceMode == HybridPersistenceMode.Snapshot)
+        {
+            StorageEngineContext snapshotContext;
+
+            if (File.Exists(fullPath))
+            {
+                byte[] databaseBytes = await File.ReadAllBytesAsync(fullPath, ct);
+                string walPath = fullPath + ".wal";
+                byte[] walBytes = File.Exists(walPath)
+                    ? await File.ReadAllBytesAsync(walPath, ct)
+                    : Array.Empty<byte>();
+
+                snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(
+                    options.StorageEngineOptions,
+                    databaseBytes,
+                    walBytes,
+                    ct);
+            }
+            else
+            {
+                snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
+            }
+
+            var snapshotDatabase = new Database(
+                snapshotContext.Pager,
+                snapshotContext.Catalog,
+                snapshotContext.RecordSerializer,
+                new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
+            return snapshotDatabase;
+        }
+
+        var context = await HybridStorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
+        var database = new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer);
+        try
+        {
+            await database.WarmHybridHotSetAsync(hybridOptions, ct);
+            return database;
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -144,20 +226,18 @@ public sealed class Database : IAsyncDisposable
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
         InvalidateCachesIfSchemaChanged();
-        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out bool bypassParse))
-            return ExecuteStatementAsync(cachedStmt, ct);
 
         if (LooksLikeInsert(sql) && Parser.TryParseSimpleInsert(sql, out var simpleInsert))
             return ExecuteSimpleInsertAsync(simpleInsert, ct);
 
-        if (bypassParse)
+        if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
         {
-            if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
-            {
-                if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
-                    return ValueTask.FromResult(fastResult);
-            }
+            if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
+                return ValueTask.FromResult(fastResult);
         }
+
+        if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
+            return ExecuteStatementAsync(cachedStmt, ct);
 
         var stmt = ParseCached(sql);
         return ExecuteStatementAsync(stmt, ct);
@@ -206,19 +286,27 @@ public sealed class Database : IAsyncDisposable
 
         try
         {
-            QueryResult result = stmt switch
+            string? insertedTableName = null;
+            QueryResult result;
+            if (stmt is InsertStatement insert)
             {
-                InsertStatement insert => await _planner.ExecuteInsertAsync(
+                insertedTableName = insert.TableName;
+                result = await _planner.ExecuteInsertAsync(
                     insert,
-                    persistRootChanges: !explicitTransaction,
-                    ct),
-                _ => await _planner.ExecuteAsync(stmt, ct),
-            };
+                    persistRootChanges: false,
+                    ct);
+            }
+            else
+            {
+                result = await _planner.ExecuteAsync(stmt, ct);
+            }
 
             if (!_inTransaction)
             {
-                // Auto-commit
-                await CommitWithCatalogSyncAsync(ct);
+                if (insertedTableName != null)
+                    await CommitInsertWithCatalogSyncAsync(insertedTableName, ct);
+                else
+                    await CommitWithCatalogSyncAsync(ct);
             }
 
             return result;
@@ -244,11 +332,11 @@ public sealed class Database : IAsyncDisposable
         {
             var result = await _planner.ExecuteSimpleInsertAsync(
                 insert,
-                persistRootChanges: !explicitTransaction,
+                persistRootChanges: false,
                 ct);
 
             if (!_inTransaction)
-                await CommitWithCatalogSyncAsync(ct);
+                await CommitInsertWithCatalogSyncAsync(insert.TableName, ct);
 
             return result;
         }
@@ -281,8 +369,9 @@ public sealed class Database : IAsyncDisposable
     {
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
-        await CommitWithCatalogSyncAsync(ct);
+        await CommitWithCatalogSyncAsync(ct, persistHybridState: false);
         _inTransaction = false;
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
     /// <summary>
@@ -294,6 +383,12 @@ public sealed class Database : IAsyncDisposable
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
         await _pager.RollbackAsync(ct);
         await _catalog.ReloadAsync(ct);
+        foreach (var cached in _collectionCache.Values)
+        {
+            if (cached is ICollectionTreeRefresh refreshable)
+                refreshable.RefreshTreeFromCatalog();
+        }
+        _statementCache.Clear();
         _inTransaction = false;
     }
 
@@ -303,6 +398,7 @@ public sealed class Database : IAsyncDisposable
     public async ValueTask CheckpointAsync(CancellationToken ct = default)
     {
         await _pager.CheckpointAsync(ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Checkpoint, ct);
     }
 
     /// <summary>
@@ -474,7 +570,8 @@ public sealed class Database : IAsyncDisposable
             catalogName,
             tree,
             _recordSerializer,
-            () => _inTransaction);
+            () => _inTransaction,
+            ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct));
         _collectionCache[catalogName] = collection;
         return collection;
     }
@@ -509,6 +606,101 @@ public sealed class Database : IAsyncDisposable
         return span.Slice(pos, keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool HasHybridHotSet(HybridDatabaseOptions hybridOptions)
+        => hybridOptions.HotTableNames.Count > 0 || hybridOptions.HotCollectionNames.Count > 0;
+
+    private static void ValidateHybridHotSetOptions(DatabaseOptions options, HybridDatabaseOptions hybridOptions)
+    {
+        if (!HasHybridHotSet(hybridOptions))
+            return;
+
+        if (hybridOptions.PersistenceMode != HybridPersistenceMode.IncrementalDurable)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming is supported only for incremental-durable hybrid mode.",
+                nameof(hybridOptions));
+        }
+
+        PagerOptions pagerOptions = options.StorageEngineOptions.PagerOptions;
+        if (pagerOptions.MaxCachedPages is not null)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming requires the default unbounded pager cache. Remove MaxCachedPages to enable it.",
+                nameof(options));
+        }
+
+        if (pagerOptions.PageCacheFactory is not null)
+        {
+            throw new ArgumentException(
+                "Hybrid hot-table warming requires the default pager cache. Remove PageCacheFactory to enable it.",
+                nameof(options));
+        }
+    }
+
+    private async ValueTask WarmHybridHotSetAsync(HybridDatabaseOptions hybridOptions, CancellationToken ct)
+    {
+        if (!HasHybridHotSet(hybridOptions))
+            return;
+
+        var warmedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string tableName in EnumerateNormalizedNames(hybridOptions.HotTableNames))
+        {
+            await WarmSqlTableAsync(tableName, ct);
+            warmedTables.Add(tableName);
+        }
+
+        foreach (string collectionName in EnumerateNormalizedNames(hybridOptions.HotCollectionNames))
+        {
+            string catalogName = NormalizeCollectionCatalogName(collectionName);
+            if (!warmedTables.Add(catalogName))
+                continue;
+
+            if (_catalog.GetTable(catalogName) is null)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Collection '{collectionName}' not found.");
+            }
+
+            await _catalog.GetTableTree(catalogName).WarmOwnedPagesAsync(ct);
+        }
+    }
+
+    private async ValueTask WarmSqlTableAsync(string tableName, CancellationToken ct)
+    {
+        if (_catalog.GetTable(tableName) is null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TableNotFound,
+                $"Table '{tableName}' not found.");
+        }
+
+        await _catalog.GetTableTree(tableName).WarmOwnedPagesAsync(ct);
+
+        foreach (var index in _catalog.GetIndexesForTable(tableName))
+            await new BTree(_pager, _catalog.GetIndexStore(index.IndexName).RootPageId).WarmOwnedPagesAsync(ct);
+    }
+
+    private static IEnumerable<string> EnumerateNormalizedNames(IReadOnlyList<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in names)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            string trimmed = name.Trim();
+            if (seen.Add(trimmed))
+                yield return trimmed;
+        }
+    }
+
+    private static string NormalizeCollectionCatalogName(string collectionName)
+    {
+        return collectionName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
+            ? collectionName
+            : $"{CollectionPrefix}{collectionName}";
+    }
+
     private void InvalidateCachesIfSchemaChanged()
     {
         long currentVersion = _catalog.SchemaVersion;
@@ -520,10 +712,29 @@ public sealed class Database : IAsyncDisposable
         _observedSchemaVersion = currentVersion;
     }
 
-    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct)
+    private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct, bool persistHybridState = true)
     {
+        await _catalog.PersistDirtyTableStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
         await _pager.CommitAsync(ct);
+        if (persistHybridState)
+            await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+    }
+
+    private async ValueTask CommitInsertWithCatalogSyncAsync(string tableName, CancellationToken ct)
+    {
+        await _catalog.PersistDirtyTableStatisticsAsync(ct);
+        await _catalog.PersistRootPageChangesAsync(tableName, ct);
+        await _pager.CommitAsync(ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+    }
+
+    private ValueTask PersistHybridStateAsync(HybridPersistenceTriggers trigger, CancellationToken ct)
+    {
+        if (_hybridPersistenceCoordinator is null)
+            return ValueTask.CompletedTask;
+
+        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -531,8 +742,18 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
         {
             try { await _pager.RollbackAsync(); } catch { }
+            _inTransaction = false;
         }
-        await _pager.DisposeAsync();
+
+        try
+        {
+            await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+        }
+        finally
+        {
+            await _pager.DisposeAsync();
+            _hybridPersistenceCoordinator?.Dispose();
+        }
     }
 
     /// <summary>
@@ -542,9 +763,16 @@ public sealed class Database : IAsyncDisposable
     public sealed class ReaderSession : IDisposable
     {
         private readonly Pager _pager;
+        private readonly SchemaCatalog _catalog;
+        private readonly IRecordSerializer _recordSerializer;
+        private readonly IRecordSerializer? _collectionReadSerializer;
         private readonly StatementCache _statementCache;
-        private readonly Pager _snapshotPager;
-        private readonly QueryPlanner _planner;
+        private readonly WalSnapshot _snapshot;
+        private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
+        private Pager? _snapshotPager;
+        private QueryPlanner? _planner;
+        private string? _lastSql;
+        private Statement? _lastParsedStatement;
         private bool _disposed;
         private int _activeQuery;
 
@@ -557,13 +785,20 @@ public sealed class Database : IAsyncDisposable
             IReadOnlyDictionary<string, long> snapshotRowCounts)
         {
             _pager = pager;
+            _catalog = catalog;
+            _recordSerializer = recordSerializer;
+            _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
+                ? new CollectionAwareRecordSerializer(recordSerializer)
+                : null;
             _statementCache = statementCache;
+            _snapshot = snapshot;
+            _snapshotRowCounts = snapshotRowCounts;
             _snapshotPager = pager.CreateSnapshotReader(snapshot);
             _planner = new QueryPlanner(
                 _snapshotPager,
                 catalog,
                 recordSerializer,
-                tableName => snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
+                tableName => _snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
         }
 
         /// <summary>
@@ -573,7 +808,20 @@ public sealed class Database : IAsyncDisposable
         public async ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
         {
-            var stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
+            Statement stmt;
+            if (_lastSql != null &&
+                string.Equals(_lastSql, sql, StringComparison.Ordinal) &&
+                _lastParsedStatement != null)
+            {
+                stmt = _lastParsedStatement;
+            }
+            else
+            {
+                stmt = _statementCache.GetOrAdd(sql, static s => Parser.Parse(s));
+                _lastSql = sql;
+                _lastParsedStatement = stmt;
+            }
+
             return await ExecuteReadAsync(stmt, ct);
         }
 
@@ -597,7 +845,17 @@ public sealed class Database : IAsyncDisposable
 
             try
             {
-                QueryResult result = await _planner.ExecuteAsync(stmt, ct);
+                QueryResult result;
+                if (stmt is SelectStatement select && await TryExecuteFastReadAsync(select, ct) is { } fastResult)
+                {
+                    result = fastResult;
+                }
+                else
+                {
+                    _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                    result = await _planner.ExecuteAsync(stmt, ct);
+                }
+
                 result.SetDisposeCallback(ReleaseActiveQueryAsync);
                 return result;
             }
@@ -612,7 +870,7 @@ public sealed class Database : IAsyncDisposable
         {
             if (!_disposed)
             {
-                _snapshotPager.Dispose();
+                _snapshotPager?.Dispose();
                 _pager.ReleaseReaderSnapshot();
                 _disposed = true;
             }
@@ -623,6 +881,288 @@ public sealed class Database : IAsyncDisposable
             Volatile.Write(ref _activeQuery, 0);
             return ValueTask.CompletedTask;
         }
+
+        private async ValueTask<QueryResult?> TryExecuteFastReadAsync(SelectStatement stmt, CancellationToken ct)
+        {
+            if (TryExecuteCountStarFastPath(stmt, out var countResult))
+                return countResult;
+
+            return await TryExecutePrimaryKeyLookupFastPathAsync(stmt, ct);
+        }
+
+        private bool TryExecuteCountStarFastPath(SelectStatement stmt, out QueryResult result)
+        {
+            result = null!;
+
+            if (stmt.From is not SimpleTableRef simpleRef)
+                return false;
+            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
+                return false;
+            if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
+                return false;
+            if (stmt.OrderBy is { Count: > 0 })
+                return false;
+            if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+                return false;
+            if (stmt.Columns.Count != 1 || stmt.Columns[0].IsStar)
+                return false;
+            if (stmt.Columns[0].Expression is not FunctionCallExpression func)
+                return false;
+            if (!func.IsStarArg || func.IsDistinct || func.Arguments.Count != 0)
+                return false;
+            if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (_catalog.GetTable(simpleRef.TableName) == null)
+                return false;
+
+            string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
+            ColumnDefinition[] outputSchema =
+            [
+                new ColumnDefinition
+                {
+                    Name = outputName,
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+            ];
+
+            if (_snapshotRowCounts.TryGetValue(simpleRef.TableName, out long rowCount))
+            {
+                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                return true;
+            }
+
+            if (_catalog.TryGetTableRowCount(simpleRef.TableName, out rowCount))
+            {
+                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                return true;
+            }
+
+            var tableTree = _catalog.GetTableTree(simpleRef.TableName, GetOrCreateSnapshotPager());
+            result = new QueryResult(new CountStarTableOperator(tableTree, outputSchema));
+            return true;
+        }
+
+        private async ValueTask<QueryResult?> TryExecutePrimaryKeyLookupFastPathAsync(SelectStatement stmt, CancellationToken ct)
+        {
+            if (stmt.IsDistinct)
+                return null;
+            if (stmt.From is not SimpleTableRef simpleRef)
+                return null;
+            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
+                return null;
+            if (stmt.Where == null || stmt.GroupBy != null || stmt.Having != null)
+                return null;
+            if (stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
+                return null;
+
+            var schema = _catalog.GetTable(simpleRef.TableName);
+            if (schema == null)
+                return null;
+
+            int pkIndex = schema.PrimaryKeyColumnIndex;
+            if (pkIndex < 0 || pkIndex >= schema.Columns.Count || schema.Columns[pkIndex].Type != DbType.Integer)
+                return null;
+
+            if (!TryExtractPrimaryKeyEquality(stmt.Where, simpleRef, schema, pkIndex, out long lookupValue))
+                return null;
+
+            if (!TryBuildProjection(stmt.Columns, schema, out var projectionColumnIndices, out var outputColumns, out bool selectStar))
+                return null;
+
+            var tableTree = new BTree(_pager, _catalog.GetTableRootPage(simpleRef.TableName));
+            ReadOnlyMemory<byte>? payload = tableTree.TryFindSnapshotCachedMemory(
+                lookupValue,
+                _snapshot,
+                out var cachedPayload)
+                ? cachedPayload
+                : await tableTree.FindMemoryAsync(lookupValue, _snapshot, ct);
+            if (!payload.HasValue)
+                return QueryResult.FromSyncLookup(null, outputColumns);
+
+            if (selectStar)
+            {
+                var serializer = GetReadSerializer(schema);
+                return QueryResult.FromSyncLookup(serializer.Decode(payload.Value.Span), outputColumns);
+            }
+
+            if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIndex))
+            {
+                var keyValue = DbValue.FromInteger(lookupValue);
+                var row = new DbValue[outputColumns.Length];
+                Array.Fill(row, keyValue);
+                return QueryResult.FromSyncLookup(row, outputColumns);
+            }
+
+            var decoded = GetReadSerializer(schema).Decode(payload.Value.Span);
+            var projected = new DbValue[projectionColumnIndices.Length];
+            for (int i = 0; i < projectionColumnIndices.Length; i++)
+                projected[i] = decoded[projectionColumnIndices[i]];
+
+            return QueryResult.FromSyncLookup(projected, outputColumns);
+        }
+
+        private Pager GetOrCreateSnapshotPager()
+            => _snapshotPager ??= _pager.CreateSnapshotReader(_snapshot);
+
+        private IRecordSerializer GetReadSerializer(TableSchema schema)
+            => _collectionReadSerializer != null && schema.TableName.StartsWith("_col_", StringComparison.Ordinal)
+                ? _collectionReadSerializer
+                : _recordSerializer;
+
+        private static bool TryExtractPrimaryKeyEquality(
+            Expression expression,
+            SimpleTableRef tableRef,
+            TableSchema schema,
+            int primaryKeyIndex,
+            out long lookupValue)
+        {
+            lookupValue = 0;
+
+            if (expression is not BinaryExpression { Op: BinaryOp.Equals } equals)
+                return false;
+
+            if (TryMatchPrimaryKeyColumn(equals.Left, tableRef, schema, primaryKeyIndex) &&
+                TryReadIntegerLiteral(equals.Right, out lookupValue))
+            {
+                return true;
+            }
+
+            if (TryMatchPrimaryKeyColumn(equals.Right, tableRef, schema, primaryKeyIndex) &&
+                TryReadIntegerLiteral(equals.Left, out lookupValue))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryMatchPrimaryKeyColumn(
+            Expression expression,
+            SimpleTableRef tableRef,
+            TableSchema schema,
+            int primaryKeyIndex)
+        {
+            if (expression is not ColumnRefExpression column)
+                return false;
+
+            if (column.TableAlias != null)
+            {
+                string expectedAlias = tableRef.Alias ?? tableRef.TableName;
+                if (!string.Equals(column.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            int columnIndex = column.TableAlias != null
+                ? schema.GetQualifiedColumnIndex(column.TableAlias, column.ColumnName)
+                : schema.GetColumnIndex(column.ColumnName);
+
+            return columnIndex == primaryKeyIndex;
+        }
+
+        private static bool TryReadIntegerLiteral(Expression expression, out long value)
+        {
+            if (expression is LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: long int64 })
+            {
+                value = int64;
+                return true;
+            }
+
+            if (expression is LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: int int32 })
+            {
+                value = int32;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        private static bool TryBuildProjection(
+            IReadOnlyList<SelectColumn> columns,
+            TableSchema schema,
+            out int[] columnIndices,
+            out ColumnDefinition[] outputColumns,
+            out bool selectStar)
+        {
+            selectStar = columns.Any(static c => c.IsStar);
+            if (selectStar)
+            {
+                if (columns.Count != 1)
+                {
+                    columnIndices = Array.Empty<int>();
+                    outputColumns = Array.Empty<ColumnDefinition>();
+                    return false;
+                }
+
+                columnIndices = Array.Empty<int>();
+                outputColumns = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
+                return true;
+            }
+
+            columnIndices = new int[columns.Count];
+            outputColumns = new ColumnDefinition[columns.Count];
+
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var column = columns[i];
+                if (column.Expression is not ColumnRefExpression colRef)
+                    return false;
+
+                int sourceIndex = colRef.TableAlias != null
+                    ? schema.GetQualifiedColumnIndex(colRef.TableAlias, colRef.ColumnName)
+                    : schema.GetColumnIndex(colRef.ColumnName);
+                if (sourceIndex < 0 || sourceIndex >= schema.Columns.Count)
+                    return false;
+
+                columnIndices[i] = sourceIndex;
+                var sourceColumn = schema.Columns[sourceIndex];
+                outputColumns[i] = column.Alias != null
+                    ? new ColumnDefinition
+                    {
+                        Name = column.Alias,
+                        Type = sourceColumn.Type,
+                        Nullable = sourceColumn.Nullable,
+                        IsPrimaryKey = sourceColumn.IsPrimaryKey,
+                        IsIdentity = sourceColumn.IsIdentity,
+                    }
+                    : sourceColumn;
+            }
+
+            return true;
+        }
+
+        private static bool IsPrimaryKeyOnlyProjection(int[] columnIndices, int primaryKeyIndex)
+        {
+            if (primaryKeyIndex < 0)
+                return false;
+
+            for (int i = 0; i < columnIndices.Length; i++)
+            {
+                if (columnIndices[i] != primaryKeyIndex)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsSystemCatalogTable(string tableName) =>
+            string.Equals(tableName, "sys.tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_triggers", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.objects", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_objects", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

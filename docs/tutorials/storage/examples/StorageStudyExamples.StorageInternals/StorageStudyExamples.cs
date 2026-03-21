@@ -640,10 +640,29 @@ public sealed class InMemoryIndexStore : IIndexStore
         return ValueTask.FromResult<byte[]?>(payload);
     }
 
+    public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+    {
+        foreach (var key in _data.Keys.Reverse())
+        {
+            if (IsWithinRange(key, range))
+                return ValueTask.FromResult<long?>(key);
+        }
+
+        return ValueTask.FromResult<long?>(null);
+    }
+
     public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         _data[key] = payload.ToArray();
         return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    {
+        if (!_data.ContainsKey(key))
+            return ValueTask.FromResult(false);
+        _data[key] = payload.ToArray();
+        return ValueTask.FromResult(true);
     }
 
     public ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
@@ -657,6 +676,29 @@ public sealed class InMemoryIndexStore : IIndexStore
         return new InMemoryIndexCursor(_data, range);
     }
 
+    private static bool IsWithinRange(long key, IndexScanRange range)
+    {
+        if (range.LowerBound.HasValue)
+        {
+            var belowLower = range.LowerInclusive
+                ? key < range.LowerBound.Value
+                : key <= range.LowerBound.Value;
+            if (belowLower)
+                return false;
+        }
+
+        if (range.UpperBound.HasValue)
+        {
+            var aboveUpper = range.UpperInclusive
+                ? key > range.UpperBound.Value
+                : key >= range.UpperBound.Value;
+            if (aboveUpper)
+                return false;
+        }
+
+        return true;
+    }
+
     private sealed class InMemoryIndexCursor : IIndexCursor
     {
         private readonly IEnumerator<KeyValuePair<long, byte[]>> _enumerator;
@@ -664,26 +706,7 @@ public sealed class InMemoryIndexStore : IIndexStore
         public InMemoryIndexCursor(SortedDictionary<long, byte[]> data, IndexScanRange range)
         {
             // Filter entries using the same inclusive/exclusive semantics as BTreeIndexStore.
-            var filtered = data.Where(kv =>
-            {
-                if (range.LowerBound.HasValue)
-                {
-                    var belowLower = range.LowerInclusive
-                        ? kv.Key < range.LowerBound.Value
-                        : kv.Key <= range.LowerBound.Value;
-                    if (belowLower) return false;
-                }
-
-                if (range.UpperBound.HasValue)
-                {
-                    var aboveUpper = range.UpperInclusive
-                        ? kv.Key > range.UpperBound.Value
-                        : kv.Key >= range.UpperBound.Value;
-                    if (aboveUpper) return false;
-                }
-
-                return true;
-            });
+            var filtered = data.Where(kv => IsWithinRange(kv.Key, range));
             _enumerator = filtered.GetEnumerator();
         }
 

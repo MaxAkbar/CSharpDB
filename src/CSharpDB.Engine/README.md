@@ -9,7 +9,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 
 ## Overview
 
-`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: a full SQL engine and a zero-SQL `Collection<T>` document API. You can run against a normal on-disk database file or open the engine fully in memory and explicitly save/load snapshots when needed.
+`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: a full SQL engine and a zero-SQL `Collection<T>` document API. You can run against a normal on-disk database file, open the engine fully in memory and explicitly save/load snapshots when needed, or use the hybrid lazy-resident mode that warms pages into memory on demand and keeps committed state durable on disk.
 
 ## Features
 
@@ -17,6 +17,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 - **NoSQL Collection API**: Typed `Collection<T>` with `Put`/`Get`/`Delete`/`Scan`/`Find`
 - **Single-file storage**: All data in one `.db` file with 4 KB B+tree pages
 - **In-memory mode**: Open empty in memory, load an existing `.db` + `.wal` into memory, then save back to disk
+- **Hybrid mode**: Open lazily from disk, keep touched pages resident in process memory, and persist commits durably through the backing-file WAL
 - **WAL durability**: Write-ahead log with crash recovery
 - **Concurrent readers**: Snapshot-isolated readers alongside a single writer
 - **Statement + plan caching**: bounded caches for parsed SQL statements and SELECT plan reuse
@@ -79,6 +80,51 @@ await db.SaveToFileAsync("cache.db");
 
 // Load an existing on-disk database into memory, including committed WAL state
 await using var imported = await Database.LoadIntoMemoryAsync("cache.db");
+```
+
+### Hybrid Memory-Resident Mode
+
+```csharp
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenHybridAsync(
+    "cache.db",
+    new DatabaseOptions(),
+    new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+        HotTableNames = ["cache"]
+    });
+
+await db.ExecuteAsync("CREATE TABLE cache (id INTEGER PRIMARY KEY, value TEXT)");
+await db.ExecuteAsync("INSERT INTO cache VALUES (1, 'hot data')");
+```
+
+`OpenHybridAsync(...)` opens from the backing file lazily, keeps owned pages
+resident in the pager cache after they are first touched, writes committed
+changes durably through the backing-file WAL, and checkpoints those committed
+pages into the base file over time.
+
+Use `HotTableNames` and `HotCollectionNames` when a long-lived hybrid process
+should preload selected read-mostly objects into the shared pager cache at
+open. In v1:
+
+- hot SQL tables warm the primary table B+tree plus SQL secondary indexes
+- hot collections warm the backing `_col_...` table only
+- hot-set warming is supported only for `IncrementalDurable`
+- hot-set warming requires the default unbounded pager cache shape and is rejected for snapshot mode, bounded caches, and custom page-cache factories
+
+If you want the older full-image export behavior, opt into snapshot mode:
+
+```csharp
+await using var snapshotHybrid = await Database.OpenHybridAsync(
+    "cache.db",
+    new DatabaseOptions(),
+    new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.Snapshot,
+        PersistenceTriggers = HybridPersistenceTriggers.Dispose
+    });
 ```
 
 ### NoSQL Collection API

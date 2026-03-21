@@ -6,7 +6,9 @@ namespace CSharpDB.Storage.Paging;
 public enum PageReadSource
 {
     Cache,
+    WalCache,
     WalSnapshot,
     WalLatest,
+    MemoryMappedMainFile,
     StorageDevice,
 }

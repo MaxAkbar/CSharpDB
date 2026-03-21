@@ -326,6 +326,12 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
     public Task CheckpointAsync(CancellationToken ct = default)
         => CallEmptyAsync(_client.CheckpointAsync(EmptyRequest, cancellationToken: ct), ct);
 
+    public Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default)
+        => CallAsync(_client.BackupAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
+    public Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
+        => CallAsync(_client.RestoreAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
     public Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
         => CallAsync(_client.GetMaintenanceReportAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 

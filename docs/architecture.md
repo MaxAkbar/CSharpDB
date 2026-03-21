@@ -10,7 +10,8 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ Hosts / Applications                                               │
-│ CSharpDB.Api   CSharpDB.Admin   CSharpDB.Cli   CSharpDB.Mcp        │
+│ CSharpDB.Api   CSharpDB.Daemon   CSharpDB.Admin   CSharpDB.Cli     │
+│ CSharpDB.Mcp                                                       │
 ├────────────────────────────────────────────────────────────────────┤
 │ Consumer Access Layer                                              │
 │ CSharpDB.Client                     CSharpDB.Data                  │
@@ -25,7 +26,7 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 │ CSharpDB.Sql                  │ CSharpDB.Storage                   │
 │ Tokenizer, Parser, AST        │ Pager, B+Tree, WAL, RecordCodec    │
 ├───────────────────────────────┴────────────────────────────────────┤
-│ CSharpDB.Primitives                                                      │
+│ CSharpDB.Primitives                                                │
 │ DbValue, DbType, Schema, ErrorCodes                                │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -34,13 +35,13 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 
 ```
 Api     → Client
+Daemon  → Client
 Admin   → Client
 Cli     → Client
 Cli     → Engine              (local-only helpers)
 Cli     → Sql
 Cli     → Storage.Diagnostics
-Mcp     → Service → Client
-Service → Sql                 (compatibility change notifications)
+Mcp     → Client
 Data    → Engine
 Client  → Engine
 Client  → Sql
@@ -237,7 +238,7 @@ Interior pages also store a "rightmost child" pointer in the page header. Leaf p
 
 **Operations:**
 - **Insert**: Descend to the correct leaf, insert the cell. If the leaf overflows, split it and propagate the split key upward. If the root splits, create a new root.
-- **Delete**: Descend to the leaf, remove the cell. (Simplified — no rebalancing/merging of underflowed pages.)
+- **Delete**: Descend to the leaf, remove the cell, rebalance underflowed pages by borrowing or merging when needed, and collapse an empty interior root back to its child.
 - **Find**: Descend from root to leaf following routing keys in interior pages.
 - **Scan**: The `BTreeCursor` starts at the leftmost leaf and follows next-leaf pointers.
 
@@ -294,10 +295,15 @@ On database open, all schemas are loaded into in-memory dictionaries for fast lo
 |----------|-----------|
 | **DDL** | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` (ADD/DROP COLUMN, RENAME TABLE/COLUMN) |
 | **DML** | `INSERT INTO`, `SELECT`, `UPDATE`, `DELETE` |
-| **Indexes** | `CREATE INDEX`, `DROP INDEX` (with `UNIQUE`, `IF NOT EXISTS`/`IF EXISTS`) |
+| **Indexes** | `CREATE INDEX`, `DROP INDEX` (with `UNIQUE`, `IF NOT EXISTS`/`IF EXISTS`, composite multi-column) |
 | **Views** | `CREATE VIEW`, `DROP VIEW` |
 | **Triggers** | `CREATE TRIGGER`, `DROP TRIGGER` (BEFORE/AFTER, INSERT/UPDATE/DELETE) |
 | **CTEs** | `WITH ... AS (...) SELECT ...` |
+| **Set operations** | `UNION`, `INTERSECT`, `EXCEPT` (inside top-level queries, views, and CTE bodies) |
+| **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, correlated evaluation in `WHERE`, non-aggregate projection, `UPDATE`/`DELETE` expressions |
+| **Statistics** | `ANALYZE [table]` — refreshes `sys.table_stats` and `sys.column_stats` |
+| **Identity** | `INTEGER PRIMARY KEY IDENTITY` — auto-increment columns with persisted high-water mark |
+| **Distinct** | `SELECT DISTINCT`, `DISTINCT` inside aggregates |
 
 ### Parsing Pipeline
 
@@ -349,16 +355,65 @@ Operators form a tree. The root operator pulls rows upward by calling `MoveNextA
 
 ### Operator Catalog
 
+#### Scan and Lookup Operators
+
 | Operator | Purpose |
 |----------|---------|
-| `TableScanOperator` | Full table scan via `BTreeCursor` — reads all rows sequentially |
-| `IndexScanOperator` | Index-based lookup — seeks in index B+tree, then fetches rows from table B+tree |
-| `FilterOperator` | Applies a WHERE predicate, skipping non-matching rows |
-| `ProjectionOperator` | Selects/reorders columns, evaluates computed expressions and aliases |
-| `SortOperator` | Materializes all input, sorts by ORDER BY clauses |
-| `LimitOperator` | Caps output at N rows with optional OFFSET |
-| `AggregateOperator` | GROUP BY grouping with aggregate functions (COUNT, SUM, AVG, MIN, MAX) |
-| `NestedLoopJoinOperator` | Implements INNER, LEFT, RIGHT, and CROSS JOINs |
+| `TableScanOperator` | Full table scan via `BTreeCursor` — batch-capable |
+| `IndexScanOperator` | Index-based lookup with base-row fetch — batch-capable |
+| `IndexOrderedScanOperator` | Ordered index range scan — batch-capable |
+| `UniqueIndexLookupOperator` | Single-row unique index probe |
+| `PrimaryKeyLookupOperator` | Direct rowid B+tree lookup fast path |
+| `PrimaryKeyProjectionLookupOperator` | PK lookup with projection pushdown |
+| `UniqueIndexProjectionLookupOperator` | Unique index lookup with projection pushdown |
+| `HashedIndexProjectionLookupOperator` | Hashed index lookup with projection pushdown |
+| `IndexScanProjectionOperator` | Index scan with index-only projection |
+| `IndexOrderedProjectionScanOperator` | Ordered index scan with index-only projection |
+
+#### Filter and Projection Operators
+
+| Operator | Purpose |
+|----------|---------|
+| `FilterOperator` | Applies a WHERE predicate — batch-capable |
+| `ProjectionOperator` | Selects/reorders columns, evaluates expressions — batch-capable |
+| `FilterProjectionOperator` | Fused filter + projection for lower materialization |
+| `CompactTableScanProjectionOperator` | Compact scan with fused filter/projection over encoded rows |
+| `CompactPayloadProjectionOperator` | Compact projection over encoded index/table payloads |
+
+#### Join Operators
+
+| Operator | Purpose |
+|----------|---------|
+| `HashJoinOperator` | Hash-based join with projection pushdown |
+| `IndexNestedLoopJoinOperator` | Index-probed nested loop join |
+| `HashedIndexNestedLoopJoinOperator` | Hashed index probe nested loop join |
+| `NestedLoopJoinOperator` | Generic INNER, LEFT, RIGHT, and CROSS JOINs |
+
+#### Aggregate Operators
+
+| Operator | Purpose |
+|----------|---------|
+| `HashAggregateOperator` | GROUP BY with hash-based grouping |
+| `ScalarAggregateOperator` | Single-group aggregate (no GROUP BY) |
+| `IndexKeyAggregateOperator` | Index-backed single-key aggregate fast path |
+| `IndexGroupedAggregateOperator` | Index-backed grouped aggregate |
+| `CompositeIndexGroupedAggregateOperator` | Composite index grouped aggregate |
+| `TableKeyAggregateOperator` | Table-key aggregate fast path |
+| `ScalarAggregateLookupOperator` | Scalar aggregate over lookup result |
+| `ScalarAggregateTableOperator` | Scalar aggregate over full table scan |
+| `FilteredScalarAggregateTableOperator` | Filtered scalar aggregate fast path |
+| `CountStarTableOperator` | Optimized `COUNT(*)` over table metadata |
+
+#### Sort, Distinct, and Limit Operators
+
+| Operator | Purpose |
+|----------|---------|
+| `SortOperator` | Materializes all input, sorts by ORDER BY — batch-capable |
+| `TopNSortOperator` | Heap-based ORDER BY + LIMIT without full materialization |
+| `DistinctOperator` | Hash-based `SELECT DISTINCT` — batch-capable |
+| `OffsetOperator` | Skips N rows — batch-capable |
+| `LimitOperator` | Caps output at N rows — batch-capable |
+| `MaterializedOperator` | Pre-materialized row set (used for CTEs and subqueries) |
 
 ### Query Planning
 
@@ -367,7 +422,7 @@ For **SELECT**, the planner builds an operator tree:
 TableScan/IndexScan → [Filter] → [Join] → [Aggregate] → [Having] → [Sort] → [Projection] → [Limit]
 ```
 
-The planner includes basic **index selection**: when a WHERE clause contains an equality check (`col = value`) on an indexed column, the planner substitutes `IndexScanOperator` for `TableScanOperator`.
+The planner includes **index selection** with multiple strategies: equality lookups on indexed columns, ordered range scans on integer indexes, composite index matching, covering-index projection pushdown, and statistics-guided non-unique lookup selection via `sys.column_stats`.
 
 For **DML** (INSERT, UPDATE, DELETE) and **DDL** (CREATE/DROP/ALTER TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE/DROP TRIGGER), the planner executes the operation directly against the B+tree and schema catalog, returning a row-count result.
 
@@ -385,10 +440,13 @@ The `ExpressionEvaluator` is a static class that recursively evaluates an `Expre
 - **Binary operators** — arithmetic (+, -, *, /), comparison (=, <>, <, >, <=, >=), logical (AND, OR)
 - **Unary operators** — NOT, negation
 - **LIKE** — pattern matching with `%` and `_` wildcards, optional ESCAPE character
-- **IN** — membership test against a list of values
+- **IN** — membership test against a list of values or `IN (SELECT ...)`
 - **BETWEEN** — range check (inclusive)
 - **IS NULL / IS NOT NULL** — null testing
 - **Aggregate functions** — COUNT, SUM, AVG, MIN, MAX (with DISTINCT support)
+- **Scalar functions** — `TEXT(expr)` for filter-friendly text coercion
+- **Scalar subqueries** — single-value subquery evaluation, including correlated cases
+- **EXISTS (SELECT ...)** — existence test subquery evaluation
 
 ---
 
@@ -396,17 +454,19 @@ The `ExpressionEvaluator` is a static class that recursively evaluates an `Expre
 
 | File | Purpose |
 |------|---------|
-| `Database.cs` | Top-level API: open/create database, execute SQL, manage transactions, checkpoint, reader sessions |
+| `Database.cs` | Top-level API: file-backed, in-memory, and hybrid open modes; execute SQL; manage transactions, checkpoints, and reader sessions |
+| `Collection.cs` | Typed document collection API backed by storage-engine B+trees |
 
 The `Database` class ties all layers together:
 
-1. **Open**: Creates the storage device, WAL, WAL index, and pager. Runs crash recovery if a WAL file exists. Loads the schema catalog.
+1. **Open**: Opens the database in file-backed, fully in-memory, or hybrid lazy-resident mode. Supports opt-in memory-mapped main-file reads, storage tuning presets (`UseLookupOptimizedPreset`, `UseWriteOptimizedPreset`), bounded WAL read caching, and background sliced auto-checkpointing. Runs crash recovery if a WAL file exists and loads the schema catalog.
 2. **ExecuteAsync**: Parses SQL → dispatches to QueryPlanner → returns `QueryResult`
 3. **Auto-commit**: Non-SELECT statements automatically begin and commit a transaction if none is active
 4. **Explicit transactions**: `BeginTransactionAsync` / `CommitAsync` / `RollbackAsync` for multi-statement atomicity
 5. **CheckpointAsync**: Manually triggers a WAL checkpoint (copies committed WAL pages to DB file)
 6. **CreateReaderSession**: Returns an independent `ReaderSession` that sees a snapshot of the database at the current point in time. Multiple reader sessions can coexist with an active writer.
-7. **Dispose**: Rolls back any uncommitted transaction, checkpoints, deletes WAL file, and closes the pager
+7. **Collections**: `GetCollectionAsync<T>` exposes the typed document path beside SQL with binary direct-payload storage, path-based indexing (`EnsureIndexAsync`, `FindByPathAsync`, `FindByPathRangeAsync`), and direct binary hydration
+8. **Dispose**: Rolls back any uncommitted transaction, checkpoints, deletes WAL file, and closes the pager
 
 ---
 
@@ -445,6 +505,8 @@ Current surface includes:
 - client-managed transactions
 - document collections
 - checkpoint and storage diagnostics
+- backup and restore (`BackupAsync`, `RestoreAsync`)
+- maintenance (reindex, vacuum, maintenance report)
 
 Implementation dependencies:
 
@@ -489,7 +551,17 @@ while (await reader.ReadAsync())
 
 ---
 
-## Layer 8: REST API (`CSharpDB.Api`)
+## Layer 8: Remote Hosts (`CSharpDB.Api` + `CSharpDB.Daemon`)
+
+The remote host split is intentional today:
+
+- `CSharpDB.Api` is the REST/HTTP host
+- `CSharpDB.Daemon` is the gRPC host
+
+Both inject `ICSharpDbClient` directly and stay above the authoritative
+`CSharpDB.Client` contract instead of exposing engine internals.
+
+### REST API (`CSharpDB.Api`)
 
 The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.
 
@@ -503,7 +575,18 @@ Components:
 The API now injects `ICSharpDbClient` directly. It does not depend on
 `CSharpDB.Data` or engine internals directly.
 
-See the [REST API Reference](../docs/rest-api.md) for the complete endpoint documentation.
+### gRPC Host (`CSharpDB.Daemon`)
+
+The daemon exposes explicit generated gRPC methods over the same client-facing
+contract. It is a thin transport host, not a separate database engine.
+
+Components:
+- **Generated protobuf contract** — `csharpdb_rpc.proto` in `CSharpDB.Client`
+- **GrpcTransportClient** — remote client implementation in `CSharpDB.Client`
+- **CSharpDbRpcService** — gRPC method host in `CSharpDB.Daemon`
+- **Startup validation** — resolves `ICSharpDbClient` and validates the configured database during host startup
+
+See the [REST API Reference](rest-api.md) for HTTP details and the [Daemon README](../src/CSharpDB.Daemon/README.md) for the gRPC host design.
 
 ---
 

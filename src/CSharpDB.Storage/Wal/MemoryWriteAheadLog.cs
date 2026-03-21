@@ -70,6 +70,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     }
 
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool IsOpen => _isOpen;
 
     public void BeginTransaction()
     {

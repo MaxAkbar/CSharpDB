@@ -20,13 +20,45 @@ using CSharpDB.Engine;
 var options = new DatabaseOptions()
     .ConfigureStorageEngine(builder =>
     {
-        builder.UseLookupOptimizedPreset();
+        builder.UseDirectLookupOptimizedPreset();
     });
 
 await using var db = await Database.OpenAsync("app.cdb", options);
 ```
 
-`UseLookupOptimizedPreset()` is the current recommended opt-in preset for file-backed lookup-heavy workloads. It sets `MaxCachedPages = 2048` and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
+`UseDirectLookupOptimizedPreset()` is the current recommended opt-in preset for direct file-backed lookup workloads. It keeps the existing page-cache shape and read path, and keeps the standard B-tree index provider, so hot local workloads stay close to default behavior.
+
+For cache-pressured or cold-file direct lookups, use the explicit cold-file preset:
+
+```csharp
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseDirectColdFileLookupPreset();
+    });
+
+await using var db = await Database.OpenAsync("cold-read.cdb", options);
+```
+
+`UseDirectColdFileLookupPreset()` keeps the existing cache shape but enables memory-mapped reads for clean main-file pages when the storage device supports them.
+
+For explicit bounded file-cache scenarios, use the explicit hybrid file-cache preset instead:
+
+```csharp
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseHybridFileCachePreset();
+    });
+
+await using var db = await Database.OpenAsync("app.cdb", options);
+```
+
+`UseHybridFileCachePreset()` is the current recommended opt-in preset for explicit bounded file-cache runs. It sets `MaxCachedPages = 2048`, adds a small bounded WAL read cache (`MaxCachedWalReadPages = 256`), keeps sequential B-tree leaf read-ahead enabled, enables memory-mapped reads for clean main-file pages when the storage device supports them, and keeps the standard B-tree index provider, which outperformed the caching index wrapper in the current tuning matrix.
 
 For sustained durable writes, use the write-heavy preset instead:
 

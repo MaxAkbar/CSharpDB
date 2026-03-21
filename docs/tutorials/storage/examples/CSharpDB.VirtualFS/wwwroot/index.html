@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSharpDB Virtual File System</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0a0f1e;
+            --panel: #111827;
+            --panel-hover: #151d2e;
+            --muted: #64748b;
+            --muted-light: #94a3b8;
+            --text: #e2e8f0;
+            --text-bright: #f1f5f9;
+            --accent: #38bdf8;
+            --accent-hover: #0ea5e9;
+            --accent-glow: rgba(56, 189, 248, 0.15);
+            --success: #22c55e;
+            --success-bg: rgba(34, 197, 94, 0.12);
+            --danger: #f87171;
+            --danger-hover: #ef4444;
+            --danger-bg: rgba(248, 113, 113, 0.12);
+            --warning: #fbbf24;
+            --border: #1e293b;
+            --border-light: #334155;
+            --input-bg: #0f172a;
+            --sidebar-w: 340px;
+            --radius: 10px;
+            --radius-lg: 14px;
+            --shadow: 0 4px 24px rgba(0,0,0,0.3);
+            --shadow-lg: 0 12px 48px rgba(0,0,0,0.4);
+            --transition: 150ms ease;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', Inter, system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            overflow-x: hidden;
+        }
+
+        /* Layout */
+        .layout {
+            display: grid;
+            grid-template-columns: var(--sidebar-w) 1fr;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            background: linear-gradient(180deg, rgba(17, 24, 39, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+            border-right: 1px solid var(--border);
+            padding: 0;
+            overflow-y: auto;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+        }
+
+        .sidebar-header {
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .sidebar-header h1 {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-header h1 svg { flex-shrink: 0; }
+
+        .sidebar-header p {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        .sidebar-body {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        /* Panels */
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background var(--transition);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-bright);
+        }
+
+        .panel-header:hover { background: var(--panel-hover); }
+
+        .panel-header svg {
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+
+        .panel-header .chevron {
+            margin-left: auto;
+            transition: transform var(--transition);
+            color: var(--muted);
+        }
+
+        .panel-header[aria-expanded="false"] .chevron {
+            transform: rotate(-90deg);
+        }
+
+        .panel-body {
+            padding: 0 16px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .panel-body.collapsed { display: none; }
+
+        /* Content area */
+        .content {
+            padding: 24px 28px;
+            min-width: 0;
+        }
+
+        .content-panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .content-panel-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-bright);
+        }
+
+        .content-panel-header svg { color: var(--muted-light); }
+
+        .content-panel-body {
+            padding: 16px 20px;
+        }
+
+        /* Forms */
+        label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--muted-light);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        input, textarea {
+            width: 100%;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--input-bg);
+            color: var(--text);
+            padding: 8px 12px;
+            font: inherit;
+            font-size: 13px;
+            transition: border-color var(--transition), box-shadow var(--transition);
+            outline: none;
+        }
+
+        input:focus, textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        input::placeholder, textarea::placeholder {
+            color: var(--muted);
+        }
+
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+            font-family: 'Cascadia Code', Consolas, monospace;
+            font-size: 12px;
+        }
+
+        /* Buttons */
+        button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            border-radius: var(--radius);
+            border: none;
+            padding: 8px 14px;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+            white-space: nowrap;
+            outline: none;
+        }
+
+        button:focus-visible {
+            box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #0ea5e9, #38bdf8);
+            color: #082f49;
+            box-shadow: 0 2px 8px rgba(14, 165, 233, 0.25);
+        }
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #0284c7, #0ea5e9);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+            transform: translateY(-1px);
+        }
+        .btn-primary:active { transform: translateY(0); }
+
+        .btn-secondary {
+            background: var(--border);
+            color: var(--text);
+        }
+        .btn-secondary:hover { background: var(--border-light); }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #dc2626, #ef4444);
+            color: #fef2f2;
+            box-shadow: 0 2px 8px rgba(220, 38, 38, 0.2);
+        }
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #b91c1c, #dc2626);
+            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+            transform: translateY(-1px);
+        }
+        .btn-danger:active { transform: translateY(0); }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--muted-light);
+            padding: 6px 10px;
+        }
+        .btn-ghost:hover { background: var(--border); color: var(--text); }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        /* Breadcrumbs */
+        .breadcrumbs {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .breadcrumb {
+            font-size: 13px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            color: var(--accent);
+            cursor: pointer;
+            transition: background var(--transition);
+            font-weight: 500;
+        }
+        .breadcrumb:hover { background: var(--accent-glow); }
+        .breadcrumb.current { color: var(--text-bright); cursor: default; }
+        .breadcrumb.current:hover { background: transparent; }
+
+        .breadcrumb-sep {
+            color: var(--muted);
+            font-size: 11px;
+            padding: 0 2px;
+        }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead th {
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--muted);
+            background: rgba(15, 23, 42, 0.5);
+            border-bottom: 1px solid var(--border);
+        }
+
+        tbody td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        tbody tr {
+            transition: background var(--transition);
+        }
+
+        tbody tr:hover { background: rgba(56, 189, 248, 0.04); }
+        tbody tr:last-child td { border-bottom: none; }
+
+        /* Entry type badges */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .badge-dir  { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
+        .badge-file { background: rgba(34, 197, 94, 0.12);  color: #86efac; }
+        .badge-link { background: rgba(251, 191, 36, 0.15); color: #fcd34d; }
+
+        .entry-name-btn {
+            background: none;
+            border: none;
+            color: var(--text);
+            padding: 4px 8px;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all var(--transition);
+            text-align: left;
+        }
+        .entry-name-btn:hover {
+            background: var(--accent-glow);
+            color: var(--accent);
+        }
+
+        /* Pre/Code */
+        pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--muted-light);
+        }
+
+        .tree-view {
+            padding: 4px 0;
+            min-height: 60px;
+        }
+
+        .entry-info-pre {
+            min-height: 60px;
+        }
+
+        /* Empty states */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+            color: var(--muted);
+            text-align: center;
+            gap: 8px;
+        }
+
+        .empty-state svg { opacity: 0.4; }
+        .empty-state p { font-size: 13px; }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 18px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: var(--shadow-lg);
+            pointer-events: auto;
+            animation: toastIn 250ms ease;
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            max-width: 420px;
+        }
+
+        .toast.ok {
+            background: rgba(17, 24, 39, 0.95);
+            border-color: rgba(34, 197, 94, 0.3);
+            color: #86efac;
+        }
+
+        .toast.error {
+            background: rgba(17, 24, 39, 0.95);
+            border-color: rgba(248, 113, 113, 0.3);
+            color: #fca5a5;
+        }
+
+        .toast.leaving { animation: toastOut 200ms ease forwards; }
+
+        .toast svg { flex-shrink: 0; }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(40px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes toastOut {
+            from { opacity: 1; transform: translateX(0); }
+            to   { opacity: 0; transform: translateX(40px); }
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 600ms linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Confirm dialog */
+        .dialog-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 150ms ease;
+        }
+
+        .dialog {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+            animation: dialogIn 200ms ease;
+        }
+
+        .dialog h3 {
+            font-size: 15px;
+            margin-bottom: 8px;
+            color: var(--text-bright);
+        }
+
+        .dialog p {
+            font-size: 13px;
+            color: var(--muted-light);
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .dialog .btn-row { justify-content: flex-end; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to   { opacity: 1; }
+        }
+        @keyframes dialogIn {
+            from { opacity: 0; transform: scale(0.95) translateY(8px); }
+            to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        /* Split grid */
+        .split {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .layout { grid-template-columns: 1fr; }
+            .sidebar {
+                position: static;
+                height: auto;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+            }
+            .split { grid-template-columns: 1fr; }
+        }
+
+        /* Danger zone styling */
+        .danger-zone {
+            border-color: rgba(248, 113, 113, 0.2);
+        }
+        .danger-zone .panel-header svg { color: var(--danger); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-light);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+        /* File content area */
+        .file-content-area {
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            min-height: 80px;
+            max-height: 400px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 002-2V8a2 2 0 00-2-2h-7.93a2 2 0 01-1.66-.9l-.82-1.2A2 2 0 007.93 3H4a2 2 0 00-2 2v13a2 2 0 002 2z"/></svg>
+                CSharpDB VirtualFS
+            </h1>
+            <p>Browse and manage the virtual file system backed by CSharpDB storage.</p>
+        </div>
+        <div class="sidebar-body">
+
+            <!-- Working Directory -->
+            <div class="panel">
+                <div class="panel-header" onclick="togglePanel(this)" aria-expanded="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    Navigation
+                    <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div class="panel-body">
+                    <label for="cwd">Working directory</label>
+                    <input id="cwd" value="/" />
+                    <div class="btn-row">
+                        <button class="btn-primary" onclick="refreshAll()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                            Refresh
+                        </button>
+                        <button class="btn-secondary" onclick="setRoot()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                            Root
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Create Directory -->
+            <div class="panel">
+                <div class="panel-header" onclick="togglePanel(this)" aria-expanded="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                    Create Directory
+                    <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div class="panel-body">
+                    <label for="mkdirPath">Path</label>
+                    <input id="mkdirPath" placeholder="e.g. notes or /documents/notes" />
+                    <div class="btn-row">
+                        <button class="btn-primary btn-sm" onclick="createDirectory()">Create</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Write File -->
+            <div class="panel">
+                <div class="panel-header" onclick="togglePanel(this)" aria-expanded="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    Write File
+                    <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div class="panel-body">
+                    <label for="writePath">File path</label>
+                    <input id="writePath" placeholder="e.g. notes/todo.txt" />
+                    <label for="writeContent">Content</label>
+                    <textarea id="writeContent" placeholder="Enter file content (UTF-8)..."></textarea>
+                    <div class="btn-row">
+                        <button class="btn-primary btn-sm" onclick="writeFile()">Write file</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Shortcut -->
+            <div class="panel">
+                <div class="panel-header" onclick="togglePanel(this)" aria-expanded="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+                    Create Shortcut
+                    <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div class="panel-body">
+                    <label for="shortcutPath">Shortcut path</label>
+                    <input id="shortcutPath" placeholder="e.g. latest-report" />
+                    <label for="shortcutTarget">Target path</label>
+                    <input id="shortcutTarget" placeholder="e.g. /documents/work/report.txt" />
+                    <div class="btn-row">
+                        <button class="btn-primary btn-sm" onclick="createShortcut()">Create shortcut</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Danger Zone -->
+            <div class="panel danger-zone">
+                <div class="panel-header" onclick="togglePanel(this)" aria-expanded="false">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    Danger Zone
+                    <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div class="panel-body collapsed">
+                    <label for="deletePath">Path to delete</label>
+                    <input id="deletePath" placeholder="e.g. notes/todo.txt" />
+                    <div class="btn-row">
+                        <button class="btn-danger btn-sm" onclick="confirmDelete()">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                            Delete entry
+                        </button>
+                        <button class="btn-danger btn-sm" onclick="confirmReset()">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                            Reset database
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </aside>
+
+    <main class="content">
+        <!-- Breadcrumbs -->
+        <nav id="breadcrumbs" class="breadcrumbs">
+            <span class="breadcrumb current">/</span>
+        </nav>
+
+        <!-- Tree -->
+        <div class="content-panel">
+            <div class="content-panel-header">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                Tree View
+            </div>
+            <div class="content-panel-body">
+                <pre id="treeOutput" class="tree-view"></pre>
+            </div>
+        </div>
+
+        <!-- Directory Listing + Entry Info -->
+        <div class="split">
+            <div class="content-panel">
+                <div class="content-panel-header">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                    Directory Listing
+                </div>
+                <div id="entriesContainer">
+                    <table>
+                        <thead>
+                            <tr><th>Type</th><th>Name</th><th style="text-align:right">Size</th></tr>
+                        </thead>
+                        <tbody id="entriesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="content-panel">
+                <div class="content-panel-header">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    Entry Info
+                </div>
+                <div class="content-panel-body">
+                    <pre id="entryInfo" class="entry-info-pre">Select an entry to inspect.</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- File Content -->
+        <div class="content-panel">
+            <div class="content-panel-header">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                File Content
+            </div>
+            <div class="content-panel-body">
+                <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
+                    <input id="readPath" placeholder="Enter file path, e.g. report.txt" style="flex:1" />
+                    <button class="btn-primary btn-sm" onclick="readFile()">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        Read
+                    </button>
+                    <button class="btn-secondary btn-sm" onclick="loadInfo()">Info</button>
+                </div>
+                <div class="file-content-area">
+                    <pre id="fileContent">No file loaded.</pre>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- Toast container -->
+<div id="toastContainer" class="toast-container"></div>
+
+<script>
+    /* ── API ────────────────────────────────────────────────── */
+    const api = {
+        tree: path => fetchJson(`/api/filesystem/tree?path=${encodeURIComponent(path)}`),
+        list: path => fetchJson(`/api/filesystem/entries?path=${encodeURIComponent(path)}`),
+        entry: path => fetchJson(`/api/filesystem/entry?path=${encodeURIComponent(path)}`),
+        content: path => fetchJson(`/api/filesystem/files/content?path=${encodeURIComponent(path)}`),
+        mkdir: path => postJson('/api/filesystem/directories', { path }),
+        write: (path, content) => postJson('/api/filesystem/files', { path, content: toBase64(content) }),
+        shortcut: (shortcutPath, targetPath) => postJson('/api/filesystem/shortcuts', { shortcutPath, targetPath }),
+        reset: () => fetch('/api/filesystem/reset', { method: 'POST' }).then(ensureSuccess),
+        remove: path => fetch(`/api/filesystem/entry?path=${encodeURIComponent(path)}`, { method: 'DELETE' }).then(ensureSuccess)
+    };
+
+    /* ── Path helpers ──────────────────────────────────────── */
+    function resolvePath(value) {
+        const input = (value || '').trim();
+        const cwd = document.getElementById('cwd').value.trim() || '/';
+        if (!input) return normalizeSegments(cwd.split('/').filter(Boolean));
+
+        const segments = input.startsWith('/')
+            ? []
+            : cwd.split('/').filter(Boolean);
+
+        for (const part of input.split('/')) {
+            if (!part || part === '.') continue;
+            if (part === '..') { segments.pop(); continue; }
+            segments.push(part);
+        }
+
+        return normalizeSegments(segments);
+    }
+
+    function normalizeSegments(segments) {
+        return segments.length === 0 ? '/' : '/' + segments.join('/');
+    }
+
+    /* ── Toast notifications ───────────────────────────────── */
+    function showToast(message, isError = false) {
+        const container = document.getElementById('toastContainer');
+        const toast = document.createElement('div');
+        toast.className = `toast ${isError ? 'error' : 'ok'}`;
+
+        const icon = isError
+            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
+            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+
+        toast.innerHTML = `${icon}<span>${escapeHtml(message)}</span>`;
+        container.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('leaving');
+            toast.addEventListener('animationend', () => toast.remove());
+        }, 3500);
+    }
+
+    function escapeHtml(text) {
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    /* ── Breadcrumbs ───────────────────────────────────────── */
+    function updateBreadcrumbs(path) {
+        const nav = document.getElementById('breadcrumbs');
+        nav.innerHTML = '';
+
+        const segments = path.split('/').filter(Boolean);
+        const paths = ['/'];
+        segments.forEach((_, i) => paths.push('/' + segments.slice(0, i + 1).join('/')));
+
+        paths.forEach((p, i) => {
+            if (i > 0) {
+                const sep = document.createElement('span');
+                sep.className = 'breadcrumb-sep';
+                sep.textContent = '/';
+                nav.appendChild(sep);
+            }
+
+            const crumb = document.createElement('span');
+            crumb.className = 'breadcrumb';
+            crumb.textContent = i === 0 ? '~' : segments[i - 1];
+
+            if (i === paths.length - 1) {
+                crumb.classList.add('current');
+            } else {
+                crumb.addEventListener('click', () => {
+                    document.getElementById('cwd').value = p;
+                    refreshAll();
+                });
+            }
+
+            nav.appendChild(crumb);
+        });
+    }
+
+    /* ── Panel toggle ──────────────────────────────────────── */
+    function togglePanel(header) {
+        const expanded = header.getAttribute('aria-expanded') !== 'false';
+        header.setAttribute('aria-expanded', !expanded);
+        header.nextElementSibling.classList.toggle('collapsed', expanded);
+    }
+
+    /* ── Core actions ──────────────────────────────────────── */
+    async function refreshAll() {
+        const path = resolvePath(document.getElementById('cwd').value);
+        document.getElementById('cwd').value = path;
+        updateBreadcrumbs(path);
+
+        const [tree, entries] = await Promise.all([api.tree(path), api.list(path)]);
+        document.getElementById('treeOutput').textContent = tree.join('\n');
+        renderEntries(entries);
+        document.getElementById('entryInfo').textContent = `Current directory: ${path}`;
+    }
+
+    const kindMap = { 1: 'Directory', 2: 'File', 3: 'Shortcut' };
+    const badgeMap = { 1: 'badge-dir', 2: 'badge-file', 3: 'badge-link' };
+    const kindIcon = {
+        1: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
+        2: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+        3: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>'
+    };
+
+    function renderEntries(entries) {
+        const body = document.getElementById('entriesBody');
+        body.innerHTML = '';
+
+        if (entries.length === 0) {
+            body.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px;">Empty directory</td></tr>';
+            return;
+        }
+
+        for (const entry of entries) {
+            const row = document.createElement('tr');
+            const sizeText = entry.kind === 2 ? formatSize(entry.size) : '\u2014';
+            row.innerHTML = `
+                <td><span class="badge ${badgeMap[entry.kind] || 'badge-file'}">${kindIcon[entry.kind] || ''}${kindMap[entry.kind] || 'Unknown'}</span></td>
+                <td><button class="entry-name-btn" data-path="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</button></td>
+                <td style="text-align:right;color:var(--muted);font-size:12px;">${sizeText}</td>`;
+
+            row.querySelector('.entry-name-btn').addEventListener('click', async () => {
+                const path = resolvePath(entry.name);
+                document.getElementById('readPath').value = path;
+                if (entry.kind === 1) {
+                    document.getElementById('cwd').value = path;
+                    await refreshAll();
+                } else {
+                    await readFile();
+                    await loadInfo();
+                }
+            });
+            body.appendChild(row);
+        }
+    }
+
+    function formatSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        const value = bytes / Math.pow(1024, i);
+        return `${i === 0 ? value : value.toFixed(1)} ${units[i]}`;
+    }
+
+    async function createDirectory() {
+        try {
+            const path = resolvePath(document.getElementById('mkdirPath').value);
+            await api.mkdir(path);
+            showToast(`Directory created: ${path}`);
+            document.getElementById('mkdirPath').value = '';
+            await refreshAll();
+        } catch (error) {
+            showToast(error.message, true);
+        }
+    }
+
+    async function writeFile() {
+        try {
+            const path = resolvePath(document.getElementById('writePath').value);
+            const content = document.getElementById('writeContent').value;
+            await api.write(path, content);
+            showToast(`File written: ${path}`);
+            document.getElementById('readPath').value = path;
+            document.getElementById('writePath').value = '';
+            document.getElementById('writeContent').value = '';
+            await refreshAll();
+            await readFile();
+        } catch (error) {
+            showToast(error.message, true);
+        }
+    }
+
+    async function createShortcut() {
+        try {
+            const shortcutPath = resolvePath(document.getElementById('shortcutPath').value);
+            const targetPath = resolvePath(document.getElementById('shortcutTarget').value);
+            await api.shortcut(shortcutPath, targetPath);
+            showToast(`Shortcut created: ${shortcutPath} \u2192 ${targetPath}`);
+            document.getElementById('shortcutPath').value = '';
+            document.getElementById('shortcutTarget').value = '';
+            await refreshAll();
+        } catch (error) {
+            showToast(error.message, true);
+        }
+    }
+
+    /* ── Confirmation dialogs ─────────────────────────────── */
+    function showConfirmDialog(title, message, onConfirm, isDanger = true) {
+        const overlay = document.createElement('div');
+        overlay.className = 'dialog-overlay';
+        overlay.innerHTML = `
+            <div class="dialog">
+                <h3>${escapeHtml(title)}</h3>
+                <p>${escapeHtml(message)}</p>
+                <div class="btn-row">
+                    <button class="btn-secondary btn-sm" id="dialogCancel">Cancel</button>
+                    <button class="${isDanger ? 'btn-danger' : 'btn-primary'} btn-sm" id="dialogConfirm">Confirm</button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(overlay);
+
+        overlay.querySelector('#dialogCancel').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        overlay.querySelector('#dialogConfirm').addEventListener('click', async () => {
+            overlay.remove();
+            await onConfirm();
+        });
+    }
+
+    function confirmDelete() {
+        const path = resolvePath(document.getElementById('deletePath').value);
+        showConfirmDialog('Delete entry', `Are you sure you want to delete "${path}"? This cannot be undone.`, async () => {
+            try {
+                await api.remove(path);
+                showToast(`Deleted: ${path}`);
+                document.getElementById('deletePath').value = '';
+                await refreshAll();
+            } catch (error) {
+                showToast(error.message, true);
+            }
+        });
+    }
+
+    function confirmReset() {
+        showConfirmDialog('Reset database', 'This will permanently erase all files, directories, and shortcuts. Are you sure?', async () => {
+            try {
+                await api.reset();
+                document.getElementById('cwd').value = '/';
+                document.getElementById('treeOutput').textContent = '';
+                document.getElementById('entriesBody').innerHTML = '';
+                document.getElementById('entryInfo').textContent = 'Database reset. Create new content to begin.';
+                document.getElementById('fileContent').textContent = 'No file loaded.';
+                updateBreadcrumbs('/');
+                showToast('Database reset successfully.');
+            } catch (error) {
+                showToast(error.message, true);
+            }
+        });
+    }
+
+    async function readFile() {
+        try {
+            const path = resolvePath(document.getElementById('readPath').value);
+            const result = await api.content(path);
+            document.getElementById('readPath').value = path;
+            document.getElementById('fileContent').textContent = result.displayContent;
+            showToast(`Loaded: ${path}`);
+        } catch (error) {
+            showToast(error.message, true);
+        }
+    }
+
+    async function loadInfo() {
+        try {
+            const path = resolvePath(document.getElementById('readPath').value);
+            const entry = await api.entry(path);
+            document.getElementById('entryInfo').textContent = JSON.stringify(entry, null, 2);
+        } catch (error) {
+            showToast(error.message, true);
+        }
+    }
+
+    function setRoot() {
+        document.getElementById('cwd').value = '/';
+        refreshAll();
+    }
+
+    /* ── HTTP helpers ──────────────────────────────────────── */
+    async function fetchJson(url) {
+        const response = await fetch(url);
+        await ensureSuccess(response);
+        return response.json();
+    }
+
+    async function postJson(url, body) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        await ensureSuccess(response);
+        if (response.status === 204) return null;
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+    }
+
+    async function ensureSuccess(response) {
+        if (response.ok) return response;
+        throw new Error(await response.text() || `Request failed: ${response.status}`);
+    }
+
+    function toBase64(text) {
+        return btoa(unescape(encodeURIComponent(text)));
+    }
+
+    /* ── Init ──────────────────────────────────────────────── */
+    refreshAll().catch(error => showToast(error.message, true));
+</script>
+</body>
+</html>

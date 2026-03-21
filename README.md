@@ -107,6 +107,8 @@ await foreach (var kvp in users.FindAsync(u => u.Age > 25))
 record User(string Name, int Age, string Email);
 ```
 
+For indexed collection queries, including nested object paths, array-element paths, nested array-object paths, and range lookups, see [docs/collection-indexing/README.md](docs/collection-indexing/README.md).
+
 ### ADO.NET Provider
 
 ```csharp

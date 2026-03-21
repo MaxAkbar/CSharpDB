@@ -11,6 +11,7 @@ public interface IRecordSerializer
     DbValue[] Decode(ReadOnlySpan<byte> buffer);
     int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination);
     void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices);
+    void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices);
     DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive);
     DbValue DecodeColumn(ReadOnlySpan<byte> buffer, int columnIndex);
     bool TryColumnTextEquals(ReadOnlySpan<byte> buffer, int columnIndex, ReadOnlySpan<byte> expectedUtf8, out bool equals);

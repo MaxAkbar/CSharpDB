@@ -259,6 +259,91 @@ public static class RecordEncoder
     }
 
     /// <summary>
+    /// Decode only the requested (sorted, unique) column indices into a compact destination
+    /// where destination slot i corresponds to selectedColumnIndices[i].
+    /// </summary>
+    public static void DecodeSelectedCompactInto(
+        ReadOnlySpan<byte> buffer,
+        Span<DbValue> destination,
+        ReadOnlySpan<int> selectedColumnIndices)
+    {
+        if (selectedColumnIndices.IsEmpty || destination.IsEmpty)
+            return;
+
+        int pos = 0;
+        int count = (int)Varint.Read(buffer, out int bytesRead);
+        pos += bytesRead;
+
+        int selectedCursor = 0;
+        int targetColumn = selectedColumnIndices[selectedCursor];
+        for (int columnIndex = 0; columnIndex < count && selectedCursor < selectedColumnIndices.Length; columnIndex++)
+        {
+            var type = (DbType)buffer[pos++];
+            if (columnIndex != targetColumn)
+            {
+                SkipValue(type, buffer, ref pos);
+                continue;
+            }
+
+            bool canWrite = (uint)selectedCursor < (uint)destination.Length;
+            switch (type)
+            {
+                case DbType.Null:
+                    if (canWrite)
+                        destination[selectedCursor] = DbValue.Null;
+                    break;
+                case DbType.Integer:
+                {
+                    long value = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
+                    if (canWrite)
+                        destination[selectedCursor] = DbValue.FromInteger(value);
+                    pos += 8;
+                    break;
+                }
+                case DbType.Real:
+                {
+                    long bits = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
+                    if (canWrite)
+                        destination[selectedCursor] = DbValue.FromReal(BitConverter.Int64BitsToDouble(bits));
+                    pos += 8;
+                    break;
+                }
+                case DbType.Text:
+                {
+                    int len = (int)Varint.Read(buffer[pos..], out int lb);
+                    pos += lb;
+                    if (canWrite)
+                        destination[selectedCursor] = DbValue.FromText(DecodeText(buffer.Slice(pos, len)));
+                    pos += len;
+                    break;
+                }
+                case DbType.Blob:
+                {
+                    int len = (int)Varint.Read(buffer[pos..], out int lb);
+                    pos += lb;
+                    if (canWrite)
+                    {
+                        destination[selectedCursor] = DbValue.FromBlob(len == 0
+                            ? Array.Empty<byte>()
+                            : buffer.Slice(pos, len).ToArray());
+                    }
+                    pos += len;
+                    break;
+                }
+                default:
+                    SkipValue(type, buffer, ref pos);
+                    if (canWrite)
+                        destination[selectedCursor] = DbValue.Null;
+                    break;
+            }
+
+            selectedCursor++;
+            if (selectedCursor < selectedColumnIndices.Length)
+                targetColumn = selectedColumnIndices[selectedCursor];
+        }
+    }
+
+    /// <summary>
     /// Decode only the prefix of columns up to maxColumnIndexInclusive.
     /// Columns after that index are skipped without materializing values.
     /// </summary>

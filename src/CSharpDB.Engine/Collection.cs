@@ -9,6 +9,14 @@ using CSharpDB.Storage.Serialization;
 namespace CSharpDB.Engine;
 
 /// <summary>
+/// Internal interface for refreshing collection tree references after rollback.
+/// </summary>
+internal interface ICollectionTreeRefresh
+{
+    void RefreshTreeFromCatalog();
+}
+
+/// <summary>
 /// A typed document collection backed by a B+tree.
 /// Documents are serialized as JSON and stored with string keys hashed to long B+tree keys.
 /// Provides a NoSQL-style API that bypasses the SQL parser/planner entirely.
@@ -17,7 +25,7 @@ namespace CSharpDB.Engine;
 [RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
 public sealed class Collection<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
-    T>
+    T> : ICollectionTreeRefresh
 {
     private const int MaxProbeDistance = 128;
     private const string CollectionIndexPrefix = "_cidx_";
@@ -25,8 +33,9 @@ public sealed class Collection<
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly string _catalogTableName;
-    private readonly BTree _tree;
+    private BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
     private long _observedSchemaVersion;
@@ -37,7 +46,8 @@ public sealed class Collection<
         string catalogTableName,
         BTree tree,
         IRecordSerializer recordSerializer,
-        Func<bool> isInTransaction)
+        Func<bool> isInTransaction,
+        Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
     {
         _pager = pager;
         _catalog = catalog;
@@ -45,7 +55,18 @@ public sealed class Collection<
         _tree = tree;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
         _observedSchemaVersion = catalog.SchemaVersion;
+        ReloadCollectionIndexes();
+    }
+
+    /// <summary>
+    /// Refresh the underlying BTree reference from the catalog after rollback.
+    /// </summary>
+    void ICollectionTreeRefresh.RefreshTreeFromCatalog()
+    {
+        _tree = _catalog.GetTableTree(_catalogTableName);
+        _observedSchemaVersion = _catalog.SchemaVersion;
         ReloadCollectionIndexes();
     }
 
@@ -216,86 +237,111 @@ public sealed class Collection<
     }
 
     /// <summary>
-    /// Ensure a secondary index exists for a direct field/property selector such as x => x.Age.
+    /// Find all documents matching a field/property selector path, using a collection index when present
+    /// and falling back to direct payload path matching when absent.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        await foreach (var match in FindByFieldPathCoreAsync(fieldPath, value, ct))
+            yield return match;
+    }
+
+    /// <summary>
+    /// Find all documents matching a path equality predicate, or array-contains predicate for terminal
+    /// array-element paths such as <c>Tags[]</c> or <c>$.tags[]</c>. Uses a collection index when present
+    /// and falls back to direct payload path matching when absent.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathAsync<TField>(
+        string fieldPath,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        await foreach (var match in FindByFieldPathCoreAsync(canonicalFieldPath, value, ct))
+            yield return match;
+    }
+
+    /// <summary>
+    /// Find all documents whose scalar path value falls within the supplied bounded range.
+    /// Array-element paths are not supported for range queries.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathRangeAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fieldSelector);
+        string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            fieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
+    /// Find all documents whose scalar path value falls within the supplied bounded range.
+    /// Supports paths such as <c>Age</c> or <c>$.address.zipCode</c>.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByPathRangeAsync<TField>(
+        string fieldPath,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            canonicalFieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
+    /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
     /// </summary>
     public async ValueTask EnsureIndexAsync<TField>(
         Expression<Func<T, TField>> fieldSelector,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
-        RefreshIndexesIfSchemaChanged();
-
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        if (_indexes.ContainsKey(fieldPath))
-            return;
+        await EnsureIndexCoreAsync(fieldPath, ct);
+    }
 
-        string indexName = BuildCollectionIndexName(fieldPath);
-        var existing = _catalog.GetIndex(indexName);
-        if (existing != null)
-        {
-            AttachIndexBinding(existing);
-            return;
-        }
-
-        if (_isInTransaction())
-        {
-            throw new InvalidOperationException(
-                "Collection indexes cannot be created while an explicit transaction is active.");
-        }
-
-        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
-
-        bool createdIndex = false;
-        try
-        {
-            await _pager.BeginTransactionAsync(ct);
-
-            var indexSchema = new IndexSchema
-            {
-                IndexName = indexName,
-                TableName = _catalogTableName,
-                Columns = [fieldPath],
-                IsUnique = false,
-            };
-
-            await _catalog.CreateIndexAsync(indexSchema, ct);
-            createdIndex = true;
-
-            var binding = AttachIndexBinding(indexSchema);
-            await BackfillIndexAsync(binding, ct);
-
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
-            _observedSchemaVersion = _catalog.SchemaVersion;
-        }
-        catch
-        {
-            if (createdIndex)
-            {
-                try
-                {
-                    await _catalog.DropIndexAsync(indexName, ct);
-                }
-                catch
-                {
-                    // Best-effort cache cleanup before rollback.
-                }
-            }
-
-            _indexes.Remove(fieldPath);
-
-            try
-            {
-                await _pager.RollbackAsync(ct);
-            }
-            catch
-            {
-                // Preserve the original failure.
-            }
-
-            RefreshIndexesIfSchemaChanged(force: true);
-            throw;
-        }
+    /// <summary>
+    /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
+    /// </summary>
+    public ValueTask EnsureIndexAsync(
+        string fieldPath,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+        return EnsureIndexCoreAsync(CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath), ct);
     }
 
     /// <summary>
@@ -308,58 +354,29 @@ public sealed class Collection<
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
-        RefreshIndexesIfSchemaChanged();
-
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        var comparer = EqualityComparer<TField>.Default;
-        
-        if (!TryGetOrAttachIndexBinding(fieldPath, out var binding) ||
-            !binding.TryBuildKeyFromValue(value, out long indexKey))
+        await foreach (var match in FindByFieldPathCoreAsync(fieldPath, value, ct))
+            yield return match;
+    }
+
+    /// <summary>
+    /// Find all documents matching a path equality predicate, using a collection index when present.
+    /// Supports paths such as <c>Address.City</c> or <c>$.address.city</c>.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexAsync<TField>(
+        string fieldPath,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+
+        string canonicalFieldPath = CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath);
+        await foreach (var match in FindByFieldPathCoreAsync(
+            canonicalFieldPath,
+            value,
+            ct))
         {
-            var fieldAccessor = fieldSelector.Compile();
-
-            await foreach (var kvp in ScanAsync(ct))
-            {
-                if (comparer.Equals(fieldAccessor(kvp.Value), value))
-                    yield return kvp;
-            }
-
-            yield break;
-        }
-
-        byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
-        if (payload == null || payload.Length < sizeof(long))
-            yield break;
-
-        int rowIdCount = payload.Length / sizeof(long);
-        for (int i = 0; i < rowIdCount; i++)
-        {
-            long rowId = RowIdPayloadCodec.ReadAt(payload, i);
-            var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
-            if (documentPayload is not { } documentMemory)
-                continue;
-
-            if (binding.UsesIntegerKey)
-            {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
-                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
-                continue;
-            }
-
-            if (binding.UsesTextKey &&
-                value is string textValue &&
-                binding.TryDirectPayloadTextEquals(documentMemory.Span, textValue))
-            {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
-                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
-                continue;
-            }
-
-            var (key, document) = _codec.Decode(documentMemory.Span);
-            if (binding.MatchesValue(document, value, comparer))
-                yield return new KeyValuePair<string, T>(key, document);
+            yield return match;
         }
     }
 
@@ -461,19 +478,61 @@ public sealed class Collection<
     private async ValueTask BackfillIndexAsync(CollectionIndexBinding<T> binding, CancellationToken ct)
     {
         var cursor = _tree.CreateCursor();
+        var groupedRowIds = new SortedDictionary<long, List<long>>();
+        var groupedTextRowIds = new SortedDictionary<long, SortedDictionary<string, List<long>>>();
+        var indexKeys = new HashSet<long>();
+        var textValues = new HashSet<string>(StringComparer.Ordinal);
+
         while (await cursor.MoveNextAsync(ct))
         {
+            long rowId = cursor.CurrentKey;
+
+            if (binding.UsesTextKey)
+            {
+                textValues.Clear();
+                if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
+                {
+                    if (!binding.TryCollectTextValuesFromDirectPayload(cursor.CurrentValue.Span, textValues))
+                        continue;
+                }
+                else
+                {
+                    T textDocument = _codec.DecodeDocument(cursor.CurrentValue.Span);
+                    if (!binding.TryCollectTextValuesFromDocument(textDocument, textValues))
+                        continue;
+                }
+
+                foreach (string textValue in textValues)
+                    AddGroupedTextRowId(groupedTextRowIds, textValue, rowId);
+
+                continue;
+            }
+
+            indexKeys.Clear();
             if (CollectionPayloadCodec.IsDirectPayload(cursor.CurrentValue.Span))
             {
-                if (binding.TryBuildKeyFromDirectPayload(cursor.CurrentValue.Span, out long directIndexKey))
-                    await InsertRowIdAsync(binding.IndexStore, directIndexKey, cursor.CurrentKey, ct);
+                if (binding.TryCollectKeysFromDirectPayload(cursor.CurrentValue.Span, indexKeys))
+                {
+                    foreach (long directIndexKey in indexKeys)
+                        AddGroupedRowId(groupedRowIds, directIndexKey, rowId);
+                }
 
                 continue;
             }
 
             T document = _codec.DecodeDocument(cursor.CurrentValue.Span);
-            await InsertIntoIndexAsync(binding, cursor.CurrentKey, document, ct);
+            if (!binding.TryCollectKeysFromDocument(document, indexKeys))
+                continue;
+
+            foreach (long indexKey in indexKeys)
+                AddGroupedRowId(groupedRowIds, indexKey, rowId);
         }
+
+        foreach (var entry in groupedRowIds)
+            await binding.IndexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+
+        foreach (var entry in groupedTextRowIds)
+            await binding.IndexStore.InsertAsync(entry.Key, OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value), ct);
     }
 
     private async ValueTask InsertIntoIndexesAsync(long rowId, T document, CancellationToken ct)
@@ -503,7 +562,23 @@ public sealed class Collection<
         {
             foreach (var binding in _indexes.Values)
             {
-                if (binding.TryBuildKeyFromDirectPayload(payload.Span, out long indexKey))
+                if (binding.UsesTextKey)
+                {
+                    var textValues = new HashSet<string>(StringComparer.Ordinal);
+                    if (!binding.TryCollectTextValuesFromDirectPayload(payload.Span, textValues))
+                        continue;
+
+                    foreach (string textValue in textValues)
+                        await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                    continue;
+                }
+
+                var indexKeys = new HashSet<long>();
+                if (!binding.TryCollectKeysFromDirectPayload(payload.Span, indexKeys))
+                    continue;
+
+                foreach (long indexKey in indexKeys)
                     await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
             }
 
@@ -520,10 +595,24 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
-        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+        if (binding.UsesTextKey)
+        {
+            var textValues = new HashSet<string>(StringComparer.Ordinal);
+            if (!binding.TryCollectTextValuesFromDocument(document, textValues))
+                return;
+
+            foreach (string textValue in textValues)
+                await InsertTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
+        var indexKeys = new HashSet<long>();
+        if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
 
-        await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+        foreach (long indexKey in indexKeys)
+            await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
     }
 
     private static async ValueTask DeleteFromIndexAsync(
@@ -532,10 +621,24 @@ public sealed class Collection<
         T document,
         CancellationToken ct)
     {
-        if (!binding.TryBuildKeyFromDocument(document, out long indexKey))
+        if (binding.UsesTextKey)
+        {
+            var textValues = new HashSet<string>(StringComparer.Ordinal);
+            if (!binding.TryCollectTextValuesFromDocument(document, textValues))
+                return;
+
+            foreach (string textValue in textValues)
+                await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
+        var indexKeys = new HashSet<long>();
+        if (!binding.TryCollectKeysFromDocument(document, indexKeys))
             return;
 
-        await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
+        foreach (long indexKey in indexKeys)
+            await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
     }
 
     private static async ValueTask InsertRowIdAsync(
@@ -551,7 +654,35 @@ public sealed class Collection<
             return;
         }
 
-        if (!RowIdPayloadCodec.TryInsertSorted(existing, rowId, out byte[] newPayload))
+        if (!RowIdPayloadCodec.TryInsert(existing, rowId, out byte[] newPayload))
+            return;
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private static async ValueTask InsertTextRowIdAsync(
+        IIndexStore indexStore,
+        string text,
+        long rowId,
+        CancellationToken ct)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+        {
+            await indexStore.InsertAsync(indexKey, OrderedTextIndexPayloadCodec.CreateSingle(text, rowId), ct);
+            return;
+        }
+
+        if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+        {
+            throw new InvalidOperationException(
+                "Collection text index payload format mismatch detected. Drop and recreate the text collection index.");
+        }
+
+        byte[] newPayload = OrderedTextIndexPayloadCodec.Insert(existing, text, rowId, out bool changed);
+        if (!changed)
             return;
 
         await indexStore.ReplaceAsync(indexKey, newPayload, ct);
@@ -567,7 +698,7 @@ public sealed class Collection<
         if (existing == null)
             return;
 
-        if (!RowIdPayloadCodec.TryRemoveSorted(existing, rowId, out byte[]? newPayload))
+        if (!RowIdPayloadCodec.TryRemove(existing, rowId, out byte[]? newPayload))
             return;
 
         if (newPayload == null)
@@ -592,6 +723,400 @@ public sealed class Collection<
         await _catalog.SetTableRowCountAsync(_catalogTableName, rowCount, ct);
     }
 
+    private static async ValueTask DeleteTextRowIdAsync(
+        IIndexStore indexStore,
+        string text,
+        long rowId,
+        CancellationToken ct)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        byte[]? existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null)
+            return;
+
+        if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+        {
+            throw new InvalidOperationException(
+                "Collection text index payload format mismatch detected. Drop and recreate the text collection index.");
+        }
+
+        byte[]? newPayload = OrderedTextIndexPayloadCodec.Remove(existing, text, rowId, out bool changed);
+        if (!changed)
+            return;
+
+        await indexStore.DeleteAsync(indexKey, ct);
+        if (newPayload == null)
+            return;
+
+        await indexStore.InsertAsync(indexKey, newPayload, ct);
+    }
+
+    private async ValueTask EnsureIndexCoreAsync(string fieldPath, CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        if (_indexes.ContainsKey(fieldPath))
+            return;
+
+        string indexName = BuildCollectionIndexName(fieldPath);
+        var existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            AttachIndexBinding(existing);
+            return;
+        }
+
+        if (_isInTransaction())
+        {
+            throw new InvalidOperationException(
+                "Collection indexes cannot be created while an explicit transaction is active.");
+        }
+
+        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
+
+        bool createdIndex = false;
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+
+            var indexSchema = new IndexSchema
+            {
+                IndexName = indexName,
+                TableName = _catalogTableName,
+                Columns = [fieldPath],
+                IsUnique = false,
+            };
+
+            await _catalog.CreateIndexAsync(indexSchema, ct);
+            createdIndex = true;
+
+            var binding = AttachIndexBinding(indexSchema);
+            await BackfillIndexAsync(binding, ct);
+
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            await _pager.CommitAsync(ct);
+            _observedSchemaVersion = _catalog.SchemaVersion;
+        }
+        catch
+        {
+            if (createdIndex)
+            {
+                try
+                {
+                    await _catalog.DropIndexAsync(indexName, ct);
+                }
+                catch
+                {
+                    // Best-effort cache cleanup before rollback.
+                }
+            }
+
+            _indexes.Remove(fieldPath);
+
+            try
+            {
+                await _pager.RollbackAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            RefreshIndexesIfSchemaChanged(force: true);
+            throw;
+        }
+    }
+
+    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathCoreAsync<TField>(
+        string fieldPath,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        CollectionIndexBinding<T> binding = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding)
+            ? attachedBinding
+            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+        var comparer = EqualityComparer<TField>.Default;
+
+        if (!TryGetOrAttachIndexBinding(fieldPath, out attachedBinding) ||
+            !attachedBinding.TryBuildKeyFromValue(value, out long indexKey))
+        {
+            bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
+            var cursor = _tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
+            {
+                ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
+                if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
+                {
+                    if (!binding.TryDirectPayloadValueEquals(fallbackPayload, expectedValue))
+                        continue;
+
+                    var (matchedKey, matchedDocument) = _codec.Decode(fallbackPayload);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (fallbackKey, fallbackDocument) = _codec.Decode(fallbackPayload);
+                if (binding.MatchesValue(fallbackDocument, value, comparer))
+                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
+            }
+
+            yield break;
+        }
+
+        byte[]? payload = await binding.IndexStore.FindAsync(indexKey, ct);
+        if (payload == null)
+            yield break;
+
+        ReadOnlyMemory<byte> rowIdPayload = payload;
+        if (attachedBinding.UsesTextKey)
+        {
+            if (!CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) ||
+                expectedValue.Type != DbType.Text)
+            {
+                yield break;
+            }
+
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload) ||
+                !OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, expectedValue.AsText, out rowIdPayload))
+            {
+                yield break;
+            }
+        }
+
+        if (rowIdPayload.Length < sizeof(long))
+            yield break;
+
+        int rowIdCount = rowIdPayload.Length / sizeof(long);
+        for (int i = 0; i < rowIdCount; i++)
+        {
+            long rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
+            var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+            if (documentPayload is not { } documentMemory)
+                continue;
+
+            if (attachedBinding.UsesIntegerKey)
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
+            if (CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) &&
+                CollectionPayloadCodec.IsDirectPayload(documentMemory.Span) &&
+                binding.TryDirectPayloadValueEquals(documentMemory.Span, expectedValue))
+            {
+                string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                continue;
+            }
+
+            var (key, document) = _codec.Decode(documentMemory.Span);
+            if (binding.MatchesValue(document, value, comparer))
+                yield return new KeyValuePair<string, T>(key, document);
+        }
+    }
+
+    private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathRangeCoreAsync<TField>(
+        string fieldPath,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive,
+        bool upperInclusive,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        RefreshIndexesIfSchemaChanged();
+
+        bool hasIndex = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding);
+        CollectionIndexBinding<T> binding = hasIndex
+            ? attachedBinding
+            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+
+        if (binding.IsMultiValueArray)
+        {
+            throw new NotSupportedException(
+                "Collection path range queries currently support only scalar field paths.");
+        }
+
+        if (!CollectionIndexBinding<T>.TryConvertComparableValue(lowerBound, out var lowerValue) ||
+            !CollectionIndexBinding<T>.TryConvertComparableValue(upperBound, out var upperValue))
+        {
+            throw new NotSupportedException(
+                "Collection path range queries currently support only string and integer bounds.");
+        }
+
+        if (lowerValue.Type != upperValue.Type)
+        {
+            throw new ArgumentException(
+                "Collection path range query bounds must use the same comparable type.",
+                nameof(upperBound));
+        }
+
+        int boundComparison = DbValue.Compare(lowerValue, upperValue);
+        if (boundComparison > 0 ||
+            (boundComparison == 0 && (!lowerInclusive || !upperInclusive)))
+        {
+            yield break;
+        }
+
+        long lowerKey = 0;
+        long upperKey = 0;
+        bool canUseOrderedIndex =
+            hasIndex &&
+            attachedBinding.SupportsOrderedRange &&
+            lowerValue.Type == upperValue.Type &&
+            ((attachedBinding.UsesIntegerKey && lowerValue.Type == DbType.Integer) ||
+             (attachedBinding.UsesTextKey && lowerValue.Type == DbType.Text));
+
+        if (canUseOrderedIndex)
+        {
+            canUseOrderedIndex =
+                attachedBinding.TryBuildKeyFromValue(lowerBound, out lowerKey) &&
+                attachedBinding.TryBuildKeyFromValue(upperBound, out upperKey);
+        }
+
+        if (!canUseOrderedIndex)
+        {
+            var cursor = _tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
+            {
+                ReadOnlySpan<byte> payload = cursor.CurrentValue.Span;
+                if (CollectionPayloadCodec.IsDirectPayload(payload))
+                {
+                    if (!binding.TryDirectPayloadValueInRange(payload, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        continue;
+
+                    var (matchedKey, matchedDocument) = _codec.Decode(payload);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (fallbackKey, fallbackDocument) = _codec.Decode(payload);
+                if (binding.MatchesRangeValue(fallbackDocument, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                    yield return new KeyValuePair<string, T>(fallbackKey, fallbackDocument);
+            }
+
+            yield break;
+        }
+
+        var range = new IndexScanRange(lowerKey, lowerInclusive, upperKey, upperInclusive);
+        var indexCursor = attachedBinding.IndexStore.CreateCursor(range);
+        var textRowIds = attachedBinding.UsesTextKey
+            ? new List<long>()
+            : null;
+        while (await indexCursor.MoveNextAsync(ct))
+        {
+            ReadOnlyMemory<byte> rowIdPayload = indexCursor.CurrentValue;
+            if (attachedBinding.UsesTextKey)
+            {
+                if (!OrderedTextIndexPayloadCodec.IsEncoded(rowIdPayload.Span))
+                    continue;
+
+                textRowIds!.Clear();
+                if (!OrderedTextIndexPayloadCodec.TryCollectMatchingRowIdsInRange(
+                        rowIdPayload.Span,
+                        lowerValue.AsText,
+                        lowerInclusive,
+                        upperValue.AsText,
+                        upperInclusive,
+                        textRowIds))
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < textRowIds.Count; i++)
+                {
+                    long rowId = textRowIds[i];
+                    var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+                    if (documentPayload is not { } documentMemory)
+                        continue;
+
+                    if (CollectionPayloadCodec.IsDirectPayload(documentMemory.Span))
+                    {
+                        if (!binding.TryDirectPayloadValueInRange(documentMemory.Span, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                            continue;
+
+                        string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                        T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                        yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                        continue;
+                    }
+
+                    var (key, document) = _codec.Decode(documentMemory.Span);
+                    if (binding.MatchesRangeValue(document, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        yield return new KeyValuePair<string, T>(key, document);
+                }
+
+                continue;
+            }
+
+            if (rowIdPayload.Length < sizeof(long))
+                continue;
+
+            int rowIdCount = rowIdPayload.Length / sizeof(long);
+            for (int i = 0; i < rowIdCount; i++)
+            {
+                long rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
+                var documentPayload = await _tree.FindMemoryAsync(rowId, ct);
+                if (documentPayload is not { } documentMemory)
+                    continue;
+
+                if (CollectionPayloadCodec.IsDirectPayload(documentMemory.Span))
+                {
+                    if (!binding.TryDirectPayloadValueInRange(documentMemory.Span, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                        continue;
+
+                    string matchedKey = _codec.DecodeKey(documentMemory.Span);
+                    T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                    yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
+                    continue;
+                }
+
+                var (key, document) = _codec.Decode(documentMemory.Span);
+                if (binding.MatchesRangeValue(document, lowerValue, lowerInclusive, upperValue, upperInclusive))
+                    yield return new KeyValuePair<string, T>(key, document);
+            }
+        }
+    }
+
+    private static void AddGroupedRowId(
+        SortedDictionary<long, List<long>> groupedRowIds,
+        long indexKey,
+        long rowId)
+    {
+        if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+        {
+            rowIds = new List<long>();
+            groupedRowIds[indexKey] = rowIds;
+        }
+
+        rowIds.Add(rowId);
+    }
+
+    private static void AddGroupedTextRowId(
+        SortedDictionary<long, SortedDictionary<string, List<long>>> groupedTextRowIds,
+        string text,
+        long rowId)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        if (!groupedTextRowIds.TryGetValue(indexKey, out var textBuckets))
+        {
+            textBuckets = new SortedDictionary<string, List<long>>(StringComparer.Ordinal);
+            groupedTextRowIds[indexKey] = textBuckets;
+        }
+
+        if (!textBuckets.TryGetValue(text, out var rowIds))
+        {
+            rowIds = new List<long>();
+            textBuckets[text] = rowIds;
+        }
+
+        rowIds.Add(rowId);
+    }
+
     /// <summary>
     /// Auto-commit wrapper: begins a transaction, executes the action, and commits.
     /// If an explicit transaction is active, just executes directly.
@@ -607,12 +1132,11 @@ public sealed class Collection<
         await _pager.BeginTransactionAsync(ct);
         try
         {
-            uint rootBefore = _tree.RootPageId;
             await action();
-            uint rootAfter = _tree.RootPageId;
-            if (rootBefore != rootAfter || _indexes.Count > 0)
-                await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
+            await _catalog.PersistDirtyTableStatisticsAsync(ct);
+            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
             await _pager.CommitAsync(ct);
+            await _afterImplicitCommitAsync(ct);
         }
         catch
         {

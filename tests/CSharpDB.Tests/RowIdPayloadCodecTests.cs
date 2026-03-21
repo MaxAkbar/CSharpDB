@@ -34,4 +34,36 @@ public sealed class RowIdPayloadCodecTests
         Assert.True(RowIdPayloadCodec.TryRemoveSorted(RowIdPayloadCodec.CreateSingle(99), 99, out byte[]? deleteEntry));
         Assert.Null(deleteEntry);
     }
+
+    [Fact]
+    public void TryInsert_PreservesLegacyUnsortedPayloads_AndPreventsDuplicates()
+    {
+        byte[] legacy = RowIdPayloadCodec.CreateFromSorted(new long[] { 10, 30 });
+        byte[] unsorted = new byte[legacy.Length];
+        legacy.AsSpan(8, 8).CopyTo(unsorted.AsSpan(0, 8));
+        legacy.AsSpan(0, 8).CopyTo(unsorted.AsSpan(8, 8));
+
+        Assert.True(RowIdPayloadCodec.TryInsert(unsorted, 20, out byte[] appended));
+        Assert.Equal(3, RowIdPayloadCodec.GetCount(appended));
+        Assert.Equal(30, RowIdPayloadCodec.ReadAt(appended, 0));
+        Assert.Equal(10, RowIdPayloadCodec.ReadAt(appended, 1));
+        Assert.Equal(20, RowIdPayloadCodec.ReadAt(appended, 2));
+
+        Assert.False(RowIdPayloadCodec.TryInsert(appended, 10, out _));
+    }
+
+    [Fact]
+    public void TryRemove_RemovesEntries_FromLegacyUnsortedPayloads()
+    {
+        byte[] payload = RowIdPayloadCodec.CreateFromSorted(new long[] { 30, 10, 20 });
+
+        Assert.True(RowIdPayloadCodec.TryRemove(payload, 10, out byte[]? trimmed));
+        Assert.NotNull(trimmed);
+        Assert.Equal(2, RowIdPayloadCodec.GetCount(trimmed));
+        Assert.Equal(30, RowIdPayloadCodec.ReadAt(trimmed, 0));
+        Assert.Equal(20, RowIdPayloadCodec.ReadAt(trimmed, 1));
+
+        Assert.True(RowIdPayloadCodec.TryRemove(RowIdPayloadCodec.CreateSingle(5), 5, out byte[]? deleted));
+        Assert.Null(deleted);
+    }
 }

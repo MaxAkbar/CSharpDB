@@ -247,6 +247,12 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<Empty> Checkpoint(Empty request, ServerCallContext context)
         => ExecuteEmptyAsync(context, ct => client.CheckpointAsync(ct));
 
+    public override Task<BackupResultMessage> Backup(BackupRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.BackupAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<RestoreResultMessage> Restore(RestoreRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.RestoreAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
     public override Task<DatabaseMaintenanceReportMessage> GetMaintenanceReport(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetMaintenanceReportAsync(ct), GrpcModelMapper.ToMessage);
 

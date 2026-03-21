@@ -5,18 +5,26 @@ namespace CSharpDB.Storage.Device;
 public sealed class FileStorageDevice : IStorageDevice
 {
     private readonly SafeFileHandle _handle;
+    private readonly string _filePath;
+    private readonly Lazy<SafeFileHandle?> _sequentialReadHandle;
 
     public FileStorageDevice(string filePath, bool createNew = false)
     {
+        _filePath = filePath;
         _handle = File.OpenHandle(
             filePath,
             createNew ? FileMode.CreateNew : FileMode.OpenOrCreate,
             FileAccess.ReadWrite,
-            FileShare.Read,
+            FileShare.ReadWrite,
             FileOptions.Asynchronous | FileOptions.RandomAccess);
+
+        _sequentialReadHandle = new Lazy<SafeFileHandle?>(CreateSequentialReadHandle, isThreadSafe: true);
     }
 
     public long Length => RandomAccess.GetLength(_handle);
+
+    internal SafeFileHandle Handle => _handle;
+    internal SafeFileHandle SequentialReadHandle => _sequentialReadHandle.Value ?? _handle;
 
     public async ValueTask<int> ReadAsync(long offset, Memory<byte> buffer, CancellationToken ct = default)
     {
@@ -52,12 +60,33 @@ public sealed class FileStorageDevice : IStorageDevice
 
     public ValueTask DisposeAsync()
     {
+        if (_sequentialReadHandle.IsValueCreated)
+            _sequentialReadHandle.Value?.Dispose();
         _handle.Dispose();
         return ValueTask.CompletedTask;
     }
 
     public void Dispose()
     {
+        if (_sequentialReadHandle.IsValueCreated)
+            _sequentialReadHandle.Value?.Dispose();
         _handle.Dispose();
+    }
+
+    private SafeFileHandle? CreateSequentialReadHandle()
+    {
+        try
+        {
+            return File.OpenHandle(
+                _filePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

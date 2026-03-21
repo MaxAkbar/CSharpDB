@@ -36,6 +36,13 @@ public sealed class PagerOptions
     public int? MaxCachedPages { get; init; }
 
     /// <summary>
+    /// Optional maximum number of immutable WAL frame pages retained in the
+    /// dedicated WAL read cache. When zero, WAL reads always materialize from
+    /// the WAL stream/index path.
+    /// </summary>
+    public int MaxCachedWalReadPages { get; init; }
+
+    /// <summary>
     /// Factory used to create pager-local page cache instances.
     /// If unset, falls back to <see cref="MaxCachedPages"/> and defaults to dictionary behavior.
     /// </summary>
@@ -58,6 +65,26 @@ public sealed class PagerOptions
     /// This is intended for diagnostics or deferred reclamation pipelines.
     /// </summary>
     public Action<uint, byte[]>? OnCachePageEvicted { get; init; }
+
+    /// <summary>
+    /// Enables an opt-in memory-mapped read path for clean main-file pages when
+    /// the underlying storage device supports it.
+    /// </summary>
+    public bool UseMemoryMappedReads { get; init; }
+
+    /// <summary>
+    /// Enables cursor-local speculative reads of the next B-tree leaf page during
+    /// sequential forward scans. This bypasses the shared page cache and is only
+    /// used when the pager can safely issue side-effect-free speculative reads.
+    /// </summary>
+    public bool EnableSequentialLeafReadAhead { get; init; } = true;
+
+    /// <summary>
+    /// When true, owned main-file pages already materialized into the shared page
+    /// cache remain resident after checkpoint completes. Transient WAL and
+    /// memory-mapped read views are still invalidated.
+    /// </summary>
+    public bool PreserveOwnedPagesOnCheckpoint { get; init; }
 
     internal IPageCache CreatePageCache()
     {

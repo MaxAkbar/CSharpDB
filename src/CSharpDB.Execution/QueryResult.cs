@@ -8,9 +8,13 @@ public sealed class QueryResult : IAsyncDisposable
     private static readonly QueryResult OneRowAffectedResult = new(1);
 
     private readonly IOperator? _operator;
+    private readonly IBatchOperator? _batchOperator;
     private Func<ValueTask>? _disposeCallback;
     private bool _opened;
     private bool _disposed;
+    private DbValue[]? _batchCurrentRow;
+    private int _batchRowIndex;
+    private bool _batchExhausted;
 
     // Sync fast path: pre-materialized single-row result (bypasses operator pipeline)
     private readonly bool _hasSyncLookupResult;
@@ -19,7 +23,7 @@ public sealed class QueryResult : IAsyncDisposable
 
     public ColumnDefinition[] Schema { get; }
     public int RowsAffected { get; }
-    public bool IsQuery => _operator != null || _hasSyncLookupResult;
+    public bool IsQuery => _operator != null || _batchOperator != null || _hasSyncLookupResult;
 
     /// <summary>
     /// For SELECT queries.
@@ -27,7 +31,20 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(IOperator op)
     {
         _operator = op;
+        _batchOperator = null;
         _disposeCallback = null;
+        _batchRowIndex = -1;
+        _hasSyncLookupResult = false;
+        Schema = op.OutputSchema;
+        RowsAffected = 0;
+    }
+
+    private QueryResult(IBatchOperator op)
+    {
+        _operator = null;
+        _batchOperator = op;
+        _disposeCallback = null;
+        _batchRowIndex = -1;
         _hasSyncLookupResult = false;
         Schema = op.OutputSchema;
         RowsAffected = 0;
@@ -39,7 +56,9 @@ public sealed class QueryResult : IAsyncDisposable
     public QueryResult(int rowsAffected)
     {
         _operator = null;
+        _batchOperator = null;
         _disposeCallback = null;
+        _batchRowIndex = -1;
         _hasSyncLookupResult = false;
         Schema = Array.Empty<ColumnDefinition>();
         RowsAffected = rowsAffected;
@@ -51,7 +70,9 @@ public sealed class QueryResult : IAsyncDisposable
     private QueryResult(DbValue[]? syncRow, ColumnDefinition[] schema)
     {
         _operator = null;
+        _batchOperator = null;
         _disposeCallback = null;
+        _batchRowIndex = -1;
         _hasSyncLookupResult = true;
         _syncRow = syncRow;
         _syncRowConsumed = syncRow == null; // if no row, already consumed
@@ -65,6 +86,9 @@ public sealed class QueryResult : IAsyncDisposable
     /// </summary>
     internal static QueryResult FromSyncLookup(DbValue[]? row, ColumnDefinition[] schema)
         => new(row, schema);
+
+    internal static QueryResult FromBatchOperator(IBatchOperator op)
+        => new(op);
 
     internal static QueryResult FromRowsAffected(int rowsAffected)
         => rowsAffected switch
@@ -101,19 +125,29 @@ public sealed class QueryResult : IAsyncDisposable
             yield break;
         }
 
-        if (_operator == null) yield break;
-        bool cloneRows = _operator.ReusesCurrentRowBuffer;
-        if (cloneRows && _operator is IRowBufferReuseController controller)
+        if (_operator != null)
         {
-            controller.SetReuseCurrentRowBuffer(false);
-            cloneRows = _operator.ReusesCurrentRowBuffer;
+            bool cloneRows = _operator.ReusesCurrentRowBuffer;
+            if (cloneRows && _operator is IRowBufferReuseController controller)
+            {
+                controller.SetReuseCurrentRowBuffer(false);
+                cloneRows = _operator.ReusesCurrentRowBuffer;
+            }
+
+            while (await MoveNextAsync(ct))
+            {
+                var row = Current;
+                yield return cloneRows ? (DbValue[])row.Clone() : row;
+            }
+
+            yield break;
         }
 
+        if (_batchOperator == null)
+            yield break;
+
         while (await MoveNextAsync(ct))
-        {
-            var row = Current;
-            yield return cloneRows ? (DbValue[])row.Clone() : row;
-        }
+            yield return (DbValue[])Current.Clone();
     }
 
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
@@ -127,13 +161,47 @@ public sealed class QueryResult : IAsyncDisposable
             return true;
         }
 
-        if (_operator == null) return false;
+        if (_operator != null)
+        {
+            if (!_opened)
+            {
+                await _operator.OpenAsync(ct);
+                _opened = true;
+            }
+            return await _operator.MoveNextAsync(ct);
+        }
+
+        if (_batchOperator == null || _batchExhausted)
+            return false;
+
         if (!_opened)
         {
-            await _operator.OpenAsync(ct);
+            await _batchOperator.OpenAsync(ct);
             _opened = true;
+            _batchRowIndex = -1;
+            _batchCurrentRow = null;
+            _batchExhausted = false;
         }
-        return await _operator.MoveNextAsync(ct);
+
+        while (true)
+        {
+            RowBatch batch = _batchOperator.CurrentBatch;
+            if (_batchRowIndex + 1 < batch.Count)
+            {
+                _batchRowIndex++;
+                _batchCurrentRow = MaterializeBatchRow(batch, _batchRowIndex);
+                return true;
+            }
+
+            if (!await _batchOperator.MoveNextBatchAsync(ct))
+            {
+                _batchCurrentRow = null;
+                _batchExhausted = true;
+                return false;
+            }
+
+            _batchRowIndex = -1;
+        }
     }
 
     public DbValue[] Current
@@ -147,9 +215,13 @@ public sealed class QueryResult : IAsyncDisposable
 
                 return _syncRow;
             }
-            if (_operator == null)
-                throw new InvalidOperationException("No active query result.");
-            return _operator.Current;
+            if (_operator != null)
+                return _operator.Current;
+
+            if (_batchCurrentRow != null)
+                return _batchCurrentRow;
+
+            throw new InvalidOperationException("No active query result.");
         }
     }
 
@@ -167,47 +239,135 @@ public sealed class QueryResult : IAsyncDisposable
             return new List<DbValue[]>(1) { _syncRow };
         }
 
-        if (_operator == null)
+        if (_operator != null)
+        {
+            bool cloneRows = _operator.ReusesCurrentRowBuffer;
+            if (cloneRows && _operator is IRowBufferReuseController controller)
+            {
+                controller.SetReuseCurrentRowBuffer(false);
+                cloneRows = _operator.ReusesCurrentRowBuffer;
+            }
+
+            bool openedNow = false;
+            if (!_opened)
+            {
+                await _operator.OpenAsync(ct);
+                _opened = true;
+                openedNow = true;
+            }
+
+            if (openedNow &&
+                !cloneRows &&
+                _operator is IMaterializedRowsProvider materialized &&
+                materialized.TryTakeMaterializedRows(out var materializedRows))
+            {
+                return materializedRows;
+            }
+
+            int initialCapacity = 0;
+            if (_operator is IEstimatedRowCountProvider estimated &&
+                estimated.EstimatedRowCount is int rowCount &&
+                rowCount > 0)
+            {
+                initialCapacity = rowCount;
+            }
+
+            if (openedNow &&
+                _operator is IBatchBackedRowOperator batchBacked)
+            {
+                return await MaterializeBatchRowsAsync(batchBacked.BatchSource, initialCapacity, -1, ct);
+            }
+
+            var list = initialCapacity > 0
+                ? new List<DbValue[]>(initialCapacity)
+                : new List<DbValue[]>();
+            while (await _operator.MoveNextAsync(ct))
+            {
+                var row = _operator.Current;
+                list.Add(cloneRows ? (DbValue[])row.Clone() : row);
+            }
+
+            return list;
+        }
+
+        if (_batchOperator == null)
             return new List<DbValue[]>(0);
 
-        bool cloneRows = _operator.ReusesCurrentRowBuffer;
-        if (cloneRows && _operator is IRowBufferReuseController controller)
-        {
-            controller.SetReuseCurrentRowBuffer(false);
-            cloneRows = _operator.ReusesCurrentRowBuffer;
-        }
-
-        bool openedNow = false;
         if (!_opened)
         {
-            await _operator.OpenAsync(ct);
+            await _batchOperator.OpenAsync(ct);
             _opened = true;
-            openedNow = true;
+            _batchRowIndex = -1;
+            _batchCurrentRow = null;
+            _batchExhausted = false;
         }
 
-        if (openedNow &&
-            !cloneRows &&
-            _operator is IMaterializedRowsProvider materialized &&
-            materialized.TryTakeMaterializedRows(out var materializedRows))
+        if (_batchExhausted)
+            return new List<DbValue[]>(0);
+
+        if (_batchOperator is IMaterializedRowsProvider batchMaterialized &&
+            _batchRowIndex < 0 &&
+            _batchOperator.CurrentBatch.Count == 0 &&
+            batchMaterialized.TryTakeMaterializedRows(out var directRows))
         {
-            return materializedRows;
+            _batchExhausted = true;
+            return directRows;
         }
 
-        int initialCapacity = 0;
-        if (_operator is IEstimatedRowCountProvider estimated &&
-            estimated.EstimatedRowCount is int rowCount &&
-            rowCount > 0)
+        int batchInitialCapacity = 0;
+        if (_batchOperator is IEstimatedRowCountProvider batchEstimated &&
+            batchEstimated.EstimatedRowCount is int batchRowCount &&
+            batchRowCount > 0)
         {
-            initialCapacity = rowCount;
+            batchInitialCapacity = batchRowCount;
         }
 
+        var rows = await MaterializeBatchRowsAsync(_batchOperator, batchInitialCapacity, _batchRowIndex, ct);
+        _batchCurrentRow = null;
+        _batchExhausted = true;
+        return rows;
+    }
+
+    private DbValue[] MaterializeBatchRow(RowBatch batch, int rowIndex)
+    {
+        int columnCount = batch.ColumnCount;
+        _batchCurrentRow ??= columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+        if (_batchCurrentRow.Length != columnCount)
+            _batchCurrentRow = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+
+        batch.CopyRowTo(rowIndex, _batchCurrentRow);
+        return _batchCurrentRow;
+    }
+
+    private static async ValueTask<List<DbValue[]>> MaterializeBatchRowsAsync(
+        IBatchOperator batchSource,
+        int initialCapacity,
+        int currentBatchRowIndex,
+        CancellationToken ct = default)
+    {
         var list = initialCapacity > 0
             ? new List<DbValue[]>(initialCapacity)
             : new List<DbValue[]>();
-        while (await _operator.MoveNextAsync(ct))
+
+        RowBatch batch = batchSource.CurrentBatch;
+        int startRowIndex = Math.Max(0, currentBatchRowIndex + 1);
+        for (int rowIndex = startRowIndex; rowIndex < batch.Count; rowIndex++)
         {
-            var row = _operator.Current;
-            list.Add(cloneRows ? (DbValue[])row.Clone() : row);
+            var row = batch.ColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[batch.ColumnCount];
+            batch.CopyRowTo(rowIndex, row);
+            list.Add(row);
+        }
+
+        while (await batchSource.MoveNextBatchAsync(ct))
+        {
+            batch = batchSource.CurrentBatch;
+            int columnCount = batch.ColumnCount;
+            for (int rowIndex = 0; rowIndex < batch.Count; rowIndex++)
+            {
+                var row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
+                batch.CopyRowTo(rowIndex, row);
+                list.Add(row);
+            }
         }
 
         return list;
@@ -222,6 +382,8 @@ public sealed class QueryResult : IAsyncDisposable
 
         if (_operator != null)
             await _operator.DisposeAsync();
+        else if (_batchOperator != null)
+            await _batchOperator.DisposeAsync();
 
         if (_disposeCallback != null)
             await _disposeCallback();

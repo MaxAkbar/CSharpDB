@@ -225,6 +225,133 @@ public sealed class ReplTests
         }
     }
 
+    [Fact]
+    public async Task Repl_BackupCommand_WritesSnapshotAndManifest()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+        string backupPath = NewTempFilePath(".backup.db");
+        string manifestPath = backupPath + ".manifest.json";
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);",
+                "INSERT INTO t VALUES (1, 'alpha');",
+                $".backup \"{backupPath}\" --with-manifest",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            Assert.Contains("Backup saved to", output, StringComparison.Ordinal);
+            Assert.True(File.Exists(backupPath));
+            Assert.True(File.Exists(manifestPath));
+            Assert.False(File.Exists(backupPath + ".wal"));
+
+            await using var backupDb = await Database.OpenAsync(backupPath, ct);
+            long count = await QueryCountAsync(backupDb, "SELECT COUNT(*) FROM t;", ct);
+            Assert.Equal(1L, count);
+
+            string manifestJson = await File.ReadAllTextAsync(manifestPath, ct);
+            Assert.Contains("backupDatabasePath", manifestJson, StringComparison.Ordinal);
+            Assert.Contains("sha256", manifestJson, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+            DeleteIfExists(backupPath);
+            DeleteIfExists(backupPath + ".wal");
+            DeleteIfExists(manifestPath);
+        }
+    }
+
+    [Fact]
+    public async Task Repl_RestoreCommand_ReplacesCurrentDatabase()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+        string restoreSourcePath = NewTempFilePath(".restore-source.db");
+
+        try
+        {
+            await using (var sourceDb = await Database.OpenAsync(restoreSourcePath, ct))
+            {
+                await sourceDb.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);", ct);
+                await sourceDb.ExecuteAsync("INSERT INTO t VALUES (1, 'from-restore');", ct);
+            }
+
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);",
+                "INSERT INTO t VALUES (1, 'current');",
+                $".restore \"{restoreSourcePath}\"",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            Assert.Contains("Restore complete from", output, StringComparison.Ordinal);
+
+            await using var restoredDb = await Database.OpenAsync(dbPath, ct);
+            await using var result = await restoredDb.ExecuteAsync("SELECT name FROM t WHERE id = 1;", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Single(rows);
+            Assert.Equal("from-restore", rows[0][0].AsText);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+            DeleteIfExists(restoreSourcePath);
+            DeleteIfExists(restoreSourcePath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task Repl_RestoreValidateOnly_DoesNotModifyCurrentDatabase()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+        string restoreSourcePath = NewTempFilePath(".restore-source.db");
+
+        try
+        {
+            await using (var sourceDb = await Database.OpenAsync(restoreSourcePath, ct))
+            {
+                await sourceDb.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);", ct);
+                await sourceDb.ExecuteAsync("INSERT INTO t VALUES (1, 'source');", ct);
+            }
+
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);",
+                "INSERT INTO t VALUES (1, 'current');",
+                $".restore \"{restoreSourcePath}\" --validate-only",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            Assert.Contains("Restore source is valid", output, StringComparison.Ordinal);
+
+            await using var currentDb = await Database.OpenAsync(dbPath, ct);
+            await using var result = await currentDb.ExecuteAsync("SELECT name FROM t WHERE id = 1;", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Single(rows);
+            Assert.Equal("current", rows[0][0].AsText);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+            DeleteIfExists(restoreSourcePath);
+            DeleteIfExists(restoreSourcePath + ".wal");
+        }
+    }
+
     private static async Task<long> QueryCountAsync(Database db, string sql, CancellationToken ct)
     {
         await using var result = await db.ExecuteAsync(sql, ct);
@@ -279,6 +406,8 @@ public sealed class ReplTests
         commands.Add(new CommitCommand());
         commands.Add(new RollbackCommand());
         commands.Add(new CheckpointCommand());
+        commands.Add(new BackupCommand());
+        commands.Add(new RestoreCommand());
         commands.Add(new SnapshotCommand());
         commands.Add(new SyncPointCommand());
         commands.Add(new TimingCommand());

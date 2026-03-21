@@ -15,8 +15,6 @@ public static class DatabaseMaintenanceCoordinator
     private const string CollectionIndexPrefix = "_cidx_";
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
-    private const string ProcedureEnabledIndexName = "idx___procedures_is_enabled";
-    private const string SavedQueryNameIndexName = "idx___saved_queries_name";
 
     public static async ValueTask<DatabaseMaintenanceReport> GetMaintenanceReportAsync(
         string databasePath,
@@ -146,7 +144,6 @@ public static class DatabaseMaintenanceCoordinator
         StorageEngineContext? destination = null;
         DatabaseInspectReport? beforeReport = null;
         bool deleteBackupFiles = false;
-        ClientMetadataSnapshot metadataSnapshot = await ReadClientMetadataSnapshotAsync(fullPath, ct);
 
         try
         {
@@ -158,6 +155,7 @@ public static class DatabaseMaintenanceCoordinator
             try
             {
                 await CopyDatabaseAsync(source, destination, ct);
+                await destination.Catalog.PersistDirtyTableStatisticsAsync(ct);
                 await destination.Catalog.PersistAllRootPageChangesAsync(ct);
                 await destination.Pager.CommitAsync(ct);
             }
@@ -170,7 +168,11 @@ public static class DatabaseMaintenanceCoordinator
             await destination.Pager.DisposeAsync();
             destination = null;
 
-            await RestoreClientMetadataAsync(tempPath, metadataSnapshot, ct);
+            // The vacuum copy path (CopyDatabaseAsync → CopyMetadataTableRowsAsync) already
+            // preserves __saved_queries and __procedures rows with correct row counts.
+            // Calling RestoreClientMetadataAsync here would DELETE+INSERT the same data,
+            // triggering row-count guard violations. Skip the restore since the copy
+            // handles metadata preservation.
 
             await source.Pager.DisposeAsync();
             source = null;
@@ -346,72 +348,117 @@ public static class DatabaseMaintenanceCoordinator
         CancellationToken ct)
     {
         string fieldPath = indexSchema.Columns[0];
-        string jsonPropertyName = JsonNamingPolicy.CamelCase.ConvertName(fieldPath);
+        var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         var tableTree = context.Catalog.GetTableTree(indexSchema.TableName);
         var indexStore = context.Catalog.GetIndexStore(indexSchema.IndexName);
         var cursor = tableTree.CreateCursor();
+        var indexKeys = new HashSet<long>();
 
         while (await cursor.MoveNextAsync(ct))
         {
-            if (!TryBuildCollectionIndexKey(cursor.CurrentValue.Span, jsonPropertyName, context.RecordSerializer, out long indexKey))
+            indexKeys.Clear();
+            if (!TryBuildCollectionIndexKeys(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, indexKeys))
                 continue;
 
-            await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, ct);
+            foreach (long indexKey in indexKeys)
+                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct);
         }
     }
 
-    private static bool TryBuildCollectionIndexKey(
+    private static bool TryBuildCollectionIndexKeys(
         ReadOnlySpan<byte> payload,
-        string jsonPropertyName,
+        CollectionFieldAccessor payloadAccessor,
         IRecordSerializer recordSerializer,
-        out long indexKey)
+        HashSet<long> indexKeys)
     {
-        if (TryBuildCollectionIndexKeyFromDirectPayload(payload, jsonPropertyName, out indexKey))
+        if (TryBuildCollectionIndexKeysFromDirectPayload(payload, payloadAccessor, indexKeys))
             return true;
 
         try
         {
             string json = recordSerializer.DecodeColumn(payload, 1).AsText;
             using var document = JsonDocument.Parse(json);
-            return TryBuildCollectionIndexKeyFromJson(document.RootElement, jsonPropertyName, out indexKey);
+            return TryBuildCollectionIndexKeysFromJson(document.RootElement, payloadAccessor, indexKeys);
         }
         catch
         {
-            indexKey = 0;
             return false;
         }
     }
 
-    private static bool TryBuildCollectionIndexKeyFromDirectPayload(
+    private static bool TryBuildCollectionIndexKeysFromDirectPayload(
         ReadOnlySpan<byte> payload,
-        string jsonPropertyName,
-        out long indexKey)
+        CollectionFieldAccessor payloadAccessor,
+        HashSet<long> indexKeys)
     {
-        if (!CollectionIndexedFieldReader.TryReadValue(payload, jsonPropertyName, out var value))
+        int startCount = indexKeys.Count;
+
+        if (payloadAccessor.TargetsArrayElements)
         {
-            indexKey = 0;
-            return false;
+            var values = new List<DbValue>();
+            if (!payloadAccessor.TryReadIndexValues(payload, values))
+                return false;
+
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (TryBuildCollectionIndexKeyFromValue(values[i], out long indexKey))
+                    indexKeys.Add(indexKey);
+            }
+
+            return indexKeys.Count != startCount;
         }
 
-        return TryBuildCollectionIndexKeyFromValue(value, out indexKey);
+        if (!payloadAccessor.TryReadValue(payload, out var value))
+            return false;
+
+        if (TryBuildCollectionIndexKeyFromValue(value, out long scalarIndexKey))
+            indexKeys.Add(scalarIndexKey);
+
+        return indexKeys.Count != startCount;
     }
 
-    private static bool TryBuildCollectionIndexKeyFromJson(
+    private static bool TryBuildCollectionIndexKeysFromJson(
         JsonElement document,
-        string jsonPropertyName,
-        out long indexKey)
+        CollectionFieldAccessor payloadAccessor,
+        HashSet<long> indexKeys)
     {
-        indexKey = 0;
+        int startCount = indexKeys.Count;
         if (document.ValueKind != JsonValueKind.Object)
             return false;
 
-        if (!TryGetJsonProperty(document, jsonPropertyName, out JsonElement property))
+        if (!TryGetJsonProperty(document, payloadAccessor.JsonPathSegments, out JsonElement property))
             return false;
+
+        if (payloadAccessor.TargetsArrayElements)
+        {
+            if (property.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (JsonElement element in property.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.String &&
+                    TryBuildCollectionIndexKeyFromValue(DbValue.FromText(element.GetString()!), out long textIndexKey))
+                {
+                    indexKeys.Add(textIndexKey);
+                    continue;
+                }
+
+                if (element.ValueKind == JsonValueKind.Number &&
+                    element.TryGetInt64(out long integerValue) &&
+                    TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long integerIndexKey))
+                {
+                    indexKeys.Add(integerIndexKey);
+                }
+            }
+
+            return indexKeys.Count != startCount;
+        }
 
         return property.ValueKind switch
         {
-            JsonValueKind.String => TryBuildCollectionIndexKeyFromValue(DbValue.FromText(property.GetString()!), out indexKey),
-            JsonValueKind.Number when property.TryGetInt64(out long integerValue) => TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out indexKey),
+            JsonValueKind.String when TryBuildCollectionIndexKeyFromValue(DbValue.FromText(property.GetString()!), out long textIndexKey) => indexKeys.Add(textIndexKey),
+            JsonValueKind.Number when property.TryGetInt64(out long integerValue) &&
+                                      TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long numericIndexKey) => indexKeys.Add(numericIndexKey),
             _ => false,
         };
     }
@@ -428,22 +475,44 @@ public static class DatabaseMaintenanceCoordinator
         return true;
     }
 
-    private static bool TryGetJsonProperty(JsonElement document, string propertyName, out JsonElement property)
+    private static bool TryGetJsonProperty(JsonElement document, IReadOnlyList<string> propertyPath, out JsonElement property)
     {
-        if (document.TryGetProperty(propertyName, out property))
-            return true;
-
-        foreach (JsonProperty candidate in document.EnumerateObject())
+        JsonElement current = document;
+        for (int i = 0; i < propertyPath.Count; i++)
         {
-            if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            if (current.ValueKind != JsonValueKind.Object)
             {
-                property = candidate.Value;
-                return true;
+                property = default;
+                return false;
+            }
+
+            string propertyName = propertyPath[i];
+            if (current.TryGetProperty(propertyName, out JsonElement directProperty))
+            {
+                current = directProperty;
+                continue;
+            }
+
+            bool found = false;
+            foreach (JsonProperty candidate in current.EnumerateObject())
+            {
+                if (!string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                current = candidate.Value;
+                found = true;
+                break;
+            }
+
+            if (!found)
+            {
+                property = default;
+                return false;
             }
         }
 
-        property = default;
-        return false;
+        property = current;
+        return true;
     }
 
     private static bool IsCollectionIndexSchema(IndexSchema schema)
@@ -574,185 +643,6 @@ public static class DatabaseMaintenanceCoordinator
         return string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase);
     }
-
-    private static async ValueTask<ClientMetadataSnapshot> ReadClientMetadataSnapshotAsync(string databasePath, CancellationToken ct)
-    {
-        await using var db = await Database.OpenAsync(databasePath, ct);
-        return new ClientMetadataSnapshot(
-            await ReadSavedQueriesAsync(db, ct),
-            await ReadProceduresAsync(db, ct));
-    }
-
-    private static async ValueTask<IReadOnlyList<SavedQueryRow>> ReadSavedQueriesAsync(Database db, CancellationToken ct)
-    {
-        try
-        {
-            await using var result = await db.ExecuteAsync(
-                $"SELECT id, name, sql_text, created_utc, updated_utc FROM {SavedQueryTableName} ORDER BY id;",
-                ct);
-            var rows = await result.ToListAsync(ct);
-            return rows.Select(row => new SavedQueryRow(
-                row[0].AsInteger,
-                row[1].AsText,
-                row[2].AsText,
-                row[3].AsText,
-                row[4].AsText)).ToArray();
-        }
-        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TableNotFound)
-        {
-            return [];
-        }
-    }
-
-    private static async ValueTask<IReadOnlyList<ProcedureRow>> ReadProceduresAsync(Database db, CancellationToken ct)
-    {
-        try
-        {
-            await using var result = await db.ExecuteAsync(
-                $"SELECT name, body_sql, params_json, description, is_enabled, created_utc, updated_utc FROM {ProcedureTableName} ORDER BY name;",
-                ct);
-            var rows = await result.ToListAsync(ct);
-            return rows.Select(row => new ProcedureRow(
-                row[0].AsText,
-                row[1].AsText,
-                row[2].AsText,
-                row[3].IsNull ? null : row[3].AsText,
-                !row[4].IsNull && row[4].AsInteger != 0,
-                row[5].AsText,
-                row[6].AsText)).ToArray();
-        }
-        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TableNotFound)
-        {
-            return [];
-        }
-    }
-
-    private static async ValueTask RestoreClientMetadataAsync(
-        string databasePath,
-        ClientMetadataSnapshot snapshot,
-        CancellationToken ct)
-    {
-        if (snapshot.SavedQueries.Count == 0 && snapshot.Procedures.Count == 0)
-            return;
-
-        await using var db = await Database.OpenAsync(databasePath, ct);
-        await db.BeginTransactionAsync(ct);
-        try
-        {
-            await EnsureClientMetadataTablesAsync(db, ct);
-            await ExecuteStatementAsync(db, $"DELETE FROM {SavedQueryTableName};", ct);
-            await ExecuteStatementAsync(db, $"DELETE FROM {ProcedureTableName};", ct);
-
-            foreach (var savedQuery in snapshot.SavedQueries)
-            {
-                await ExecuteStatementAsync(
-                    db,
-                    $"""
-                    INSERT INTO {SavedQueryTableName} (id, name, sql_text, created_utc, updated_utc)
-                    VALUES ({savedQuery.Id}, {FormatSqlLiteral(savedQuery.Name)}, {FormatSqlLiteral(savedQuery.SqlText)}, {FormatSqlLiteral(savedQuery.CreatedUtc)}, {FormatSqlLiteral(savedQuery.UpdatedUtc)});
-                    """,
-                    ct);
-            }
-
-            foreach (var procedure in snapshot.Procedures)
-            {
-                string descriptionLiteral = procedure.Description is null ? "NULL" : FormatSqlLiteral(procedure.Description);
-                await ExecuteStatementAsync(
-                    db,
-                    $"""
-                    INSERT INTO {ProcedureTableName} (name, body_sql, params_json, description, is_enabled, created_utc, updated_utc)
-                    VALUES ({FormatSqlLiteral(procedure.Name)}, {FormatSqlLiteral(procedure.BodySql)}, {FormatSqlLiteral(procedure.ParamsJson)}, {descriptionLiteral}, {(procedure.IsEnabled ? 1 : 0)}, {FormatSqlLiteral(procedure.CreatedUtc)}, {FormatSqlLiteral(procedure.UpdatedUtc)});
-                    """,
-                    ct);
-            }
-
-            await db.CommitAsync(ct);
-        }
-        catch
-        {
-            await db.RollbackAsync(ct);
-            throw;
-        }
-    }
-
-    private static async ValueTask EnsureClientMetadataTablesAsync(Database db, CancellationToken ct)
-    {
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE TABLE IF NOT EXISTS {ProcedureTableName} (
-                name TEXT PRIMARY KEY,
-                body_sql TEXT NOT NULL,
-                params_json TEXT NOT NULL,
-                description TEXT,
-                is_enabled INTEGER NOT NULL,
-                created_utc TEXT NOT NULL,
-                updated_utc TEXT NOT NULL
-            );
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE INDEX IF NOT EXISTS {ProcedureEnabledIndexName}
-            ON {ProcedureTableName} (is_enabled);
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE TABLE IF NOT EXISTS {SavedQueryTableName} (
-                id INTEGER PRIMARY KEY IDENTITY,
-                name TEXT NOT NULL,
-                sql_text TEXT NOT NULL,
-                created_utc TEXT NOT NULL,
-                updated_utc TEXT NOT NULL
-            );
-            """,
-            ct);
-
-        await ExecuteStatementAsync(
-            db,
-            $"""
-            CREATE UNIQUE INDEX IF NOT EXISTS {SavedQueryNameIndexName}
-            ON {SavedQueryTableName} (name);
-            """,
-            ct);
-    }
-
-    private static string FormatSqlLiteral(string value)
-    {
-        return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
-    }
-
-    private static async ValueTask ExecuteStatementAsync(Database db, string sql, CancellationToken ct)
-    {
-        await using var result = await db.ExecuteAsync(sql, ct);
-        if (result.IsQuery)
-            _ = await result.ToListAsync(ct);
-    }
-
-    private sealed record ClientMetadataSnapshot(
-        IReadOnlyList<SavedQueryRow> SavedQueries,
-        IReadOnlyList<ProcedureRow> Procedures);
-
-    private sealed record SavedQueryRow(
-        long Id,
-        string Name,
-        string SqlText,
-        string CreatedUtc,
-        string UpdatedUtc);
-
-    private sealed record ProcedureRow(
-        string Name,
-        string BodySql,
-        string ParamsJson,
-        string? Description,
-        bool IsEnabled,
-        string CreatedUtc,
-        string UpdatedUtc);
 
     private static void TryDeleteFile(string path)
     {

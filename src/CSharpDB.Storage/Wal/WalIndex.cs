@@ -20,6 +20,18 @@ public sealed class WalIndex
     /// <summary>Total number of committed frames.</summary>
     public int FrameCount => _frameCount;
 
+    /// <summary>Total number of committed publish cycles.</summary>
+    public long CommitCounter
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _commitCounter;
+            }
+        }
+    }
+
     /// <summary>
     /// Ensure internal page map capacity before bulk frame publication.
     /// </summary>

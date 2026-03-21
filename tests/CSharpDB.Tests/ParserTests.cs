@@ -1,3 +1,4 @@
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Tests;
@@ -151,6 +152,36 @@ public class ParserTests
             out _);
 
         Assert.False(parsed);
+    }
+
+    [Fact]
+    public void TryParseSimplePrimaryKeyLookup_ParsesTextPredicateLiteral()
+    {
+        bool parsed = Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT name FROM users WHERE name = 'Alice'",
+            out var lookup);
+
+        Assert.True(parsed);
+        Assert.Equal("users", lookup.TableName);
+        Assert.False(lookup.SelectStar);
+        Assert.Equal("name", lookup.ProjectionColumn);
+        Assert.Equal("name", lookup.PredicateColumn);
+        Assert.Equal(DbType.Text, lookup.PredicateLiteral.Type);
+        Assert.Equal("Alice", lookup.PredicateLiteral.AsText);
+    }
+
+    [Fact]
+    public void TryParseSimplePrimaryKeyLookup_ParsesMultipleProjectionColumns()
+    {
+        bool parsed = Parser.TryParseSimplePrimaryKeyLookup(
+            "SELECT id, name FROM users WHERE id = 42",
+            out var lookup);
+
+        Assert.True(parsed);
+        Assert.False(lookup.SelectStar);
+        Assert.Equal(["id", "name"], lookup.ProjectionColumns);
+        Assert.Equal("id", lookup.PredicateColumn);
+        Assert.Equal(42, lookup.LookupValue);
     }
 
     [Fact]

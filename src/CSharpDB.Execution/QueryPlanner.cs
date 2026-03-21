@@ -157,6 +157,7 @@ public sealed class QueryPlanner
         SimpleCountStar,
         SimpleScalarAggregateColumn,
         SimpleLookupScalarAggregateColumn,
+        SimpleGroupedIndexAggregate,
         SimpleConstantGroupAggregateColumn,
         General,
     }
@@ -2108,7 +2109,7 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
 
     private async ValueTask<QueryResult> ExecuteCompoundSelectWithSubqueriesAsync(CompoundSelectStatement stmt, CancellationToken ct)
@@ -2202,7 +2203,7 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
 
     private void ValidateCorrelatedSelectSupport(SelectStatement stmt)
@@ -2268,13 +2269,13 @@ public sealed class QueryPlanner
         {
             if (predicate != null)
             {
-                var predicateResult = await EvaluateExpressionWithSubqueriesAsync(
+                bool predicatePassed = await EvaluateWherePredicateWithSubqueriesAsync(
                     predicate,
                     source.Current,
                     schema,
                     outerScopes,
                     ct);
-                if (!predicateResult.IsTruthy)
+                if (!predicatePassed)
                     continue;
             }
 
@@ -2282,6 +2283,52 @@ public sealed class QueryPlanner
         }
 
         return rows;
+    }
+
+    private async ValueTask<bool> EvaluateWherePredicateWithSubqueriesAsync(
+        Expression predicate,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        switch (predicate)
+        {
+            case BinaryExpression { Op: BinaryOp.And } andExpression:
+                if (!await EvaluateWherePredicateWithSubqueriesAsync(andExpression.Left, row, schema, outerScopes, ct))
+                    return false;
+
+                return await EvaluateWherePredicateWithSubqueriesAsync(andExpression.Right, row, schema, outerScopes, ct);
+            case BinaryExpression { Op: BinaryOp.Or } orExpression:
+                if (await EvaluateWherePredicateWithSubqueriesAsync(orExpression.Left, row, schema, outerScopes, ct))
+                    return true;
+
+                return await EvaluateWherePredicateWithSubqueriesAsync(orExpression.Right, row, schema, outerScopes, ct);
+            case UnaryExpression { Op: TokenType.Not, Operand: ExistsExpression exists }:
+            {
+                bool? existsResult = await TryEvaluateExistsFilterFastAsync(exists, row, schema, outerScopes, ct);
+                if (existsResult.HasValue)
+                    return !existsResult.Value;
+                break;
+            }
+            case ExistsExpression exists:
+            {
+                bool? existsResult = await TryEvaluateExistsFilterFastAsync(exists, row, schema, outerScopes, ct);
+                if (existsResult.HasValue)
+                    return existsResult.Value;
+                break;
+            }
+            case InSubqueryExpression inSubquery:
+            {
+                bool? inResult = await TryEvaluateInSubqueryFilterFastAsync(inSubquery, row, schema, outerScopes, ct);
+                if (inResult.HasValue)
+                    return inResult.Value;
+                break;
+            }
+        }
+
+        var predicateResult = await EvaluateExpressionWithSubqueriesAsync(predicate, row, schema, outerScopes, ct);
+        return predicateResult.IsTruthy;
     }
 
     private async ValueTask<List<DbValue[]>> MaterializeProjectedRowsAsync(
@@ -2334,6 +2381,247 @@ public sealed class QueryPlanner
         var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
         var rewritten = await RewriteCorrelatedExpressionAsync(expression, correlationScopes, ct);
         return ExpressionEvaluator.Evaluate(rewritten, row, schema);
+    }
+
+    private async ValueTask<bool?> TryEvaluateExistsFilterFastAsync(
+        ExistsExpression exists,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
+        var boundQuery = BindOuterScopesInQuery(exists.Query, correlationScopes);
+        return await TryExecuteSimpleExistsProbeAsync(boundQuery, ct);
+    }
+
+    private async ValueTask<bool?> TryEvaluateInSubqueryFilterFastAsync(
+        InSubqueryExpression inSubquery,
+        DbValue[] row,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        var visibleScopes = new[] { schema };
+        var boundOperand = BindOuterScopesInExpression(inSubquery.Operand, visibleScopes, outerScopes);
+        if (ContainsSubqueries(boundOperand))
+            return null;
+
+        var operandValue = ExpressionEvaluator.Evaluate(boundOperand, row, schema);
+        if (operandValue.IsNull)
+            return false;
+
+        var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
+        var boundQuery = BindOuterScopesInQuery(inSubquery.Query, correlationScopes);
+        return inSubquery.Negated
+            ? await TryExecuteSimpleNotInFilterProbeAsync(boundQuery, operandValue, ct)
+            : await TryExecuteSimpleInFilterProbeAsync(boundQuery, operandValue, ct);
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleExistsProbeAsync(QueryStatement query, CancellationToken ct)
+    {
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex: null);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate == null ||
+                    ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleInFilterProbeAsync(
+        QueryStatement query,
+        DbValue operandValue,
+        CancellationToken ct)
+    {
+        if (query is not SelectStatement select)
+            return null;
+
+        if (select.Columns.Count != 1 ||
+            select.Columns[0].IsStar ||
+            select.Columns[0].Expression is not ColumnRefExpression projectedColumn)
+        {
+            return null;
+        }
+
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        int projectedColumnIndex = projectedColumn.TableAlias != null
+            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
+            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
+        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
+            return null;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate != null &&
+                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    continue;
+                }
+
+                var candidateValue = projectedColumnIndex < source.Current.Length
+                    ? source.Current[projectedColumnIndex]
+                    : DbValue.Null;
+                if (candidateValue.IsNull)
+                    continue;
+
+                if (DbValue.Compare(candidateValue, operandValue) == 0)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async ValueTask<bool?> TryExecuteSimpleNotInFilterProbeAsync(
+        QueryStatement query,
+        DbValue operandValue,
+        CancellationToken ct)
+    {
+        if (query is not SelectStatement select)
+            return null;
+
+        if (select.Columns.Count != 1 ||
+            select.Columns[0].IsStar ||
+            select.Columns[0].Expression is not ColumnRefExpression projectedColumn)
+        {
+            return null;
+        }
+
+        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
+            return null;
+
+        int projectedColumnIndex = projectedColumn.TableAlias != null
+            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
+            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
+        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
+            return null;
+
+        bool sawNullCandidate = false;
+
+        await using (source)
+        {
+            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
+
+            await source.OpenAsync(ct);
+            while (await source.MoveNextAsync(ct))
+            {
+                if (residualPredicate != null &&
+                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                {
+                    continue;
+                }
+
+                var candidateValue = projectedColumnIndex < source.Current.Length
+                    ? source.Current[projectedColumnIndex]
+                    : DbValue.Null;
+                if (candidateValue.IsNull)
+                {
+                    sawNullCandidate = true;
+                    continue;
+                }
+
+                if (DbValue.Compare(candidateValue, operandValue) == 0)
+                    return false;
+            }
+        }
+
+        return !sawNullCandidate;
+    }
+
+    private bool TryCreateSimpleBoundSubquerySource(
+        QueryStatement query,
+        out IOperator source,
+        out TableSchema sourceSchema,
+        out Expression? residualPredicate)
+    {
+        source = null!;
+        sourceSchema = null!;
+        residualPredicate = null;
+
+        if (query is not SelectStatement select ||
+            select.IsDistinct ||
+            select.GroupBy is { Count: > 0 } ||
+            select.Having != null ||
+            select.OrderBy is { Count: > 0 } ||
+            select.Limit.HasValue ||
+            select.Offset.HasValue ||
+            select.From is not SimpleTableRef simpleRef)
+        {
+            return false;
+        }
+
+        if ((_cteData != null && _cteData.ContainsKey(simpleRef.TableName)) ||
+            TryBuildSystemCatalogSource(simpleRef, out _) ||
+            _catalog.GetViewSql(simpleRef.TableName) != null ||
+            _catalog.GetTable(simpleRef.TableName) == null)
+        {
+            return false;
+        }
+
+        sourceSchema = ResolveCorrelationSimpleTableSchema(simpleRef);
+        if (select.Where != null && ContainsSubqueries(select.Where))
+            return false;
+
+        source = select.Where != null
+            ? TryBuildIndexScan(simpleRef.TableName, select.Where, sourceSchema, out residualPredicate)
+                ?? new TableScanOperator(_catalog.GetTableTree(simpleRef.TableName, _pager), sourceSchema, GetReadSerializer(sourceSchema))
+            : new TableScanOperator(_catalog.GetTableTree(simpleRef.TableName, _pager), sourceSchema, GetReadSerializer(sourceSchema));
+
+        if (select.Where == null)
+            residualPredicate = null;
+        else if (source is TableScanOperator)
+            residualPredicate = select.Where;
+
+        return true;
+    }
+
+    private static void ApplySimpleSubqueryDecodeHints(
+        IOperator source,
+        TableSchema sourceSchema,
+        Expression? residualPredicate,
+        int? projectedColumnIndex)
+    {
+        if (residualPredicate == null && !projectedColumnIndex.HasValue)
+        {
+            TrySetDecodedColumnIndices(source, Array.Empty<int>());
+            return;
+        }
+
+        if (projectedColumnIndex.HasValue && residualPredicate == null)
+        {
+            TrySetDecodedColumnIndices(source, [projectedColumnIndex.Value]);
+            return;
+        }
+
+        int maxDecodedColumnIndex = projectedColumnIndex ?? -1;
+        if (residualPredicate != null &&
+            !TryAccumulateMaxReferencedColumn(residualPredicate, sourceSchema, ref maxDecodedColumnIndex))
+        {
+            return;
+        }
+
+        if (maxDecodedColumnIndex >= 0)
+            TrySetDecodedColumnUpperBound(source, maxDecodedColumnIndex);
     }
 
     private async ValueTask<Expression> RewriteCorrelatedExpressionAsync(
@@ -2503,6 +2791,11 @@ public sealed class QueryPlanner
                 if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
                     return lookupScalarAggResult;
                 break;
+            case SelectPlanKind.SimpleGroupedIndexAggregate:
+                if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult) ||
+                    TryBuildCompositeGroupedIndexAggregateQuery(stmt, out groupedIndexAggResult))
+                    return groupedIndexAggResult;
+                break;
             case SelectPlanKind.SimpleConstantGroupAggregateColumn:
                 if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
                     return constantGroupAggResult;
@@ -2563,6 +2856,12 @@ public sealed class QueryPlanner
             {
                 selectedPlan = SelectPlanKind.SimpleLookupScalarAggregateColumn;
                 return lookupScalarAggResult;
+            }
+            if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult) ||
+                TryBuildCompositeGroupedIndexAggregateQuery(stmt, out groupedIndexAggResult))
+            {
+                selectedPlan = SelectPlanKind.SimpleGroupedIndexAggregate;
+                return groupedIndexAggResult;
             }
             if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
             {
@@ -2666,7 +2965,13 @@ public sealed class QueryPlanner
             TrySetDecodedColumnUpperBound(op, maxColumnIndex);
         }
 
-        if (remainingWhere != null)
+        bool delayFilterUntilProjection = !hasAggregates && !stmt.Columns.Any(c => c.IsStar);
+        Func<DbValue[], DbValue>? remainingWhereEvaluator =
+            remainingWhere != null && delayFilterUntilProjection
+                ? GetOrCompileExpression(remainingWhere, schema)
+                : null;
+
+        if (remainingWhere != null && remainingWhereEvaluator == null)
             op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
         if (hasAggregates)
@@ -2717,12 +3022,38 @@ public sealed class QueryPlanner
                     {
                         op = new PrimaryKeyProjectionLookupOperator(pkLookup.TableTree, pkLookup.SeekKey, outputCols);
                     }
-                    else if (TryPushDownColumnProjection(op, columnIndices, outputCols))
+                    else if (remainingWhere == null &&
+                             op is IndexOrderedScanOperator orderedScan &&
+                             TryBuildCoveredOrderedIndexProjectionOperator(
+                                 orderedScan,
+                                 schema,
+                                 columnIndices,
+                                 outputCols,
+                                 out var coveredOrderedProjection))
+                    {
+                        op = coveredOrderedProjection;
+                    }
+                    else if (remainingWhere == null &&
+                             op is IndexScanOperator hashedLookup &&
+                             TryBuildCoveredHashedIndexProjectionOperator(
+                                 hashedLookup,
+                                 schema,
+                                 columnIndices,
+                                 outputCols,
+                                 out var coveredHashedProjection))
+                    {
+                        op = coveredHashedProjection;
+                    }
+                    else if (remainingWhere == null &&
+                             TryPushDownColumnProjection(op, columnIndices, outputCols))
                     {
                         // Join operators can project directly, avoiding full composite row materialization.
                     }
                     else
                     {
+                        if (remainingWhereEvaluator != null)
+                            op = new FilterOperator(op, remainingWhereEvaluator);
+
                         op = new ProjectionOperator(op, columnIndices, outputCols, schema);
                     }
                 }
@@ -2734,11 +3065,14 @@ public sealed class QueryPlanner
                     {
                         outputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, schema, i);
                     }
-                    op = new ProjectionOperator(
-                        op,
-                        Array.Empty<int>(),
-                        outputCols,
-                        GetOrCompileExpressions(expressions, schema));
+                    var expressionEvaluators = GetOrCompileExpressions(expressions, schema);
+                    op = remainingWhereEvaluator != null
+                        ? new FilterProjectionOperator(op, remainingWhereEvaluator, outputCols, expressionEvaluators)
+                        : new ProjectionOperator(
+                            op,
+                            Array.Empty<int>(),
+                            outputCols,
+                            expressionEvaluators);
                 }
             }
 
@@ -2752,8 +3086,21 @@ public sealed class QueryPlanner
         if (stmt.Limit.HasValue)
             op = new LimitOperator(op, stmt.Limit.Value);
 
-        return new QueryResult(op);
+        return CreateQueryResult(op);
     }
+
+    private static QueryResult CreateQueryResult(IOperator op)
+        => op is IBatchOperator batchOperator && ShouldUseBatchResultBoundary(op)
+            ? QueryResult.FromBatchOperator(batchOperator)
+            : new QueryResult(op);
+
+    private static bool ShouldUseBatchResultBoundary(IOperator op)
+        => op switch
+        {
+            IndexScanOperator => false,
+            IndexOrderedScanOperator => false,
+            _ => true,
+        };
 
     private static int? GetOrderByTopN(SelectStatement stmt)
         => GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset);
@@ -2959,43 +3306,96 @@ public sealed class QueryPlanner
         int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
         if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
             return false;
-        if (schema.Columns[predicateColumnIndex].Type != DbType.Integer)
+        if (schema.Columns[predicateColumnIndex].Type != DbType.Integer &&
+            schema.Columns[predicateColumnIndex].Type != DbType.Text)
+        {
             return false;
+        }
 
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPk = pkIdx >= 0 &&
             pkIdx < schema.Columns.Count &&
             schema.Columns[pkIdx].Type == DbType.Integer;
-        bool isPrimaryKeyLookup = hasIntegerPk && predicateColumnIndex == pkIdx;
+        DbValue predicateLiteral = lookup.PredicateLiteral;
+        if (predicateLiteral.Type == DbType.Null &&
+            schema.Columns[predicateColumnIndex].Type == DbType.Integer)
+        {
+            // Backward compatibility for older callers that only set LookupValue.
+            predicateLiteral = DbValue.FromInteger(lookup.LookupValue);
+        }
 
-        long lookupValue = lookup.LookupValue;
+        bool predicateUsesDirectIntegerKey =
+            predicateLiteral.Type == DbType.Integer &&
+            schema.Columns[predicateColumnIndex].Type == DbType.Integer;
+        bool isPrimaryKeyLookup = hasIntegerPk &&
+            predicateColumnIndex == pkIdx &&
+            predicateUsesDirectIntegerKey;
+
+        long lookupValue;
         var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
         IOperator lookupOp;
+        IndexSchema? matchedIndex = null;
+        IIndexStore? indexStore = null;
+        bool predicateRequiresResidual = false;
 
         if (isPrimaryKeyLookup)
         {
+            lookupValue = predicateLiteral.AsInteger;
             lookupOp = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
         }
         else
         {
             var indexes = _catalog.GetIndexesForTable(lookup.TableName);
-            var matchedIndex = FindLookupIndexForColumn(indexes, schema.Columns[predicateColumnIndex].Name);
+            matchedIndex = FindLookupIndexForColumn(indexes, schema.Columns[predicateColumnIndex].Name);
             if (matchedIndex == null)
                 return false;
 
-            var indexStore = _catalog.GetIndexStore(matchedIndex.IndexName, _pager);
-            lookupOp = matchedIndex.IsUnique
+            if (predicateLiteral.Type != DbType.Integer && predicateLiteral.Type != DbType.Text)
+                return false;
+
+            if (!predicateUsesDirectIntegerKey &&
+                !(predicateLiteral.Type == DbType.Text && schema.Columns[predicateColumnIndex].Type == DbType.Text))
+            {
+                return false;
+            }
+
+            lookupValue = predicateUsesDirectIntegerKey
+                ? predicateLiteral.AsInteger
+                : ComputeIndexKey([predicateLiteral]);
+            indexStore = _catalog.GetIndexStore(matchedIndex.IndexName, _pager);
+            lookupOp = matchedIndex.IsUnique && predicateUsesDirectIntegerKey
                 ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
-                : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema));
+                : new IndexScanOperator(
+                    indexStore,
+                    tableTree,
+                    schema,
+                    lookupValue,
+                    GetReadSerializer(schema),
+                    predicateUsesDirectIntegerKey ? null : [predicateColumnIndex],
+                    predicateUsesDirectIntegerKey ? null : [predicateLiteral]);
         }
 
-        bool hasResidual = lookup.HasResidualPredicate;
+        if (predicateRequiresResidual && lookup.HasResidualPredicate)
+            return false;
+
+        bool hasResidual = predicateRequiresResidual || lookup.HasResidualPredicate;
         int residualColumnIndex = -1;
         if (hasResidual)
         {
-            residualColumnIndex = schema.GetColumnIndex(lookup.ResidualPredicateColumn);
-            if (residualColumnIndex < 0 || residualColumnIndex >= schema.Columns.Count)
-                return false;
+            DbValue residualLiteral;
+            if (predicateRequiresResidual)
+            {
+                residualColumnIndex = predicateColumnIndex;
+                residualLiteral = predicateLiteral;
+            }
+            else
+            {
+                residualColumnIndex = schema.GetColumnIndex(lookup.ResidualPredicateColumn);
+                if (residualColumnIndex < 0 || residualColumnIndex >= schema.Columns.Count)
+                    return false;
+
+                residualLiteral = lookup.ResidualPredicateLiteral;
+            }
 
             if (lookupOp is not IPreDecodeFilterSupport preDecodeFilterTarget)
                 return false;
@@ -3003,7 +3403,7 @@ public sealed class QueryPlanner
             preDecodeFilterTarget.SetPreDecodeFilter(
                 residualColumnIndex,
                 BinaryOp.Equals,
-                lookup.ResidualPredicateLiteral);
+                residualLiteral);
         }
 
         if (lookup.SelectStar)
@@ -3022,35 +3422,102 @@ public sealed class QueryPlanner
             return true;
         }
 
-        int projectionColumnIndex = schema.GetColumnIndex(lookup.ProjectionColumn);
-        if (projectionColumnIndex < 0)
-            return false;
-
-        if (isPrimaryKeyLookup && !hasResidual && projectionColumnIndex == pkIdx)
+        if (!TryBuildSimpleLookupProjection(
+                lookup.ProjectionColumns,
+                schema,
+                out var projectionColumnIndices,
+                out var outputColumns))
         {
-            var outputCols = GetSingleColumnOutputSchema(schema, pkIdx);
+            return false;
+        }
+
+        if (isPrimaryKeyLookup && !hasResidual && IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
+        {
             if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 DbValue[]? row = null;
                 if (payload != null)
-                    row = new[] { DbValue.FromInteger(lookupValue) };
+                {
+                    var keyValue = DbValue.FromInteger(lookupValue);
+                    row = new DbValue[outputColumns.Length];
+                    Array.Fill(row, keyValue);
+                }
 
-                result = QueryResult.FromSyncLookup(row, outputCols);
+                result = QueryResult.FromSyncLookup(row, outputColumns);
                 return true;
             }
 
-            result = new QueryResult(new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols));
+            result = new QueryResult(new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputColumns));
             return true;
         }
 
-        int maxDecodedColumn = projectionColumnIndex;
-        if (residualColumnIndex > maxDecodedColumn)
-            maxDecodedColumn = residualColumnIndex;
-        if (maxDecodedColumn >= 0)
-            TrySetDecodedColumnUpperBound(lookupOp, maxDecodedColumn);
+        if (!isPrimaryKeyLookup &&
+            !hasResidual &&
+            matchedIndex != null &&
+            indexStore != null)
+        {
+            if (predicateUsesDirectIntegerKey &&
+                IsCoveredLookupProjection(
+                    projectionColumnIndices,
+                    pkIdx,
+                    predicateColumnIndex,
+                    canProjectPrimaryKey: hasIntegerPk))
+            {
+                IOperator projectionLookup = matchedIndex.IsUnique
+                    ? new UniqueIndexProjectionLookupOperator(
+                        indexStore,
+                        lookupValue,
+                        outputColumns,
+                        projectionColumnIndices,
+                        pkIdx,
+                        predicateColumnIndex)
+                    : new IndexScanProjectionOperator(
+                        indexStore,
+                        lookupValue,
+                        outputColumns,
+                        projectionColumnIndices,
+                        pkIdx,
+                        predicateColumnIndex);
+                result = new QueryResult(projectionLookup);
+                return true;
+            }
 
-        var output = GetSingleColumnOutputSchema(schema, projectionColumnIndex);
-        IOperator op = new ProjectionOperator(lookupOp, new[] { projectionColumnIndex }, output, schema);
+            if (!predicateUsesDirectIntegerKey &&
+                CanProjectPrimaryKeyOrKeyColumns(
+                    projectionColumnIndices,
+                    schema,
+                    [predicateColumnIndex]))
+            {
+                result = new QueryResult(
+                    new HashedIndexProjectionLookupOperator(
+                        indexStore,
+                        tableTree,
+                        schema,
+                        lookupValue,
+                        outputColumns,
+                        projectionColumnIndices,
+                        [predicateColumnIndex],
+                        [predicateLiteral],
+                        GetReadSerializer(schema)));
+                return true;
+            }
+        }
+
+        int[] decodeColumnIndices = ToSortedColumnIndices(new HashSet<int>(projectionColumnIndices));
+        if (!TrySetDecodedColumnIndices(lookupOp, decodeColumnIndices))
+        {
+            int maxDecodedColumn = -1;
+            for (int i = 0; i < projectionColumnIndices.Length; i++)
+            {
+                if (projectionColumnIndices[i] > maxDecodedColumn)
+                    maxDecodedColumn = projectionColumnIndices[i];
+            }
+
+            if (maxDecodedColumn >= 0)
+                TrySetDecodedColumnUpperBound(lookupOp, maxDecodedColumn);
+        }
+
+        IOperator op = new ProjectionOperator(lookupOp, projectionColumnIndices, outputColumns, schema);
         result = new QueryResult(op);
         return true;
     }
@@ -3153,7 +3620,7 @@ public sealed class QueryPlanner
                 residualWhere = pushedWhere;
             if (residualWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(residualWhere, schema));
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
@@ -3239,6 +3706,7 @@ public sealed class QueryPlanner
             IOperator projOp = pkOp;
             if (remainingResidual != null)
                 projOp = new FilterOperator(projOp, GetOrCompileExpression(remainingResidual, schema));
+
             projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
             return true;
@@ -3352,15 +3820,7 @@ public sealed class QueryPlanner
             },
         };
 
-        if (TryGetTableRowCount(simpleRef.TableName, out long rowCount))
-        {
-            result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
-            return true;
-        }
-
-        var tree = _catalog.GetTableTree(simpleRef.TableName, _pager);
-        result = new QueryResult(new CountStarTableOperator(tree, outputSchema));
-        return true;
+        return TryBuildTableRowCountQuery(simpleRef.TableName, outputSchema, out result);
     }
 
     private bool TryBuildSimpleSystemCatalogCountStarQuery(SelectStatement stmt, out QueryResult result)
@@ -3515,6 +3975,23 @@ public sealed class QueryPlanner
             return false;
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        if (TryBuildPrimaryKeyCountQuery(simpleRef.TableName, schema, columnIndex, func, outputSchema, out result))
+            return true;
+
+        if (TryBuildKeyAggregateQuery(
+                simpleRef.TableName,
+                schema,
+                where: null,
+                columnIndex,
+                func.FunctionName,
+                outputSchema,
+                isDistinct: func.IsDistinct,
+                isCountStar: false,
+                out result))
+        {
+            return true;
+        }
+
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         result = new QueryResult(new ScalarAggregateTableOperator(
             tableTree,
@@ -3550,14 +4027,29 @@ public sealed class QueryPlanner
         if (stmt.Columns[0].Expression is not FunctionCallExpression func)
             return false;
 
-        if (func.IsStarArg || func.Arguments.Count != 1)
-            return false;
+        bool isCountStar = false;
+        ColumnRefExpression? col = null;
 
-        if (func.FunctionName is not ("COUNT" or "SUM" or "AVG" or "MIN" or "MAX"))
-            return false;
+        if (func.IsStarArg)
+        {
+            if (func.FunctionName != "COUNT" || func.IsDistinct || func.Arguments.Count != 0)
+                return false;
 
-        if (func.Arguments[0] is not ColumnRefExpression col)
-            return false;
+            isCountStar = true;
+        }
+        else
+        {
+            if (func.Arguments.Count != 1)
+                return false;
+
+            if (func.FunctionName is not ("COUNT" or "SUM" or "AVG" or "MIN" or "MAX"))
+                return false;
+
+            if (func.Arguments[0] is not ColumnRefExpression aggregateColumn)
+                return false;
+
+            col = aggregateColumn;
+        }
 
         if (_catalog.IsView(simpleRef.TableName))
             return false;
@@ -3565,7 +4057,7 @@ public sealed class QueryPlanner
         if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
             return false;
 
-        if (col.TableAlias != null)
+        if (col?.TableAlias != null)
         {
             string expectedAlias = simpleRef.Alias ?? simpleRef.TableName;
             if (!string.Equals(col.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
@@ -3573,47 +4065,231 @@ public sealed class QueryPlanner
         }
 
         var schema = GetSchema(simpleRef.TableName);
-        int columnIndex = schema.GetColumnIndex(col.ColumnName);
-        if (columnIndex < 0)
-            return false;
-
-        var lookupOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
-        if (lookupOp == null || remainingWhere != null)
-            return false;
+        int columnIndex = -1;
+        if (!isCountStar)
+        {
+            columnIndex = schema.GetColumnIndex(col!.ColumnName);
+            if (columnIndex < 0)
+                return false;
+        }
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        result = lookupOp switch
+        if (TryBuildKeyAggregateQuery(
+                simpleRef.TableName,
+                schema,
+                stmt.Where,
+                columnIndex,
+                func.FunctionName,
+                outputSchema,
+                isDistinct: func.IsDistinct,
+                isCountStar,
+                out result))
         {
-            PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
-                pk.TableTree,
-                pk.SeekKey,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
-                idx.IndexStore,
-                idx.TableTree,
-                idx.SeekValue,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
-                uniq.IndexStore,
-                uniq.TableTree,
-                uniq.SeekValue,
-                columnIndex,
-                func.FunctionName,
-                outputSchema,
-                isDistinct: func.IsDistinct,
-                recordSerializer: GetReadSerializer(schema))),
-            _ => null!,
-        };
+            return true;
+        }
 
-        return result != null;
+        if (!isCountStar)
+        {
+            var lookupOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere);
+            if (lookupOp != null && remainingWhere == null)
+            {
+                result = lookupOp switch
+                {
+                    PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
+                        pk.TableTree,
+                        pk.SeekKey,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
+                        idx.IndexStore,
+                        idx.TableTree,
+                        idx.SeekValue,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
+                        uniq.IndexStore,
+                        uniq.TableTree,
+                        uniq.SeekValue,
+                        columnIndex,
+                        func.FunctionName,
+                        outputSchema,
+                        isDistinct: func.IsDistinct,
+                        recordSerializer: GetReadSerializer(schema))),
+                    _ => null!,
+                };
+
+                if (result != null)
+                    return true;
+            }
+        }
+
+        var decodeColumns = new HashSet<int>();
+        if (!TryAccumulateReferencedColumns(stmt.Where, schema, decodeColumns))
+            return false;
+
+        if (!isCountStar)
+            decodeColumns.Add(columnIndex);
+
+        var filteredDecodeColumns = ToSortedColumnIndices(decodeColumns);
+        result = new QueryResult(new FilteredScalarAggregateTableOperator(
+            _catalog.GetTableTree(simpleRef.TableName, _pager),
+            columnIndex,
+            func.FunctionName,
+            outputSchema,
+            GetOrCompileExpression(stmt.Where, schema),
+            filteredDecodeColumns,
+            isDistinct: func.IsDistinct,
+            isCountStar,
+            recordSerializer: GetReadSerializer(schema)));
+        return true;
+    }
+
+    private bool TryBuildKeyAggregateQuery(
+        string tableName,
+        TableSchema schema,
+        Expression? where,
+        int columnIndex,
+        string functionName,
+        ColumnDefinition[] outputSchema,
+        bool isDistinct,
+        bool isCountStar,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (TryBuildTableKeyAggregateQuery(
+                tableName,
+                schema,
+                where,
+                columnIndex,
+                functionName,
+                outputSchema,
+                isDistinct,
+                isCountStar,
+                out result))
+        {
+            return true;
+        }
+
+        if (where == null)
+        {
+            if (isCountStar)
+                return false;
+
+            if (!TryFindDirectIntegerIndexForColumn(tableName, schema, columnIndex, out var directIndex))
+                return false;
+
+            result = new QueryResult(new IndexKeyAggregateOperator(
+                _catalog.GetIndexStore(directIndex.IndexName, _pager),
+                IndexScanRange.All,
+                functionName,
+                outputSchema,
+                isDistinct));
+            return true;
+        }
+
+        if (TryBuildIntegerIndexRangeScan(tableName, where, schema, out var remainingWhere) is not IndexOrderedScanOperator orderedScan ||
+            remainingWhere != null)
+        {
+            return false;
+        }
+
+        if (!isCountStar && orderedScan.KeyColumnIndex != columnIndex)
+            return false;
+
+        result = new QueryResult(new IndexKeyAggregateOperator(
+            orderedScan.IndexStore,
+            orderedScan.ScanRange,
+            functionName,
+            outputSchema,
+            isDistinct));
+        return true;
+    }
+
+    private bool TryBuildPrimaryKeyCountQuery(
+        string tableName,
+        TableSchema schema,
+        int columnIndex,
+        FunctionCallExpression func,
+        ColumnDefinition[] outputSchema,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        int pkIndex = schema.PrimaryKeyColumnIndex;
+        if (pkIndex < 0 || columnIndex != pkIndex)
+            return false;
+
+        if (schema.Columns[pkIndex].Type != DbType.Integer)
+            return false;
+
+        return TryBuildTableRowCountQuery(tableName, outputSchema, out result);
+    }
+
+    private bool TryBuildTableRowCountQuery(string tableName, ColumnDefinition[] outputSchema, out QueryResult result)
+    {
+        if (TryGetTableRowCount(tableName, out long rowCount))
+        {
+            result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+            return true;
+        }
+
+        var tree = _catalog.GetTableTree(tableName, _pager);
+        result = new QueryResult(new CountStarTableOperator(tree, outputSchema));
+        return true;
+    }
+
+    private bool TryBuildTableKeyAggregateQuery(
+        string tableName,
+        TableSchema schema,
+        Expression? where,
+        int columnIndex,
+        string functionName,
+        ColumnDefinition[] outputSchema,
+        bool isDistinct,
+        bool isCountStar,
+        out QueryResult result)
+    {
+        result = null!;
+
+        int pkIndex = schema.PrimaryKeyColumnIndex;
+        if (pkIndex < 0 || schema.Columns[pkIndex].Type != DbType.Integer)
+            return false;
+
+        if (!isCountStar && columnIndex != pkIndex)
+            return false;
+
+        if (where == null)
+        {
+            var tableTree = _catalog.GetTableTree(tableName, _pager);
+            result = new QueryResult(new TableKeyAggregateOperator(
+                tableTree,
+                IndexScanRange.All,
+                functionName,
+                outputSchema));
+            return true;
+        }
+
+        ExtractOrderedIndexRange(where, schema, pkIndex, out var scanRange, out var remainingWhere, out int consumedTermCount);
+        if (consumedTermCount == 0 || remainingWhere != null)
+            return false;
+
+        var rangedTableTree = _catalog.GetTableTree(tableName, _pager);
+        result = new QueryResult(new TableKeyAggregateOperator(
+            rangedTableTree,
+            scanRange,
+            functionName,
+            outputSchema));
+        return true;
     }
 
     private bool TryBuildSimpleConstantGroupAggregateColumnQuery(SelectStatement stmt, out QueryResult result)
@@ -3681,6 +4357,451 @@ public sealed class QueryPlanner
             emitOnEmptyInput: false,
             recordSerializer: GetReadSerializer(schema)));
         return true;
+    }
+
+    private bool TryBuildSimpleGroupedIndexAggregateQuery(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+
+        if (stmt.GroupBy is not { Count: 1 })
+            return false;
+
+        if (stmt.Columns.Count == 0 || stmt.Columns.Any(c => c.IsStar))
+            return false;
+
+        if (stmt.GroupBy[0] is not ColumnRefExpression groupByColumn)
+            return false;
+
+        if (_catalog.IsView(simpleRef.TableName))
+            return false;
+
+        if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
+            return false;
+
+        string expectedAlias = simpleRef.Alias ?? simpleRef.TableName;
+        var schema = GetSchema(simpleRef.TableName);
+        if (!TryResolveSimpleColumnRefIndex(groupByColumn, schema, expectedAlias, out int groupColumnIndex))
+            return false;
+
+        var groupColumn = schema.Columns[groupColumnIndex];
+        if (groupColumn.Type != DbType.Integer || groupColumn.Nullable)
+            return false;
+
+        if (!TryFindDirectIntegerIndexForColumn(simpleRef.TableName, schema, groupColumnIndex, out var directIndex))
+            return false;
+
+        if (!TryBuildGroupedIndexAggregateProjection(stmt.Columns, schema, expectedAlias, groupColumnIndex, out var projectionKinds))
+            return false;
+
+        if (!CanUseNaturalGroupedIndexOrder(stmt.OrderBy, schema, expectedAlias, groupColumnIndex))
+            return false;
+
+        if (!TryBuildGroupedIndexAggregateCountPredicate(
+                stmt.Having,
+                out var countPredicateKind,
+                out long countPredicateValue))
+        {
+            return false;
+        }
+
+        IndexScanRange scanRange = IndexScanRange.All;
+        if (stmt.Where != null)
+        {
+            ExtractOrderedIndexRange(
+                stmt.Where,
+                schema,
+                groupColumnIndex,
+                out scanRange,
+                out var residualWhere,
+                out int consumedTermCount);
+
+            if (consumedTermCount == 0 || residualWhere != null)
+                return false;
+        }
+
+        var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        var projectionKindIds = Array.ConvertAll(projectionKinds, static kind => (int)kind);
+        IOperator op = new IndexGroupedAggregateOperator(
+            _catalog.GetIndexStore(directIndex.IndexName, _pager),
+            scanRange,
+            outputSchema,
+            projectionKindIds,
+            countPredicateKind,
+            countPredicateValue);
+
+        if (stmt.Offset.HasValue)
+            op = new OffsetOperator(op, stmt.Offset.Value);
+        if (stmt.Limit.HasValue)
+            op = new LimitOperator(op, stmt.Limit.Value);
+
+        result = new QueryResult(op);
+        return true;
+    }
+
+    private bool TryBuildCompositeGroupedIndexAggregateQuery(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (stmt.Where != null || stmt.Having != null || stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+        if (stmt.GroupBy is not { Count: > 0 })
+            return false;
+        if (stmt.Columns.Count == 0 || stmt.Columns.Any(c => c.IsStar))
+            return false;
+        if (_catalog.IsView(simpleRef.TableName))
+            return false;
+        if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
+            return false;
+
+        string expectedAlias = simpleRef.Alias ?? simpleRef.TableName;
+        var schema = GetSchema(simpleRef.TableName);
+        if (!TryResolveCompositeGroupByColumns(stmt.GroupBy, schema, expectedAlias, out var groupColumnIndices))
+            return false;
+
+        var matchingIndex = FindCompositeGroupedIndex(simpleRef.TableName, schema, groupColumnIndices);
+        if (matchingIndex == null)
+            return false;
+
+        if (!TryBuildCompositeGroupedAggregateProjection(
+                stmt.Columns,
+                schema,
+                expectedAlias,
+                groupColumnIndices,
+                out var projectionKinds))
+        {
+            return false;
+        }
+
+        var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        result = new QueryResult(new CompositeIndexGroupedAggregateOperator(
+            _catalog.GetIndexStore(matchingIndex.IndexName, _pager),
+            _catalog.GetTableTree(simpleRef.TableName, _pager),
+            GetReadSerializer(schema),
+            groupColumnIndices,
+            outputSchema,
+            projectionKinds));
+        return true;
+    }
+
+    private static bool TryBuildGroupedIndexAggregateCountPredicate(
+        Expression? having,
+        out GroupedIndexAggregateCountPredicateKind predicateKind,
+        out long predicateValue)
+    {
+        predicateKind = GroupedIndexAggregateCountPredicateKind.None;
+        predicateValue = 0;
+
+        if (having == null)
+            return true;
+
+        if (having is not BinaryExpression binary)
+            return false;
+
+        if (TryMatchCountStarComparison(binary.Left, binary.Right, binary.Op, out predicateKind, out predicateValue))
+            return true;
+
+        return TryMatchCountStarComparison(binary.Right, binary.Left, InvertBinaryComparison(binary.Op), out predicateKind, out predicateValue);
+    }
+
+    private static bool CanUseNaturalGroupedIndexOrder(
+        List<OrderByClause>? orderBy,
+        TableSchema schema,
+        string expectedAlias,
+        int groupColumnIndex)
+    {
+        if (orderBy is not { Count: > 0 })
+            return true;
+
+        if (orderBy.Count != 1)
+            return false;
+
+        var clause = orderBy[0];
+        if (clause.Descending)
+            return false;
+
+        if (clause.Expression is not ColumnRefExpression columnRef)
+            return false;
+
+        return TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int orderColumnIndex) &&
+               orderColumnIndex == groupColumnIndex;
+    }
+
+    private static bool TryMatchCountStarComparison(
+        Expression aggregateExpr,
+        Expression literalExpr,
+        BinaryOp op,
+        out GroupedIndexAggregateCountPredicateKind predicateKind,
+        out long predicateValue)
+    {
+        predicateKind = GroupedIndexAggregateCountPredicateKind.None;
+        predicateValue = 0;
+
+        if (!IsCountStarExpression(aggregateExpr) ||
+            literalExpr is not LiteralExpression literal ||
+            literal.LiteralType != TokenType.IntegerLiteral ||
+            literal.Value is not long longValue)
+        {
+            return false;
+        }
+
+        predicateKind = op switch
+        {
+            BinaryOp.Equals => GroupedIndexAggregateCountPredicateKind.Equals,
+            BinaryOp.NotEquals => GroupedIndexAggregateCountPredicateKind.NotEquals,
+            BinaryOp.LessThan => GroupedIndexAggregateCountPredicateKind.LessThan,
+            BinaryOp.GreaterThan => GroupedIndexAggregateCountPredicateKind.GreaterThan,
+            BinaryOp.LessOrEqual => GroupedIndexAggregateCountPredicateKind.LessOrEqual,
+            BinaryOp.GreaterOrEqual => GroupedIndexAggregateCountPredicateKind.GreaterOrEqual,
+            _ => GroupedIndexAggregateCountPredicateKind.None,
+        };
+
+        if (predicateKind == GroupedIndexAggregateCountPredicateKind.None)
+            return false;
+
+        predicateValue = longValue;
+        return true;
+    }
+
+    private static BinaryOp InvertBinaryComparison(BinaryOp op)
+    {
+        return op switch
+        {
+            BinaryOp.LessThan => BinaryOp.GreaterThan,
+            BinaryOp.GreaterThan => BinaryOp.LessThan,
+            BinaryOp.LessOrEqual => BinaryOp.GreaterOrEqual,
+            BinaryOp.GreaterOrEqual => BinaryOp.LessOrEqual,
+            _ => op,
+        };
+    }
+
+    private static bool IsCountStarExpression(Expression expression)
+    {
+        return expression is FunctionCallExpression
+        {
+            FunctionName: "COUNT",
+            IsDistinct: false,
+            IsStarArg: true,
+            Arguments.Count: 0,
+        };
+    }
+
+    private static bool TryResolveCompositeGroupByColumns(
+        List<Expression> groupByExpressions,
+        TableSchema schema,
+        string expectedAlias,
+        out int[] groupColumnIndices)
+    {
+        groupColumnIndices = Array.Empty<int>();
+        var resolved = new int[groupByExpressions.Count];
+
+        for (int i = 0; i < groupByExpressions.Count; i++)
+        {
+            if (groupByExpressions[i] is not ColumnRefExpression columnRef ||
+                !TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int columnIndex))
+            {
+                return false;
+            }
+
+            var column = schema.Columns[columnIndex];
+            if (column.Nullable || column.Type is not (DbType.Integer or DbType.Text))
+                return false;
+
+            for (int j = 0; j < i; j++)
+            {
+                if (resolved[j] == columnIndex)
+                    return false;
+            }
+
+            resolved[i] = columnIndex;
+        }
+
+        groupColumnIndices = resolved;
+        return true;
+    }
+
+    private IndexSchema? FindCompositeGroupedIndex(string tableName, TableSchema schema, ReadOnlySpan<int> groupColumnIndices)
+    {
+        IndexSchema? best = null;
+        foreach (var index in _catalog.GetIndexesForTable(tableName))
+        {
+            if (index.Columns.Count < groupColumnIndices.Length || index.Columns.Count < 2)
+                continue;
+
+            bool matches = true;
+            for (int i = 0; i < groupColumnIndices.Length; i++)
+            {
+                if (!string.Equals(
+                        index.Columns[i],
+                        schema.Columns[groupColumnIndices[i]].Name,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (!matches)
+                continue;
+
+            if (best == null ||
+                index.Columns.Count < best.Columns.Count ||
+                (index.Columns.Count == best.Columns.Count && index.IsUnique && !best.IsUnique))
+            {
+                best = index;
+            }
+        }
+
+        return best;
+    }
+
+    private static bool TryBuildCompositeGroupedAggregateProjection(
+        List<SelectColumn> columns,
+        TableSchema schema,
+        string expectedAlias,
+        ReadOnlySpan<int> groupColumnIndices,
+        out int[] projectionKinds)
+    {
+        projectionKinds = Array.Empty<int>();
+        var kinds = new int[columns.Count];
+
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var expression = columns[i].Expression;
+            if (expression is null)
+                return false;
+
+            if (expression is ColumnRefExpression columnRef)
+            {
+                if (!TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int columnIndex))
+                    return false;
+
+                int groupOrdinal = -1;
+                for (int j = 0; j < groupColumnIndices.Length; j++)
+                {
+                    if (groupColumnIndices[j] == columnIndex)
+                    {
+                        groupOrdinal = j;
+                        break;
+                    }
+                }
+
+                if (groupOrdinal < 0)
+                    return false;
+
+                kinds[i] = groupOrdinal;
+                continue;
+            }
+
+            if (expression is FunctionCallExpression
+                {
+                    FunctionName: "COUNT",
+                    IsDistinct: false,
+                    IsStarArg: true,
+                    Arguments.Count: 0,
+                })
+            {
+                kinds[i] = -1;
+                continue;
+            }
+
+            return false;
+        }
+
+        projectionKinds = kinds;
+        return true;
+    }
+
+    private static bool TryBuildGroupedIndexAggregateProjection(
+        List<SelectColumn> columns,
+        TableSchema schema,
+        string expectedAlias,
+        int groupColumnIndex,
+        out GroupedIndexAggregateProjectionKind[] projectionKinds)
+    {
+        projectionKinds = Array.Empty<GroupedIndexAggregateProjectionKind>();
+        var kinds = new GroupedIndexAggregateProjectionKind[columns.Count];
+
+        for (int i = 0; i < columns.Count; i++)
+        {
+            var expression = columns[i].Expression;
+            if (expression is null)
+                return false;
+
+            if (expression is ColumnRefExpression columnRef)
+            {
+                if (!TryResolveSimpleColumnRefIndex(columnRef, schema, expectedAlias, out int columnIndex) ||
+                    columnIndex != groupColumnIndex)
+                {
+                    return false;
+                }
+
+                kinds[i] = GroupedIndexAggregateProjectionKind.GroupKey;
+                continue;
+            }
+
+            if (expression is not FunctionCallExpression func || func.IsDistinct)
+                return false;
+
+            if (func.IsStarArg)
+            {
+                if (func.FunctionName != "COUNT" || func.Arguments.Count != 0)
+                    return false;
+
+                kinds[i] = GroupedIndexAggregateProjectionKind.Count;
+                continue;
+            }
+
+            if (func.Arguments.Count != 1 || func.Arguments[0] is not ColumnRefExpression aggregateColumn)
+                return false;
+
+            if (!TryResolveSimpleColumnRefIndex(aggregateColumn, schema, expectedAlias, out int aggregateColumnIndex) ||
+                aggregateColumnIndex != groupColumnIndex)
+            {
+                return false;
+            }
+
+            if (func.FunctionName is not ("COUNT" or "SUM" or "AVG" or "MIN" or "MAX"))
+                return false;
+
+            kinds[i] = func.FunctionName switch
+            {
+                "COUNT" => GroupedIndexAggregateProjectionKind.Count,
+                "SUM" => GroupedIndexAggregateProjectionKind.Sum,
+                "AVG" => GroupedIndexAggregateProjectionKind.Avg,
+                "MIN" => GroupedIndexAggregateProjectionKind.Min,
+                "MAX" => GroupedIndexAggregateProjectionKind.Max,
+                _ => GroupedIndexAggregateProjectionKind.GroupKey,
+            };
+        }
+
+        projectionKinds = kinds;
+        return true;
+    }
+
+    private static bool TryResolveSimpleColumnRefIndex(
+        ColumnRefExpression columnRef,
+        TableSchema schema,
+        string expectedAlias,
+        out int columnIndex)
+    {
+        columnIndex = -1;
+        if (columnRef.TableAlias != null &&
+            !string.Equals(columnRef.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        columnIndex = schema.GetColumnIndex(columnRef.ColumnName);
+        return columnIndex >= 0;
     }
 
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
@@ -4170,66 +5291,86 @@ public sealed class QueryPlanner
             return false;
         }
 
-        // Index nested-loop currently supports single key lookups only.
-        if (leftKeyIndices.Length != 1 || rightKeyIndices.Length != 1)
-            return false;
-
-        int leftKeyIndex = leftKeyIndices[0];
-        int rightKeyIndex = rightKeyIndices[0];
-        if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
-            return false;
-
-        var rightKeyColumn = rightSchema.Columns[rightKeyIndex];
-        if (rightKeyColumn.Type != DbType.Integer)
+        if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
             return false;
 
         var rightTableTree = _catalog.GetTableTree(rightSimple.TableName, _pager);
         IIndexStore? rightIndexStore = null;
         bool lookupIsUnique = false;
         bool lookupIsPrimaryKey = false;
+        bool usesDirectIntegerLookup = false;
+        int[]? orderedLeftKeyIndices = null;
+        int[]? orderedRightKeyIndices = null;
 
         int rightPkIndex = rightSchema.PrimaryKeyColumnIndex;
         bool usesPrimaryKeyLookup =
-            rightPkIndex == rightKeyIndex &&
+            rightKeyIndices.Length == 1 &&
+            rightPkIndex == rightKeyIndices[0] &&
             rightSchema.Columns[rightPkIndex].Type == DbType.Integer;
 
-        if (!usesPrimaryKeyLookup)
+        if (usesPrimaryKeyLookup)
         {
-            // Secondary indexes in this engine omit NULL keys.
-            // Preserve current expression semantics by using index lookup only
-            // when the join key column is non-nullable.
-            if (rightKeyColumn.Nullable)
-                return false;
+            lookupIsUnique = true;
+            lookupIsPrimaryKey = true;
+            usesDirectIntegerLookup = true;
+            orderedLeftKeyIndices = [leftKeyIndices[0]];
+            orderedRightKeyIndices = [rightKeyIndices[0]];
+        }
+        else
+        {
+            for (int i = 0; i < rightKeyIndices.Length; i++)
+            {
+                int rightKeyIndex = rightKeyIndices[i];
+                if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
+                    return false;
+
+                var rightKeyColumn = rightSchema.Columns[rightKeyIndex];
+                if (rightKeyColumn.Type is not (DbType.Integer or DbType.Text))
+                    return false;
+            }
 
             var indexes = _catalog.GetIndexesForTable(rightSimple.TableName);
             IndexSchema? selected = null;
-            foreach (var idx in indexes)
+            int[]? selectedLeftKeyIndices = null;
+            int[]? selectedRightKeyIndices = null;
+            bool selectedUsesDirectIntegerKey = false;
+            for (int i = 0; i < indexes.Count; i++)
             {
-                if (idx.Columns.Count != 1 ||
-                    !string.Equals(idx.Columns[0], rightKeyColumn.Name, StringComparison.OrdinalIgnoreCase))
+                var idx = indexes[i];
+                if (!TryMatchJoinLookupIndex(
+                        idx,
+                        rightSchema,
+                        leftKeyIndices,
+                        rightKeyIndices,
+                        out var candidateLeftKeyIndices,
+                        out var candidateRightKeyIndices))
                 {
                     continue;
                 }
 
-                if (idx.IsUnique)
+                bool candidateUsesDirectIntegerKey =
+                    candidateRightKeyIndices.Length == 1 &&
+                    rightSchema.Columns[candidateRightKeyIndices[0]].Type == DbType.Integer;
+
+                if (selected == null ||
+                    (idx.IsUnique && !selected.IsUnique) ||
+                    (candidateUsesDirectIntegerKey && !selectedUsesDirectIntegerKey && idx.IsUnique == selected.IsUnique))
                 {
                     selected = idx;
-                    break;
+                    selectedLeftKeyIndices = candidateLeftKeyIndices;
+                    selectedRightKeyIndices = candidateRightKeyIndices;
+                    selectedUsesDirectIntegerKey = candidateUsesDirectIntegerKey;
                 }
-
-                selected ??= idx;
             }
 
-            if (selected == null)
+            if (selected == null || selectedLeftKeyIndices == null || selectedRightKeyIndices == null)
                 return false;
 
             rightIndexStore = _catalog.GetIndexStore(selected.IndexName, _pager);
             lookupIsUnique = selected.IsUnique;
-        }
-        else
-        {
-            lookupIsUnique = true;
-            lookupIsPrimaryKey = true;
+            usesDirectIntegerLookup = selectedUsesDirectIntegerKey;
+            orderedLeftKeyIndices = selectedLeftKeyIndices;
+            orderedRightKeyIndices = selectedRightKeyIndices;
         }
 
         bool hasOuterEstimate = TryEstimateTableRefRowCount(join.Left, out long outerRows);
@@ -4249,18 +5390,95 @@ public sealed class QueryPlanner
             ? ToCapacityHint(outerRows)
             : EstimateJoinOutputRowCount(join.JoinType, hasOuterEstimate, outerRows, hasInnerEstimate, innerRows);
 
-        indexNestedJoinOp = new IndexNestedLoopJoinOperator(
-            leftOp,
-            rightTableTree,
-            rightIndexStore,
-            join.JoinType,
-            leftKeyIndex,
-            leftSchema.Columns.Count,
-            rightSchema.Columns.Count,
-            residualCondition,
-            compositeSchema,
-            GetReadSerializer(rightSchema),
-            estimatedOutputRowCount);
+        if (orderedLeftKeyIndices == null || orderedRightKeyIndices == null)
+            return false;
+
+        if (usesDirectIntegerLookup)
+        {
+            indexNestedJoinOp = new IndexNestedLoopJoinOperator(
+                leftOp,
+                rightTableTree,
+                rightIndexStore,
+                join.JoinType,
+                orderedLeftKeyIndices[0],
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                residualCondition,
+                compositeSchema,
+                GetReadSerializer(rightSchema),
+                estimatedOutputRowCount);
+        }
+        else
+        {
+            indexNestedJoinOp = new HashedIndexNestedLoopJoinOperator(
+                leftOp,
+                rightTableTree,
+                rightIndexStore!,
+                join.JoinType,
+                orderedLeftKeyIndices,
+                orderedRightKeyIndices,
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                rightSchema.PrimaryKeyColumnIndex,
+                residualCondition,
+                compositeSchema,
+                GetReadSerializer(rightSchema),
+                estimatedOutputRowCount);
+        }
+
+        return true;
+    }
+
+    private static bool TryMatchJoinLookupIndex(
+        IndexSchema indexSchema,
+        TableSchema rightSchema,
+        ReadOnlySpan<int> leftKeyIndices,
+        ReadOnlySpan<int> rightKeyIndices,
+        out int[] orderedLeftKeyIndices,
+        out int[] orderedRightKeyIndices)
+    {
+        orderedLeftKeyIndices = Array.Empty<int>();
+        orderedRightKeyIndices = Array.Empty<int>();
+
+        if (indexSchema.Columns.Count != rightKeyIndices.Length)
+            return false;
+
+        var consumed = new bool[rightKeyIndices.Length];
+        orderedLeftKeyIndices = new int[indexSchema.Columns.Count];
+        orderedRightKeyIndices = new int[indexSchema.Columns.Count];
+
+        for (int indexColumn = 0; indexColumn < indexSchema.Columns.Count; indexColumn++)
+        {
+            string indexColumnName = indexSchema.Columns[indexColumn];
+            int match = -1;
+            for (int candidate = 0; candidate < rightKeyIndices.Length; candidate++)
+            {
+                if (consumed[candidate])
+                    continue;
+
+                int rightKeyIndex = rightKeyIndices[candidate];
+                if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
+                    return false;
+
+                if (!string.Equals(
+                        rightSchema.Columns[rightKeyIndex].Name,
+                        indexColumnName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                match = candidate;
+                break;
+            }
+
+            if (match < 0)
+                return false;
+
+            consumed[match] = true;
+            orderedLeftKeyIndices[indexColumn] = leftKeyIndices[match];
+            orderedRightKeyIndices[indexColumn] = rightKeyIndices[match];
+        }
 
         return true;
     }
@@ -4666,25 +5884,38 @@ public sealed class QueryPlanner
             schema,
             indexes,
             out var compositeIndex,
-            out long compositeLookupKey);
+            out long compositeLookupKey,
+            out var compositeColumnIndices,
+            out var compositeKeyComponents);
 
         if (hasCompositeCandidate &&
             (!hasSelectedCandidate || (compositeIndex!.IsUnique ? 1 : 2) < selectedCandidate.Rank))
         {
-            // Composite index keys are hashed; keep the full predicate as residual
-            // so hash collisions are filtered out by expression evaluation.
-            remaining = where;
+            remaining = BuildResidualTermsExcludingLookupKeyTerms(
+                conjuncts,
+                schema,
+                compositeColumnIndices!,
+                compositeKeyComponents!);
             return BuildLookupOperator(
                 tableName,
                 schema,
                 isPrimaryKey: false,
                 compositeIndex,
-                compositeLookupKey);
+                compositeLookupKey,
+                compositeColumnIndices,
+                compositeKeyComponents);
         }
 
         if (!hasSelectedCandidate || selectedConjunctIndex < 0)
             return null;
-        IOperator lookupOp = BuildLookupOperator(tableName, schema, selectedCandidate.IsPrimaryKey, selectedCandidate.Index, selectedCandidate.LookupValue);
+        IOperator lookupOp = BuildLookupOperator(
+            tableName,
+            schema,
+            selectedCandidate.IsPrimaryKey,
+            selectedCandidate.Index,
+            selectedCandidate.LookupValue,
+            selectedCandidate.KeyColumnIndices,
+            selectedCandidate.KeyComponents);
 
         if (selectedCandidate.RequiresResidualPredicate)
         {
@@ -4718,7 +5949,9 @@ public sealed class QueryPlanner
         int Rank,
         bool RequiresResidualPredicate,
         long? EstimatedRows,
-        long? TableRowCount);
+        long? TableRowCount,
+        int[]? KeyColumnIndices,
+        DbValue[]? KeyComponents);
 
     private bool TryPickLookupCandidate(
         string tableName,
@@ -4745,7 +5978,9 @@ public sealed class QueryPlanner
                 Rank: 0,
                 RequiresResidualPredicate: false,
                 EstimatedRows: 1,
-                TableRowCount: 1);
+                TableRowCount: 1,
+                KeyColumnIndices: null,
+                KeyComponents: null);
             return true;
         }
 
@@ -4770,13 +6005,15 @@ public sealed class QueryPlanner
             IsPrimaryKey: false,
             Index: matchedIndex,
             Rank: matchedIndex.IsUnique ? 1 : 2,
-            RequiresResidualPredicate: !usesDirectIntegerKey,
+            RequiresResidualPredicate: false,
             EstimatedRows: matchedIndex.IsUnique
                 ? 1
                 : hasEstimatedRows ? estimatedRows : null,
             TableRowCount: matchedIndex.IsUnique
                 ? 1
-                : hasEstimatedRows ? tableRowCount : null);
+                : hasEstimatedRows ? tableRowCount : null,
+            KeyColumnIndices: usesDirectIntegerKey ? null : [columnIndex],
+            KeyComponents: usesDirectIntegerKey ? null : [lookupLiteral]);
         return true;
     }
 
@@ -4856,10 +6093,14 @@ public sealed class QueryPlanner
         TableSchema schema,
         IReadOnlyList<IndexSchema> indexes,
         out IndexSchema? selectedIndex,
-        out long lookupKey)
+        out long lookupKey,
+        out int[]? keyColumnIndices,
+        out DbValue[]? keyComponents)
     {
         selectedIndex = null;
         lookupKey = 0;
+        keyColumnIndices = null;
+        keyComponents = null;
 
         if (conjuncts.Count == 0)
             return false;
@@ -4888,17 +6129,22 @@ public sealed class QueryPlanner
         IndexSchema? bestUnique = null;
         long bestUniqueKey = 0;
         int bestUniqueColumnCount = -1;
+        int[]? bestUniqueColumnIndices = null;
+        DbValue[]? bestUniqueKeyComponents = null;
 
         IndexSchema? bestNonUnique = null;
         long bestNonUniqueKey = 0;
         int bestNonUniqueColumnCount = -1;
+        int[]? bestNonUniqueColumnIndices = null;
+        DbValue[]? bestNonUniqueKeyComponents = null;
 
         foreach (var idx in indexes)
         {
             if (idx.Columns.Count <= 1)
                 continue;
 
-            var keyComponents = new DbValue[idx.Columns.Count];
+            var candidateKeyComponents = new DbValue[idx.Columns.Count];
+            var candidateColumnIndices = new int[idx.Columns.Count];
             bool matches = true;
 
             for (int i = 0; i < idx.Columns.Count; i++)
@@ -4929,13 +6175,14 @@ public sealed class QueryPlanner
                     break;
                 }
 
-                keyComponents[i] = literal;
+                candidateColumnIndices[i] = colIndex;
+                candidateKeyComponents[i] = literal;
             }
 
             if (!matches)
                 continue;
 
-            long key = ComputeIndexKey(keyComponents);
+            long key = ComputeIndexKey(candidateKeyComponents);
 
             if (idx.IsUnique)
             {
@@ -4944,6 +6191,8 @@ public sealed class QueryPlanner
                     bestUnique = idx;
                     bestUniqueKey = key;
                     bestUniqueColumnCount = idx.Columns.Count;
+                    bestUniqueColumnIndices = candidateColumnIndices;
+                    bestUniqueKeyComponents = candidateKeyComponents;
                 }
             }
             else if (idx.Columns.Count > bestNonUniqueColumnCount)
@@ -4951,6 +6200,8 @@ public sealed class QueryPlanner
                 bestNonUnique = idx;
                 bestNonUniqueKey = key;
                 bestNonUniqueColumnCount = idx.Columns.Count;
+                bestNonUniqueColumnIndices = candidateColumnIndices;
+                bestNonUniqueKeyComponents = candidateKeyComponents;
             }
         }
 
@@ -4958,6 +6209,8 @@ public sealed class QueryPlanner
         {
             selectedIndex = bestUnique;
             lookupKey = bestUniqueKey;
+            keyColumnIndices = bestUniqueColumnIndices;
+            keyComponents = bestUniqueKeyComponents;
             return true;
         }
 
@@ -4965,6 +6218,8 @@ public sealed class QueryPlanner
         {
             selectedIndex = bestNonUnique;
             lookupKey = bestNonUniqueKey;
+            keyColumnIndices = bestNonUniqueColumnIndices;
+            keyComponents = bestNonUniqueKeyComponents;
             return true;
         }
 
@@ -4976,7 +6231,9 @@ public sealed class QueryPlanner
         TableSchema schema,
         bool isPrimaryKey,
         IndexSchema? index,
-        long lookupValue)
+        long lookupValue,
+        int[]? expectedKeyColumnIndices = null,
+        DbValue[]? expectedKeyComponents = null)
     {
         var tableTree = _catalog.GetTableTree(tableName, _pager);
         if (isPrimaryKey)
@@ -4985,7 +6242,14 @@ public sealed class QueryPlanner
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
         return index.IsUnique && UsesDirectIntegerIndexKey(index, schema)
             ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
-            : new IndexScanOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema));
+            : new IndexScanOperator(
+                indexStore,
+                tableTree,
+                schema,
+                lookupValue,
+                GetReadSerializer(schema),
+                expectedKeyColumnIndices,
+                expectedKeyComponents);
     }
 
     private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)
@@ -5119,6 +6383,31 @@ public sealed class QueryPlanner
         return firstNonUnique;
     }
 
+    private bool TryFindDirectIntegerIndexForColumn(
+        string tableName,
+        TableSchema schema,
+        int columnIndex,
+        out IndexSchema index)
+    {
+        index = null!;
+
+        if (columnIndex < 0 ||
+            columnIndex >= schema.Columns.Count ||
+            schema.Columns[columnIndex].Type != DbType.Integer)
+        {
+            return false;
+        }
+
+        var matchedIndex = FindLookupIndexForColumn(
+            _catalog.GetIndexesForTable(tableName),
+            schema.Columns[columnIndex].Name);
+        if (matchedIndex == null || !UsesDirectIntegerIndexKey(matchedIndex, schema))
+            return false;
+
+        index = matchedIndex;
+        return true;
+    }
+
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
         => IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
 
@@ -5177,8 +6466,11 @@ public sealed class QueryPlanner
         if (pkIdx == orderColumnIndex && currentSource is TableScanOperator)
             return true;
 
-        if (!stmt.Limit.HasValue)
+        if (!stmt.Limit.HasValue &&
+            !CanUseCoveredOrderedIndexScanWithoutLimit(stmt, schema, orderColumnIndex))
+        {
             return false;
+        }
 
         // Secondary indexes currently skip NULL values.
         // To preserve ORDER BY semantics, only use index order for non-nullable columns.
@@ -5198,7 +6490,13 @@ public sealed class QueryPlanner
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName, _pager);
             var tableTree = _catalog.GetTableTree(tableRef.TableName, _pager);
-            replacementSource = new IndexOrderedScanOperator(indexStore, tableTree, schema, scanRange, GetReadSerializer(schema));
+            replacementSource = new IndexOrderedScanOperator(
+                indexStore,
+                tableTree,
+                schema,
+                orderColumnIndex,
+                scanRange,
+                GetReadSerializer(schema));
             return true;
         }
 
@@ -5227,14 +6525,18 @@ public sealed class QueryPlanner
 
         if (stmt.GroupBy != null || stmt.Having != null)
             return false;
+        if (stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression)))
+            return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
         if (stmt.Limit.HasValue || stmt.Offset.HasValue)
             return false;
 
-        var schema = _catalog.GetTable(simpleRef.TableName);
-        if (schema == null)
+        var baseSchema = _catalog.GetTable(simpleRef.TableName);
+        if (baseSchema == null)
             return false;
+        var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
+        var serializer = GetReadSerializer(baseSchema);
 
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
             ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
@@ -5242,19 +6544,77 @@ public sealed class QueryPlanner
             return false;
 
         IOperator op = indexOp;
-        if (remainingWhere != null && TryPushDownSimplePreDecodeFilter(op, remainingWhere, schema, out var pushedWhere))
-            remainingWhere = pushedWhere;
+        List<PushdownPredicateSpec>? pushedPredicates = null;
+        if (remainingWhere != null &&
+            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+        {
+            pushedPredicates = extractedPredicates;
+            remainingWhere = residualWhere;
+
+            for (int i = 0; i < pushedPredicates.Count; i++)
+            {
+                var predicate = pushedPredicates[i];
+                if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+        }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
+            if (remainingWhere == null &&
+                op is IndexOrderedScanOperator orderedScan &&
+                TryBuildCoveredOrderedIndexProjectionOperator(
+                    orderedScan,
+                    schema,
+                    columnIndices,
+                    outputCols,
+                    out var coveredOrderedProjection))
+            {
+                result = new QueryResult(coveredOrderedProjection);
+                return true;
+            }
+
+            if (remainingWhere == null &&
+                op is IndexScanOperator hashedLookup &&
+                TryBuildCoveredHashedIndexProjectionOperator(
+                    hashedLookup,
+                    schema,
+                    columnIndices,
+                    outputCols,
+                    out var coveredHashedProjection))
+            {
+                result = new QueryResult(coveredHashedProjection);
+                return true;
+            }
+
+            if (indexOp is IEncodedPayloadSource &&
+                TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
+            {
+                var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
+                if (TryBuildColumnProjection(stmt.Columns, compactSchema, out var compactProjectionIndices, out var compactOutputCols))
+                {
+                    var compactOp = new CompactPayloadProjectionOperator(
+                        indexOp,
+                        serializer,
+                        decodeColumnIndices,
+                        compactProjectionIndices,
+                        compactOutputCols);
+                    if (remainingWhere != null)
+                        compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+                    result = CreateQueryResult(compactOp);
+                    return true;
+                }
+            }
+
             int maxCol = -1;
             for (int i = 0; i < columnIndices.Length; i++)
                 if (columnIndices[i] > maxCol) maxCol = columnIndices[i];
@@ -5272,7 +6632,29 @@ public sealed class QueryPlanner
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
+            return true;
+        }
+
+        if (indexOp is IEncodedPayloadSource &&
+            TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var expressionDecodeColumnIndices))
+        {
+            var compactSchema = CreateCompactProjectionSchema(schema, expressionDecodeColumnIndices);
+            var expressions = stmt.Columns.Select(c => c.Expression!).ToArray();
+            var expressionOutputCols = new ColumnDefinition[expressions.Length];
+            for (int i = 0; i < expressions.Length; i++)
+                expressionOutputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, compactSchema, i);
+
+            var compactExpressionOp = new CompactPayloadProjectionOperator(
+                indexOp,
+                serializer,
+                expressionDecodeColumnIndices,
+                expressionOutputCols,
+                GetOrCompileExpressions(expressions, compactSchema));
+            if (remainingWhere != null)
+                compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+            result = CreateQueryResult(compactExpressionOp);
             return true;
         }
 
@@ -5300,67 +6682,111 @@ public sealed class QueryPlanner
 
         if (stmt.GroupBy != null || stmt.Having != null)
             return false;
+        if (stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression)))
+            return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
         if (stmt.Limit.HasValue || stmt.Offset.HasValue)
             return false;
 
-        var schema = _catalog.GetTable(simpleRef.TableName);
-        if (schema == null)
+        var baseSchema = _catalog.GetTable(simpleRef.TableName);
+        if (baseSchema == null)
             return false;
+        var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
-        var scanOp = new TableScanOperator(
-            tableTree,
-            schema,
-            GetReadSerializer(schema),
-            TryGetCachedTreeRowCountCapacityHint(tableTree));
-        IOperator op = scanOp;
+        var serializer = GetReadSerializer(baseSchema);
+        int? estimatedRowCount = TryGetCachedTreeRowCountCapacityHint(tableTree);
         var remainingWhere = stmt.Where;
-
-        if (remainingWhere != null &&
-            TryPushDownSimplePreDecodeFilter(scanOp, remainingWhere, schema, out var pushedWhere))
-        {
-            remainingWhere = pushedWhere;
-        }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
-            if (remainingWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
-
-            result = new QueryResult(op);
-            return true;
-        }
-
-        if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
-        {
-            var decodeColumns = new HashSet<int>();
-            for (int i = 0; i < columnIndices.Length; i++)
-                decodeColumns.Add(columnIndices[i]);
+            var scanOp = new TableScanOperator(
+                tableTree,
+                schema,
+                serializer,
+                estimatedRowCount);
+            IOperator op = scanOp;
 
             if (remainingWhere != null &&
-                !TryAccumulateReferencedColumns(remainingWhere, schema, decodeColumns))
+                TryPushDownSimplePreDecodeFilter(scanOp, remainingWhere, schema, out var pushedWhere))
             {
-                return false;
-            }
-
-            if (!TrySetDecodedColumnIndices(scanOp, ToSortedColumnIndices(decodeColumns)))
-            {
-                int maxCol = decodeColumns.Count == 0 ? -1 : decodeColumns.Max();
-                scanOp.SetDecodedColumnUpperBound(maxCol);
+                remainingWhere = pushedWhere;
             }
 
             if (remainingWhere != null)
                 op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
 
-            op = new ProjectionOperator(op, columnIndices, outputCols, schema);
-            result = new QueryResult(op);
+            result = CreateQueryResult(op);
             return true;
         }
 
-        // Expression projections fall back to the general path.
-        return false;
+        List<PushdownPredicateSpec>? pushedPredicates = null;
+        if (remainingWhere != null &&
+            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+        {
+            pushedPredicates = extractedPredicates;
+            remainingWhere = residualWhere;
+        }
+
+        if (!TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
+            return false;
+
+        var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
+
+        if (TryBuildColumnProjection(stmt.Columns, compactSchema, out var compactProjectionIndices, out var outputCols))
+        {
+            var compactOp = new CompactTableScanProjectionOperator(
+                tableTree,
+                decodeColumnIndices,
+                compactProjectionIndices,
+                outputCols,
+                serializer,
+                estimatedRowCount);
+
+            if (pushedPredicates is { Count: > 0 })
+            {
+                for (int i = 0; i < pushedPredicates.Count; i++)
+                {
+                    var predicate = pushedPredicates[i];
+                    compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+                }
+            }
+
+            if (remainingWhere != null)
+                compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+            result = CreateQueryResult(compactOp);
+            return true;
+        }
+
+        var expressions = stmt.Columns.Select(c => c.Expression!).ToArray();
+        var expressionOutputCols = new ColumnDefinition[expressions.Length];
+        for (int i = 0; i < expressions.Length; i++)
+            expressionOutputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, compactSchema, i);
+
+        var compactExpressionOp = new CompactTableScanProjectionOperator(
+            tableTree,
+            decodeColumnIndices,
+            expressionOutputCols,
+            GetOrCompileExpressions(expressions, compactSchema),
+            serializer,
+            estimatedRowCount);
+
+        if (pushedPredicates is { Count: > 0 })
+        {
+            for (int i = 0; i < pushedPredicates.Count; i++)
+            {
+                var predicate = pushedPredicates[i];
+                compactExpressionOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+        }
+
+        if (remainingWhere != null)
+            compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+
+        result = CreateQueryResult(compactExpressionOp);
+        return true;
     }
 
     private IOperator? TryBuildIntegerIndexRangeScan(
@@ -5416,7 +6842,14 @@ public sealed class QueryPlanner
         remaining = selectedRemaining;
         var indexStore = _catalog.GetIndexStore(selectedIndex.IndexName, _pager);
         var tableTree = _catalog.GetTableTree(tableName, _pager);
-        return new IndexOrderedScanOperator(indexStore, tableTree, schema, selectedRange, GetReadSerializer(schema));
+        int keyColumnIndex = schema.GetColumnIndex(selectedIndex.Columns[0]);
+        return new IndexOrderedScanOperator(
+            indexStore,
+            tableTree,
+            schema,
+            keyColumnIndex,
+            selectedRange,
+            GetReadSerializer(schema));
     }
 
     private static void ExtractOrderedIndexRange(
@@ -5658,9 +7091,14 @@ public sealed class QueryPlanner
         if (op is not IPreDecodeFilterSupport preDecodeFilterTarget)
             return false;
 
-        if (TryExtractPushdownPredicate(where, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal, out var residual))
+        if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
         {
-            preDecodeFilterTarget.SetPreDecodeFilter(columnIndex, opToApply, literal);
+            for (int i = 0; i < predicates.Count; i++)
+            {
+                var predicate = predicates[i];
+                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+
             remaining = residual;
             return true;
         }
@@ -5668,23 +7106,20 @@ public sealed class QueryPlanner
         return false;
     }
 
-    private static bool TryExtractPushdownPredicate(
+    private static bool TryExtractPushdownPredicates(
         Expression where,
         TableSchema schema,
-        out int columnIndex,
-        out BinaryOp opToApply,
-        out DbValue literal,
+        out List<PushdownPredicateSpec> predicates,
         out Expression? remaining)
     {
-        columnIndex = -1;
-        opToApply = BinaryOp.Equals;
-        literal = DbValue.Null;
+        predicates = [];
         remaining = where;
 
         if (where is BinaryExpression singleBin &&
             IsPushdownComparison(singleBin.Op) &&
-            TryGetPushdownOperands(singleBin, schema, out columnIndex, out opToApply, out literal))
+            TryGetPushdownOperands(singleBin, schema, out int columnIndex, out BinaryOp opToApply, out DbValue literal))
         {
+            predicates.Add(new PushdownPredicateSpec(columnIndex, opToApply, literal));
             remaining = null;
             return true;
         }
@@ -5695,51 +7130,43 @@ public sealed class QueryPlanner
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(where, conjuncts);
 
-        int selectedConjunctIndex = -1;
-        int selectedRank = int.MaxValue;
+        var residualTerms = new List<Expression>(conjuncts.Count);
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (conjuncts[i] is not BinaryExpression bin || !IsPushdownComparison(bin.Op))
-                continue;
-
-            if (!TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
-                continue;
-
-            int candidateRank = GetPushdownComparisonRank(candidateOp);
-            if (candidateRank >= selectedRank)
-                continue;
-
-            selectedConjunctIndex = i;
-            selectedRank = candidateRank;
-            columnIndex = candidateColumnIndex;
-            opToApply = candidateOp;
-            literal = candidateLiteral;
-
-            if (candidateRank == 0)
-                break;
+            if (conjuncts[i] is BinaryExpression bin &&
+                IsPushdownComparison(bin.Op) &&
+                TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
+            {
+                predicates.Add(new PushdownPredicateSpec(candidateColumnIndex, candidateOp, candidateLiteral));
+            }
+            else
+            {
+                residualTerms.Add(conjuncts[i]);
+            }
         }
 
-        if (selectedConjunctIndex < 0)
+        if (predicates.Count == 0)
             return false;
 
-        if (conjuncts.Count == 1)
-        {
-            remaining = null;
-            return true;
-        }
-
-        var residualTerms = new List<Expression>(conjuncts.Count - 1);
-        for (int i = 0; i < conjuncts.Count; i++)
-        {
-            if (i == selectedConjunctIndex)
-                continue;
-
-            residualTerms.Add(conjuncts[i]);
-        }
-
+        predicates.Sort(static (left, right) =>
+            GetPushdownComparisonRank(left.Op).CompareTo(GetPushdownComparisonRank(right.Op)));
         remaining = CombineConjuncts(residualTerms);
         return true;
+    }
+
+    private readonly struct PushdownPredicateSpec
+    {
+        public PushdownPredicateSpec(int columnIndex, BinaryOp op, DbValue literal)
+        {
+            ColumnIndex = columnIndex;
+            Op = op;
+            Literal = literal;
+        }
+
+        public int ColumnIndex { get; }
+        public BinaryOp Op { get; }
+        public DbValue Literal { get; }
     }
 
     private static int GetPushdownComparisonRank(BinaryOp op)
@@ -5854,9 +7281,9 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+            if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                 continue; // Don't index entries that include NULL.
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
@@ -5886,12 +7313,12 @@ public sealed class QueryPlanner
                             idx.IndexName,
                         ct);
 
-                    await InsertIntoIndexAsync(indexStore, indexKey, rowId, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, ct);
                 }
             }
             else
             {
-                await InsertIntoIndexAsync(indexStore, indexKey, rowId, ct);
+                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, ct);
             }
         }
     }
@@ -5901,13 +7328,13 @@ public sealed class QueryPlanner
     {
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
+            if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
                 continue;
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
-            await DeleteFromIndexAsync(indexStore, indexKey, rowId, ct);
+            await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, indexKey, rowId, null, ct);
         }
     }
 
@@ -5919,16 +7346,16 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
-            if (!TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
 
-            bool hasOldKey = TryBuildIndexKey(oldRow, columnIndices, usesDirectIntegerKey, out long oldKey, out DbValue[]? oldComponents);
-            bool hasNewKey = TryBuildIndexKey(newRow, columnIndices, usesDirectIntegerKey, out long newKey, out DbValue[]? newComponents);
+            bool hasOldKey = IndexMaintenanceHelper.TryBuildIndexKey(oldRow, columnIndices, usesDirectIntegerKey, out long oldKey, out DbValue[]? oldComponents);
+            bool hasNewKey = IndexMaintenanceHelper.TryBuildIndexKey(newRow, columnIndices, usesDirectIntegerKey, out long newKey, out DbValue[]? newComponents);
 
             // If neither index presence, key value, nor rowid changed, no maintenance needed.
             if (hasOldKey == hasNewKey &&
                 oldRowId == newRowId &&
-                (!hasOldKey || (oldKey == newKey && IndexKeyComponentsEqual(oldComponents, newComponents))))
+                (!hasOldKey || (oldKey == newKey && IndexMaintenanceHelper.IndexKeyComponentsEqual(oldComponents, newComponents))))
             {
                 continue;
             }
@@ -5938,7 +7365,7 @@ public sealed class QueryPlanner
             // Remove old entry.
             if (hasOldKey)
             {
-                await DeleteFromIndexAsync(indexStore, oldKey, oldRowId, ct);
+                await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, oldKey, oldRowId, oldComponents, ct);
             }
 
             // Add new entry.
@@ -5969,12 +7396,12 @@ public sealed class QueryPlanner
                             idx.IndexName,
                             ct);
 
-                        await InsertIntoIndexAsync(indexStore, newKey, newRowId, ct);
+                        await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, ct);
                     }
                 }
                 else
                 {
-                    await InsertIntoIndexAsync(indexStore, newKey, newRowId, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, ct);
                 }
             }
         }
@@ -5994,6 +7421,18 @@ public sealed class QueryPlanner
         if (existing == null || existing.Length < 8)
             return;
 
+        if (HashedIndexPayloadCodec.TryGetMatchingRowIds(existing, keyComponents, out var matchingPayload))
+        {
+            if (matchingPayload is { Length: > 0 })
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Duplicate key value in unique index '{indexName}'.");
+            }
+
+            return;
+        }
+
         int entryCount = existing.Length / 8;
         int maxIndexedColumn = indexColumnIndices.Max();
 
@@ -6012,81 +7451,6 @@ public sealed class QueryPlanner
                     $"Duplicate key value in unique index '{indexName}'.");
             }
         }
-    }
-
-    private static bool TryResolveIndexColumnIndices(
-        IndexSchema index,
-        TableSchema schema,
-        out int[] columnIndices,
-        out bool usesDirectIntegerKey)
-    {
-        int count = index.Columns.Count;
-        columnIndices = new int[count];
-        usesDirectIntegerKey = false;
-        if (count == 0)
-            return false;
-
-        for (int i = 0; i < count; i++)
-        {
-            int colIdx = schema.GetColumnIndex(index.Columns[i]);
-            if (colIdx < 0 || colIdx >= schema.Columns.Count)
-                return false;
-            if (schema.Columns[colIdx].Type is not (DbType.Integer or DbType.Text))
-                return false;
-
-            columnIndices[i] = colIdx;
-        }
-
-        usesDirectIntegerKey = count == 1 && schema.Columns[columnIndices[0]].Type == DbType.Integer;
-        return true;
-    }
-
-    private static bool TryBuildIndexKey(
-        DbValue[] row,
-        int[] indexColumnIndices,
-        bool usesDirectIntegerKey,
-        out long indexKey,
-        out DbValue[]? keyComponents)
-    {
-        indexKey = 0;
-        keyComponents = null;
-
-        if (indexColumnIndices.Length == 0)
-            return false;
-
-        if (usesDirectIntegerKey)
-        {
-            int colIdx = indexColumnIndices[0];
-            if (colIdx < 0 || colIdx >= row.Length)
-                return false;
-
-            var value = row[colIdx];
-            if (value.IsNull || value.Type != DbType.Integer)
-                return false;
-
-            indexKey = value.AsInteger;
-            return true;
-        }
-
-        var components = new DbValue[indexColumnIndices.Length];
-        for (int i = 0; i < indexColumnIndices.Length; i++)
-        {
-            int colIdx = indexColumnIndices[i];
-            if (colIdx < 0 || colIdx >= row.Length)
-                return false;
-
-            var value = row[colIdx];
-            if (value.IsNull)
-                return false;
-            if (value.Type is not (DbType.Integer or DbType.Text))
-                return false;
-
-            components[i] = value;
-        }
-
-        indexKey = ComputeIndexKey(components);
-        keyComponents = components;
-        return true;
     }
 
     private static bool IndexRowMatchesKeyComponents(
@@ -6222,10 +7586,23 @@ public sealed class QueryPlanner
 
     private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
     {
-        if (op is TableScanOperator tableScan)
+        switch (op)
         {
-            tableScan.SetDecodedColumnIndices(columnIndices);
-            return true;
+            case TableScanOperator tableScan:
+                tableScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexScanOperator indexScan:
+                indexScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                uniqueIndexLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case IndexOrderedScanOperator indexOrderedScan:
+                indexOrderedScan.SetDecodedColumnIndices(columnIndices);
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                primaryKeyLookup.SetDecodedColumnIndices(columnIndices);
+                return true;
         }
 
         return false;
@@ -6240,6 +7617,74 @@ public sealed class QueryPlanner
         columnSet.CopyTo(columns);
         Array.Sort(columns);
         return columns;
+    }
+
+    private static TableSchema CreateSimpleTableQuerySchema(TableSchema schema, string? alias)
+    {
+        if (string.IsNullOrWhiteSpace(alias))
+            return schema;
+
+        var qualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (schema.QualifiedMappings != null)
+        {
+            foreach (var (key, index) in schema.QualifiedMappings)
+                qualifiedMappings[key] = index;
+        }
+
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            string columnName = schema.Columns[i].Name;
+            qualifiedMappings[$"{alias}.{columnName}"] = i;
+            qualifiedMappings[$"{schema.TableName}.{columnName}"] = i;
+        }
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            NextRowId = schema.NextRowId,
+            QualifiedMappings = qualifiedMappings,
+        };
+    }
+
+    private static TableSchema CreateCompactProjectionSchema(TableSchema schema, ReadOnlySpan<int> columnIndices)
+    {
+        if (columnIndices.Length == 0)
+        {
+            return new TableSchema
+            {
+                TableName = schema.TableName,
+                Columns = Array.Empty<ColumnDefinition>(),
+                NextRowId = schema.NextRowId,
+            };
+        }
+
+        var columns = new ColumnDefinition[columnIndices.Length];
+        var remappedIndices = new Dictionary<int, int>(columnIndices.Length);
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            columns[i] = schema.Columns[columnIndices[i]];
+            remappedIndices[columnIndices[i]] = i;
+        }
+
+        Dictionary<string, int>? qualifiedMappings = null;
+        if (schema.QualifiedMappings != null)
+        {
+            qualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, originalIndex) in schema.QualifiedMappings)
+            {
+                if (remappedIndices.TryGetValue(originalIndex, out int compactIndex))
+                    qualifiedMappings[key] = compactIndex;
+            }
+        }
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = columns,
+            NextRowId = schema.NextRowId,
+            QualifiedMappings = qualifiedMappings,
+        };
     }
 
     private static bool TryGetAggregateDecodeColumnIndices(
@@ -6534,6 +7979,29 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static bool TryBuildSimpleLookupProjection(
+        IReadOnlyList<string> projectionColumns,
+        TableSchema schema,
+        out int[] columnIndices,
+        out ColumnDefinition[] outputColumns)
+    {
+        columnIndices = new int[projectionColumns.Count];
+        outputColumns = new ColumnDefinition[projectionColumns.Count];
+
+        for (int i = 0; i < projectionColumns.Count; i++)
+        {
+            string columnName = projectionColumns[i];
+            int sourceIndex = schema.GetColumnIndex(columnName);
+            if (sourceIndex < 0 || sourceIndex >= schema.Columns.Count)
+                return false;
+
+            columnIndices[i] = sourceIndex;
+            outputColumns[i] = schema.Columns[sourceIndex];
+        }
+
+        return true;
+    }
+
     private static bool TryAccumulateReferencedColumns(
         Expression expr,
         TableSchema schema,
@@ -6667,6 +8135,181 @@ public sealed class QueryPlanner
         for (int i = 0; i < columnIndices.Length; i++)
         {
             if (columnIndices[i] != primaryKeyIndex)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsCoveredLookupProjection(
+        int[] columnIndices,
+        int primaryKeyIndex,
+        int predicateColumnIndex,
+        bool canProjectPrimaryKey)
+    {
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (columnIndex == predicateColumnIndex)
+                continue;
+
+            if (canProjectPrimaryKey && columnIndex == primaryKeyIndex)
+                continue;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static Expression? BuildResidualTermsExcludingLookupKeyTerms(
+        IReadOnlyList<Expression> conjuncts,
+        TableSchema schema,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents)
+    {
+        if (conjuncts.Count == 0)
+            return null;
+
+        var residualTerms = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (TryExtractIndexEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out DbValue literal))
+            {
+                bool matchesLookupKey = false;
+                for (int componentIndex = 0; componentIndex < keyColumnIndices.Length; componentIndex++)
+                {
+                    if (keyColumnIndices[componentIndex] != columnIndex)
+                        continue;
+
+                    if (DbValue.Compare(keyComponents[componentIndex], literal) == 0)
+                    {
+                        matchesLookupKey = true;
+                        break;
+                    }
+                }
+
+                if (matchesLookupKey)
+                    continue;
+            }
+
+            residualTerms.Add(conjuncts[i]);
+        }
+
+        return CombineConjuncts(residualTerms);
+    }
+
+    private static bool CanUseCoveredOrderedIndexScanWithoutLimit(
+        SelectStatement stmt,
+        TableSchema schema,
+        int keyColumnIndex)
+    {
+        if (stmt.Columns.Any(c => c.IsStar))
+            return false;
+
+        if (!TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out _))
+            return false;
+
+        return CanProjectIntegerPrimaryKeyOrKeyColumn(columnIndices, schema, keyColumnIndex);
+    }
+
+    private static bool TryBuildCoveredOrderedIndexProjectionOperator(
+        IndexOrderedScanOperator orderedScan,
+        TableSchema schema,
+        int[] columnIndices,
+        ColumnDefinition[] outputColumns,
+        out IOperator projectionOperator)
+    {
+        projectionOperator = null!;
+
+        if (!CanProjectIntegerPrimaryKeyOrKeyColumn(columnIndices, schema, orderedScan.KeyColumnIndex))
+            return false;
+
+        projectionOperator = new IndexOrderedProjectionScanOperator(
+            orderedScan.IndexStore,
+            orderedScan.ScanRange,
+            outputColumns,
+            columnIndices,
+            schema.PrimaryKeyColumnIndex,
+            orderedScan.KeyColumnIndex);
+        return true;
+    }
+
+    private bool TryBuildCoveredHashedIndexProjectionOperator(
+        IndexScanOperator indexScan,
+        TableSchema schema,
+        int[] columnIndices,
+        ColumnDefinition[] outputColumns,
+        out IOperator projectionOperator)
+    {
+        projectionOperator = null!;
+
+        if (indexScan.ExpectedKeyColumnIndices is not { Length: > 0 } keyColumnIndices ||
+            indexScan.ExpectedKeyComponents is not { Length: > 0 } keyComponents)
+        {
+            return false;
+        }
+
+        if (!CanProjectPrimaryKeyOrKeyColumns(columnIndices, schema, keyColumnIndices))
+            return false;
+
+        projectionOperator = new HashedIndexProjectionLookupOperator(
+            indexScan.IndexStore,
+            indexScan.TableTree,
+            schema,
+            indexScan.SeekValue,
+            outputColumns,
+            columnIndices,
+            keyColumnIndices,
+            keyComponents,
+            GetReadSerializer(schema));
+        return true;
+    }
+
+    private static bool CanProjectIntegerPrimaryKeyOrKeyColumn(
+        int[] columnIndices,
+        TableSchema schema,
+        int keyColumnIndex)
+    {
+        int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
+        bool canProjectPrimaryKey = primaryKeyIndex >= 0 &&
+            primaryKeyIndex < schema.Columns.Count &&
+            schema.Columns[primaryKeyIndex].Type == DbType.Integer;
+
+        return IsCoveredLookupProjection(
+            columnIndices,
+            primaryKeyIndex,
+            keyColumnIndex,
+            canProjectPrimaryKey);
+    }
+
+    private static bool CanProjectPrimaryKeyOrKeyColumns(
+        int[] columnIndices,
+        TableSchema schema,
+        ReadOnlySpan<int> keyColumnIndices)
+    {
+        int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
+        bool canProjectPrimaryKey = primaryKeyIndex >= 0 &&
+            primaryKeyIndex < schema.Columns.Count &&
+            schema.Columns[primaryKeyIndex].Type == DbType.Integer;
+
+        for (int i = 0; i < columnIndices.Length; i++)
+        {
+            int columnIndex = columnIndices[i];
+            if (canProjectPrimaryKey && columnIndex == primaryKeyIndex)
+                continue;
+
+            bool matchesIndexedColumn = false;
+            for (int j = 0; j < keyColumnIndices.Length; j++)
+            {
+                if (keyColumnIndices[j] == columnIndex)
+                {
+                    matchesIndexedColumn = true;
+                    break;
+                }
+            }
+
+            if (!matchesIndexedColumn)
                 return false;
         }
 
@@ -7350,7 +8993,7 @@ public sealed class QueryPlanner
             {
                 long explicitRowId = row[pkIdx].AsInteger;
                 if (explicitRowId >= 0 && explicitRowId < long.MaxValue)
-                    UpdateNextRowIdState(tableName, schema, checked(explicitRowId + 1));
+                    ObserveExplicitRowId(tableName, schema, checked(explicitRowId + 1));
                 return (explicitRowId, false);
             }
 
@@ -7426,6 +9069,26 @@ public sealed class QueryPlanner
 
         if (schema.NextRowId < nextRowId)
             schema.NextRowId = nextRowId;
+    }
+
+    private void ObserveExplicitRowId(string tableName, TableSchema schema, long nextRowId)
+    {
+        if (nextRowId <= 0)
+            return;
+
+        if (_nextRowIdCache.TryGetValue(tableName, out long cached))
+            _nextRowIdCache[tableName] = Math.Max(cached, nextRowId);
+        else if (schema.NextRowId > 0)
+            _nextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
+        else
+            _nextRowIdCache[tableName] = nextRowId;
+
+        // Explicit rowid inserts can push the durable high-water mark forward, but persisting
+        // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as
+        // unknown instead; the current session still uses the in-memory cache, and a future
+        // reopened session can recompute max(rowid)+1 once if needed.
+        if (schema.NextRowId > 0 && nextRowId > schema.NextRowId)
+            schema.NextRowId = 0;
     }
 
     #endregion

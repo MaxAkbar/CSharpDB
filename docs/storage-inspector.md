@@ -56,6 +56,7 @@ Admin UI (`CSharpDB.Admin`):
 
 - Sidebar `Storage` action opens the **Storage** tab
 - Displays header summary, page histogram, index checks, issue list, and page drill-down
+- Also exposes maintenance actions plus backup/restore, with paths resolved on the connected host
 
 ## Exit Codes
 

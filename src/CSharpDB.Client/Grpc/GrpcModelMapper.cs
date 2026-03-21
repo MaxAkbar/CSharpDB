@@ -487,6 +487,34 @@ public static class GrpcModelMapper
             Name = value.Name,
         };
 
+    public static BackupRequestMessage ToMessage(BackupRequest value)
+        => new()
+        {
+            DestinationPath = value.DestinationPath,
+            WithManifest = value.WithManifest,
+        };
+
+    public static BackupRequest ToModel(BackupRequestMessage value)
+        => new()
+        {
+            DestinationPath = value.DestinationPath,
+            WithManifest = value.WithManifest,
+        };
+
+    public static RestoreRequestMessage ToMessage(RestoreRequest value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            ValidateOnly = value.ValidateOnly,
+        };
+
+    public static RestoreRequest ToModel(RestoreRequestMessage value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            ValidateOnly = value.ValidateOnly,
+        };
+
     public static SpaceUsageReportMessage ToMessage(SpaceUsageReport value)
         => new()
         {
@@ -587,6 +615,66 @@ public static class GrpcModelMapper
             DatabaseFileBytesAfter = value.DatabaseFileBytesAfter,
             PhysicalPageCountBefore = value.PhysicalPageCountBefore,
             PhysicalPageCountAfter = value.PhysicalPageCountAfter,
+        };
+
+    public static BackupResultMessage ToMessage(BackupResult value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            DestinationPath = value.DestinationPath,
+            ManifestPath = value.ManifestPath,
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            ChangeCounter = value.ChangeCounter,
+            WarningCount = value.WarningCount,
+            ErrorCount = value.ErrorCount,
+            Sha256 = value.Sha256,
+        };
+
+    public static BackupResult ToModel(BackupResultMessage value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            DestinationPath = value.DestinationPath,
+            ManifestPath = value.ManifestPath,
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            ChangeCounter = value.ChangeCounter,
+            WarningCount = value.WarningCount,
+            ErrorCount = value.ErrorCount,
+            Sha256 = value.Sha256,
+        };
+
+    public static RestoreResultMessage ToMessage(RestoreResult value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            DestinationPath = value.DestinationPath,
+            ValidateOnly = value.ValidateOnly,
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            ChangeCounter = value.ChangeCounter,
+            SourceWalExists = value.SourceWalExists,
+            WarningCount = value.WarningCount,
+            ErrorCount = value.ErrorCount,
+        };
+
+    public static RestoreResult ToModel(RestoreResultMessage value)
+        => new()
+        {
+            SourcePath = value.SourcePath,
+            DestinationPath = value.DestinationPath,
+            ValidateOnly = value.ValidateOnly,
+            DatabaseFileBytes = value.DatabaseFileBytes,
+            PhysicalPageCount = value.PhysicalPageCount,
+            DeclaredPageCount = value.DeclaredPageCount,
+            ChangeCounter = value.ChangeCounter,
+            SourceWalExists = value.SourceWalExists,
+            WarningCount = value.WarningCount,
+            ErrorCount = value.ErrorCount,
         };
 
     public static FileHeaderReportMessage ToMessage(FileHeaderReport value)

@@ -75,6 +75,8 @@ All meta-commands start with a dot (`.`). They are case-insensitive.
 | `.commit` | Commit the current transaction |
 | `.rollback` | Rollback the current transaction |
 | `.checkpoint` | Flush WAL pages to the main database file |
+| `.backup <FILE> [--with-manifest]` | Write a committed snapshot backup to a file, optionally with a JSON manifest |
+| `.restore <FILE> [--validate-only]` | Validate a source snapshot or restore it into the current database file; for remote transports the path is resolved on the target host |
 
 ### Mode Toggles
 

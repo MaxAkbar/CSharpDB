@@ -17,6 +17,9 @@ public sealed class DefaultRecordSerializer : IRecordSerializer
     public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices) =>
         RecordEncoder.DecodeSelectedInto(buffer, destination, selectedColumnIndices);
 
+    public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices) =>
+        RecordEncoder.DecodeSelectedCompactInto(buffer, destination, selectedColumnIndices);
+
     public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive) =>
         RecordEncoder.DecodeUpTo(buffer, maxColumnIndexInclusive);
 

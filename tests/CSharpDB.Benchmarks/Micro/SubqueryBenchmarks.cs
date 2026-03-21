@@ -73,6 +73,16 @@ public class SubqueryBenchmarks
             _sink = result.Current[0].AsInteger;
     }
 
+    [Benchmark(Description = "Correlated NOT IN subquery filter COUNT(*)")]
+    public async Task CorrelatedNotInFilterCount()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT COUNT(*) FROM users u " +
+            "WHERE id NOT IN (SELECT user_id FROM tenant_featured f WHERE f.tenant_id = u.tenant_id)");
+        if (await result.MoveNextAsync())
+            _sink = result.Current[0].AsInteger;
+    }
+
     [Benchmark(Description = "Correlated EXISTS subquery filter COUNT(*)")]
     public async Task CorrelatedExistsFilterCount()
     {

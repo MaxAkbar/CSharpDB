@@ -5,7 +5,7 @@
  * Run with: node --test tests/csharpdb.test.mjs
  */
 
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { unlinkSync, existsSync } from "node:fs";
 import { Database, CSharpDBError, ColumnType } from "../dist/index.js";
@@ -37,7 +37,7 @@ describe("Database", () => {
     db = new Database(TEST_DB);
   });
 
-  after(() => {
+  afterEach(() => {
     if (db?.isOpen) db.close();
   });
 
@@ -84,9 +84,9 @@ describe("Database", () => {
 
       const rows = db.query("SELECT id, name FROM t ORDER BY id");
       assert.equal(rows.length, 2);
-      assert.equal(rows[0].id, 1n); // bigint
+      assert.equal(Number(rows[0].id), 1);
       assert.equal(rows[0].name, "Alice");
-      assert.equal(rows[1].id, 2n);
+      assert.equal(Number(rows[1].id), 2);
       assert.equal(rows[1].name, "Bob");
     });
 
@@ -196,7 +196,7 @@ describe("Database", () => {
 
       const rows = db.query("SELECT * FROM t");
       assert.equal(rows.length, 1);
-      assert.equal(rows[0].id, 0n);
+      assert.equal(Number(rows[0].id), 0);
     });
 
     it("should return the function result", () => {

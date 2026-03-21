@@ -28,6 +28,18 @@ public class JoinBenchmarks
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE TABLE right_big_t (id INTEGER PRIMARY KEY, left_id INTEGER, amount INTEGER)")
             .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE left_wide_t (id INTEGER PRIMARY KEY, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE right_wide_t (id INTEGER PRIMARY KEY, left_id INTEGER, c1 TEXT, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, tail TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE left_comp_t (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, label TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE right_comp_t (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, amount INTEGER, left_id INTEGER)")
+            .AsTask().GetAwaiter().GetResult();
 
         // Small table for cross join
         db.ExecuteAsync("CREATE TABLE small_t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -43,6 +55,21 @@ public class JoinBenchmarks
             $"INSERT INTO right_t VALUES ({i}, {i % 1000}, {i * 5})")
             .GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE INDEX idx_right_t_left_id ON right_t(left_id)")
+            .AsTask().GetAwaiter().GetResult();
+
+        _bench.SeedAsync("left_wide_t", 1000, i =>
+            $"INSERT INTO left_wide_t VALUES ({i}, 'l1_{i}', 'l2_{i}', 'l3_{i}', 'l4_{i}', 'l5_{i}', 'l6_{i}', 'ltail_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("right_wide_t", 1000, i =>
+            $"INSERT INTO right_wide_t VALUES ({i}, {i % 1000}, 'r1_{i}', 'r2_{i}', 'r3_{i}', 'r4_{i}', 'r5_{i}', 'r6_{i}', 'rtail_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("left_comp_t", 1000, i =>
+            $"INSERT INTO left_comp_t VALUES ({i}, {i % 100}, 'code_{i / 100}', 'left_comp_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("right_comp_t", 1000, i =>
+            $"INSERT INTO right_comp_t VALUES ({i}, {i % 100}, 'code_{i / 100}', {i * 3}, {i})")
+            .GetAwaiter().GetResult();
+        db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_t_ab ON right_comp_t(a, b)")
             .AsTask().GetAwaiter().GetResult();
 
         // Skewed table (20K rows) to stress hash build-side choice.
@@ -128,6 +155,54 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection hash)")]
+    public async Task InnerJoin_WideLateProjection_HashJoin()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.tail, r.tail FROM left_wide_t l INNER JOIN right_wide_t r ON l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection forced nested-loop)")]
+    public async Task InnerJoin_WideLateProjection_ForcedNestedLoop()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.tail, r.tail FROM left_wide_t l INNER JOIN right_wide_t r ON l.id + 0 = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite index nested-loop)")]
+    public async Task InnerJoin_CompositeIndexLookup()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite forced hash)")]
+    public async Task InnerJoin_CompositeIndex_ForcedHash()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a AND l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite covered lookup)")]
+    public async Task InnerJoin_CompositeIndex_CoveredLookup()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.id, r.a, r.b FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite covered forced hash)")]
+    public async Task InnerJoin_CompositeIndex_CoveredForcedHash()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.id, r.a, r.b FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a AND l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "RIGHT JOIN on left PK (rewritten index nested-loop)")]
     public async Task RightJoin_OnLeftPk_RewrittenIndexNestedLoop()
     {
@@ -165,6 +240,22 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id = r.left_id WHERE r.amount > 2500");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN with expression projection")]
+    public async Task InnerJoinWithExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN with filter + expression projection")]
+    public async Task InnerJoinWithFilterAndExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id = r.left_id WHERE r.amount > 2500");
         await result.ToListAsync();
     }
 }

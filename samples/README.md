@@ -1,8 +1,8 @@
 # Samples
 
-This folder contains realistic datasets, a focused query/statistics workbook sample, and a full-fidelity fictitious company example for the current CSharpDB surface area. Each sample now lives in its own folder with a conventional layout: `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries.
+This folder contains both SQL dataset samples and runnable C# sample projects for the current CSharpDB surface area.
 
-Each sample folder also includes a small `README.md` with domain notes, key features, and suggested starting points.
+The SQL dataset samples use a conventional layout with `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries. Runnable C# samples include a `.csproj`, `Program.cs`, and a focused `README.md`.
 
 ## Available Samples
 
@@ -13,6 +13,7 @@ Each sample folder also includes a small `README.md` with domain notes, key feat
 | `school-district/` | Education + attendance | `schema.sql`, `procedures.json` |
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
+| `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 
 Root-level helpers:
 
@@ -57,6 +58,14 @@ Root-level helpers:
 - Queries: [queries.sql](procurement-analytics/queries.sql)
 - Domain: suppliers, warehouses, products, purchase orders, and quality incidents
 - Good for: `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, and `sys.table_stats` / `sys.column_stats`
+
+### Collection Indexing Walkthrough
+
+- Project: [CollectionIndexingSample.csproj](collection-indexing/CollectionIndexingSample.csproj)
+- Code: [Program.cs](collection-indexing/Program.cs)
+- Docs: [README.md](collection-indexing/README.md)
+- Domain: typed user documents with nested address, tags, and orders
+- Good for: `GetCollectionAsync<T>()`, `EnsureIndexAsync(...)`, `FindByIndexAsync(...)`, `FindByPathAsync(...)`, and `FindByPathRangeAsync(...)`
 
 ## Running a Sample
 
@@ -122,6 +131,75 @@ You can then run workbook queries the same way:
 var workbook = File.ReadAllText("samples/feature-tour/queries.sql");
 foreach (var statement in SqlScriptSplitter.SplitExecutableStatements(workbook))
     await client.ExecuteSqlAsync(statement);
+```
+
+### Option 4: Run the Collection Indexing Sample
+
+```bash
+dotnet run --project samples/collection-indexing/CollectionIndexingSample.csproj
+```
+
+This sample is the quickest way to see the collection indexing APIs with real seed data and console output.
+
+## v2.2.0 API Examples
+
+The SQL samples above cover the relational surface. The following snippets show v2.2.0 features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
+
+### Collection Path Indexing and Queries
+
+Collection path indexes and queries are engine-level APIs on `Database` and `Collection<T>`:
+
+For a complete walkthrough with seed data, index creation, and equality/range query examples, see [docs/collection-indexing/README.md](../docs/collection-indexing/README.md).
+
+```csharp
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("sample.db");
+var users = await db.GetCollectionAsync<User>("users");
+
+// Create path indexes
+await users.EnsureIndexAsync("Email");
+await users.EnsureIndexAsync("$.address.city");
+await users.EnsureIndexAsync("$.tags[]");
+await users.EnsureIndexAsync("$.orders[].sku");
+
+// Query by scalar path
+await foreach (var kv in users.FindByPathAsync<string>("$.address.city", "Seattle"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+
+// Query by array element path
+await foreach (var kv in users.FindByPathAsync<string>("$.tags[]", "premium"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+
+// Range query on an ordered text index
+await foreach (var kv in users.FindByPathRangeAsync<string>("Email", "a@", "m@"))
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+```
+
+### Backup and Restore
+
+Backup and restore are first-class `ICSharpDbClient` operations across Direct, HTTP, gRPC, and CLI:
+
+```csharp
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "production.db",
+});
+
+// Backup
+var backupResult = await client.BackupAsync(new BackupRequest
+{
+    DestinationPath = "backups/production-2026-03-19.db",
+});
+
+// Restore
+var restoreResult = await client.RestoreAsync(new RestoreRequest
+{
+    SourcePath = "backups/production-2026-03-19.db",
+});
 ```
 
 ## Notes

@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.0.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.2.0` state of the repo.
 
 ---
 
@@ -24,8 +24,14 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
+| **Memory-mapped main-file reads** | Opt-in mapped clean-page reads plus copy-on-write materialization for mutable access on file-backed databases | Done |
 | **Background WAL checkpointing** | Incremental/sliced auto-checkpointing to move work off the triggering commit | Done |
-| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | In progress |
+| **SQL executor/read-path fast paths** | Compact scan and indexed-range projections, broader join lookup/covered paths, grouped/composite index aggregates, correlated subquery filter fast paths, and lower row materialization overhead | Done |
+| **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | Done |
+| **Collection binary payloads** | Binary direct-payload format with faster hydration, direct field/path extraction, and richer path-based indexing | Done |
+| **Collection path indexes** | Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes with `FindByPathAsync` / `FindByPathRangeAsync` | Done |
+| **Hybrid storage mode** | Lazy-resident durable storage with gRPC tunable file-cache configuration | Done |
+| **Client backup/restore** | `BackupAsync` / `RestoreAsync` as first-class `ICSharpDbClient` operations across direct, HTTP, gRPC, CLI, and Admin | Done |
 
 ---
 
@@ -48,9 +54,11 @@ SQL feature parity and ecosystem expansion.
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
-| **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | In progress |
+| **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | Done |
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
+| **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Planned |
+| **Collation support** | Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and `COLLATE` clause in queries and index definitions | Planned |
 
 ---
 
@@ -60,10 +68,11 @@ Advanced features and fundamental architecture enhancements.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **Memory-mapped I/O (mmap)** | Replace `byte[]` page materialization on cache misses with mapped read views where safe to reduce copy and GC pressure | Planned |
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Planned |
-| **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) | Planned |
-| **Advanced collection storage path** | Extend document storage beyond UTF-8 JSON payloads with direct binary hydration and richer expression/path indexes | Planned |
+| **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) via `FindByPathAsync` / `FindByPathRangeAsync` | Done |
+| **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
+| **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
+| **SQL batched row transport** | Introduce true internal row-batch transport between operators as the foundation for batch-oriented/vectorized scan-heavy execution | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Cost-based query optimizer** | Statistics-driven join ordering and index selection (initial support via ANALYZE in Near-Term; advanced histograms and adaptive re-optimization here) | Planned |
@@ -88,14 +97,14 @@ These are known simplifications in the current implementation:
 | **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
-| **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindAsync` remains a full scan |
-| **Collections** | No JSON-path querying or expression/path-based document indexes yet |
+| **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
+| **Text / Collation** | Text is stored as UTF-8 and supports all Unicode languages, but comparisons and sorting use ordinal (byte-order) semantics only; no collation, case-insensitive matching, or locale-aware ordering |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
-| **Storage** | No mmap read path |
+| **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` exist, but range and join costing still lean on heuristics rather than broader statistics-driven estimation |
 
 ---
@@ -131,13 +140,20 @@ Major features already implemented:
 - Collection secondary field indexes via `EnsureIndexAsync` / `FindByIndexAsync`
 - Maintenance report, `REINDEX`, and `VACUUM` flows across client, CLI, API, and Admin UI
 - Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
-- Storage tuning presets and sliced background WAL auto-checkpointing
+- Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing
+- SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
 - B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)
 - Reusable snapshot reader sessions for higher concurrent-read throughput
 - Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)
+- Binary direct-payload collection storage with direct hydration and field/path extraction
+- Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text
+- Collection path query APIs: `FindByPathAsync` and `FindByPathRangeAsync`
+- Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache
+- Client-wide `BackupAsync` / `RestoreAsync` across direct, HTTP, gRPC, CLI, and Admin
+- `ReplaceAsync` for index stores
 
 ---
 
@@ -145,9 +161,11 @@ Major features already implemented:
 
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
-- [Backup/Export/Import Plan](backup-export-import/README.md) — Planned tooling for diagnostics, backups, import/export, and reclaim
 - [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
+- [Source-Generated Collection Fast Path](source-generated-collections/README.md) — No-reflection typed collection models, generated codecs, and trim/AOT-safe collection access
+- [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
+- [Collation Support Plan](collation-support/README.md) — Case-insensitive matching, locale-aware sorting, and COLLATE clause for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library

@@ -1,3 +1,4 @@
+using System.Text;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Storage.Serialization;
@@ -8,6 +9,7 @@ namespace CSharpDB.Storage.Serialization;
 public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 {
     private readonly IRecordSerializer _inner;
+    private readonly bool _supportsDirectCollectionPayloads;
 
     public CollectionAwareRecordSerializer()
         : this(new DefaultRecordSerializer())
@@ -17,45 +19,57 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
     public CollectionAwareRecordSerializer(IRecordSerializer inner)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _supportsDirectCollectionPayloads = inner is DefaultRecordSerializer;
     }
 
     public byte[] Encode(ReadOnlySpan<DbValue> values) => _inner.Encode(values);
 
     public DbValue[] Decode(ReadOnlySpan<byte> buffer)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.Decode(buffer);
 
         return
         [
-            DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer)),
-            DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer))
+            DbValue.FromText(Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header))),
+            DbValue.FromText(
+                header.Format == CollectionPayloadCodec.CollectionPayloadFormat.LegacyJson
+                    ? Encoding.UTF8.GetString(CollectionPayloadCodec.GetDocumentPayload(buffer, header))
+                    : CollectionBinaryDocumentCodec.DecodeJson(CollectionPayloadCodec.GetDocumentPayload(buffer, header)))
         ];
     }
 
     public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeInto(buffer, destination);
 
         int decodeCount = Math.Min(2, destination.Length);
         if (decodeCount <= 0)
             return 0;
 
-        destination[0] = DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer));
+        destination[0] = DbValue.FromText(Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header)));
         if (decodeCount > 1)
-            destination[1] = DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer));
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(buffer, header);
+            destination[1] = DbValue.FromText(
+                header.Format == CollectionPayloadCodec.CollectionPayloadFormat.LegacyJson
+                    ? Encoding.UTF8.GetString(documentPayload)
+                    : CollectionBinaryDocumentCodec.DecodeJson(documentPayload));
+        }
         return decodeCount;
     }
 
     public void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
         {
             _inner.DecodeSelectedInto(buffer, destination, selectedColumnIndices);
             return;
         }
 
+        string? decodedKey = null;
+        string? decodedJson = null;
         int decodeCount = Math.Min(destination.Length, selectedColumnIndices.Length);
         for (int i = 0; i < decodeCount; i++)
         {
@@ -66,10 +80,12 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
             switch (columnIndex)
             {
                 case 0:
-                    destination[columnIndex] = DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer));
+                    decodedKey ??= Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header));
+                    destination[columnIndex] = DbValue.FromText(decodedKey);
                     break;
                 case 1:
-                    destination[columnIndex] = DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer));
+                    decodedJson ??= DecodeJson(buffer, header);
+                    destination[columnIndex] = DbValue.FromText(decodedJson);
                     break;
                 default:
                     destination[columnIndex] = DbValue.Null;
@@ -78,45 +94,67 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         }
     }
 
+    public void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices)
+    {
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
+        {
+            _inner.DecodeSelectedCompactInto(buffer, destination, selectedColumnIndices);
+            return;
+        }
+
+        string? decodedKey = null;
+        string? decodedJson = null;
+        int decodeCount = Math.Min(destination.Length, selectedColumnIndices.Length);
+        for (int i = 0; i < decodeCount; i++)
+        {
+            destination[i] = selectedColumnIndices[i] switch
+            {
+                0 => DbValue.FromText(decodedKey ??= Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header))),
+                1 => DbValue.FromText(decodedJson ??= DecodeJson(buffer, header)),
+                _ => DbValue.Null,
+            };
+        }
+    }
+
     public DbValue[] DecodeUpTo(ReadOnlySpan<byte> buffer, int maxColumnIndexInclusive)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeUpTo(buffer, maxColumnIndexInclusive);
 
         if (maxColumnIndexInclusive < 0)
             return Array.Empty<DbValue>();
         if (maxColumnIndexInclusive == 0)
-            return [DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer))];
+            return [DbValue.FromText(Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header)))];
 
         return
         [
-            DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer)),
-            DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer))
+            DbValue.FromText(Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header))),
+            DbValue.FromText(DecodeJson(buffer, header))
         ];
     }
 
     public DbValue DecodeColumn(ReadOnlySpan<byte> buffer, int columnIndex)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.DecodeColumn(buffer, columnIndex);
 
         return columnIndex switch
         {
-            0 => DbValue.FromText(CollectionPayloadCodec.DecodeKey(buffer)),
-            1 => DbValue.FromText(CollectionPayloadCodec.DecodeJson(buffer)),
+            0 => DbValue.FromText(Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(buffer, header))),
+            1 => DbValue.FromText(DecodeJson(buffer, header)),
             _ => DbValue.Null,
         };
     }
 
     public bool TryColumnTextEquals(ReadOnlySpan<byte> buffer, int columnIndex, ReadOnlySpan<byte> expectedUtf8, out bool equals)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))
             return _inner.TryColumnTextEquals(buffer, columnIndex, expectedUtf8, out equals);
 
         equals = columnIndex switch
         {
-            0 => CollectionPayloadCodec.KeyEquals(buffer, expectedUtf8),
-            1 => CollectionPayloadCodec.GetJsonUtf8(buffer).SequenceEqual(expectedUtf8),
+            0 => CollectionPayloadCodec.GetKeyUtf8(buffer, header).SequenceEqual(expectedUtf8),
+            1 => CollectionPayloadCodec.JsonEquals(buffer, expectedUtf8),
             _ => false,
         };
 
@@ -125,7 +163,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public bool IsColumnNull(ReadOnlySpan<byte> buffer, int columnIndex)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
             return _inner.IsColumnNull(buffer, columnIndex);
 
         return columnIndex is not 0 and not 1;
@@ -138,7 +176,7 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         out double realValue,
         out bool isReal)
     {
-        if (!CollectionPayloadCodec.IsDirectPayload(buffer))
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
             return _inner.TryDecodeNumericColumn(buffer, columnIndex, out intValue, out realValue, out isReal);
 
         intValue = 0;
@@ -146,5 +184,13 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         isReal = false;
 
         return false;
+    }
+
+    private static string DecodeJson(ReadOnlySpan<byte> buffer, CollectionPayloadCodec.Header header)
+    {
+        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(buffer, header);
+        return header.Format == CollectionPayloadCodec.CollectionPayloadFormat.LegacyJson
+            ? Encoding.UTF8.GetString(documentPayload)
+            : CollectionBinaryDocumentCodec.DecodeJson(documentPayload);
     }
 }
