@@ -15,7 +15,7 @@
 
     --text-primary: #e8ecf4;
     --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    --text-muted: #8b9bb0;
 
     --accent: #6366f1;
     --accent-hover: #818cf8;
@@ -30,7 +30,7 @@
     --code-keyword: #c084fc;
     --code-string: #86efac;
     --code-type: #67e8f9;
-    --code-comment: #64748b;
+    --code-comment: #8b9bb0;
     --code-number: #fbbf24;
 
     --success: #22c55e;
@@ -63,7 +63,7 @@
 
     --text-primary: #0f172a;
     --text-secondary: #475569;
-    --text-muted: #94a3b8;
+    --text-muted: #64748b;
 
     --accent: #4f46e5;
     --accent-hover: #6366f1;
@@ -76,7 +76,7 @@
     --code-keyword: #7c3aed;
     --code-string: #059669;
     --code-type: #0891b2;
-    --code-comment: #94a3b8;
+    --code-comment: #64748b;
     --code-number: #d97706;
 
     --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
