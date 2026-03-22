@@ -56,6 +56,7 @@ SQL feature parity and ecosystem expansion.
 | **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, and deeper diagnostics beyond the current schema/procedure/storage tooling | Done |
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
+| **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
 | **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Planned |
 | **Collation support** | Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and `COLLATE` clause in queries and index definitions | Planned |
@@ -154,6 +155,7 @@ Major features already implemented:
 - Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache
 - Client-wide `BackupAsync` / `RestoreAsync` across direct, HTTP, gRPC, CLI, and Admin
 - `ReplaceAsync` for index stores
+- Package-driven ETL pipelines with validation, dry-run, execute/resume, persisted run history, and Admin visual designer support
 
 ---
 
@@ -161,7 +163,6 @@ Major features already implemented:
 
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
-- [ETL Pipelines Plan](etl-pipelines/README.md) — SSIS-lite proposal for package-based data movement and transforms
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Source-Generated Collection Fast Path](source-generated-collections/README.md) — No-reflection typed collection models, generated codecs, and trim/AOT-safe collection access
 - [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
