@@ -18,6 +18,7 @@
     <meta name="twitter:title" content="Benchmarks — CSharpDB">
     <meta name="twitter:description" content="CSharpDB performance benchmarks — sub-microsecond in-memory reads, file-based durability, and side-by-side comparisons across storage modes.">
     <link rel="stylesheet" href="css/style.css">
+    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="favicon.png">
     <style>
         .bench-detail { color: var(--text-secondary); font-size: 14px; margin-top: 8px; line-height: 1.6; }
@@ -616,7 +617,6 @@
     </main>
 
     <div id="site-footer"></div>
-    <script src="js/components.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/csharpdb.bundle.js" defer></script>
 </body>
 </html>
