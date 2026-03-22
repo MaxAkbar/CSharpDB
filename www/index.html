@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSharpDB — Embedded Database Engine for .NET</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'home';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <!-- Hero -->
+        <section class="hero">
+            <div class="hero-bg-grid"></div>
+            <div class="container">
+                <div class="hero-badge">Open Source Database Engine</div>
+                <h1 class="hero-title">
+                    The Embedded Database<br>
+                    Built for <span class="gradient-text">.NET</span>
+                </h1>
+                <p class="hero-subtitle">
+                    A zero-dependency, ACID-compliant storage engine with full SQL, NoSQL collections,
+                    ETL pipelines, and multiple access layers. Single-file. Production-grade.
+                </p>
+                <div class="hero-actions">
+                    <a href="getting-started.html" class="btn btn-primary btn-lg">Get Started</a>
+                    <a href="docs/index.html" class="btn btn-ghost btn-lg">Read the Docs</a>
+                </div>
+                <div class="hero-install">
+                    <code>dotnet add package CSharpDB</code>
+                    <button class="copy-btn" title="Copy">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features -->
+        <section class="section" id="features">
+            <div class="container">
+                <h2 class="section-title">Why CSharpDB?</h2>
+                <p class="section-subtitle">A complete embedded database platform — from storage primitives to SQL to ETL.</p>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-7m7 10h-7m-4-5v10l-4-4"/><path d="M4 7h16"/></svg>
+                        </div>
+                        <h3>Zero Dependencies</h3>
+                        <p>No external NuGet packages. Pure .NET implementation from page management to query execution.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        </div>
+                        <h3>ACID Transactions</h3>
+                        <p>Full atomicity, consistency, isolation, and durability. WAL-based recovery with snapshot isolation.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                        </div>
+                        <h3>Full SQL Engine</h3>
+                        <p>DDL, DML, JOINs, aggregates, CTEs, subqueries, views, triggers, and stored procedures.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15h6"/></svg>
+                        </div>
+                        <h3>Collection API</h3>
+                        <p>Typed <code>Collection&lt;T&gt;</code> with JSON serialization, nested path indexing, and range queries.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>
+                        </div>
+                        <h3>B+Tree Storage</h3>
+                        <p>Efficient on-disk key-value storage with automatic node splitting, cursor iteration, and range scans.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                        </div>
+                        <h3>ETL Pipelines</h3>
+                        <p>Built-in pipeline runtime with CSV/JSON sources, transforms, and destinations. Visual designer in Admin UI.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                        </div>
+                        <h3>Snapshot Isolation</h3>
+                        <p>Concurrent readers never block the writer. Each reader sees a consistent point-in-time snapshot.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        </div>
+                        <h3>Multiple Access Layers</h3>
+                        <p>ADO.NET provider, REST API, gRPC daemon, CLI REPL, Client SDK, MCP server, and VS Code extension.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        </div>
+                        <h3>Single-File Database</h3>
+                        <p>Your entire database in one file. 4096-byte slotted pages with efficient freelist management.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Code Examples -->
+        <section class="section section-alt">
+            <div class="container">
+                <h2 class="section-title">Three Ways to Work</h2>
+                <p class="section-subtitle">Use SQL, the Collection API, or low-level storage — all in one engine.</p>
+                <div class="code-showcase">
+                    <div class="code-block">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">SQL via ADO.NET</span>
+                        </div>
+                        <pre><code><span class="kw">using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">@"
+    CREATE TABLE IF NOT EXISTS Users (
+        Id   INTEGER PRIMARY KEY,
+        Name TEXT NOT NULL,
+        Email TEXT
+    )"</span>;
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+
+cmd.CommandText = <span class="str">"INSERT INTO Users VALUES (@id, @name, @email)"</span>;
+cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
+cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@email"</span>, <span class="str">"alice@example.com"</span>));
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();</code></pre>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Collection API</span>
+                        </div>
+                        <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;();
+
+<span class="cm">// Put, Get, Delete</span>
+<span class="kw">await</span> users.PutAsync(<span class="num">1</span>, <span class="kw">new</span> <span class="tp">User</span>(<span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>));
+<span class="kw">var</span> alice = <span class="kw">await</span> users.GetAsync(<span class="num">1</span>);
+
+<span class="cm">// Index and query</span>
+<span class="kw">await</span> users.Index.OnAsync(u => u.Name);
+<span class="kw">var</span> results = <span class="kw">await</span> users.FindAsync(u => u.Name, <span class="str">"Alice"</span>);</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Stats -->
+        <section class="section">
+            <div class="container">
+                <div class="stats-grid">
+                    <div class="stat">
+                        <span class="stat-value">0</span>
+                        <span class="stat-label">External Dependencies</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">Full SQL</span>
+                        <span class="stat-label">DDL, DML, JOINs, CTEs</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">10+</span>
+                        <span class="stat-label">Access Methods</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">.NET 10</span>
+                        <span class="stat-label">Target Framework</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA -->
+        <section class="section section-cta">
+            <div class="container center">
+                <h2>Ready to get started?</h2>
+                <p>Add CSharpDB to your .NET project in seconds.</p>
+                <a href="getting-started.html" class="btn btn-primary btn-lg">Get Started</a>
+            </div>
+        </section>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/components.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

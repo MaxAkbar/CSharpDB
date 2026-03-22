@@ -1,0 +1,892 @@
+@using CSharpDB.Admin.Models
+@using CSharpDB.Client.Pipelines
+@using CSharpDB.Pipelines.Models
+@using CSharpDB.Pipelines.Serialization
+@inject ICSharpDbClient DbClient
+@inject ToastService Toast
+@inject DatabaseChangeService Changes
+
+<div class="pipeline-tab">
+    <div class="toolbar">
+        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.Validate)" disabled="@_running">
+            <i class="bi bi-shield-check"></i> Validate
+        </button>
+        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.DryRun)" disabled="@_running">
+            <i class="bi bi-eye"></i> Dry Run
+        </button>
+        <button class="toolbar-btn primary" @onclick="() => ExecuteAsync(PipelineExecutionMode.Run)" disabled="@_running">
+            <i class="bi bi-play-fill"></i> Run
+        </button>
+        <div class="toolbar-separator"></div>
+        <input class="schema-input" style="width:180px" @bind="_pipelineName" placeholder="Pipeline name" />
+        <button class="toolbar-btn" @onclick="SavePipelineAsync" disabled="@_running">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <div class="toolbar-separator"></div>
+        <div class="view-switcher">
+            <button class="@GetEditorModeClass(PipelineEditorMode.Visual)" @onclick="() => SetEditorModeAsync(PipelineEditorMode.Visual)">
+                <i class="bi bi-diagram-3"></i> Visual
+            </button>
+            <button class="@GetEditorModeClass(PipelineEditorMode.Json)" @onclick="() => SetEditorModeAsync(PipelineEditorMode.Json)">
+                <i class="bi bi-braces"></i> JSON
+            </button>
+        </div>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">@(_editorMode == PipelineEditorMode.Visual ? "Visual builder with raw JSON fallback" : "Raw JSON package editor")</div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="query-error">
+            <i class="bi bi-exclamation-triangle"></i> @_error
+        </div>
+    }
+
+    @if (_message is not null)
+    {
+        <div class="query-message">
+            <i class="bi bi-check-circle"></i> @_message
+        </div>
+    }
+
+    <div class="pipeline-layout">
+        <div class="schema-section">
+            <div class="schema-section-header">
+                <h3>@(_editorMode == PipelineEditorMode.Visual ? "Pipeline Designer" : "Package JSON")</h3>
+                <button class="toolbar-btn" @onclick="ResetTemplate" disabled="@_running">
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset Template
+                </button>
+            </div>
+            @if (_editorMode == PipelineEditorMode.Visual)
+            {
+                <PipelineDesigner @ref="_designer"
+                                  @key="_designerReloadVersion"
+                                  PackageJson="@_visualPackageJson"
+                                  PackageJsonChanged="@OnPackageJsonChanged" />
+            }
+            else
+            {
+                <textarea class="schema-textarea pipeline-json-editor" @bind="_packageJson" @bind:event="oninput"></textarea>
+            }
+        </div>
+
+        <div class="schema-section">
+            <h3>Run Result</h3>
+            @if (_result is null)
+            {
+                <p class="schema-empty">Validate or run a package to see execution output.</p>
+            }
+            else
+            {
+                <div class="pipeline-result-grid">
+                    <div class="pipeline-metric"><span>Run ID</span><strong>@_result.RunId</strong></div>
+                    <div class="pipeline-metric"><span>Pipeline</span><strong>@_result.PipelineName</strong></div>
+                    <div class="pipeline-metric"><span>Mode</span><strong>@_result.Mode</strong></div>
+                    <div class="pipeline-metric"><span>Status</span><strong>@_result.Status</strong></div>
+                    <div class="pipeline-metric"><span>Rows Read</span><strong>@_result.Metrics.RowsRead</strong></div>
+                    <div class="pipeline-metric"><span>Rows Written</span><strong>@_result.Metrics.RowsWritten</strong></div>
+                    <div class="pipeline-metric"><span>Batches</span><strong>@_result.Metrics.BatchesCompleted</strong></div>
+                </div>
+
+                @if (_result.Checkpoint is not null)
+                {
+                    <div class="pipeline-checkpoint">
+                        <strong>Last Checkpoint</strong>
+                        <span>Batch @_result.Checkpoint.BatchNumber</span>
+                        <span>@_result.Checkpoint.StepName</span>
+                        <span>@_result.Checkpoint.UpdatedUtc.LocalDateTime</span>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_result.ErrorSummary))
+                {
+                    <pre class="procedure-sql-preview">@_result.ErrorSummary</pre>
+                }
+            }
+        </div>
+
+        <div class="schema-section">
+            <div class="schema-section-header">
+                <h3>Stored Pipelines</h3>
+                <button class="toolbar-btn" @onclick="LoadPipelinesAsync" disabled="@_running">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+
+            @if (_pipelines.Count == 0)
+            {
+                <p class="schema-empty">No stored pipelines yet.</p>
+            }
+            else
+            {
+                <table class="schema-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Version</th>
+                            <th>Revision</th>
+                            <th>Description</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var pipeline in _pipelines)
+                        {
+                            <tr>
+                                <td>@pipeline.Name</td>
+                                <td>@pipeline.Version</td>
+                                <td>@pipeline.Revision</td>
+                                <td>@pipeline.Description</td>
+                                <td style="display:flex; gap:4px;">
+                                    <button class="schema-icon-btn" title="Load pipeline"
+                                            @onclick="() => LoadPipelineAsync(pipeline.Name)" disabled="@_running">
+                                        <i class="bi bi-folder2-open"></i>
+                                    </button>
+                                    <button class="schema-icon-btn" title="Show revisions"
+                                            @onclick="() => SelectPipelineAsync(pipeline.Name)" disabled="@_running">
+                                        <i class="bi bi-clock-history"></i>
+                                    </button>
+                                    <button class="schema-icon-btn" title="Run stored pipeline"
+                                            @onclick="() => RunStoredPipelineAsync(pipeline.Name)" disabled="@_running">
+                                        <i class="bi bi-play"></i>
+                                    </button>
+                                    <button class="schema-icon-btn danger" title="Delete pipeline"
+                                            @onclick="() => DeletePipelineAsync(pipeline.Name)" disabled="@_running">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            @if (_loadingPipelineDetail)
+            {
+                <p class="schema-empty">Loading pipeline revisions...</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(_selectedPipelineName))
+            {
+                <div class="pipeline-run-detail">
+                    <div class="schema-section-header">
+                        <h3>Revision History</h3>
+                        <div class="toolbar-info">@_selectedPipelineName</div>
+                    </div>
+                    @if (_selectedPipelineRevisions.Count == 0)
+                    {
+                        <p class="schema-empty">No revisions recorded for this pipeline.</p>
+                    }
+                    else
+                    {
+                        <table class="schema-table">
+                            <thead>
+                                <tr>
+                                    <th>Revision</th>
+                                    <th>Version</th>
+                                    <th>Created</th>
+                                    <th>Description</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var revision in _selectedPipelineRevisions)
+                                {
+                                    <tr class="pipeline-run-row @(revision.Revision == _selectedPipelineRevision ? "selected" : null)">
+                                        <td>@revision.Revision</td>
+                                        <td>@revision.Version</td>
+                                        <td>@revision.CreatedUtc.LocalDateTime</td>
+                                        <td>@revision.Description</td>
+                                        <td style="display:flex; gap:4px;">
+                                            <button class="schema-icon-btn" title="Load revision"
+                                                    @onclick="() => LoadPipelineRevisionAsync(revision.Name, revision.Revision)" disabled="@_running">
+                                                <i class="bi bi-folder-symlink"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="schema-section">
+            <div class="schema-section-header">
+                <h3>Recent Runs</h3>
+                <button class="toolbar-btn" @onclick="LoadRunsAsync" disabled="@_running">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+
+            @if (_runs.Count == 0)
+            {
+                <p class="schema-empty">No recorded pipeline runs yet.</p>
+            }
+            else
+            {
+                <table class="schema-table">
+                    <thead>
+                        <tr>
+                            <th>Run ID</th>
+                            <th>Status</th>
+                            <th>Mode</th>
+                            <th>Pipeline</th>
+                            <th>Read</th>
+                            <th>Written</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var run in _runs)
+                        {
+                            <tr class="pipeline-run-row @(string.Equals(_selectedRunId, run.RunId, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">
+                                <td class="mono-cell">@run.RunId</td>
+                                <td>@run.Status</td>
+                                <td>@run.Mode</td>
+                                <td>@run.PipelineName</td>
+                                <td>@run.Metrics.RowsRead</td>
+                                <td>@run.Metrics.RowsWritten</td>
+                                <td style="display:flex; gap:4px;">
+                                    <button class="schema-icon-btn" title="Inspect run"
+                                            @onclick="() => SelectRunAsync(run.RunId)" disabled="@_running">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                    <button class="schema-icon-btn" title="Load run package into editor"
+                                            @onclick="() => LoadRunPackageAsync(run.RunId)" disabled="@_running">
+                                        <i class="bi bi-arrow-up-right-square"></i>
+                                    </button>
+                                    <button class="schema-icon-btn" title="Resume run"
+                                            @onclick="() => ResumeAsync(run.RunId)" disabled="@_running">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            @if (_loadingRunDetail)
+            {
+                <p class="schema-empty">Loading run details...</p>
+            }
+            else if (_selectedRunDetail is not null)
+            {
+                <div class="pipeline-run-detail">
+                    <div class="schema-section-header">
+                        <h3>Run Detail</h3>
+                        <div class="toolbar-info mono-cell">@_selectedRunDetail.RunId</div>
+                    </div>
+                    <div class="pipeline-result-grid">
+                        <div class="pipeline-metric"><span>Status</span><strong>@_selectedRunDetail.Status</strong></div>
+                        <div class="pipeline-metric"><span>Mode</span><strong>@_selectedRunDetail.Mode</strong></div>
+                        <div class="pipeline-metric"><span>Started</span><strong>@_selectedRunDetail.StartedUtc.LocalDateTime</strong></div>
+                        <div class="pipeline-metric"><span>Completed</span><strong>@(_selectedRunDetail.CompletedUtc?.LocalDateTime.ToString() ?? "Pending")</strong></div>
+                        <div class="pipeline-metric"><span>Read</span><strong>@_selectedRunDetail.Metrics.RowsRead</strong></div>
+                        <div class="pipeline-metric"><span>Written</span><strong>@_selectedRunDetail.Metrics.RowsWritten</strong></div>
+                        <div class="pipeline-metric"><span>Rejected</span><strong>@_selectedRunDetail.Metrics.RowsRejected</strong></div>
+                        <div class="pipeline-metric"><span>Batches</span><strong>@_selectedRunDetail.Metrics.BatchesCompleted</strong></div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_selectedRunDetail.ErrorSummary))
+                    {
+                        <pre class="procedure-sql-preview">@_selectedRunDetail.ErrorSummary</pre>
+                    }
+
+                    <div class="pipeline-reject-section">
+                        <div class="schema-section-header">
+                            <h3>Rejects</h3>
+                            <div class="toolbar-info">@_selectedRunRejects.Count row@( _selectedRunRejects.Count == 1 ? "" : "s")</div>
+                        </div>
+                        @if (_selectedRunRejects.Count == 0)
+                        {
+                            <p class="schema-empty">No rejects recorded for this run.</p>
+                        }
+                        else
+                        {
+                            <div class="pipeline-reject-list">
+                                @foreach (var reject in _selectedRunRejects.Take(20))
+                                {
+                                    <div class="pipeline-reject-card">
+                                        <strong>Row @reject.RowNumber</strong>
+                                        <span>@reject.Reason</span>
+                                        @if (!string.IsNullOrWhiteSpace(reject.PayloadJson))
+                                        {
+                                            <pre class="procedure-sql-preview">@reject.PayloadJson</pre>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private bool _running;
+    private string? _error;
+    private string? _message;
+    private string _packageJson = string.Empty;
+    private string _visualPackageJson = string.Empty;
+    private string _pipelineName = string.Empty;
+    private PipelineRunResult? _result;
+    private IReadOnlyList<PipelineRunResult> _runs = [];
+    private IReadOnlyList<PipelineDefinitionSummary> _pipelines = [];
+    private bool _loadingPipelineDetail;
+    private string? _selectedPipelineName;
+    private int? _selectedPipelineRevision;
+    private IReadOnlyList<PipelineRevisionSummary> _selectedPipelineRevisions = [];
+    private bool _loadingRunDetail;
+    private string? _selectedRunId;
+    private PipelineRunResult? _selectedRunDetail;
+    private IReadOnlyList<PipelineRejectRecord> _selectedRunRejects = [];
+    private PipelineEditorMode _editorMode = PipelineEditorMode.Visual;
+    private PipelineDesigner? _designer;
+    private int _designerReloadVersion;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        string? candidateJson = Tab?.PipelinePackageJson;
+        if (!string.IsNullOrWhiteSpace(candidateJson) && !string.Equals(candidateJson, _packageJson, StringComparison.Ordinal))
+        {
+            _packageJson = candidateJson;
+            if (TryGetPackageName(candidateJson) is { Length: > 0 } packageName)
+            {
+                _pipelineName = packageName;
+            }
+        }
+
+        if (TryGetValidPackageJson(_packageJson, out var validPackageJson))
+        {
+            if (!string.Equals(validPackageJson, _visualPackageJson, StringComparison.Ordinal))
+            {
+                _visualPackageJson = validPackageJson;
+                _designerReloadVersion++;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(_visualPackageJson) && _editorMode == PipelineEditorMode.Visual && string.IsNullOrWhiteSpace(_error))
+        {
+            _message = "No pipeline schema is loaded yet. Load a pipeline or enter a valid package JSON to use the visual designer.";
+        }
+
+        if (_runs.Count == 0)
+        {
+            await LoadRunsAsync();
+        }
+
+        if (_pipelines.Count == 0)
+        {
+            await LoadPipelinesAsync();
+        }
+    }
+
+    private async Task ExecuteAsync(PipelineExecutionMode mode)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            PipelinePackageDefinition package = await GetCurrentPackageAsync();
+            _pipelineName = string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName;
+            var runner = new CSharpDbPipelineRunner(DbClient);
+            _result = await runner.RunPackageAsync(package, mode);
+            Tab?.PipelinePackageJson = _packageJson;
+
+            if (_result.Status == PipelineRunStatus.Succeeded)
+            {
+                _message = $"Pipeline completed in {mode} mode.";
+                Toast.Success(_message);
+                if (mode == PipelineExecutionMode.Run)
+                    Changes.NotifyChanged();
+            }
+            else
+            {
+                _error = _result.ErrorSummary ?? "Pipeline execution failed.";
+            }
+
+            await LoadRunsAsync();
+            await SelectRunAsync(_result.RunId);
+            await LoadPipelinesAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task ResetTemplate()
+    {
+        await SetLoadedPackageAsync(CreateDefaultTemplate());
+        _result = null;
+        _error = null;
+        _message = null;
+    }
+
+    private async Task SetEditorModeAsync(PipelineEditorMode mode)
+    {
+        if (mode == PipelineEditorMode.Visual)
+        {
+            if (TryGetValidPackageJson(_packageJson, out var validPackageJson))
+            {
+                if (!string.Equals(validPackageJson, _visualPackageJson, StringComparison.Ordinal))
+                {
+                    _visualPackageJson = validPackageJson;
+                    _designerReloadVersion++;
+                }
+
+                _pipelineName = TryGetPackageName(validPackageJson);
+                Tab?.PipelinePackageJson = _packageJson;
+                await SyncDesignerAsync();
+            }
+            else if (string.IsNullOrWhiteSpace(_visualPackageJson))
+            {
+                _message = "No pipeline schema is loaded yet. Load a pipeline or enter a valid package JSON to use the visual designer.";
+            }
+            else
+            {
+                _message = "Current JSON is not a valid ETL package. The visual designer is showing the last loaded schema.";
+            }
+        }
+
+        _editorMode = mode;
+    }
+
+    private string GetEditorModeClass(PipelineEditorMode mode) =>
+        mode == _editorMode ? "active" : string.Empty;
+
+    private Task OnPackageJsonChanged(string json)
+    {
+        _packageJson = json;
+        _visualPackageJson = json;
+        _pipelineName = TryGetPackageName(json);
+        if (Tab is not null)
+        {
+            Tab.PipelinePackageJson = json;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task LoadRunsAsync()
+    {
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _runs = await catalog.ListRunsAsync(20);
+            if (_runs.Count > 0 && (string.IsNullOrWhiteSpace(_selectedRunId) || _runs.All(r => !string.Equals(r.RunId, _selectedRunId, StringComparison.OrdinalIgnoreCase))))
+            {
+                await SelectRunAsync(_runs[0].RunId);
+            }
+        }
+        catch
+        {
+            _runs = [];
+            _selectedRunId = null;
+            _selectedRunDetail = null;
+            _selectedRunRejects = [];
+        }
+    }
+
+    private async Task LoadPipelinesAsync()
+    {
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _pipelines = await catalog.ListPipelinesAsync(50);
+            if (_pipelines.Count > 0 && (string.IsNullOrWhiteSpace(_selectedPipelineName) || _pipelines.All(p => !string.Equals(p.Name, _selectedPipelineName, StringComparison.OrdinalIgnoreCase))))
+            {
+                await SelectPipelineAsync(_pipelines[0].Name);
+            }
+        }
+        catch
+        {
+            _pipelines = [];
+            _selectedPipelineName = null;
+            _selectedPipelineRevision = null;
+            _selectedPipelineRevisions = [];
+        }
+    }
+
+    private async Task SavePipelineAsync()
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            PipelinePackageDefinition package = await GetCurrentPackageAsync();
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var summary = await catalog.SavePipelineAsync(package, string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName);
+            _pipelineName = summary.Name;
+            await LoadPipelinesAsync();
+            _message = $"Saved pipeline {summary.Name} revision {summary.Revision}.";
+            Toast.Success(_message);
+            await SelectPipelineAsync(summary.Name);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task LoadPipelineAsync(string name)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var package = await catalog.GetPipelineAsync(name);
+            if (package is null)
+            {
+                _error = $"Pipeline '{name}' not found.";
+                return;
+            }
+
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), name);
+            _message = $"Loaded pipeline {name}.";
+            await SelectPipelineAsync(name);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task DeletePipelineAsync(string name)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            await catalog.DeletePipelineAsync(name);
+            if (string.Equals(_pipelineName, name, StringComparison.OrdinalIgnoreCase))
+                _pipelineName = string.Empty;
+            await LoadPipelinesAsync();
+            _message = $"Deleted pipeline {name}.";
+            Toast.Success(_message);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task RunStoredPipelineAsync(string name)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _result = await catalog.RunStoredPipelineAsync(name);
+            _pipelineName = name;
+            await LoadRunsAsync();
+            await SelectRunAsync(_result.RunId);
+            await SelectPipelineAsync(name);
+            _message = $"Ran stored pipeline {name}.";
+            Toast.Success(_message);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task SelectPipelineAsync(string name)
+    {
+        _selectedPipelineName = name;
+        _loadingPipelineDetail = true;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _selectedPipelineRevisions = await catalog.ListPipelineRevisionsAsync(name);
+            _selectedPipelineRevision = _selectedPipelineRevisions.Count > 0
+                ? _selectedPipelineRevisions[0].Revision
+                : null;
+        }
+        catch
+        {
+            _selectedPipelineRevisions = [];
+            _selectedPipelineRevision = null;
+        }
+        finally
+        {
+            _loadingPipelineDetail = false;
+        }
+    }
+
+    private async Task LoadPipelineRevisionAsync(string name, int revision)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var package = await catalog.GetPipelineRevisionAsync(name, revision);
+            if (package is null)
+            {
+                _error = $"Pipeline '{name}' revision {revision} not found.";
+                return;
+            }
+
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), package.Name);
+            _selectedPipelineName = name;
+            _selectedPipelineRevision = revision;
+            _message = $"Loaded pipeline {name} revision {revision}.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task ResumeAsync(string runId)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _result = await catalog.ResumeAsync(runId);
+            await LoadRunsAsync();
+            await SelectRunAsync(_result.RunId);
+
+            if (_result.Status == PipelineRunStatus.Succeeded)
+            {
+                _message = $"Resumed pipeline run {runId}.";
+                Toast.Success(_message);
+                Changes.NotifyChanged();
+            }
+            else
+            {
+                _error = _result.ErrorSummary ?? "Pipeline resume failed.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task SelectRunAsync(string runId)
+    {
+        _selectedRunId = runId;
+        _loadingRunDetail = true;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            _selectedRunDetail = await catalog.GetRunAsync(runId);
+            _selectedRunRejects = await catalog.GetRejectsAsync(runId);
+        }
+        catch
+        {
+            _selectedRunDetail = null;
+            _selectedRunRejects = [];
+        }
+        finally
+        {
+            _loadingRunDetail = false;
+        }
+    }
+
+    private async Task LoadRunPackageAsync(string runId)
+    {
+        _running = true;
+        _error = null;
+        _message = null;
+
+        try
+        {
+            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var package = await catalog.GetRunPackageAsync(runId);
+            if (package is null)
+            {
+                _error = $"Run '{runId}' does not have a stored package definition.";
+                return;
+            }
+
+            await SetLoadedPackageAsync(PipelinePackageSerializer.Serialize(package), package.Name);
+            _editorMode = PipelineEditorMode.Visual;
+            _message = $"Loaded package from run {runId} into the editor.";
+            await SelectRunAsync(runId);
+            if (!string.IsNullOrWhiteSpace(package.Name))
+            {
+                await SelectPipelineAsync(package.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private static string CreateDefaultTemplate()
+    {
+        var package = new PipelinePackageDefinition
+        {
+            Name = "sample-pipeline",
+            Version = "1.0.0",
+            Description = "Edit this package and run it from Admin.",
+            Source = new PipelineSourceDefinition
+            {
+                Kind = PipelineSourceKind.CsvFile,
+                Path = "data/input.csv",
+                HasHeaderRow = true,
+            },
+            Transforms =
+            [
+                new PipelineTransformDefinition
+                {
+                    Kind = PipelineTransformKind.Select,
+                    SelectColumns = ["id", "name"],
+                },
+            ],
+            Destination = new PipelineDestinationDefinition
+            {
+                Kind = PipelineDestinationKind.JsonFile,
+                Path = "data/output.json",
+            },
+            Options = new PipelineExecutionOptions
+            {
+                BatchSize = 100,
+                CheckpointInterval = 10,
+                ErrorMode = PipelineErrorMode.SkipBadRows,
+                MaxRejects = 10,
+            },
+        };
+
+        return PipelinePackageSerializer.Serialize(package);
+    }
+
+    private static string TryGetPackageName(string json)
+    {
+        try
+        {
+            return PipelinePackageSerializer.Deserialize(json).Name;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private async Task<PipelinePackageDefinition> GetCurrentPackageAsync()
+    {
+        string currentJson = _editorMode == PipelineEditorMode.Visual && _designer is not null
+            ? await _designer.GetPackageJsonAsync()
+            : _packageJson;
+
+        if (!TryGetValidPackageJson(currentJson, out var validPackageJson))
+        {
+            throw new InvalidOperationException("Current package JSON is not a valid ETL package.");
+        }
+
+        _packageJson = validPackageJson;
+        _visualPackageJson = validPackageJson;
+        _pipelineName = TryGetPackageName(_packageJson);
+        if (Tab is not null)
+        {
+            Tab.PipelinePackageJson = _packageJson;
+        }
+
+        return PipelinePackageSerializer.Deserialize(_packageJson);
+    }
+
+    private async Task SetLoadedPackageAsync(string json, string? packageName = null)
+    {
+        _packageJson = json;
+        _visualPackageJson = json;
+        _pipelineName = string.IsNullOrWhiteSpace(packageName) ? TryGetPackageName(json) : packageName;
+        Tab?.PipelinePackageJson = json;
+        _designerReloadVersion++;
+        await SyncDesignerAsync();
+    }
+
+    private async Task SyncDesignerAsync()
+    {
+        if (_editorMode == PipelineEditorMode.Visual && _designer is not null)
+        {
+            await _designer.LoadPackageJsonAsync(_visualPackageJson);
+        }
+    }
+
+    private static bool TryGetValidPackageJson(string? json, out string validPackageJson)
+    {
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                validPackageJson = PipelinePackageSerializer.Serialize(PipelinePackageSerializer.Deserialize(json));
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        validPackageJson = string.Empty;
+        return false;
+    }
+
+    private enum PipelineEditorMode
+    {
+        Visual,
+        Json,
+    }
+}

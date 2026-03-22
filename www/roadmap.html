@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roadmap — CSharpDB</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+    <style>
+        .roadmap-section { margin-bottom: 64px; }
+        .roadmap-section h2 { display: flex; align-items: center; gap: 12px; }
+        .roadmap-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 3px 10px;
+            border-radius: 100px;
+        }
+        .roadmap-badge-done { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+        .roadmap-badge-planned { background: rgba(59, 130, 246, 0.15); color: var(--info); }
+        .roadmap-badge-research { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+
+        .roadmap-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+        .roadmap-item {
+            padding: 20px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            transition: all 0.2s;
+        }
+        .roadmap-item:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        .roadmap-item-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .roadmap-item h4 {
+            margin: 0;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .roadmap-item p {
+            margin: 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .milestone-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 12px;
+            margin-top: 20px;
+        }
+        .milestone-item {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            padding: 10px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+        }
+        .milestone-check {
+            color: var(--success);
+            flex-shrink: 0;
+            font-weight: 700;
+        }
+
+        .limitations-table td:first-child {
+            white-space: nowrap;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        @media (max-width: 768px) {
+            .roadmap-grid { grid-template-columns: 1fr; }
+            .milestone-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <script>window.currentPage = 'roadmap';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Roadmap</h1>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.3.0 state.</p>
+
+                <!-- ════════ NEAR-TERM ════════ -->
+                <div class="roadmap-section">
+                    <h2>
+                        Near-Term
+                        <span class="roadmap-badge roadmap-badge-done">Completed</span>
+                    </h2>
+                    <p>Recently completed improvements to query performance, storage behavior, maintenance workflows, and developer ergonomics.</p>
+
+                    <div class="roadmap-grid">
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>DISTINCT &amp; Composite Indexes</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Deduplicate SELECT output with DISTINCT. Multi-column indexes for broader query coverage.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Index Range Scans</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Use indexes for &lt;, &gt;, &lt;=, &gt;=, BETWEEN — not just equality lookups.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Prepared Statement Cache</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Cache parsed ASTs and query plans to avoid re-parsing identical SQL statements.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>In-Memory Database Mode</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Open a database fully in memory, load from disk, and save committed snapshots back to disk.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Collection Path Indexes</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>B+Tree Delete Rebalancing</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Merge underflowed pages on delete to reclaim space via borrow/merge with interior collapse.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Database Administration</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Maintenance report, REINDEX, VACUUM/compact, fragmentation analysis, and database size report.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Dedicated gRPC Daemon</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>CSharpDB.Daemon host with full gRPC coverage for SQL, schema, procedures, collections, and maintenance.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Background WAL Checkpointing</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Incremental/sliced auto-checkpointing to move work off the triggering commit path.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Hybrid Storage Mode</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Lazy-resident durable storage with on-demand page loading and gRPC tunable file-cache.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Table &amp; Index Statistics</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>ANALYZE command with persisted row counts, column NDV/min/max, and initial stats-guided index selection.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Client Backup &amp; Restore</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>BackupAsync / RestoreAsync as first-class operations across direct, HTTP, gRPC, CLI, and Admin.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ════════ MID-TERM ════════ -->
+                <div class="roadmap-section">
+                    <h2>
+                        Mid-Term
+                        <span class="roadmap-badge roadmap-badge-planned">In Progress</span>
+                    </h2>
+                    <p>SQL feature parity and ecosystem expansion.</p>
+
+                    <div class="roadmap-grid">
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>User-Defined Functions</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Broader built-in scalar function registry, user-registered C# functions, and native plugin extensions.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Window Functions</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>ROW_NUMBER(), RANK(), DENSE_RANK(), LEAD(), LAG() for analytical queries.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>DEFAULT &amp; CHECK Constraints</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Default expressions in column definitions and arbitrary expression-based constraints per column or table.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Foreign Key Constraints</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>REFERENCES with optional ON DELETE CASCADE for referential integrity.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Remote Host Consolidation</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Fold REST/HTTP into CSharpDB.Daemon so one server host serves REST, gRPC, and future transports from a shared warm Database instance.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Remote Host Security</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Built-in authentication, authorization, API keys, protected admin endpoints, and TLS/mTLS deployment support.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Daemon Service Packaging</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Package CSharpDB.Daemon as a persistent background service across systemd, Windows Service, and launchd.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Cross-Platform Distribution</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>dotnet tool, self-contained binaries, Docker, Homebrew, winget, and install scripts.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>ADO.NET GetSchema</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Implement DbConnection.GetSchema() for standard metadata collections to support ORMs and tooling.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Collation Support</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and COLLATE clause.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Subqueries &amp; Set Operations</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Scalar subqueries, IN/EXISTS (including correlated), UNION, INTERSECT, EXCEPT across SELECT results.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Visual Query Designer</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Admin query builder with source canvas, join editing, design grid, SQL preview, and saved layouts.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ════════ LONG-TERM ════════ -->
+                <div class="roadmap-section">
+                    <h2>
+                        Long-Term
+                        <span class="roadmap-badge roadmap-badge-research">Future</span>
+                    </h2>
+                    <p>Advanced features and fundamental architecture enhancements.</p>
+
+                    <div class="roadmap-grid">
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Full-Text Search</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Inverted index with tokenization, stemming, and relevance ranking.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Source-Generated Collections</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>No-reflection, trim-safe typed collection API backed by generated codecs and index bindings.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>SQL Batched Row Transport</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Internal row-batch transport between operators as foundation for vectorized scan-heavy execution.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Page-Level Compression</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Compress cell content within pages to reduce I/O and storage footprint.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>At-Rest Encryption</h4>
+                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                            </div>
+                            <p>Encrypt database and WAL files with passphrase-based key management and explicit migration paths.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Cost-Based Query Optimizer</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Statistics-driven join ordering and index selection with advanced histograms and adaptive re-optimization.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Async I/O &amp; Group Commit</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Group multiple page writes into fewer system calls. Buffer committed WAL writes across transactions.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Multi-Writer Support</h4>
+                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                            </div>
+                            <p>Allow concurrent write transactions with conflict detection and retry.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Replication &amp; Change Feed</h4>
+                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                            </div>
+                            <p>Stream committed changes for read replicas or event-driven architectures.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>WebAssembly Sandboxed UDFs</h4>
+                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                            </div>
+                            <p>Execute untrusted user-submitted functions in a WASM sandbox with resource limits via Wasmtime.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ════════ CURRENT LIMITATIONS ════════ -->
+                <div class="roadmap-section">
+                    <h2>Current Limitations</h2>
+                    <p>Known simplifications in the current implementation:</p>
+                    <table class="doc-table">
+                        <thead><tr><th>Area</th><th>Limitation</th></tr></thead>
+                        <tbody>
+                            <tr><td>Functions</td><td>Limited scalar function surface; no user-defined functions yet</td></tr>
+                            <tr><td>Query</td><td>Correlated subqueries not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
+                            <tr><td>Query</td><td>No window functions; no UNION ALL</td></tr>
+                            <tr><td>Schema</td><td>No SQL DEFAULT column values, CHECK constraints, or foreign keys</td></tr>
+                            <tr><td>Indexes</td><td>Ordered range-scan pushdown limited to single-column INTEGER index paths</td></tr>
+                            <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); consolidation planned</td></tr>
+                            <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls</td></tr>
+                            <tr><td>Collation</td><td>Ordinal (byte-order) comparisons only; no case-insensitive matching or locale-aware ordering</td></tr>
+                            <tr><td>Concurrency</td><td>Single writer only (no multi-writer)</td></tr>
+                            <tr><td>Storage</td><td>No page-level compression or at-rest encryption</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- ════════ COMPLETED MILESTONES ════════ -->
+                <div class="roadmap-section">
+                    <h2>Completed Milestones</h2>
+                    <p>Major features already implemented and shipped:</p>
+                    <div class="milestone-grid">
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Single-file database with 4 KB page-oriented storage</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree-backed tables and secondary indexes</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Write-Ahead Log with crash recovery</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Concurrent snapshot-isolated readers via MVCC</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full SQL pipeline: tokenizer, parser, planner, operators</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, CTEs</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> UNION, INTERSECT, EXCEPT set operations</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Scalar/IN/EXISTS subqueries (incl. correlated)</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Composite indexes with range scans</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ANALYZE with persisted table/column stats</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> SELECT DISTINCT and DISTINCT aggregates</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Prepared statement and query plan caching</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Views and triggers (BEFORE/AFTER)</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET provider with connection pooling</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> In-memory and hybrid database modes</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Document Collection API with path indexes</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ETL pipeline runtime with visual designer</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Stored procedures with typed parameters</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Dedicated gRPC daemon host</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> REST API with 34+ endpoints</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Blazor Server admin dashboard</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Interactive CLI with meta-commands</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> VS Code extension with schema explorer</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> MCP server for AI assistant integration</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> NativeAOT C library for cross-language FFI</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Background WAL auto-checkpointing</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree delete rebalancing</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide backup and restore</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/components.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

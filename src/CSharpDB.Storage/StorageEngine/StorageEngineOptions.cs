@@ -6,6 +6,12 @@ namespace CSharpDB.Storage.StorageEngine;
 public sealed class StorageEngineOptions
 {
     /// <summary>
+    /// Durability policy applied to file-backed WAL commits.
+    /// Buffered maps to SQLite WAL NORMAL semantics; Durable maps to FULL semantics.
+    /// </summary>
+    public DurabilityMode DurabilityMode { get; init; } = DurabilityMode.Durable;
+
+    /// <summary>
     /// Pager behavior options (cache, lock timeout, checkpoint policy).
     /// </summary>
     public PagerOptions PagerOptions { get; init; } = new();

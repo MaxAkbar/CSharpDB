@@ -8,7 +8,7 @@ internal static class InMemoryBenchmarkDatabaseFactory
     {
         string filePath = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}.db");
 
-        await using var db = await Database.OpenAsync(filePath);
+        await using var db = await Database.OpenAsync(filePath, BenchmarkDurability.Apply());
         await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)");
 
         const int batchSize = 500;
@@ -31,7 +31,7 @@ internal static class InMemoryBenchmarkDatabaseFactory
     {
         string filePath = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}.db");
 
-        await using var db = await Database.OpenAsync(filePath);
+        await using var db = await Database.OpenAsync(filePath, BenchmarkDurability.Apply());
         var collection = await db.GetCollectionAsync<CollectionBenchDoc>("bench_docs");
 
         const int batchSize = 500;

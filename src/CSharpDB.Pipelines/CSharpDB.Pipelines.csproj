@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Package contracts and runtime foundation for CSharpDB ETL pipelines.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
+  </ItemGroup>
+
+</Project>

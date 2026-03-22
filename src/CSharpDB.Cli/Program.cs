@@ -11,6 +11,9 @@ if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
 if (args.Length > 0 && MaintenanceCommandRunner.IsKnownCommand(args[0]))
     return await MaintenanceCommandRunner.RunAsync(args, Console.Out, Console.Error);
 
+if (args.Length > 0 && PipelineCommandRunner.IsKnownCommand(args[0]))
+    return await PipelineCommandRunner.RunAsync(args, Console.Out, Console.Error);
+
 if (!CliShellOptions.TryParse(args, out var shellOptions, out var parseError))
 {
     Console.Error.WriteLine(Ansi.Colorize($"Error: {parseError}", Ansi.Red));

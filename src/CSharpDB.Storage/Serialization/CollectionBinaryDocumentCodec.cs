@@ -1547,6 +1547,11 @@ internal static class CollectionBinaryDocumentCodec
             return MemberValueKind.Double;
         if (effectiveType == typeof(decimal))
             return MemberValueKind.Decimal;
+        if (effectiveType.IsValueType)
+        {
+            throw new NotSupportedException(
+                $"Type '{effectiveType}' is not supported for binary collection storage.");
+        }
 
         return MemberValueKind.Object;
     }

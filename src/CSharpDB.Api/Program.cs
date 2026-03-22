@@ -71,6 +71,7 @@ api.MapTriggerEndpoints();
 api.MapProcedureEndpoints();
 api.MapSavedQueryEndpoints();
 api.MapSqlEndpoints();
+api.MapPipelineEndpoints();
 api.MapTransactionEndpoints();
 api.MapCollectionEndpoints();
 api.MapSchemaEndpoints();

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collection API — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Collection API</h1>
+                <p class="lead">A typed NoSQL document API built on top of CSharpDB's storage engine. Store, index, and query C# objects with zero SQL.</p>
+
+                <h2>Getting Started</h2>
+                <p>Collections serialize C# objects to JSON and store them in B+trees. Each document is keyed by a <code>long</code> identifier.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Basic Usage</span>
+                    </div>
+                    <pre><code><span class="kw">public record</span> <span class="tp">Customer</span>(
+    <span class="kw">string</span> Name,
+    <span class="kw">string</span> Email,
+    <span class="tp">Address</span> Address,
+    <span class="kw">string</span>[] Tags
+);
+
+<span class="kw">public record</span> <span class="tp">Address</span>(<span class="kw">string</span> City, <span class="kw">string</span> State, <span class="kw">string</span> Zip);
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> customers = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Customer</span>&gt;();</code></pre>
+                </div>
+
+                <h2>CRUD Operations</h2>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Put / Get / Delete</span>
+                    </div>
+                    <pre><code><span class="cm">// Put (insert or update)</span>
+<span class="kw">await</span> customers.PutAsync(<span class="num">1</span>, <span class="kw">new</span> <span class="tp">Customer</span>(
+    <span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>,
+    <span class="kw">new</span>(<span class="str">"Portland"</span>, <span class="str">"OR"</span>, <span class="str">"97201"</span>),
+    [<span class="str">"premium"</span>, <span class="str">"early-adopter"</span>]
+));
+
+<span class="cm">// Get by key</span>
+<span class="kw">var</span> alice = <span class="kw">await</span> customers.GetAsync(<span class="num">1</span>);
+
+<span class="cm">// Delete</span>
+<span class="kw">await</span> customers.DeleteAsync(<span class="num">1</span>);
+
+<span class="cm">// Scan all documents</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> (key, customer) <span class="kw">in</span> customers.ScanAsync())
+    Console.WriteLine(<span class="str">$"{key}: {customer.Name}"</span>);</code></pre>
+                </div>
+
+                <h2>Indexing</h2>
+                <p>Collections support several indexing strategies for efficient queries without full scans.</p>
+
+                <h3>Scalar Member Index</h3>
+                <p>Index a top-level property for exact-match and range queries.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Scalar Index</span>
+                    </div>
+                    <pre><code><span class="kw">await</span> customers.Index.OnAsync(c => c.Email);
+<span class="kw">var</span> results = <span class="kw">await</span> customers.FindAsync(c => c.Email, <span class="str">"alice@example.com"</span>);</code></pre>
+                </div>
+
+                <h3>Nested Object Path</h3>
+                <p>Index into nested objects using property path expressions like <code>$.address.city</code>.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Nested Path Index</span>
+                    </div>
+                    <pre><code><span class="kw">await</span> customers.Index.OnAsync(c => c.Address.City);
+<span class="kw">var</span> portlanders = <span class="kw">await</span> customers.FindAsync(c => c.Address.City, <span class="str">"Portland"</span>);</code></pre>
+                </div>
+
+                <h3>Array Element Path</h3>
+                <p>Index into terminal array elements for membership queries like <code>$.tags[]</code>.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Array Element Index</span>
+                    </div>
+                    <pre><code><span class="cm">// Index array elements — one index entry per tag per document</span>
+<span class="kw">await</span> customers.Index.OnEachAsync(c => c.Tags);
+<span class="kw">var</span> premium = <span class="kw">await</span> customers.FindAsync(c => c.Tags, <span class="str">"premium"</span>);</code></pre>
+                </div>
+
+                <h3>Range Queries</h3>
+                <p>Query indexed properties with range bounds for ordered data.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Range Queries</span>
+                    </div>
+                    <pre><code><span class="kw">public record</span> <span class="tp">Order</span>(<span class="kw">string</span> Customer, <span class="kw">double</span> Total, <span class="kw">string</span> Date);
+
+<span class="kw">var</span> orders = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Order</span>&gt;();
+<span class="kw">await</span> orders.Index.OnAsync(o => o.Total);
+
+<span class="cm">// Find orders with total between 100 and 500</span>
+<span class="kw">var</span> midRange = <span class="kw">await</span> orders.FindRangeAsync(
+    o => o.Total, <span class="num">100.0</span>, <span class="num">500.0</span>);</code></pre>
+                </div>
+
+                <h2>Index Types Summary</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Index Type</th><th>Path Pattern</th><th>Use Case</th></tr></thead>
+                    <tbody>
+                        <tr><td>Scalar member</td><td><code>$.Name</code></td><td>Top-level property exact match</td></tr>
+                        <tr><td>Nested object</td><td><code>$.Address.City</code></td><td>Nested property lookup</td></tr>
+                        <tr><td>Terminal array</td><td><code>$.Tags[]</code></td><td>Array membership queries</td></tr>
+                        <tr><td>Nested array-object</td><td><code>$.Orders[].Sku</code></td><td>Property within array elements</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callout callout-info">
+                    <strong>Performance:</strong> Indexed lookups use B+tree secondary indexes for O(log n) access. Without an index, queries fall back to a full collection scan.
+                </div>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Use SQL for relational queries on the same database</p>
+                        </a>
+                        <a href="pipelines.html" class="next-step-card">
+                            <h4>ETL Pipelines</h4>
+                            <p>Import/export data with built-in connectors</p>
+                        </a>
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Engine</h4>
+                            <p>Understand the B+tree backing store</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

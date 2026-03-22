@@ -136,6 +136,14 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenPipelineTab()
+    {
+        int num = Interlocked.Increment(ref _queryCounter);
+        var tab = new TabDescriptor($"pipeline:{num}", $"Pipeline {num}", "bi-diagram-3", TabKind.Pipeline);
+        OpenTab(tab);
+        return tab;
+    }
+
     /// <summary>Open a table tab and switch it to Schema view.</summary>
     public TabDescriptor OpenTableSchemaTab(string tableName)
     {

@@ -3,7 +3,9 @@
 CSharpDB is a layered embedded database engine inspired by SQLite's architecture.
 The core engine layers have clear responsibilities and mostly communicate with
 adjacent layers. Above the engine, CSharpDB now exposes multiple consumer-facing
-entry points, with `CSharpDB.Client` as the authoritative database API.
+entry points, with `CSharpDB.Client` as the authoritative database API. It also
+ships a reusable package-driven ETL pipeline runtime in `CSharpDB.Pipelines`
+that is reused by the client, API, CLI, and Admin surfaces.
 
 ## Layer Overview
 
@@ -16,6 +18,10 @@ entry points, with `CSharpDB.Client` as the authoritative database API.
 │ Consumer Access Layer                                              │
 │ CSharpDB.Client                     CSharpDB.Data                  │
 │ ICSharpDbClient                     ADO.NET Provider               │
+├────────────────────────────────────────────────────────────────────┤
+│ Data Movement Layer                                                │
+│ CSharpDB.Pipelines                                                 │
+│ Package Models / Validation / Orchestrator / Serialization         │
 ├────────────────────────────────────────────────────────────────────┤
 │ CSharpDB.Engine                                                    │
 │ Database.OpenAsync / ExecuteAsync / Transactions / ReaderSession   │
@@ -41,11 +47,14 @@ Cli     → Client
 Cli     → Engine              (local-only helpers)
 Cli     → Sql
 Cli     → Storage.Diagnostics
+Cli     → Pipelines
 Mcp     → Client
 Data    → Engine
 Client  → Engine
+Client  → Pipelines
 Client  → Sql
 Client  → Storage.Diagnostics
+Pipelines → Sql
 Engine  → Execution → Sql
                     → Storage → Primitives
           Execution → Primitives
@@ -191,7 +200,7 @@ CSharpDB uses a Write-Ahead Log for crash recovery and concurrent reader support
 3a. COMMIT
     └── Append all dirty pages as WAL frames
     └── Mark last frame as commit (dbPageCount > 0)
-    └── Flush WAL to disk (commit point)
+    └── Flush WAL according to configured durability policy (commit point)
     └── Update in-memory WAL index
     └── Release writer lock
     └── Auto-checkpoint if WAL exceeds threshold (default: 1000 frames)
@@ -201,6 +210,28 @@ CSharpDB uses a Write-Ahead Log for crash recovery and concurrent reader support
     └── Clear page cache
     └── Release writer lock
 ```
+
+#### WAL Durability Modes
+
+File-backed storage now exposes explicit WAL durability modes through
+`StorageEngineOptions.DurabilityMode`:
+
+- **`Durable`**: flushes managed buffers and forces the OS-backed WAL flush
+  before commit success is reported. This is the crash-safe default and is
+  analogous to SQLite WAL `FULL`.
+- **`Buffered`**: flushes managed buffers into the OS, but does not force an
+  OS-buffer flush on every commit. This is the higher-throughput mode and is
+  analogous to SQLite WAL `NORMAL`.
+
+Internally, `WriteAheadLog` routes commit completion through an explicit
+`IWalFlushPolicy` (`DurableWalFlushPolicy` or `BufferedWalFlushPolicy`) so the
+durability tradeoff is visible at the storage boundary instead of being an
+implicit side effect of file-stream behavior.
+
+Durable commits also support grouped completion: when multiple writers reach the
+flush boundary together, they can share one durable flush sequence. The pager's
+commit wait is no longer held under the writer lock, which keeps single-writer
+correctness intact while reducing unnecessary durable-commit contention.
 
 #### Crash Recovery
 
@@ -470,7 +501,44 @@ The `Database` class ties all layers together:
 
 ---
 
-## Layer 6: Unified Client (`CSharpDB.Client`)
+## Layer 6: Pipelines (`CSharpDB.Pipelines`)
+
+| File | Purpose |
+|------|---------|
+| `Models/PipelinePackageDefinition.cs` | Package model for sources, transforms, destinations, execution options, and incremental settings |
+| `Models/PipelineRuntimeModels.cs` | Run request/result, metrics, checkpoints, rejects, and execution context |
+| `Validation/PipelinePackageValidator.cs` | Validates package completeness and supported configuration combinations |
+| `Runtime/PipelineOrchestrator.cs` | Executes validate, dry-run, run, and resume flows |
+| `Runtime/BuiltIns/*` | Built-in CSV/JSON file sources and destinations plus built-in transforms |
+| `Serialization/PipelinePackageSerializer.cs` | JSON persistence for package files and stored package payloads |
+
+`CSharpDB.Pipelines` is the reusable ETL pipeline runtime. It is intentionally
+separate from the storage engine so package validation, orchestration, and
+connector/transform logic can be reused from local and remote hosts without
+mixing ETL concerns into the SQL execution pipeline.
+
+Current responsibilities:
+
+1. **Package model**: defines JSON-serializable pipeline packages with metadata,
+   source, transforms, destination, execution options, and optional incremental
+   settings.
+2. **Validation**: validates package completeness and returns structured
+   validation errors before runtime execution starts.
+3. **Execution modes**: supports `Validate`, `DryRun`, `Run`, and `Resume`.
+4. **Batch orchestration**: opens the source, reads row batches, applies the
+   ordered transform chain, writes destination batches, and updates run metrics.
+5. **Checkpoint and run logging contracts**: persists pipeline progress and run
+   status through `IPipelineCheckpointStore` and `IPipelineRunLogger`.
+6. **Built-in file connectors**: includes CSV/JSON file sources and CSV/JSON
+   file destinations in the core runtime.
+
+The pipeline runtime is package- and batch-oriented, not a general DAG
+scheduler. The current shipping model is a linear source -> transforms ->
+destination flow with resumable batch checkpoints and reject tracking.
+
+---
+
+## Layer 7: Unified Client (`CSharpDB.Client`)
 
 `CSharpDB.Client` is the authoritative database API for CSharpDB consumers.
 
@@ -504,6 +572,7 @@ Current surface includes:
 - SQL execution
 - client-managed transactions
 - document collections
+- pipeline catalog, package storage, pipeline execution, resume, checkpoints, and rejects
 - checkpoint and storage diagnostics
 - backup and restore (`BackupAsync`, `RestoreAsync`)
 - maintenance (reindex, vacuum, maintenance report)
@@ -511,6 +580,7 @@ Current surface includes:
 Implementation dependencies:
 
 - `CSharpDB.Engine`
+- `CSharpDB.Pipelines`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`
 
@@ -519,7 +589,24 @@ ADO.NET wrapper.
 
 ---
 
-## Layer 7: ADO.NET Provider (`CSharpDB.Data`)
+### Pipeline Integration Through The Client
+
+Pipeline management and execution are layered on top of `ICSharpDbClient`:
+
+- `CSharpDbPipelineRunner` wraps the reusable `PipelineOrchestrator`
+- `CSharpDbPipelineComponentFactory` adds CSharpDB-backed table and SQL-query
+  connectors on top of the runtime's built-in file connectors
+- `CSharpDbPipelineCatalogClient` persists packages, revisions, runs,
+  checkpoints, and rejects in catalog tables such as `_etl_pipelines`,
+  `_etl_pipeline_versions`, `_etl_runs`, `_etl_checkpoints`, and `_etl_rejects`
+
+This keeps ETL transport-agnostic: the same package/run/catalog flow works
+through direct, HTTP, and gRPC clients because the persistence and execution
+path are built on the same client contract.
+
+---
+
+## Layer 8: ADO.NET Provider (`CSharpDB.Data`)
 
 | File | Purpose |
 |------|---------|
@@ -551,7 +638,7 @@ while (await reader.ReadAsync())
 
 ---
 
-## Layer 8: Remote Hosts (`CSharpDB.Api` + `CSharpDB.Daemon`)
+## Layer 9: Remote Hosts (`CSharpDB.Api` + `CSharpDB.Daemon`)
 
 The remote host split is intentional today:
 
@@ -566,7 +653,7 @@ Both inject `ICSharpDbClient` directly and stay above the authoritative
 The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.
 
 Components:
-- **Endpoints** — organized by resource (tables, rows, indexes, views, triggers, procedures, SQL, info, inspection)
+- **Endpoints** — organized by resource (tables, rows, indexes, views, triggers, procedures, SQL, pipelines, info, inspection)
 - **DTOs** — Request/response records for type-safe serialization
 - **JSON helpers** — Coerce `System.Text.Json` `JsonElement` values to CLR primitives for the client
 - **Exception middleware** — Maps `CSharpDbException` error codes to HTTP status codes (404, 409, 422, etc.)
@@ -590,29 +677,34 @@ See the [REST API Reference](rest-api.md) for HTTP details and the [Daemon READM
 
 ---
 
-## Layer 9: Admin Dashboard (`CSharpDB.Admin`)
+## Layer 10: Admin Dashboard (`CSharpDB.Admin`)
 
 A Blazor Server application that provides a web-based UI for database administration. Features:
 - Tab-based interface for browsing tables, views, indexes, and triggers
 - Paginated data grid with column headers
 - SQL execution panel
 - Procedure editing and execution
+- Pipeline designer and execution workflows
 - Storage inspection
 - Schema introspection (columns, types, constraints)
 
 The Admin dashboard now injects `ICSharpDbClient` directly. It uses an
 admin-local change notification service to refresh UI state after mutations.
+Its pipeline UI works with package JSON plus a designer surface for source,
+transform, destination, and execution-option editing, then routes execution and
+catalog operations through the client-backed pipeline services.
 
 ---
 
-## Layer 10: CLI And MCP Hosts
+## Layer 11: CLI And MCP Hosts
 
 Two additional host applications sit above the consumer access layer:
 
 - **`CSharpDB.Cli`** — the interactive shell and local tooling entrypoint. It
   now routes normal database access through `CSharpDB.Client`, while still
   keeping a few local-only direct helpers for engine- and diagnostics-specific
-  features.
+  features. It also exposes pipeline commands for validate, dry-run, run,
+  resume, import/export, and catalog inspection.
 - **`CSharpDB.Mcp`** — the MCP server host. It resolves `ICSharpDbClient`
   directly and shares the same client configuration model as the other hosts.
 

@@ -352,120 +352,136 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_transactions is null || !_transactions.InTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction to commit.");
-
-        ChangeCounter++;
-
-        // Update file header in page 0
-        var page0 = await GetPageAsync(0, ct);
-        WriteFileHeaderTo(page0);
-        _buffers.AddDirty(0);
-        int dirtyCount = _buffers.DirtyPages.Count;
-
-        if (_hasInterceptor)
+        try
         {
-            bool commitSucceeded = false;
-            await _interceptor.OnCommitStartAsync(dirtyCount, ct);
-            uint[]? orderedDirtyPageIds = null;
-            int orderedDirtyCount = 0;
-            try
+            ChangeCounter++;
+
+            // Update file header in page 0
+            var page0 = await GetPageAsync(0, ct);
+            WriteFileHeaderTo(page0);
+            _buffers.AddDirty(0);
+            int dirtyCount = _buffers.DirtyPages.Count;
+
+            if (_hasInterceptor)
+            {
+                bool commitSucceeded = false;
+                await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+                uint[]? orderedDirtyPageIds = null;
+                int orderedDirtyCount = 0;
+                WalCommitResult commitResult = WalCommitResult.Completed;
+                try
+                {
+                    EnforceReaderWalBackpressure(dirtyCount);
+                    orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
+
+                    // Write all dirty pages to WAL with per-page interceptor hooks
+                    for (int i = 0; i < orderedDirtyCount; i++)
+                    {
+                        uint pageId = orderedDirtyPageIds[i];
+                        if (!_buffers.TryGetDirtyPage(pageId, out var data))
+                        {
+                            throw new CSharpDbException(
+                                ErrorCode.Unknown,
+                                $"Dirty page {pageId} could not be materialized during commit.");
+                        }
+
+                        bool writeSucceeded = false;
+                        await _interceptor.OnBeforeWriteAsync(pageId, ct);
+                        try
+                        {
+                            await _wal.AppendFrameAsync(pageId, data, ct);
+                            writeSucceeded = true;
+                        }
+                        finally
+                        {
+                            await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
+                        }
+                    }
+
+                    commitResult = await PrepareWalCommitAsync(ct);
+                    _buffers.ClearDirty();
+                    _transactions.ReleaseWriterAfterCommitAppend();
+                    await commitResult.WaitAsync(ct);
+                    await FinalizeCommitAndCheckpointAsync(ct);
+                    commitSucceeded = true;
+                }
+                finally
+                {
+                    if (orderedDirtyPageIds != null)
+                        ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
+                    await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, ct);
+                }
+            }
+            else
             {
                 EnforceReaderWalBackpressure(dirtyCount);
-                orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
 
-                // Write all dirty pages to WAL with per-page interceptor hooks
-                for (int i = 0; i < orderedDirtyCount; i++)
+                // Fast path: no interceptor — batch WAL appends to reduce per-frame write overhead.
+                uint[]? orderedDirtyPageIds = null;
+                int orderedDirtyCount = 0;
+                WalFrameWrite[]? frameBatch = null;
+                int frameCount = 0;
+                WalCommitResult commitResult = WalCommitResult.Completed;
+                try
                 {
-                    uint pageId = orderedDirtyPageIds[i];
-                    if (!_buffers.TryGetDirtyPage(pageId, out var data))
+                    orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
+                    frameBatch = ArrayPool<WalFrameWrite>.Shared.Rent(dirtyCount);
+                    for (int i = 0; i < orderedDirtyCount; i++)
                     {
-                        throw new CSharpDbException(
-                            ErrorCode.Unknown,
-                            $"Dirty page {pageId} could not be materialized during commit.");
+                        uint pageId = orderedDirtyPageIds[i];
+                        if (!_buffers.TryGetDirtyPage(pageId, out var data))
+                        {
+                            throw new CSharpDbException(
+                                ErrorCode.Unknown,
+                                $"Dirty page {pageId} could not be materialized during commit.");
+                        }
+
+                        frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
                     }
 
-                    bool writeSucceeded = false;
-                    await _interceptor.OnBeforeWriteAsync(pageId, ct);
-                    try
+                    if (frameCount > 0)
                     {
-                        await _wal.AppendFrameAsync(pageId, data, ct);
-                        writeSucceeded = true;
+                        commitResult = await _wal.AppendFramesAndCommitAsync(frameBatch.AsMemory(0, frameCount), PageCount, ct);
                     }
-                    finally
+                    else
                     {
-                        await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
+                        commitResult = await _wal.CommitAsync(PageCount, ct);
                     }
+
+                    _buffers.ClearDirty();
+                    _transactions.ReleaseWriterAfterCommitAppend();
+                    await commitResult.WaitAsync(ct);
+                }
+                finally
+                {
+                    if (frameBatch != null)
+                    {
+                        frameBatch.AsSpan(0, frameCount).Clear();
+                        ArrayPool<WalFrameWrite>.Shared.Return(frameBatch, clearArray: false);
+                    }
+                    if (orderedDirtyPageIds != null)
+                        ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
                 }
 
-                await CommitWalAndFinalizeAsync(ct);
-                commitSucceeded = true;
-            }
-            finally
-            {
-                if (orderedDirtyPageIds != null)
-                    ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
-                await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, ct);
+                await FinalizeCommitAndCheckpointAsync(ct);
             }
         }
-        else
+        catch
         {
-            EnforceReaderWalBackpressure(dirtyCount);
-
-            // Fast path: no interceptor — batch WAL appends to reduce per-frame write overhead.
-            uint[]? orderedDirtyPageIds = null;
-            int orderedDirtyCount = 0;
-            WalFrameWrite[]? frameBatch = null;
-            int frameCount = 0;
-            try
-            {
-                orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
-                frameBatch = ArrayPool<WalFrameWrite>.Shared.Rent(dirtyCount);
-                for (int i = 0; i < orderedDirtyCount; i++)
-                {
-                    uint pageId = orderedDirtyPageIds[i];
-                    if (!_buffers.TryGetDirtyPage(pageId, out var data))
-                    {
-                        throw new CSharpDbException(
-                            ErrorCode.Unknown,
-                            $"Dirty page {pageId} could not be materialized during commit.");
-                    }
-
-                    frameBatch[frameCount++] = new WalFrameWrite(pageId, data);
-                }
-
-                if (frameCount > 0)
-                {
-                    await _wal.AppendFramesAndCommitAsync(frameBatch.AsMemory(0, frameCount), PageCount, ct);
-                }
-                else
-                {
-                    await _wal.CommitAsync(PageCount, ct);
-                }
-            }
-            finally
-            {
-                if (frameBatch != null)
-                {
-                    frameBatch.AsSpan(0, frameCount).Clear();
-                    ArrayPool<WalFrameWrite>.Shared.Return(frameBatch, clearArray: false);
-                }
-                if (orderedDirtyPageIds != null)
-                    ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
-            }
-
-            await FinalizeCommitAndCheckpointAsync(ct);
+            await RollbackAsync(ct);
+            await ResetPagerStateFromCommittedStorageAsync(ct);
+            throw;
         }
     }
 
-    private async ValueTask CommitWalAndFinalizeAsync(CancellationToken ct)
+    private ValueTask<WalCommitResult> PrepareWalCommitAsync(CancellationToken ct)
     {
         // Commit the WAL (makes frames durable and visible to new readers)
-        await _wal.CommitAsync(PageCount, ct);
-        await FinalizeCommitAndCheckpointAsync(ct);
+        return _wal.CommitAsync(PageCount, ct);
     }
 
     private async ValueTask FinalizeCommitAndCheckpointAsync(CancellationToken ct)
     {
-        _buffers.ClearDirty();
         _transactions!.CompleteCommit();
 
         // Auto-checkpoint according to policy
@@ -497,8 +513,21 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // Truncate uncommitted frames from WAL
         await _wal.RollbackAsync(ct);
 
-        _buffers.ClearAll();
         _transactions.CompleteRollback();
+        await ResetPagerStateFromCommittedStorageAsync(ct);
+    }
+
+    private void ReadFileHeaderFrom(byte[] page0)
+    {
+        PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
+        SchemaRootPage = BitConverter.ToUInt32(page0, PageConstants.SchemaRootPageOffset);
+        FreelistHead = BitConverter.ToUInt32(page0, PageConstants.FreelistHeadOffset);
+        ChangeCounter = BitConverter.ToUInt32(page0, PageConstants.ChangeCounterOffset);
+    }
+
+    private async ValueTask ResetPagerStateFromCommittedStorageAsync(CancellationToken ct)
+    {
+        _buffers.ClearAll();
 
         // Re-read header from DB file (WAL may have committed data, so check WAL too)
         if (_device.Length >= PageConstants.PageSize)
@@ -510,14 +539,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
             ReadFileHeaderFrom(_walHeaderPageBuffer);
         }
-    }
-
-    private void ReadFileHeaderFrom(byte[] page0)
-    {
-        PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
-        SchemaRootPage = BitConverter.ToUInt32(page0, PageConstants.SchemaRootPageOffset);
-        FreelistHead = BitConverter.ToUInt32(page0, PageConstants.FreelistHeadOffset);
-        ChangeCounter = BitConverter.ToUInt32(page0, PageConstants.ChangeCounterOffset);
     }
 
     /// <summary>

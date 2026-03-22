@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture — CSharpDB</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'architecture';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Architecture</h1>
+                <p class="lead">CSharpDB is built in clean layers, each with a single responsibility. From client access down to file I/O.</p>
+
+                <h2>Layered Architecture</h2>
+                <div class="arch-diagram">
+                    <div class="arch-layer arch-layer-client">
+                        <div class="arch-label">Client &amp; Access Layer</div>
+                        <div class="arch-desc">ADO.NET, Client SDK (HTTP/gRPC/Direct), REST API, CLI, MCP Server, VS Code Extension</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-app">
+                        <div class="arch-label">Application Layer</div>
+                        <div class="arch-desc">Admin UI (Blazor), Database class, Collection&lt;T&gt; API</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-execution">
+                        <div class="arch-label">Query Execution</div>
+                        <div class="arch-desc">SQL Tokenizer, Parser, Query Planner, Operators, Expression Evaluator</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-pipeline">
+                        <div class="arch-label">Pipeline &amp; Procedures</div>
+                        <div class="arch-desc">PipelineOrchestrator, Sources, Transforms, Destinations, Stored Procedures</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-catalog">
+                        <div class="arch-label">Catalog &amp; Indexing</div>
+                        <div class="arch-desc">SchemaCatalog, BTreeIndexStore, CachingIndexStore, CollectionIndexBinding</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-storage">
+                        <div class="arch-label">Storage Engine</div>
+                        <div class="arch-desc">BTree, Pager, RecordEncoder, TransactionCoordinator</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-wal">
+                        <div class="arch-label">Durability &amp; Recovery</div>
+                        <div class="arch-desc">WriteAheadLog, WalIndex, CheckpointCoordinator, Snapshot Readers</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-device">
+                        <div class="arch-label">Device / File I/O</div>
+                        <div class="arch-desc">FileStream, LRU PageCache, DictionaryPageCache (in-memory mode)</div>
+                    </div>
+                </div>
+
+                <h2>Page Format (4096 bytes)</h2>
+                <p>Every page uses a slotted format with a fixed header, cell pointer array growing forward, and cell data growing backward from the end of the page.</p>
+                <div class="format-diagram">
+                    <div class="format-row">
+                        <div class="format-cell format-header" style="flex: 1">Page Header<br><small>Type, Cell Count, Free Offset</small></div>
+                    </div>
+                    <div class="format-row">
+                        <div class="format-cell format-pointers" style="flex: 2">Cell Pointer Array <span class="format-arrow-right">&rarr;</span></div>
+                        <div class="format-cell format-free" style="flex: 3">Free Space</div>
+                        <div class="format-cell format-cells" style="flex: 3"><span class="format-arrow-left">&larr;</span> Cell Data</div>
+                    </div>
+                    <div class="format-legend">
+                        <span><span class="legend-dot legend-header"></span> Header</span>
+                        <span><span class="legend-dot legend-pointers"></span> Pointers (grow &rarr;)</span>
+                        <span><span class="legend-dot legend-free"></span> Free space</span>
+                        <span><span class="legend-dot legend-cells"></span> Cells (grow &larr;)</span>
+                    </div>
+                </div>
+
+                <h2>WAL File Format</h2>
+                <p>The Write-Ahead Log consists of a 32-byte header followed by a sequence of frames. Each frame contains a 24-byte header and a full 4096-byte page image.</p>
+                <div class="format-diagram">
+                    <div class="format-row">
+                        <div class="format-cell format-header" style="flex: 1">WAL Header (32 bytes)<br><small>Magic "CWAL", Version, Page Size, Salts, Checksum Seed</small></div>
+                    </div>
+                    <div class="format-row">
+                        <div class="format-cell format-pointers" style="flex: 1">Frame Header (24 bytes)<br><small>Page Number, DB Page Count, Salt1, Salt2, Checksum</small></div>
+                        <div class="format-cell format-cells" style="flex: 3">Page Image (4096 bytes)</div>
+                    </div>
+                    <div class="format-row">
+                        <div class="format-cell format-pointers" style="flex: 1">Frame Header (24 bytes)</div>
+                        <div class="format-cell format-cells" style="flex: 3">Page Image (4096 bytes)</div>
+                    </div>
+                    <div class="format-row format-row-fade">
+                        <div class="format-cell format-pointers" style="flex: 1">...</div>
+                        <div class="format-cell format-cells" style="flex: 3">...</div>
+                    </div>
+                </div>
+
+                <h2>Transaction Flow</h2>
+                <div class="flow-container">
+                    <div class="flow-column">
+                        <h3>Writer Path</h3>
+                        <div class="flow-steps">
+                            <div class="flow-step">Acquire exclusive lock</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Modify pages in memory</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Write dirty pages to WAL</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Mark commit frame</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Update WAL index</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Release lock</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step flow-step-alt">Checkpoint (if policy triggers)</div>
+                        </div>
+                    </div>
+                    <div class="flow-divider"></div>
+                    <div class="flow-column">
+                        <h3>Reader Path</h3>
+                        <div class="flow-steps">
+                            <div class="flow-step">Capture WAL snapshot</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Create read-only pager</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Read pages (WAL first, then DB file)</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Return consistent results</div>
+                            <div class="flow-connector"></div>
+                            <div class="flow-step">Release snapshot on dispose</div>
+                        </div>
+                    </div>
+                </div>
+
+                <h2>Database Modes</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Mode</th><th>Factory</th><th>Characteristics</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Default</strong></td><td><code>DefaultStorageEngineFactory</code></td><td>Standard file-backed with LRU cache. Full durability.</td></tr>
+                        <tr><td><strong>In-Memory</strong></td><td><code>InMemoryStorageEngineFactory</code></td><td>Dictionary-based page cache. No file I/O. Fast but non-persistent.</td></tr>
+                        <tr><td><strong>Hybrid</strong></td><td><code>HybridStorageEngineFactory</code></td><td>Lazy-resident pages with durable backing file. On-demand loading.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Project Structure</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Assembly</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>CSharpDB.Primitives</code></td><td>Shared types: DbValue, DbType, Schema, ErrorCodes</td></tr>
+                        <tr><td><code>CSharpDB.Storage</code></td><td>B+tree, Pager, WAL, page cache, serialization</td></tr>
+                        <tr><td><code>CSharpDB.Storage.Diagnostics</code></td><td>Database/WAL/Index inspection</td></tr>
+                        <tr><td><code>CSharpDB.Sql</code></td><td>SQL tokenizer, parser, AST</td></tr>
+                        <tr><td><code>CSharpDB.Execution</code></td><td>Query planner, operators, expression evaluator</td></tr>
+                        <tr><td><code>CSharpDB.Engine</code></td><td>Database class, Collection&lt;T&gt;, top-level API</td></tr>
+                        <tr><td><code>CSharpDB.Pipelines</code></td><td>ETL orchestrator, sources, transforms, destinations</td></tr>
+                        <tr><td><code>CSharpDB.Data</code></td><td>ADO.NET provider</td></tr>
+                        <tr><td><code>CSharpDB.Client</code></td><td>Unified client SDK with pluggable transports</td></tr>
+                        <tr><td><code>CSharpDB.Api</code></td><td>ASP.NET Core REST API</td></tr>
+                        <tr><td><code>CSharpDB.Daemon</code></td><td>gRPC service host</td></tr>
+                        <tr><td><code>CSharpDB.Cli</code></td><td>Interactive REPL shell</td></tr>
+                        <tr><td><code>CSharpDB.Admin</code></td><td>Blazor Server dashboard</td></tr>
+                        <tr><td><code>CSharpDB.Mcp</code></td><td>Model Context Protocol server for AI</td></tr>
+                        <tr><td><code>CSharpDB.Native</code></td><td>NativeAOT C library for FFI</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/components.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

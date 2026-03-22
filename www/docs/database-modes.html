@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Modes — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+    <style>
+        .mode-comparison {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin: 32px 0 48px;
+        }
+        .mode-card {
+            padding: 28px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            transition: all 0.3s;
+        }
+        .mode-card:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        .mode-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 4px;
+        }
+        .mode-card .mode-subtitle {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+        .mode-card p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 16px;
+        }
+        .mode-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 3px 10px;
+            border-radius: 100px;
+            margin-right: 6px;
+            margin-bottom: 6px;
+        }
+        .mode-tag-green { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+        .mode-tag-blue { background: rgba(59, 130, 246, 0.15); color: var(--info); }
+        .mode-tag-purple { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+        .mode-tag-amber { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+
+        .trait-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .trait-list li {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 6px 0;
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+        .trait-list li:last-child { border-bottom: none; }
+        .trait-icon { flex-shrink: 0; font-size: 0.85rem; }
+        .trait-yes { color: var(--success); }
+        .trait-no { color: var(--text-muted); }
+
+        @media (max-width: 1024px) {
+            .mode-comparison { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Database Modes</h1>
+                <p class="lead">CSharpDB supports three storage modes — file-based, in-memory, and hybrid — each tuned for different workloads. All three share the same SQL engine, Collection API, and transaction model.</p>
+
+                <!-- ═══ Visual Comparison ═══ -->
+                <div class="mode-comparison">
+                    <div class="mode-card">
+                        <h3>File-Based</h3>
+                        <div class="mode-subtitle">Default mode</div>
+                        <p>Standard persistent database backed by a single file on disk. All commits are durable immediately via the Write-Ahead Log.</p>
+                        <span class="mode-tag mode-tag-green">Durable</span>
+                        <span class="mode-tag mode-tag-blue">Production</span>
+                    </div>
+                    <div class="mode-card">
+                        <h3>In-Memory</h3>
+                        <div class="mode-subtitle">Ephemeral mode</div>
+                        <p>Entire database lives in memory with no disk I/O. Fastest option for testing, caching, or temporary workloads. Can save snapshots to disk on demand.</p>
+                        <span class="mode-tag mode-tag-purple">Fast</span>
+                        <span class="mode-tag mode-tag-amber">Non-persistent</span>
+                    </div>
+                    <div class="mode-card">
+                        <h3>Hybrid</h3>
+                        <div class="mode-subtitle">Lazy-resident mode</div>
+                        <p>Durable backing file with aggressive page caching. Touched pages stay resident across checkpoints. Best when a hot working set fits in memory but the full dataset doesn't.</p>
+                        <span class="mode-tag mode-tag-green">Durable</span>
+                        <span class="mode-tag mode-tag-purple">Cached</span>
+                    </div>
+                </div>
+
+                <!-- ═══ File-Based ═══ -->
+                <h2>File-Based (Default)</h2>
+                <p>The standard mode for production workloads. Uses <code>FileStorageDevice</code> for true async I/O via <code>RandomAccess.ReadAsync</code> / <code>RandomAccess.WriteAsync</code>. All committed data is durable on disk.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Open a file-based database</span>
+                    </div>
+                    <pre><code><span class="cm">// Simple — uses default options</span>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// With custom options</span>
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>
+{
+    StorageEngineOptions = <span class="kw">new</span> <span class="tp">StorageEngineOptionsBuilder</span>()
+        .WithCacheSize(<span class="num">4096</span>)
+        .WithLockTimeout(<span class="tp">TimeSpan</span>.FromSeconds(<span class="num">30</span>))
+        .WithCheckpointPolicy(<span class="kw">new</span> <span class="tp">FrameCountCheckpointPolicy</span>(<span class="num">1000</span>))
+        .Build()
+};
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>, options);</code></pre>
+                </div>
+
+                <h3>How It Works</h3>
+                <ul class="trait-list">
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Storage:</strong> Single <code>.db</code> file with 4 KB slotted pages, plus a <code>.db.wal</code> file for the Write-Ahead Log</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Page Cache:</strong> Unbounded <code>DictionaryPageCache</code> by default, or bounded <code>LruPageCache</code> when <code>MaxCachedPages</code> is set</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>WAL:</strong> Full WAL with frame-level checksums. Pages written to WAL before commit, then merged to the main file during checkpoint</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Durability:</strong> Every committed transaction is immediately durable via <code>FlushToDisk()</code></li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Recovery:</strong> On open, the WAL is scanned to recover any committed frames not yet checkpointed</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Checkpoint:</strong> Configurable policies — frame count, time interval, WAL size, or composite. Pages are evicted from cache after checkpoint by default</li>
+                </ul>
+
+                <h3>Configuration Options</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>MaxCachedPages</code></td><td>Unbounded</td><td>Limits page cache to N pages using LRU eviction</td></tr>
+                        <tr><td><code>WriterLockTimeout</code></td><td>5 seconds</td><td>Maximum wait time for acquiring the exclusive write lock</td></tr>
+                        <tr><td><code>CheckpointPolicy</code></td><td>Frame count</td><td>When to merge WAL pages back to the main file</td></tr>
+                        <tr><td><code>AutoCheckpointExecutionMode</code></td><td>Background</td><td>Run checkpoint inline (foreground) or on a background thread</td></tr>
+                        <tr><td><code>UseMemoryMappedReads</code></td><td>false</td><td>Opt-in memory-mapped read path for clean main-file pages</td></tr>
+                        <tr><td><code>EnableSequentialLeafReadAhead</code></td><td>true</td><td>Speculative read-ahead during sequential B+tree scans</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callout callout-info">
+                    <strong>Best for:</strong> Production databases, persistent storage, any workload that requires crash durability.
+                </div>
+
+                <!-- ═══ In-Memory ═══ -->
+                <h2>In-Memory</h2>
+                <p>The entire database lives in memory with no disk I/O. Uses <code>MemoryStorageDevice</code> — a thread-safe in-memory byte buffer. Fastest option but data is lost when the process exits unless explicitly saved.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Open an in-memory database</span>
+                    </div>
+                    <pre><code><span class="cm">// Create a fresh in-memory database</span>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
+
+<span class="cm">// Load an existing file into memory</span>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.LoadIntoMemoryAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// Save committed state to disk at any time</span>
+<span class="kw">await</span> db.SaveToFileAsync(<span class="str">"snapshot.db"</span>);</code></pre>
+                </div>
+
+                <h3>How It Works</h3>
+                <ul class="trait-list">
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Storage:</strong> <code>MemoryStorageDevice</code> — an in-memory <code>byte[]</code> buffer with thread-safe access</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Page Cache:</strong> <code>DictionaryPageCache</code> (unbounded, no eviction). All pages remain resident</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>WAL:</strong> Full WAL implementation (<code>MemoryWriteAheadLog</code>) using the same frame format, stored in memory. Ensures transaction atomicity</li>
+                    <li><span class="trait-icon trait-no">&#9675;</span> <strong>Durability:</strong> Not persistent by default — data lost on process exit</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Snapshot Save:</strong> <code>SaveToFileAsync(path)</code> writes the complete database image to disk</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Load from Disk:</strong> <code>LoadIntoMemoryAsync(path)</code> reads a file (and its WAL) into memory</li>
+                </ul>
+
+                <h3>Shared In-Memory (ADO.NET)</h3>
+                <p>Multiple ADO.NET connections can share a single in-memory database instance. Useful for test scenarios where several connections need to see the same data.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Shared in-memory via ADO.NET</span>
+                    </div>
+                    <pre><code><span class="cm">// Multiple connections share the same in-memory instance</span>
+<span class="kw">var</span> connStr = <span class="str">"Data Source=:memory:;SharedMemoryName=testdb"</span>;
+
+<span class="kw">using var</span> conn1 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
+<span class="kw">using var</span> conn2 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
+<span class="kw">await</span> conn1.OpenAsync();
+<span class="kw">await</span> conn2.OpenAsync();
+
+<span class="cm">// Both connections see the same tables and data</span></code></pre>
+                </div>
+
+                <p>Shared instances are managed by <code>SharedMemoryDatabaseHost</code> and serialized via a semaphore to ensure consistency.</p>
+
+                <div class="callout callout-info">
+                    <strong>Best for:</strong> Unit tests, integration tests, caches, temporary in-process data, scenarios where speed matters more than persistence.
+                </div>
+
+                <!-- ═══ Hybrid ═══ -->
+                <h2>Hybrid (Lazy-Resident)</h2>
+                <p>Combines the durability of file-based storage with the performance of in-memory caching. Uses <code>FileStorageDevice</code> for durable backing, but keeps touched pages resident in cache across checkpoints — unlike the default mode which evicts pages after checkpoint.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Open a hybrid database</span>
+                    </div>
+                    <pre><code><span class="cm">// Simple — uses default hybrid options</span>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// With custom options — preload hot tables and configure persistence</span>
+<span class="kw">var</span> hybridOptions = <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
+{
+    PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
+    PersistenceTriggers = <span class="tp">HybridPersistenceTrigger</span>.Commit
+                        | <span class="tp">HybridPersistenceTrigger</span>.Dispose,
+    HotTableNames = [<span class="str">"Users"</span>, <span class="str">"Sessions"</span>],
+    HotCollectionNames = [<span class="str">"Settings"</span>],
+};
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"myapp.db"</span>, hybridOptions: hybridOptions);</code></pre>
+                </div>
+
+                <h3>How It Works</h3>
+                <ul class="trait-list">
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Storage:</strong> Same <code>FileStorageDevice</code> as default mode — backing <code>.db</code> file on disk with a <code>.db.wal</code></li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Page Cache:</strong> <code>DictionaryPageCache</code> with <code>PreserveOwnedPagesOnCheckpoint = true</code> — pages stay in cache after checkpoint</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>WAL:</strong> Full WAL implementation, same as file-based mode</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Durability:</strong> Committed state persisted to disk incrementally via checkpoints</li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Hot Set Preloading:</strong> Specify tables and collections to load into cache at open via <code>HotTableNames</code> / <code>HotCollectionNames</code></li>
+                    <li><span class="trait-icon trait-yes">&#9679;</span> <strong>Lazy Residency:</strong> Cold pages load from disk on first access, then stay resident. Over time the working set migrates into memory</li>
+                </ul>
+
+                <h3>Persistence Modes</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Mode</th><th>Behavior</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>IncrementalDurable</code></td><td>Default. Pages cached per policy; file and WAL update incrementally on commit and checkpoint.</td></tr>
+                        <tr><td><code>Snapshot</code></td><td>Full in-memory copy; periodically writes complete database image to disk.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Persistence Triggers</h3>
+                <p>Control when committed state is persisted to the backing file. Flags can be combined:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Trigger</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Commit</code></td><td>Persist after each committed write transaction</td></tr>
+                        <tr><td><code>Checkpoint</code></td><td>Persist when a WAL checkpoint occurs</td></tr>
+                        <tr><td><code>Dispose</code></td><td>Persist when the database is disposed/closed</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callout callout-info">
+                    <strong>Best for:</strong> Applications with a hot working set that fits in memory but a cold tail on disk — e.g., active user sessions, frequently queried tables with a large archive, or read-heavy services backed by durable storage.
+                </div>
+
+                <!-- ═══ Comparison Table ═══ -->
+                <h2>Comparison</h2>
+                <table class="doc-table">
+                    <thead>
+                        <tr><th>Aspect</th><th>File-Based</th><th>In-Memory</th><th>Hybrid</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Storage device</strong></td><td>FileStorageDevice</td><td>MemoryStorageDevice</td><td>FileStorageDevice</td></tr>
+                        <tr><td><strong>Default page cache</strong></td><td>Dictionary (unbounded)</td><td>Dictionary (unbounded)</td><td>Dictionary (unbounded)</td></tr>
+                        <tr><td><strong>WAL</strong></td><td>Disk file</td><td>In-memory buffer</td><td>Disk file</td></tr>
+                        <tr><td><strong>Durability</strong></td><td>Immediate</td><td>None (manual save)</td><td>Incremental</td></tr>
+                        <tr><td><strong>Crash recovery</strong></td><td>Automatic via WAL</td><td>Data lost</td><td>Automatic via WAL</td></tr>
+                        <tr><td><strong>Pages after checkpoint</strong></td><td>Evicted from cache</td><td>Always resident</td><td>Preserved in cache</td></tr>
+                        <tr><td><strong>Bounded cache option</strong></td><td>LruPageCache</td><td>No</td><td>Optional</td></tr>
+                        <tr><td><strong>Shared ADO.NET</strong></td><td>No</td><td>Yes</td><td>No</td></tr>
+                        <tr><td><strong>Save to disk</strong></td><td>Automatic</td><td>SaveToFileAsync()</td><td>Automatic + triggers</td></tr>
+                        <tr><td><strong>Best for</strong></td><td>Production databases</td><td>Testing, caches</td><td>Hot working set + cold tail</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ═══ Choosing a Mode ═══ -->
+                <h2>Choosing a Mode</h2>
+
+                <h3>Use File-Based when:</h3>
+                <ul style="color: var(--text-secondary); padding-left: 24px; margin-bottom: 24px;">
+                    <li>You need crash durability — every committed transaction survives a power failure</li>
+                    <li>Your dataset is larger than available memory</li>
+                    <li>You're deploying to production and need standard database guarantees</li>
+                </ul>
+
+                <h3>Use In-Memory when:</h3>
+                <ul style="color: var(--text-secondary); padding-left: 24px; margin-bottom: 24px;">
+                    <li>You're running unit or integration tests and want isolation and speed</li>
+                    <li>The data is ephemeral — caches, scratch computations, temporary state</li>
+                    <li>You need a shared in-memory database across multiple ADO.NET connections</li>
+                    <li>You want to load a file into memory for fast read-only processing, then discard</li>
+                </ul>
+
+                <h3>Use Hybrid when:</h3>
+                <ul style="color: var(--text-secondary); padding-left: 24px; margin-bottom: 24px;">
+                    <li>You have a clear hot/cold split — frequently accessed data should be in memory, but you need the full dataset on disk</li>
+                    <li>You want near-in-memory read performance for your working set with durable backing</li>
+                    <li>You can identify hot tables or collections to preload at startup</li>
+                    <li>You want to control exactly when persistence happens (on commit, checkpoint, or dispose)</li>
+                </ul>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Engine</h4>
+                            <p>B+tree, WAL, checkpointing, and diagnostics in depth</p>
+                        </a>
+                        <a href="../architecture.html" class="next-step-card">
+                            <h4>Architecture</h4>
+                            <p>How all layers connect from client to file I/O</p>
+                        </a>
+                        <a href="../benchmarks.html" class="next-step-card">
+                            <h4>Benchmarks</h4>
+                            <p>Performance characteristics across workloads</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

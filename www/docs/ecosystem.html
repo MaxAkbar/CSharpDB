@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tools &amp; Ecosystem — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Tools &amp; Ecosystem</h1>
+                <p class="lead">CSharpDB provides 10+ ways to interact with your database — from embedded APIs to remote services, AI integrations, and visual tools.</p>
+
+                <h2>Data Access Layers</h2>
+
+                <h3>Engine API (In-Process)</h3>
+                <p>The <code>Database</code> class is the primary entry point for embedded use. It provides direct, high-performance, in-process access to the SQL engine and Collection API.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Engine API</span>
+                    </div>
+                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> result = <span class="kw">await</span> db.ExecuteAsync(<span class="str">"SELECT * FROM Users"</span>);
+<span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;();</code></pre>
+                </div>
+
+                <h3>ADO.NET Provider</h3>
+                <p>Standard <code>DbConnection</code>, <code>DbCommand</code>, <code>DbDataReader</code>, and <code>DbTransaction</code> implementations. Compatible with ORMs and data access libraries that use ADO.NET.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">ADO.NET</span>
+                    </div>
+                    <pre><code><span class="kw">using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">using var</span> tx = <span class="kw">await</span> conn.BeginTransactionAsync();
+<span class="kw">using var</span> cmd = conn.CreateCommand();
+cmd.Transaction = tx;
+cmd.CommandText = <span class="str">"INSERT INTO Users VALUES (@id, @name)"</span>;
+cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+<span class="kw">await</span> tx.CommitAsync();</code></pre>
+                </div>
+                <p>Features: parameter binding, connection pooling, transaction support, type mapping.</p>
+
+                <h3>Client SDK</h3>
+                <p>A unified C# client with pluggable transports. Use the same <code>ICSharpDbClient</code> interface whether connecting locally, over HTTP, or via gRPC.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Client SDK</span>
+                    </div>
+                    <pre><code><span class="cm">// Direct (in-process)</span>
+<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateDirect(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// HTTP transport</span>
+<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateHttp(<span class="str">"http://localhost:5000"</span>);
+
+<span class="cm">// gRPC transport</span>
+<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateGrpc(<span class="str">"http://localhost:5001"</span>);
+
+<span class="cm">// Unified interface for all transports</span>
+<span class="kw">var</span> result = <span class="kw">await</span> client.Query.ExecuteAsync(<span class="str">"SELECT * FROM Users"</span>);
+<span class="kw">var</span> tables = <span class="kw">await</span> client.Schema.ListTablesAsync();
+<span class="kw">await</span> client.Procedures.ExecuteAsync(<span class="str">"GetUser"</span>, <span class="kw">new</span> { id = <span class="num">1</span> });</code></pre>
+                </div>
+
+                <h2>Hosting &amp; Services</h2>
+
+                <h3>REST API</h3>
+                <p>An ASP.NET Core Minimal API exposing 33+ endpoints across 13 groups. Includes OpenAPI/Swagger documentation with Scalar UI for interactive exploration.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Endpoint Group</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>/api/tables</code></td><td>Table CRUD and schema inspection</td></tr>
+                        <tr><td><code>/api/rows</code></td><td>Row-level insert, update, delete</td></tr>
+                        <tr><td><code>/api/sql</code></td><td>Execute SQL statements</td></tr>
+                        <tr><td><code>/api/indexes</code></td><td>Index management</td></tr>
+                        <tr><td><code>/api/views</code></td><td>View management</td></tr>
+                        <tr><td><code>/api/triggers</code></td><td>Trigger management</td></tr>
+                        <tr><td><code>/api/procedures</code></td><td>Stored procedure CRUD and execution</td></tr>
+                        <tr><td><code>/api/collections</code></td><td>Collection API endpoints</td></tr>
+                        <tr><td><code>/api/pipelines</code></td><td>Pipeline management and execution</td></tr>
+                        <tr><td><code>/api/transactions</code></td><td>Explicit transaction control</td></tr>
+                        <tr><td><code>/api/schema</code></td><td>Full schema export</td></tr>
+                        <tr><td><code>/api/inspect</code></td><td>Storage diagnostics</td></tr>
+                        <tr><td><code>/api/maintenance</code></td><td>Vacuum, analyze, checkpoint, backup</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>gRPC Daemon</h3>
+                <p>A standalone gRPC service host (<code>CSharpDB.Daemon</code>) for remote client access. Enables multi-machine architectures with the same Client SDK interface used locally.</p>
+
+                <h2>Developer Tools</h2>
+
+                <h3>CLI REPL</h3>
+                <p>An interactive shell for executing SQL and inspecting databases from the terminal.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Terminal</span>
+                    </div>
+                    <pre><code>$ csharpdb myapp.db
+CSharpDB CLI v2.3.0
+
+csharpdb> SELECT * FROM Users;
+┌────┬───────┬───────────────────┐
+│ Id │ Name  │ Email             │
+├────┼───────┼───────────────────┤
+│  1 │ Alice │ alice@example.com │
+│  2 │ Bob   │ bob@example.com   │
+└────┴───────┴───────────────────┘
+
+csharpdb> .tables
+Users, Products, Orders
+
+csharpdb> .schema Users
+CREATE TABLE Users (Id INTEGER PRIMARY KEY, Name TEXT, Email TEXT)
+
+csharpdb> .indexes
+idx_users_email ON Users (Email)
+
+csharpdb> .quit</code></pre>
+                </div>
+                <p>Meta-commands: <code>.tables</code>, <code>.schema</code>, <code>.indexes</code>, <code>.views</code>, <code>.triggers</code>, <code>.procedures</code>, <code>.read &lt;file&gt;</code>, <code>.snapshot</code>, <code>.quit</code></p>
+
+                <h3>Admin UI (Blazor Server)</h3>
+                <p>A full-featured web dashboard for database management and exploration.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Tab</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Data</strong></td><td>Browse tables with search, sort, filter, and inline CRUD</td></tr>
+                        <tr><td><strong>Query</strong></td><td>SQL editor with syntax highlighting and results grid</td></tr>
+                        <tr><td><strong>Query Designer</strong></td><td>Visual SQL builder with draggable table nodes, join lines, and live SQL preview</td></tr>
+                        <tr><td><strong>Procedures</strong></td><td>Create, edit, and execute stored procedures</td></tr>
+                        <tr><td><strong>Pipeline Designer</strong></td><td>Visual ETL editor with nodes, connections, properties panel, and execution controls</td></tr>
+                        <tr><td><strong>Storage</strong></td><td>Disk inspection, page layout, and integrity analysis</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>VS Code Extension</h3>
+                <p>A NativeAOT-backed extension for Visual Studio Code with deep CSharpDB integration.</p>
+                <ul style="color: var(--text-secondary); margin-bottom: 24px; padding-left: 24px;">
+                    <li>Auto-connect to workspace <code>.db</code> files</li>
+                    <li>Schema explorer — tables, columns, views, indexes, triggers, procedures</li>
+                    <li><code>.csql</code> syntax highlighting, completion, and hover help</li>
+                    <li>Query results panel with export</li>
+                    <li>Data browser with CRUD for tables</li>
+                    <li>Table designer for schema editing</li>
+                    <li>Storage diagnostics viewer</li>
+                </ul>
+
+                <h2>AI Integration</h2>
+
+                <h3>MCP Server (Model Context Protocol)</h3>
+                <p>A Model Context Protocol server exposing 15+ tools for AI assistants. Works with Claude Desktop, Cursor, VS Code Copilot, LM Studio, and other MCP-compatible clients.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Tool Category</th><th>Tools</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Schema</strong></td><td>Inspect tables, columns, indexes, views</td></tr>
+                        <tr><td><strong>SQL</strong></td><td>Execute queries and statements</td></tr>
+                        <tr><td><strong>Data</strong></td><td>Browse rows, filter, iterate</td></tr>
+                        <tr><td><strong>Mutations</strong></td><td>Insert, update, delete rows</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Cross-Platform</h2>
+
+                <h3>Native FFI (NativeAOT)</h3>
+                <p>A C library compiled with NativeAOT for cross-language interop. Enables CSharpDB usage from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, and other languages via FFI.</p>
+
+                <h3>Node.js Package</h3>
+                <p>A TypeScript/JavaScript wrapper around the native library using koffi for FFI binding. Brings CSharpDB to the Node.js ecosystem.</p>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="../getting-started.html" class="next-step-card">
+                            <h4>Getting Started</h4>
+                            <p>Quick start with any access method</p>
+                        </a>
+                        <a href="../api-reference.html" class="next-step-card">
+                            <h4>API Reference</h4>
+                            <p>Complete API surface for all classes</p>
+                        </a>
+                        <a href="../architecture.html" class="next-step-card">
+                            <h4>Architecture</h4>
+                            <p>See how all layers connect</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

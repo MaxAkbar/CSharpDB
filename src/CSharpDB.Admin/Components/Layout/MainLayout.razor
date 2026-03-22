@@ -39,6 +39,10 @@
                             <ProcedureTab @key="TabManager.ActiveTab.Id"
                                           Tab="TabManager.ActiveTab" />
                             break;
+                        case TabKind.Pipeline:
+                            <PipelineTab @key="TabManager.ActiveTab.Id"
+                                         Tab="TabManager.ActiveTab" />
+                            break;
                         case TabKind.Storage:
                             <StorageTab @key="TabManager.ActiveTab.Id" />
                             break;

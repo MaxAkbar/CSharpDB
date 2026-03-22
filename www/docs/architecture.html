@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage Architecture Deep Dive — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#role">Role in the Ecosystem</a></li>
+                        <li><a href="#high-level">High-Level Architecture</a></li>
+                        <li><a href="#file-format">File Format &amp; On-Disk Layout</a></li>
+                        <li><a href="#components">Core Components</a>
+                            <ul>
+                                <li><a href="#storage-device">IStorageDevice</a></li>
+                                <li><a href="#pager">Pager</a></li>
+                                <li><a href="#wal">WriteAheadLog + WalIndex</a></li>
+                                <li><a href="#btree">BTree &amp; BTreeCursor</a></li>
+                                <li><a href="#serialization">Serialization Utilities</a></li>
+                                <li><a href="#catalog">SchemaCatalog</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#data-flows">Data Flow Walkthroughs</a></li>
+                        <li><a href="#patterns">Architectural Patterns</a></li>
+                        <li><a href="#extensibility">Extensibility Model</a></li>
+                        <li><a href="#tradeoffs">Tradeoffs &amp; Rationale</a></li>
+                        <li><a href="#contributor-guide">Contributor Guide</a></li>
+                        <li><a href="#mental-model">Practical Mental Model</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>Storage Architecture Deep Dive</h1>
+                <p class="lead">How <code>CSharpDB.Storage</code> is designed and how its components collaborate — written for mid-level C# engineers comfortable with .NET async patterns, interfaces, and clean architecture.</p>
+
+                <div class="callout callout-info">
+                    <strong>Source:</strong> This page mirrors <a href="https://github.com/maxakbar/csharpdb/blob/main/docs/tutorials/storage/architecture.md"><code>docs/tutorials/storage/architecture.md</code></a> in the repository. See also the companion <a href="https://github.com/maxakbar/csharpdb/blob/main/docs/tutorials/storage/extensibility.md">Usage &amp; Extensibility</a> guide.
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     1) ROLE
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="role">Role of <code>CSharpDB.Storage</code> in the Ecosystem</h2>
+                <p><code>CSharpDB.Storage</code> is the durability and physical layout layer. It is responsible for:</p>
+                <ul>
+                    <li>Persisting pages to a backing store via <code>IStorageDevice</code></li>
+                    <li>Managing in-memory page caching and dirty tracking (<code>Pager</code>)</li>
+                    <li>Providing crash safety and commit durability through a write-ahead log (<code>WriteAheadLog</code>)</li>
+                    <li>Offering a row-id keyed B+tree for table and index data (<code>BTree</code>, <code>BTreeCursor</code>, <code>SlottedPage</code>)</li>
+                    <li>Encoding row values and schema metadata into compact byte payloads (<code>RecordEncoder</code>, <code>SchemaSerializer</code>)</li>
+                    <li>Maintaining a system catalog for tables, indexes, views, and triggers (<code>SchemaCatalog</code>)</li>
+                </ul>
+                <p>The higher layers (<code>CSharpDB.Engine</code>, <code>CSharpDB.Execution</code>, and the SQL planner/executor) treat storage as a stable persistence substrate. The engine delegates transaction lifecycle methods (<code>BeginTransactionAsync</code>, <code>CommitAsync</code>, <code>RollbackAsync</code>) to the <code>Pager</code>.</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     2) HIGH-LEVEL ARCHITECTURE
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="high-level">High-Level Architecture</h2>
+                <p>At runtime, write/read operations flow through this stack:</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Runtime Stack</span>
+                    </div>
+                    <pre><code>┌──────────────────────────────────────────────────────────┐
+│  <span class="tp">Engine / Planner</span>                                       │
+│  Decides what logical records to read/write              │
+├──────────────────────────────────────────────────────────┤
+│  <span class="tp">SchemaCatalog + BTree</span>                                   │
+│  Resolves table/index trees, performs key-level ops      │
+├──────────────────────────────────────────────────────────┤
+│  <span class="tp">Pager</span>                                                  │
+│  Page access, cache, dirty bookkeeping, transactions     │
+├──────────────────────────────────────────────────────────┤
+│  <span class="tp">WriteAheadLog + WalIndex</span>                                │
+│  Durability, commit visibility, recovery, checkpointing  │
+├──────────────────────────────────────────────────────────┤
+│  <span class="tp">IStorageDevice</span>                                         │
+│  Physical file reads/writes/flushes                      │
+└──────────────────────────────────────────────────────────┘</code></pre>
+                </div>
+
+                <p>Conceptually:</p>
+                <ul>
+                    <li><strong>BTree</strong> is the logical page consumer (structure + algorithms)</li>
+                    <li><strong>Pager</strong> is the transactional page manager (state + coordination)</li>
+                    <li><strong>WAL</strong> is the durability journal (redo log with commit markers)</li>
+                    <li><strong>Storage device</strong> is the pluggable I/O boundary</li>
+                </ul>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     3) FILE FORMAT
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="file-format">File Format &amp; On-Disk Layout</h2>
+
+                <h3>Database Pages</h3>
+                <ul>
+                    <li>Fixed page size: <strong>4096 bytes</strong> (<code>PageConstants.PageSize</code>)</li>
+                    <li>Page 0 contains a <strong>100-byte file header</strong>, then usable page content</li>
+                    <li>Remaining pages are fully usable for B+tree or freelist content</li>
+                </ul>
+                <p>The file header tracks:</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">File Header Layout (100 bytes)</span>
+                    </div>
+                    <pre><code>┌───────────────────────┬──────────────┐
+│ magic / version       │ bytes 0-15   │
+│ page size             │ bytes 16-19  │
+│ total page count      │ bytes 20-23  │
+│ schema catalog root   │ bytes 24-27  │
+│ freelist head page    │ bytes 28-31  │
+│ change counter        │ bytes 32-35  │
+│ <span class="cm">(reserved)</span>            │ bytes 36-99  │
+└───────────────────────┴──────────────┘</code></pre>
+                </div>
+
+                <h3>Slotted Page Structure</h3>
+                <p>Each B+tree page uses a slotted layout:</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Slotted Page Layout</span>
+                    </div>
+                    <pre><code>┌──────────────────────────────────────────────────────────┐
+│  Page Header (type, cell count, content-start,           │
+│               right-child / next-leaf pointer)           │
+├──────────────┬───────────────────────┬───────────────────┤
+│ Pointer Array│    <span class="cm">Free Space</span>         │   Cell Content    │
+│ (grows →)    │                       │        (← grows)  │
+└──────────────┴───────────────────────┴───────────────────┘</code></pre>
+                </div>
+                <p><code>SlottedPage</code> encapsulates this structure: cell insert/delete, free-space accounting, defragmentation, and typed access to page header fields.</p>
+
+                <h3>WAL File Layout</h3>
+                <p>The WAL file (<code>&lt;db&gt;.wal</code>) contains:</p>
+                <ul>
+                    <li><strong>32-byte WAL header</strong> (magic/version/page size/salts)</li>
+                    <li>Repeated <strong>frames</strong>, each containing:
+                        <ul>
+                            <li>24-byte frame header</li>
+                            <li>Full 4096-byte page image</li>
+                        </ul>
+                    </li>
+                </ul>
+                <p>Frames are appended for dirty pages. A transaction is committed by marking the <strong>last frame</strong> with non-zero <code>dbPageCount</code> and flushing the WAL stream.</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     4) CORE COMPONENTS
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="components">Core Components &amp; Responsibilities</h2>
+
+                <h3 id="storage-device">I/O Abstraction: <code>IStorageDevice</code></h3>
+                <ul>
+                    <li><code>IStorageDevice</code> defines async primitives for random reads/writes, flushing, resizing, and disposal</li>
+                    <li><code>FileStorageDevice</code> is the default, using <code>RandomAccess</code> APIs and async random I/O</li>
+                    <li>Read behavior zero-fills unread portions when reading beyond file end</li>
+                </ul>
+                <div class="callout callout-info">
+                    <strong>Why it matters:</strong> This is the main extensibility seam for alternate backends (in-memory, encrypted, remote block device) without changing Pager/BTree logic.
+                </div>
+
+                <h3 id="pager">Page Manager &amp; Transaction Coordinator: <code>Pager</code></h3>
+                <p><code>Pager</code> is the central coordinator with these responsibilities:</p>
+                <ul>
+                    <li>Caches pages via <code>IPageCache</code> (<code>DictionaryPageCache</code> by default, <code>LruPageCache</code> when bounded, or a custom cache)</li>
+                    <li>Tracks dirty page IDs within a write transaction</li>
+                    <li>Manages page allocation and freelist reuse</li>
+                    <li>Reads/writes file header state</li>
+                    <li>Owns transaction flow: begin, commit, rollback</li>
+                    <li>Delegates WAL appends/commit/rollback/checkpoint</li>
+                    <li>Supports concurrent snapshot readers and checkpoint coordination</li>
+                </ul>
+
+                <h4>Concurrency Model</h4>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border);">
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Mechanism</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Purpose</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;"><code>SemaphoreSlim</code> writer lock</td>
+                            <td style="padding: 8px 12px;">Single-writer exclusion with timeout</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Checkpoint lock</td>
+                            <td style="padding: 8px 12px;">Serializes checkpoint operations</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Active reader counter</td>
+                            <td style="padding: 8px 12px;">Prevents checkpoint while snapshot readers are alive</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px;">Immutable <code>WalSnapshot</code></td>
+                            <td style="padding: 8px 12px;">Snapshot readers use frozen state + read-only pager</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Transaction Behavior</h4>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Transaction Lifecycle</span>
+                    </div>
+                    <pre><code><span class="cm">// BeginTransactionAsync</span>
+<span class="cm">// → acquires writer lock, starts WAL transaction</span>
+
+<span class="cm">// CommitAsync</span>
+<span class="cm">// → writes all dirty pages as WAL frames</span>
+<span class="cm">// → WAL commits (mark final frame + flush)</span>
+<span class="cm">// → clears dirty set, releases writer lock</span>
+
+<span class="cm">// RollbackAsync</span>
+<span class="cm">// → truncates uncommitted WAL frames</span>
+<span class="cm">// → clears cache/dirty state</span>
+<span class="cm">// → rehydrates header state, releases lock</span></code></pre>
+                </div>
+
+                <h4>Checkpoint Behavior</h4>
+                <ul>
+                    <li>Triggered manually or automatically when WAL frame count threshold is reached</li>
+                    <li>Skips if active readers hold snapshots</li>
+                    <li>Applies committed WAL pages back into main DB file and resets WAL/index</li>
+                </ul>
+
+                <h3 id="wal">Durability &amp; Recovery: <code>WriteAheadLog</code> + <code>WalIndex</code></h3>
+
+                <h4><code>WriteAheadLog</code></h4>
+                <ul>
+                    <li>Create/open WAL file</li>
+                    <li>Append page frames for dirty pages</li>
+                    <li>Mark commit by rewriting final frame header (<code>dbPageCount</code>) + checksum + flush</li>
+                    <li>Recover by scanning WAL, validating frame salts/checksums, rebuilding committed index, truncating partial/corrupt tail</li>
+                    <li>Checkpoint committed pages to DB file and reset WAL</li>
+                </ul>
+
+                <h4><code>WalIndex</code></h4>
+                <ul>
+                    <li>Maps <code>pageId &rarr; latest committed WAL offset</code></li>
+                    <li>Tracks committed frame count</li>
+                    <li>Produces <code>WalSnapshot</code> copies for readers</li>
+                </ul>
+
+                <h4><code>WalSnapshot</code> &mdash; Snapshot Isolation</h4>
+                <ul>
+                    <li>Readers resolve page lookups through a frozen page-to-offset map</li>
+                    <li>New commits do not affect an existing snapshot</li>
+                </ul>
+
+                <h3 id="btree">Data Structure: <code>BTree</code> &amp; <code>BTreeCursor</code></h3>
+                <p><code>BTree</code> is a row-id keyed B+tree (<code>long</code> key).</p>
+
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border);">
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Cell Type</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Contents</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Leaf cell</td>
+                            <td style="padding: 8px 12px;">key + payload bytes</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Interior cell</td>
+                            <td style="padding: 8px 12px;">left child + separator key</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px;">Interior header</td>
+                            <td style="padding: 8px 12px;">right-child pointer; leaf pages chain via <code>nextLeaf</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p><strong>Supported operations:</strong> point lookup (<code>FindAsync</code> + cached fast path <code>TryFindCached</code>), insert with recursive split, delete (no underflow rebalance), full count by leaf traversal, and cursor creation.</p>
+
+                <p><strong>Performance:</strong> Leaf hint cache (<code>_hintLeafPageId</code>, min/max key range) bypasses root-to-leaf traversal for clustered lookups. Binary search utilities (<code>LowerBoundLeaf</code>, <code>UpperBoundInterior</code>) operate on per-page cells.</p>
+
+                <p><strong><code>BTreeCursor</code>:</strong> Forward-only iterator starting at the leftmost leaf and advancing through the leaf-linked list. Supports <code>SeekAsync(targetKey)</code> then incremental <code>MoveNextAsync</code>.</p>
+
+                <h3 id="serialization">Serialization: <code>RecordEncoder</code>, <code>Varint</code>, <code>SchemaSerializer</code></h3>
+
+                <h4>Record Encoding</h4>
+                <p>Rows are encoded as a column-count varint followed by repeated <code>[typeTag][valueData]</code> pairs. Optimized APIs avoid materializing full rows:</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">RecordEncoder Hot-Path APIs</span>
+                    </div>
+                    <pre><code><span class="tp">DecodeInto</span>          <span class="cm">// reuse destination span</span>
+<span class="tp">DecodeUpTo</span>          <span class="cm">// prefix decode (first N columns)</span>
+<span class="tp">DecodeColumn</span>        <span class="cm">// single-column extraction</span>
+<span class="tp">TryColumnTextEquals</span> <span class="cm">// UTF-8 equality without string alloc</span>
+<span class="tp">IsColumnNull</span>        <span class="cm">// null check without decode</span>
+<span class="tp">TryDecodeNumericColumn</span> <span class="cm">// numeric extraction</span></code></pre>
+                </div>
+
+                <h4>Varint</h4>
+                <p>Unsigned LEB128-style encoding used by record and schema serializers for compact lengths/sizes.</p>
+
+                <h4>Schema Metadata</h4>
+                <p><code>SchemaSerializer</code> serializes/deserializes <code>TableSchema</code>, <code>IndexSchema</code>, and <code>TriggerSchema</code>. Maps names to <code>long</code> keys via deterministic hash functions for catalog storage.</p>
+
+                <h3 id="catalog">Catalog &amp; Metadata: <code>SchemaCatalog</code></h3>
+                <p><code>SchemaCatalog</code> stores and caches metadata in B+trees:</p>
+                <ul>
+                    <li>Main catalog tree stores table definitions keyed by hashed table name</li>
+                    <li>Sentinel keys point to separate subtrees for indexes, views, and triggers</li>
+                    <li>In-memory caches mirror catalog for fast lookups</li>
+                </ul>
+                <p><strong>Responsibilities:</strong> create/drop/update table schemas, create/drop indexes/views/triggers, provide table/index BTree instances, track root page IDs, persist root-page changes after splits (<code>PersistRootPageChangesAsync</code>).</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     5) DATA FLOW WALKTHROUGHS
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="data-flows">Data Flow Walkthroughs</h2>
+
+                <h3>Database Open / Recovery</h3>
+                <ol>
+                    <li>Engine creates <code>FileStorageDevice</code>, <code>WalIndex</code>, <code>WriteAheadLog</code>, <code>Pager</code></li>
+                    <li><strong>New DB:</strong> initialize page 0 header, create/open WAL</li>
+                    <li><strong>Existing DB:</strong> pager loads header, WAL recovery scans WAL</li>
+                    <li>If committed WAL frames exist after recovery, checkpoint runs to bring DB file current</li>
+                    <li><code>SchemaCatalog</code> loads metadata trees and warms in-memory schema caches</li>
+                </ol>
+
+                <h3>Write Transaction</h3>
+                <ol>
+                    <li><code>Pager.BeginTransactionAsync</code> acquires writer lock and starts WAL transaction</li>
+                    <li>Planner/catalog/BTree mutate page byte arrays</li>
+                    <li>Modified pages are marked dirty in pager</li>
+                    <li><code>Pager.CommitAsync</code>: updates page 0 header &rarr; appends dirty pages to WAL &rarr; WAL commits (mark final frame + flush) &rarr; WAL index visible to future readers &rarr; writer lock released</li>
+                    <li>Optional auto-checkpoint may run when threshold reached</li>
+                </ol>
+
+                <h3>Rollback</h3>
+                <ol>
+                    <li>WAL is truncated to tx start offset</li>
+                    <li>Pager clears dirty state and cache</li>
+                    <li>Header state is reloaded from DB file (or latest committed WAL page 0 if present)</li>
+                    <li>Writer lock is released</li>
+                </ol>
+
+                <h3>Read Path (Normal &amp; Snapshot)</h3>
+                <p><strong>Normal read:</strong> BTree asks pager for pages. Pager resolves from cache first, then latest WAL frame (if any), then DB file.</p>
+                <p><strong>Snapshot read:</strong></p>
+                <ol>
+                    <li>Reader acquires <code>WalSnapshot</code> from pager</li>
+                    <li>Read-only snapshot pager is created</li>
+                    <li>Page resolution uses snapshot mapping only; later commits are invisible</li>
+                    <li>On disposal, reader count decrements, allowing future checkpoint</li>
+                </ol>
+
+                <h3>Query Scans</h3>
+                <p><code>BTreeCursor</code> begins at leftmost leaf and walks <code>nextLeaf</code> pointers. Row payloads are decoded via <code>RecordEncoder</code> as needed by execution operators.</p>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     6) ARCHITECTURAL PATTERNS
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="patterns">Architectural Patterns</h2>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border);">
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Pattern</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Where</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Abstraction boundary</td>
+                            <td style="padding: 8px 12px;"><code>IStorageDevice</code> decouples persistence medium from page/WAL logic</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Coordinator pattern</td>
+                            <td style="padding: 8px 12px;"><code>Pager</code> centralizes transactional lifecycle and page state</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Redo logging</td>
+                            <td style="padding: 8px 12px;">WAL stores post-image page frames and commit markers</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Snapshot pattern</td>
+                            <td style="padding: 8px 12px;"><code>WalSnapshot</code> provides immutable read view for concurrent readers</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Repository-like metadata</td>
+                            <td style="padding: 8px 12px;"><code>SchemaCatalog</code> encapsulates schema persistence and in-memory indexing</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Cursor iteration</td>
+                            <td style="padding: 8px 12px;"><code>BTreeCursor</code> for ordered streaming traversal</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px;">Format utility classes</td>
+                            <td style="padding: 8px 12px;"><code>RecordEncoder</code>, <code>SchemaSerializer</code>, <code>Varint</code> isolate binary format concerns</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="callout callout-info">
+                    <strong>Plugin architecture:</strong> The project is <strong>partially pluggable</strong> today. First-class provider seams exist for storage device, page cache, checkpoint policy, lifecycle interceptors, checksum provider, index provider, serializer provider, catalog store, and the storage engine factory. Pager/WAL/BTree internals remain concrete.
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     7) EXTENSIBILITY
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="extensibility">Extensibility Model</h2>
+
+                <h3>Current Extension Points</h3>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border);">
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Concern</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Interface</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Default</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Storage backend</td>
+                            <td style="padding: 8px 12px;"><code>IStorageDevice</code></td>
+                            <td style="padding: 8px 12px;"><code>FileStorageDevice</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Page cache</td>
+                            <td style="padding: 8px 12px;"><code>IPageCache</code></td>
+                            <td style="padding: 8px 12px;"><code>DictionaryPageCache</code> / <code>LruPageCache</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Auto-checkpoint</td>
+                            <td style="padding: 8px 12px;"><code>ICheckpointPolicy</code></td>
+                            <td style="padding: 8px 12px;"><code>FrameCountCheckpointPolicy</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Lifecycle hooks</td>
+                            <td style="padding: 8px 12px;"><code>IPageOperationInterceptor</code></td>
+                            <td style="padding: 8px 12px;"><code>NoOpPageOperationInterceptor</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">WAL checksum</td>
+                            <td style="padding: 8px 12px;"><code>IPageChecksumProvider</code></td>
+                            <td style="padding: 8px 12px;"><code>AdditiveChecksumProvider</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Index implementation</td>
+                            <td style="padding: 8px 12px;"><code>IIndexProvider</code></td>
+                            <td style="padding: 8px 12px;"><code>BTreeIndexProvider</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Serialization</td>
+                            <td style="padding: 8px 12px;"><code>ISerializerProvider</code></td>
+                            <td style="padding: 8px 12px;"><code>DefaultSerializerProvider</code></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Catalog codec</td>
+                            <td style="padding: 8px 12px;"><code>ICatalogStore</code></td>
+                            <td style="padding: 8px 12px;"><code>CatalogStore</code></td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px;">Composition root</td>
+                            <td style="padding: 8px 12px;"><code>IStorageEngineFactory</code></td>
+                            <td style="padding: 8px 12px;"><code>DefaultStorageEngineFactory</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Future Plugin Support</h3>
+                <ul>
+                    <li>Expose WAL replacement through <code>StorageEngineOptionsBuilder</code> instead of requiring a custom <code>IStorageEngineFactory</code></li>
+                    <li>Introduce a higher-level abstraction around pager/WAL orchestration for alternate journaling schemes</li>
+                    <li>Consider whether page layout and B+tree algorithms should ever be swappable, or remain intentionally concrete</li>
+                </ul>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     8) TRADEOFFS
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="tradeoffs">Tradeoffs &amp; Rationale</h2>
+
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border);">
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Decision</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Benefit</th>
+                            <th style="text-align: left; padding: 8px 12px; color: var(--text-secondary);">Tradeoff</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Whole-page WAL frames</td>
+                            <td style="padding: 8px 12px;">Implementation clarity, recovery simplicity</td>
+                            <td style="padding: 8px 12px;">Larger write amplification for small updates</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Single-writer lock</td>
+                            <td style="padding: 8px 12px;">Predictable conflict/consistency handling</td>
+                            <td style="padding: 8px 12px;">Write throughput bottleneck under heavy concurrent writes</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Snapshot readers via copied map</td>
+                            <td style="padding: 8px 12px;">Cheap creation, easy to reason about</td>
+                            <td style="padding: 8px 12px;">Copy cost grows with WAL page map size</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Delete without rebalance</td>
+                            <td style="padding: 8px 12px;">Simpler implementation, fewer edge-case bugs</td>
+                            <td style="padding: 8px 12px;">Potential space inefficiency over time</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 8px 12px;">Hash-based catalog keys</td>
+                            <td style="padding: 8px 12px;">Deterministic and lightweight</td>
+                            <td style="padding: 8px 12px;">Theoretical collision risk</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px;">Static utility serializers</td>
+                            <td style="padding: 8px 12px;">Low overhead, fast</td>
+                            <td style="padding: 8px 12px;">Reduced runtime configurability</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     9) CONTRIBUTOR GUIDE
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="contributor-guide">Contributor Quick Guide</h2>
+
+                <h3>A) Add a New Storage Backend</h3>
+                <ol>
+                    <li>Implement <code>IStorageDevice</code></li>
+                    <li>Ensure read semantics match expectations (especially zero-fill beyond EOF behavior)</li>
+                    <li>Validate with WAL + pager tests (transaction commit/rollback/recovery)</li>
+                </ol>
+
+                <h3>B) Add Row Encoding Optimizations</h3>
+                <ol>
+                    <li>Extend <code>RecordEncoder</code> with focused decode helpers for execution hot paths</li>
+                    <li>Keep wire format backward-compatible unless versioning header strategy is introduced</li>
+                    <li>Add tests for mixed type decoding and edge cases (missing columns, null semantics)</li>
+                </ol>
+
+                <h3>C) Improve BTree Behavior</h3>
+                <ol>
+                    <li>Add rebalance/merge logic for delete underflow</li>
+                    <li>Preserve cursor and lookup correctness with split/merge interactions</li>
+                    <li>Ensure root-page updates are persisted through <code>SchemaCatalog.PersistRootPageChangesAsync</code></li>
+                </ol>
+
+                <h3>D) Pluggable Index Providers (Larger Refactor)</h3>
+                <ol>
+                    <li>Define an interface for index operations used by planner/catalog</li>
+                    <li>Provide adapter for existing <code>BTree</code> implementation</li>
+                    <li>Migrate factory points in engine/database construction</li>
+                </ol>
+
+                <h3>E) Concurrency Changes</h3>
+                <ol>
+                    <li>Be cautious around writer/checkpoint/reader interactions</li>
+                    <li>Any checkpoint policy changes must preserve snapshot guarantees</li>
+                    <li>Re-run WAL recovery and concurrent reader tests after modifications</li>
+                </ol>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     10) MENTAL MODEL
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="mental-model">Practical Mental Model</h2>
+                <p>A useful way to reason about this storage engine:</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Four Concerns</span>
+                    </div>
+                    <pre><code><span class="tp">BTree</span>          → <span class="str">"Where is this key/value logically?"</span>
+<span class="tp">Pager</span>          → <span class="str">"Which page image is authoritative right now?"</span>
+<span class="tp">WAL</span>            → <span class="str">"What is durable and recoverable after a crash?"</span>
+<span class="tp">SchemaCatalog</span>  → <span class="str">"Which trees represent which database objects?"</span></code></pre>
+                </div>
+
+                <p>Those four concerns are intentionally separated, and that separation is the main architectural strength of <code>CSharpDB.Storage</code>.</p>
+
+                <!-- Next Steps -->
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="database-modes.html" class="next-step-card">
+                            <h4>Database Modes</h4>
+                            <p>File-based, in-memory, and hybrid storage modes</p>
+                        </a>
+                        <a href="samples.html#storage-tutorials" class="next-step-card">
+                            <h4>Storage Tutorials</h4>
+                            <p>Runnable examples from config stores to graph databases</p>
+                        </a>
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Full SQL syntax supported by the engine</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL Reference — CSharpDB</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>DB</text></svg>">
+</head>
+<body>
+    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>SQL Reference</h1>
+                <p class="lead">CSharpDB includes a full SQL engine with tokenizer, parser, query planner, and expression evaluator.</p>
+
+                <h2>Data Definition (DDL)</h2>
+
+                <h3>CREATE TABLE</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">CREATE TABLE</span> Employees (
+    Id        <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY</span>,
+    Name      <span class="tp">TEXT</span> <span class="kw">NOT NULL</span>,
+    DeptId    <span class="tp">INTEGER</span>,
+    Salary    <span class="tp">REAL</span>,
+    HireDate  <span class="tp">TEXT</span>,
+    Photo     <span class="tp">BLOB</span>
+);</code></pre>
+                </div>
+
+                <h3>CREATE INDEX</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">CREATE INDEX</span> idx_emp_dept <span class="kw">ON</span> Employees (DeptId);
+<span class="kw">CREATE UNIQUE INDEX</span> idx_emp_name <span class="kw">ON</span> Employees (Name);</code></pre>
+                </div>
+
+                <h3>CREATE VIEW</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">CREATE VIEW</span> HighEarners <span class="kw">AS</span>
+    <span class="kw">SELECT</span> Name, Salary <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Salary > <span class="num">100000</span>;</code></pre>
+                </div>
+
+                <h3>CREATE TRIGGER</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">CREATE TRIGGER</span> log_insert
+    <span class="kw">AFTER INSERT ON</span> Employees
+    <span class="kw">BEGIN</span>
+        <span class="kw">INSERT INTO</span> AuditLog <span class="kw">VALUES</span> (<span class="str">'INSERT'</span>, NEW.Name);
+    <span class="kw">END</span>;</code></pre>
+                </div>
+
+                <h3>ALTER TABLE &amp; DROP</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">ALTER TABLE</span> Employees <span class="kw">ADD COLUMN</span> Title <span class="tp">TEXT</span>;
+<span class="kw">DROP TABLE</span> Employees;
+<span class="kw">DROP INDEX</span> idx_emp_dept;
+<span class="kw">DROP VIEW</span> HighEarners;</code></pre>
+                </div>
+
+                <h2>Data Manipulation (DML)</h2>
+
+                <h3>INSERT</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">INSERT INTO</span> Employees (Id, Name, DeptId, Salary)
+    <span class="kw">VALUES</span> (<span class="num">1</span>, <span class="str">'Alice'</span>, <span class="num">10</span>, <span class="num">95000.0</span>);
+
+<span class="kw">INSERT INTO</span> Employees <span class="kw">VALUES</span>
+    (<span class="num">2</span>, <span class="str">'Bob'</span>, <span class="num">20</span>, <span class="num">88000.0</span>, <span class="str">'2024-01-15'</span>, <span class="kw">NULL</span>);</code></pre>
+                </div>
+
+                <h3>SELECT</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="cm">-- Basic query with filtering and ordering</span>
+<span class="kw">SELECT</span> Name, Salary <span class="kw">FROM</span> Employees
+    <span class="kw">WHERE</span> Salary > <span class="num">80000</span> <span class="kw">ORDER BY</span> Salary <span class="kw">DESC</span>;
+
+<span class="cm">-- DISTINCT, LIMIT, OFFSET</span>
+<span class="kw">SELECT DISTINCT</span> DeptId <span class="kw">FROM</span> Employees <span class="kw">LIMIT</span> <span class="num">10</span> <span class="kw">OFFSET</span> <span class="num">5</span>;
+
+<span class="cm">-- JOINs</span>
+<span class="kw">SELECT</span> e.Name, d.DeptName
+    <span class="kw">FROM</span> Employees e
+    <span class="kw">INNER JOIN</span> Departments d <span class="kw">ON</span> e.DeptId = d.Id;
+
+<span class="kw">SELECT</span> e.Name, d.DeptName
+    <span class="kw">FROM</span> Employees e
+    <span class="kw">LEFT JOIN</span> Departments d <span class="kw">ON</span> e.DeptId = d.Id;
+
+<span class="cm">-- Aggregates and GROUP BY</span>
+<span class="kw">SELECT</span> DeptId, <span class="tp">COUNT</span>(*), <span class="tp">AVG</span>(Salary), <span class="tp">MAX</span>(Salary)
+    <span class="kw">FROM</span> Employees
+    <span class="kw">GROUP BY</span> DeptId
+    <span class="kw">HAVING</span> <span class="tp">COUNT</span>(*) > <span class="num">3</span>;
+
+<span class="cm">-- CTEs (Common Table Expressions)</span>
+<span class="kw">WITH</span> TopEarners <span class="kw">AS</span> (
+    <span class="kw">SELECT</span> Name, Salary <span class="kw">FROM</span> Employees
+    <span class="kw">WHERE</span> Salary > <span class="num">100000</span>
+)
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> TopEarners <span class="kw">ORDER BY</span> Salary <span class="kw">DESC</span>;
+
+<span class="cm">-- Subqueries</span>
+<span class="kw">SELECT</span> Name <span class="kw">FROM</span> Employees
+    <span class="kw">WHERE</span> DeptId <span class="kw">IN</span> (<span class="kw">SELECT</span> Id <span class="kw">FROM</span> Departments <span class="kw">WHERE</span> Region = <span class="str">'West'</span>);
+
+<span class="kw">SELECT</span> Name <span class="kw">FROM</span> Employees e
+    <span class="kw">WHERE EXISTS</span> (<span class="kw">SELECT</span> <span class="num">1</span> <span class="kw">FROM</span> Reviews r <span class="kw">WHERE</span> r.EmpId = e.Id);
+
+<span class="cm">-- Set operations</span>
+<span class="kw">SELECT</span> Name <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> DeptId = <span class="num">10</span>
+<span class="kw">UNION</span>
+<span class="kw">SELECT</span> Name <span class="kw">FROM</span> Contractors <span class="kw">WHERE</span> Active = <span class="num">1</span>;</code></pre>
+                </div>
+
+                <h3>UPDATE &amp; DELETE</h3>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">SQL</span>
+                    </div>
+                    <pre><code><span class="kw">UPDATE</span> Employees <span class="kw">SET</span> Salary = Salary * <span class="num">1.1</span> <span class="kw">WHERE</span> DeptId = <span class="num">10</span>;
+<span class="kw">DELETE FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">99</span>;</code></pre>
+                </div>
+
+                <h2>Built-in Functions</h2>
+
+                <h3>String Functions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>UPPER(text)</code></td><td>Convert to uppercase</td></tr>
+                        <tr><td><code>LOWER(text)</code></td><td>Convert to lowercase</td></tr>
+                        <tr><td><code>LENGTH(text)</code></td><td>String length</td></tr>
+                        <tr><td><code>SUBSTR(text, start, len)</code></td><td>Substring extraction</td></tr>
+                        <tr><td><code>TRIM(text)</code></td><td>Remove leading/trailing whitespace</td></tr>
+                        <tr><td><code>REPLACE(text, from, to)</code></td><td>String replacement</td></tr>
+                        <tr><td><code>INSTR(text, search)</code></td><td>Find position of substring</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Math Functions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>ABS(value)</code></td><td>Absolute value</td></tr>
+                        <tr><td><code>ROUND(value, digits)</code></td><td>Round to N decimal places</td></tr>
+                        <tr><td><code>SIGN(value)</code></td><td>Sign of a number (-1, 0, 1)</td></tr>
+                        <tr><td><code>CEIL(value)</code></td><td>Round up to nearest integer</td></tr>
+                        <tr><td><code>FLOOR(value)</code></td><td>Round down to nearest integer</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Conditional &amp; Type Functions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>TYPEOF(value)</code></td><td>Returns the type name as text</td></tr>
+                        <tr><td><code>COALESCE(a, b, ...)</code></td><td>First non-null value</td></tr>
+                        <tr><td><code>NULLIF(a, b)</code></td><td>NULL if a equals b</td></tr>
+                        <tr><td><code>IFNULL(a, b)</code></td><td>b if a is null</td></tr>
+                        <tr><td><code>IIF(cond, then, else)</code></td><td>Conditional expression</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Aggregate Functions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>COUNT(*)</code> / <code>COUNT(col)</code></td><td>Count rows or non-null values</td></tr>
+                        <tr><td><code>SUM(col)</code></td><td>Sum of values</td></tr>
+                        <tr><td><code>AVG(col)</code></td><td>Average of values</td></tr>
+                        <tr><td><code>MIN(col)</code></td><td>Minimum value</td></tr>
+                        <tr><td><code>MAX(col)</code></td><td>Maximum value</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>System Catalog</h2>
+                <p>Query database metadata through built-in system views:</p>
+                <table class="doc-table">
+                    <thead><tr><th>View</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>sys.tables</code></td><td>All tables and their root page numbers</td></tr>
+                        <tr><td><code>sys.columns</code></td><td>Column definitions for all tables</td></tr>
+                        <tr><td><code>sys.indexes</code></td><td>Index definitions and backing B+tree info</td></tr>
+                        <tr><td><code>sys.views</code></td><td>View definitions and SQL</td></tr>
+                        <tr><td><code>sys.triggers</code></td><td>Trigger metadata</td></tr>
+                        <tr><td><code>sys.table_stats</code></td><td>Row count and page usage per table</td></tr>
+                        <tr><td><code>sys.column_stats</code></td><td>Cardinality, NULL count, min/max per column</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Stored Procedures</h2>
+                <p>CSharpDB supports stored procedures with typed parameters, persisted in the database catalog.</p>
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dots"><span></span><span></span><span></span></div>
+                        <span class="code-filename">Procedures via Client SDK</span>
+                    </div>
+                    <pre><code><span class="cm">// Create a procedure</span>
+<span class="kw">await</span> client.Procedures.CreateAsync(<span class="kw">new</span> {
+    Name = <span class="str">"GetEmployeesByDept"</span>,
+    Body = <span class="str">"SELECT * FROM Employees WHERE DeptId = @deptId"</span>,
+    Parameters = <span class="kw">new</span>[] {
+        <span class="kw">new</span> { Name = <span class="str">"deptId"</span>, Type = <span class="str">"INTEGER"</span>, Direction = <span class="str">"IN"</span> }
+    }
+});
+
+<span class="cm">// Execute</span>
+<span class="kw">var</span> result = <span class="kw">await</span> client.Procedures.ExecuteAsync(
+    <span class="str">"GetEmployeesByDept"</span>, <span class="kw">new</span> { deptId = <span class="num">10</span> });</code></pre>
+                </div>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="collections.html" class="next-step-card">
+                            <h4>Collection API</h4>
+                            <p>Work with typed C# objects instead of SQL</p>
+                        </a>
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Engine</h4>
+                            <p>Low-level B+tree operations and transactions</p>
+                        </a>
+                        <a href="../api-reference.html" class="next-step-card">
+                            <h4>API Reference</h4>
+                            <p>Complete API surface for all classes</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+</body>
+</html>

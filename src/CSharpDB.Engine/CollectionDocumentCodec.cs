@@ -58,6 +58,11 @@ internal sealed class CollectionDocumentCodec<T>
             byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes(document, s_jsonOptions);
             return CollectionPayloadCodec.Encode(key, jsonUtf8);
         }
+        catch (TypeInitializationException ex) when (ex.InnerException is NotSupportedException)
+        {
+            byte[] jsonUtf8 = JsonSerializer.SerializeToUtf8Bytes(document, s_jsonOptions);
+            return CollectionPayloadCodec.Encode(key, jsonUtf8);
+        }
     }
 
     [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]

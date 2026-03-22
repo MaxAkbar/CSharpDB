@@ -1,59 +1,27 @@
 # What's New
 
-## v2.2.0 (Unreleased)
+## v2.3.0
 
-### SQL Read-Path Performance
+### WAL Durability and Commit Throughput
 
-- Added storage read-path optimizations for pager and WAL hot paths.
-- Narrowed reader and write-path regressions introduced during earlier tuning.
-- Reduced insert metadata churn and front-door overhead.
-- Expanded composite and grouped index fast paths.
-- Added composite grouped index aggregates for single-pass grouped queries.
-- Broadened join lookup and covered join paths to reduce intermediate row copies.
-- Optimized correlated `EXISTS` and `IN` filter evaluation.
-- Optimized correlated `NOT IN` filters.
-- Fused scan filter and projection paths to avoid unnecessary row materialization.
-- Added filtered scalar aggregate fast path for single-pass aggregate queries.
-- Added compact scan projection path and compact indexed range projection paths.
-- Batched compact scan expression projections.
-- Batched generic expression projection operators.
-- Extended batch transport through generic projections.
-- Batched aggregate and join consumers.
-- Checkpoint SQL batched transport groundwork (internal executor-level batching; the full public batch transport is forward-looking design work).
+- Added configurable WAL durability modes so file-backed storage can run with explicit `Durable` or `Buffered` commit behavior.
+- Added grouped WAL commit coordination for durable writes to reduce commit contention under concurrent write load.
+- Moved pager commit waiting out from under the writer lock to improve write-path scheduling.
+- Routed WAL flushing through explicit flush policies so durability behavior stays clear at the storage-engine boundary.
+- Added durable-vs-buffered benchmark coverage and refreshed v2.3 comparison results.
 
-### Collection Storage and Indexing
+### Pipelines and Collection Reliability
 
-- Added binary collection payload read path and faster binary collection hydration.
-- Added path-based collection index APIs (`EnsureIndexAsync`, `FindByPathAsync`, `FindByPathRangeAsync`).
-- Added multi-value array collection indexes for terminal array-element indexing.
-- Added collection path query API with string-path forms such as `FindByPathAsync("$.address.city", ...)` and `FindByPathAsync("$.tags[]", ...)`.
-- Added collection path range queries for integer and text paths.
-- Added nested array path collection indexes for `$.orders[].sku`-style paths.
-- Added ordered text collection indexes for index-backed text equality and text range queries.
-- Added Guid and temporal (DateTime) collection path indexing.
+- Improved pipeline editor resilience so visual mode preserves valid package state and no longer resets user work when package JSON is invalid or empty.
+- Added CSV source column previews, schema-aware destination coercion, resolved file-path handling, and richer transform/destination failure diagnostics.
+- Preserved explicit `null` values during pipeline table writes and extended pipeline resume coverage around checkpoint rewinds.
+- Hardened collection storage by falling back to JSON when binary collection storage does not support a value type.
+- Fixed collection codec regressions so unsupported typed document shapes still round-trip through JSON fallback and `UInt64` values preserve binary round-tripping.
 
-### Hybrid Storage Mode
+### Documentation, Site, and Admin Publishing
 
-- Redesigned hybrid mode around lazy-resident durable storage.
-- Added gRPC tunable file-cache hybrid mode documentation and configuration options.
-
-### Client-Wide Backup and Restore
-
-- `ICSharpDbClient` now exposes `BackupAsync` and `RestoreAsync` as first-class operations.
-- Backup and restore work across Direct, HTTP, gRPC, CLI, and Admin flows.
-- `CSharpDB.Api` exposes `/api/maintenance/backup` and `/api/maintenance/restore`.
-- CLI `.backup` / `.restore` now route through `ICSharpDbClient` instead of calling engine helpers directly.
-
-### Index Store
-
-- Implemented `ReplaceAsync` method for index stores and updated related logic across the codebase.
-
-### Documentation and Maintenance
-
-- Added SQL batched row transport design document (forward-looking design for next phase).
-- Refreshed architecture docs and published storage advanced examples.
-- Expanded v2.2.0 collection release notes and broadened v2.2.0 release notes.
-- Added benchmark results for CSharpDB v2.2 and v2.0 comparison results.
-- Cleaned up trim warnings and normalized line endings.
-- Updated `.gitignore` to include `tmp/` directory.
-- Deleted old benchmarks.
+- Added a static documentation site under `www` with landing pages, architecture docs, benchmarks, getting-started guidance, storage/SQL/pipeline/collection docs, and sample content.
+- Added a publish helper script for `CSharpDB.Admin` and `CSharpDB.Daemon` to simplify deployment artifact generation.
+- Updated the release workflow to publish the docs site to GitHub Pages and added the supporting Pages workflow.
+- Updated the admin UI pipeline designer with a New Pipeline action and enabled static asset mapping so site assets are served correctly.
+- Added a storage internals walkthrough script in `docs` for release and educational content.
