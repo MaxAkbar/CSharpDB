@@ -46,7 +46,7 @@
                     <button class="theme-toggle" id="themeToggle" title="Toggle theme">
                         ${sunSvg}${moonSvg}
                     </button>
-                    <a href="https://github.com" class="btn btn-outline btn-sm" target="_blank">GitHub</a>
+                    <a href="https://github.com/MaxAkbar/CSharpDB" class="btn btn-outline btn-sm" target="_blank">GitHub</a>
                     <button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu">
                         <span></span><span></span><span></span>
                     </button>
