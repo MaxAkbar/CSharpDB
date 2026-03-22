@@ -324,14 +324,13 @@ public sealed class WriteAheadLog : IWriteAheadLog
     public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
     {
         if (_stream == null) return;
-        ThrowIfWriteFaulted();
         await _streamMutex.WaitAsync(cancellationToken);
         try
         {
             _stream.SetLength(_uncommittedStartOffset);
             _stream.Position = _uncommittedStartOffset;
             _writePosition = _uncommittedStartOffset;
-            await FlushAsync(cancellationToken);
+            await _stream.FlushAsync(cancellationToken);
             _uncommittedFrames.Clear();
             _lastUncommittedDataChecksum = 0;
         }
@@ -960,6 +959,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
             catch (Exception ex)
             {
+                await RewindPendingCommitBytesAsync().ConfigureAwait(false);
                 FailPendingCommits(ex);
                 return;
             }
@@ -1020,6 +1020,37 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         foreach (var batch in batches)
             batch.Completion.TrySetException(fault);
+    }
+
+    private async Task RewindPendingCommitBytesAsync()
+    {
+        long truncateAt;
+        lock (_pendingCommitSync)
+        {
+            if (_pendingCommitBatches.Count == 0)
+                return;
+
+            truncateAt = _pendingCommitBatches[0].Entries[0].WalOffset;
+        }
+
+        if (_stream == null)
+            return;
+
+        await _streamMutex.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _stream.SetLength(truncateAt);
+            _stream.Position = truncateAt;
+            _writePosition = truncateAt;
+            _uncommittedStartOffset = truncateAt;
+            _uncommittedFrames.Clear();
+            _lastUncommittedDataChecksum = 0;
+            await _stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _streamMutex.Release();
+        }
     }
 
     private void ThrowIfWriteFaulted()

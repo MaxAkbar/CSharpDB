@@ -1,5 +1,6 @@
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Validation;
+using System.Text.Json;
 
 namespace CSharpDB.Pipelines.Runtime;
 
@@ -61,6 +62,10 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         string currentStep = "starting";
         string? currentComponent = null;
         PipelineRowBatch? currentBatch = null;
+        bool skipBadRows = request.Package.Options.ErrorMode == PipelineErrorMode.SkipBadRows;
+        int maxRejects = request.Package.Options.MaxRejects <= 0
+            ? int.MaxValue
+            : request.Package.Options.MaxRejects;
 
         try
         {
@@ -104,40 +109,103 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             await foreach (var sourceBatch in source.ReadBatchesAsync(context, ct))
             {
                 currentBatch = sourceBatch;
-                PipelineRowBatch batch = sourceBatch;
-                foreach (var transform in transforms)
+                long rowsWritten = 0;
+                var rejects = new List<PipelineRejectRecord>();
+
+                try
                 {
-                    currentStep = "transform";
-                    currentComponent = transform.Name;
-                    batch = await transform.TransformAsync(batch, context, ct);
+                    PipelineRowBatch batch = sourceBatch;
+                    foreach (var transform in transforms)
+                    {
+                        currentStep = "transform";
+                        currentComponent = transform.Name;
+                        batch = await transform.TransformAsync(batch, context, ct);
+                    }
+
+                    if (request.Mode is PipelineExecutionMode.Run or PipelineExecutionMode.Resume)
+                    {
+                        currentStep = "destination-write";
+                        currentComponent = GetDestinationLabel(request.Package.Destination);
+                        currentBatch = batch;
+                        await destination.WriteBatchAsync(batch, context, ct);
+                        rowsWritten = batch.Rows.Count;
+                    }
+                }
+                catch (Exception ex) when (skipBadRows && sourceBatch.Rows.Count > 0)
+                {
+                    if (sourceBatch.Rows.Count == 1)
+                    {
+                        rejects.Add(CreateReject(sourceBatch.StartingRowNumber, sourceBatch.Rows[0], ex));
+                    }
+                    else
+                    {
+                        for (int i = 0; i < sourceBatch.Rows.Count; i++)
+                        {
+                            var singleRowBatch = new PipelineRowBatch
+                            {
+                                BatchNumber = sourceBatch.BatchNumber,
+                                StartingRowNumber = sourceBatch.StartingRowNumber + i,
+                                Rows = [sourceBatch.Rows[i]],
+                            };
+
+                            currentBatch = singleRowBatch;
+
+                            try
+                            {
+                                PipelineRowBatch transformedBatch = singleRowBatch;
+                                foreach (var transform in transforms)
+                                {
+                                    currentStep = "transform";
+                                    currentComponent = transform.Name;
+                                    transformedBatch = await transform.TransformAsync(transformedBatch, context, ct);
+                                }
+
+                                if (request.Mode is PipelineExecutionMode.Run or PipelineExecutionMode.Resume)
+                                {
+                                    currentStep = "destination-write";
+                                    currentComponent = GetDestinationLabel(request.Package.Destination);
+                                    currentBatch = transformedBatch;
+                                    await destination.WriteBatchAsync(transformedBatch, context, ct);
+                                    rowsWritten += transformedBatch.Rows.Count;
+                                }
+                            }
+                            catch (Exception rowEx)
+                            {
+                                rejects.Add(CreateReject(singleRowBatch.StartingRowNumber, singleRowBatch.Rows[0], rowEx));
+                            }
+                        }
+                    }
                 }
 
                 metrics = new PipelineRunMetrics
                 {
                     RowsRead = metrics.RowsRead + sourceBatch.Rows.Count,
-                    RowsWritten = metrics.RowsWritten + (request.Mode == PipelineExecutionMode.DryRun ? 0 : batch.Rows.Count),
-                    RowsRejected = metrics.RowsRejected,
+                    RowsWritten = metrics.RowsWritten + rowsWritten,
+                    RowsRejected = metrics.RowsRejected + rejects.Count,
                     BatchesCompleted = metrics.BatchesCompleted + 1,
                 };
 
-                if (request.Mode is PipelineExecutionMode.Run or PipelineExecutionMode.Resume)
+                if (rejects.Count > 0)
                 {
-                    currentStep = "destination-write";
-                    currentComponent = GetDestinationLabel(request.Package.Destination);
-                    currentBatch = batch;
-                    await destination.WriteBatchAsync(batch, context, ct);
+                    await _runLogger.RejectsCapturedAsync(runId, rejects, ct);
                 }
 
                 if (request.Mode is PipelineExecutionMode.Run or PipelineExecutionMode.Resume)
                 {
                     latestCheckpoint = new PipelineCheckpointState
                     {
-                        BatchNumber = batch.BatchNumber,
+                        BatchNumber = sourceBatch.BatchNumber,
                         StepName = "destination-write",
                         UpdatedUtc = DateTimeOffset.UtcNow,
                     };
 
                     await _checkpointStore.SaveAsync(runId, latestCheckpoint, ct);
+                }
+
+                if (metrics.RowsRejected > maxRejects)
+                {
+                    throw new InvalidOperationException(
+                        $"Pipeline rejected {metrics.RowsRejected} row(s), exceeding MaxRejects={request.Package.Options.MaxRejects}.");
                 }
 
                 await _runLogger.StatusChangedAsync(runId, PipelineRunStatus.Running, metrics, ct);
@@ -209,6 +277,19 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
 
         segments.Add($"Error: {exception.Message}");
         return string.Join(Environment.NewLine, segments);
+    }
+
+    private static PipelineRejectRecord CreateReject(
+        long rowNumber,
+        IReadOnlyDictionary<string, object?> row,
+        Exception exception)
+    {
+        return new PipelineRejectRecord
+        {
+            RowNumber = rowNumber,
+            Reason = exception.Message,
+            PayloadJson = JsonSerializer.Serialize(row),
+        };
     }
 
     private static string GetSourceLabel(PipelineSourceDefinition definition) => definition.Kind switch

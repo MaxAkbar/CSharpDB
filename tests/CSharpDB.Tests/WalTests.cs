@@ -1074,6 +1074,43 @@ public class WalTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task FileWriteAheadLog_FlushFailure_DoesNotRecoverFailedCommitOnReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_flush_reopen_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new FailingCommitWalFlushPolicy();
+
+        try
+        {
+            await using (var wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy))
+            {
+                await wal.OpenAsync(currentDbPageCount: 1, ct);
+                wal.BeginTransaction();
+                await wal.AppendFrameAsync(0, CreateFilledPage(0xB1), ct);
+
+                WalCommitResult commit = await wal.CommitAsync(newDbPageCount: 1, ct);
+                await Assert.ThrowsAsync<CSharpDbException>(() => commit.WaitAsync(ct).AsTask());
+            }
+
+            await using var reopened = new WriteAheadLog(dbPath, new WalIndex());
+            await reopened.OpenAsync(currentDbPageCount: 1, ct);
+
+            Assert.Equal(0, reopened.Index.FrameCount);
+            Assert.False(reopened.Index.TryGetLatest(0, out _));
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
     private static async Task WaitForWalLengthAsync(
         string walPath,
         long expectedLength,

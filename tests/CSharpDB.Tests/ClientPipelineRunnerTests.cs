@@ -439,6 +439,65 @@ public sealed class ClientPipelineRunnerTests
         }
     }
 
+    [Fact]
+    public async Task RunPackageAsync_TableDestinationBatchFailure_DoesNotPersistPartialRows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_test_{Guid.NewGuid():N}.db");
+        string csvPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_test_{Guid.NewGuid():N}.csv");
+
+        try
+        {
+            await File.WriteAllTextAsync(csvPath, "id,name\r\n1,Alice\r\n1,Bob\r\n", ct);
+
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            await client.ExecuteSqlAsync("""
+                CREATE TABLE customers_dest (id INTEGER PRIMARY KEY, name TEXT);
+                """, ct);
+
+            var runner = new CSharpDbPipelineRunner(client);
+            PipelineRunResult result = await runner.RunPackageAsync(new PipelinePackageDefinition
+            {
+                Name = "partial-write-protection",
+                Version = "1.0.0",
+                Source = new PipelineSourceDefinition
+                {
+                    Kind = PipelineSourceKind.CsvFile,
+                    Path = csvPath,
+                    HasHeaderRow = true,
+                },
+                Destination = new PipelineDestinationDefinition
+                {
+                    Kind = PipelineDestinationKind.CSharpDbTable,
+                    TableName = "customers_dest",
+                },
+                Options = new PipelineExecutionOptions
+                {
+                    BatchSize = 2,
+                    CheckpointInterval = 1,
+                    ErrorMode = PipelineErrorMode.FailFast,
+                },
+            }, ct: ct);
+
+            Assert.Equal(PipelineRunStatus.Failed, result.Status);
+
+            var count = await client.ExecuteSqlAsync("SELECT COUNT(*) FROM customers_dest;", ct);
+            Assert.True(count.IsQuery);
+            Assert.NotNull(count.Rows);
+            Assert.Equal(0L, Convert.ToInt64(count.Rows[0][0]));
+        }
+        finally
+        {
+            DeleteIfExists(csvPath);
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static void DeleteIfExists(string path)
     {
         if (File.Exists(path))

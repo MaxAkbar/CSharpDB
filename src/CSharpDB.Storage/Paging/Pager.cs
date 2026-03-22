@@ -469,6 +469,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         catch
         {
             await RollbackAsync(ct);
+            await ResetPagerStateFromCommittedStorageAsync(ct);
             throw;
         }
     }
@@ -512,8 +513,21 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // Truncate uncommitted frames from WAL
         await _wal.RollbackAsync(ct);
 
-        _buffers.ClearAll();
         _transactions.CompleteRollback();
+        await ResetPagerStateFromCommittedStorageAsync(ct);
+    }
+
+    private void ReadFileHeaderFrom(byte[] page0)
+    {
+        PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
+        SchemaRootPage = BitConverter.ToUInt32(page0, PageConstants.SchemaRootPageOffset);
+        FreelistHead = BitConverter.ToUInt32(page0, PageConstants.FreelistHeadOffset);
+        ChangeCounter = BitConverter.ToUInt32(page0, PageConstants.ChangeCounterOffset);
+    }
+
+    private async ValueTask ResetPagerStateFromCommittedStorageAsync(CancellationToken ct)
+    {
+        _buffers.ClearAll();
 
         // Re-read header from DB file (WAL may have committed data, so check WAL too)
         if (_device.Length >= PageConstants.PageSize)
@@ -525,14 +539,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
             ReadFileHeaderFrom(_walHeaderPageBuffer);
         }
-    }
-
-    private void ReadFileHeaderFrom(byte[] page0)
-    {
-        PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
-        SchemaRootPage = BitConverter.ToUInt32(page0, PageConstants.SchemaRootPageOffset);
-        FreelistHead = BitConverter.ToUInt32(page0, PageConstants.FreelistHeadOffset);
-        ChangeCounter = BitConverter.ToUInt32(page0, PageConstants.ChangeCounterOffset);
     }
 
     /// <summary>

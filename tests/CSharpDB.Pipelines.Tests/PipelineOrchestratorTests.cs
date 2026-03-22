@@ -66,7 +66,7 @@ public sealed class PipelineOrchestratorTests
 
         PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
         {
-            Package = CreatePackage(),
+            Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
         });
 
@@ -142,7 +142,7 @@ public sealed class PipelineOrchestratorTests
 
         PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
         {
-            Package = CreatePackage(),
+            Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
         });
 
@@ -166,7 +166,7 @@ public sealed class PipelineOrchestratorTests
 
         PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
         {
-            Package = CreatePackage(),
+            Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
         });
 
@@ -178,7 +178,60 @@ public sealed class PipelineOrchestratorTests
         Assert.Contains("Cannot read Text as Integer.", result.ErrorSummary);
     }
 
-    private static PipelinePackageDefinition CreatePackage() => new()
+    [Fact]
+    public async Task ExecuteAsync_SkipBadRows_RecordsRejectsAndContinues()
+    {
+        var source = new FakeSource([CreateBatch(1, 1, 2)]);
+        var destination = new RejectingDestination(row => Convert.ToInt32(row["id"]) == 2, "Duplicate key.");
+        var logger = new RecordingRunLogger();
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, destination, []),
+            new RecordingCheckpointStore(),
+            logger);
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(),
+            Mode = PipelineExecutionMode.Run,
+        });
+
+        Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+        Assert.Equal(2, result.Metrics.RowsRead);
+        Assert.Equal(1, result.Metrics.RowsWritten);
+        Assert.Equal(1, result.Metrics.RowsRejected);
+        Assert.Equal(1, result.Metrics.BatchesCompleted);
+        Assert.Single(logger.CapturedRejects);
+        Assert.Single(logger.CapturedRejects[0]);
+        Assert.Equal(2, logger.CapturedRejects[0][0].RowNumber);
+        Assert.Contains("Duplicate key.", logger.CapturedRejects[0][0].Reason);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SkipBadRows_RespectsMaxRejects()
+    {
+        var source = new FakeSource([CreateBatch(1, 1, 2)]);
+        var destination = new RejectingDestination(_ => true, "Bad row.");
+        var checkpointStore = new RecordingCheckpointStore();
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, destination, []),
+            checkpointStore,
+            new RecordingRunLogger());
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(maxRejects: 1),
+            Mode = PipelineExecutionMode.Run,
+        });
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.Contains("exceeding MaxRejects=1", result.ErrorSummary);
+        Assert.Single(checkpointStore.Saved);
+        Assert.Equal(1, checkpointStore.Saved[0].BatchNumber);
+    }
+
+    private static PipelinePackageDefinition CreatePackage(
+        PipelineErrorMode errorMode = PipelineErrorMode.SkipBadRows,
+        int maxRejects = 10) => new()
     {
         Name = "customers-import",
         Version = "1.0.0",
@@ -196,8 +249,8 @@ public sealed class PipelineOrchestratorTests
         {
             BatchSize = 100,
             CheckpointInterval = 1,
-            ErrorMode = PipelineErrorMode.SkipBadRows,
-            MaxRejects = 10,
+            ErrorMode = errorMode,
+            MaxRejects = errorMode == PipelineErrorMode.SkipBadRows ? maxRejects : 0,
         },
     };
 
@@ -360,6 +413,7 @@ public sealed class PipelineOrchestratorTests
     {
         public List<PipelineExecutionContext> StartedContexts { get; } = [];
         public List<PipelineRunResult> CompletedRuns { get; } = [];
+        public List<IReadOnlyList<PipelineRejectRecord>> CapturedRejects { get; } = [];
 
         public Task RunStartedAsync(PipelineExecutionContext context, CancellationToken ct = default)
         {
@@ -371,12 +425,41 @@ public sealed class PipelineOrchestratorTests
             => Task.CompletedTask;
 
         public Task RejectsCapturedAsync(string runId, IReadOnlyList<PipelineRejectRecord> rejects, CancellationToken ct = default)
-            => Task.CompletedTask;
+        {
+            CapturedRejects.Add(rejects);
+            return Task.CompletedTask;
+        }
 
         public Task RunCompletedAsync(PipelineRunResult result, CancellationToken ct = default)
         {
             CompletedRuns.Add(result);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class RejectingDestination : IPipelineDestination
+    {
+        private readonly Func<IReadOnlyDictionary<string, object?>, bool> _shouldReject;
+        private readonly string _message;
+
+        public RejectingDestination(Func<IReadOnlyDictionary<string, object?>, bool> shouldReject, string message)
+        {
+            _shouldReject = shouldReject;
+            _message = message;
+        }
+
+        public Task InitializeAsync(PipelineExecutionContext context, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task WriteBatchAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
+        {
+            if (batch.Rows.Any(_shouldReject))
+                return Task.FromException(new InvalidOperationException(_message));
+
+            return Task.CompletedTask;
+        }
+
+        public Task CompleteAsync(PipelineExecutionContext context, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 }

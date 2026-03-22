@@ -3,6 +3,7 @@ using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Runtime.BuiltIns;
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace CSharpDB.Client.Pipelines;
 
@@ -177,6 +178,7 @@ internal sealed class SqlQueryPipelineSource : IPipelineSource
 
 internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
 {
+    private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     private readonly ICSharpDbClient _client;
     private readonly PipelineDestinationDefinition _definition;
     private TableSchema? _tableSchema;
@@ -198,22 +200,48 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
 
     public async Task WriteBatchAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
     {
-        for (int i = 0; i < batch.Rows.Count; i++)
+        TransactionSessionInfo transaction = await _client.BeginTransactionAsync(ct);
+        bool committed = false;
+
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            var row = batch.Rows[i];
-            var writeRow = CoerceRowValues(row);
-            try
+            for (int i = 0; i < batch.Rows.Count; i++)
             {
-                await _client.InsertRowAsync(_definition.TableName!, writeRow, ct);
+                ct.ThrowIfCancellationRequested();
+                var row = batch.Rows[i];
+                var writeRow = CoerceRowValues(row);
+                try
+                {
+                    await _client.ExecuteInTransactionAsync(
+                        transaction.TransactionId,
+                        BuildInsertSql(_definition.TableName!, writeRow),
+                        ct);
+                }
+                catch (Exception ex)
+                {
+                    long rowNumber = batch.StartingRowNumber + i;
+                    string mismatchDetails = DescribeTypeMismatch(writeRow);
+                    throw new InvalidOperationException(
+                        $"Destination write failed for table '{_definition.TableName}' at row {rowNumber} (batch {batch.BatchNumber}). {ex.Message}{mismatchDetails}",
+                        ex);
+                }
             }
-            catch (Exception ex)
+
+            await _client.CommitTransactionAsync(transaction.TransactionId, ct);
+            committed = true;
+        }
+        finally
+        {
+            if (!committed)
             {
-                long rowNumber = batch.StartingRowNumber + i;
-                string mismatchDetails = DescribeTypeMismatch(writeRow);
-                throw new InvalidOperationException(
-                    $"Destination write failed for table '{_definition.TableName}' at row {rowNumber} (batch {batch.BatchNumber}). {ex.Message}{mismatchDetails}",
-                    ex);
+                try
+                {
+                    await _client.RollbackTransactionAsync(transaction.TransactionId, ct);
+                }
+                catch
+                {
+                    // Preserve the original write error.
+                }
             }
         }
     }
@@ -346,5 +374,49 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
             },
             _ => value,
         };
+    }
+
+    private static string BuildInsertSql(string tableName, IReadOnlyDictionary<string, object?> values)
+    {
+        if (values.Count == 0)
+            throw new InvalidOperationException($"Destination table '{tableName}' has no writable columns for the current pipeline row.");
+
+        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string[] columns = values.Keys.Select(static key => RequireIdentifier(key, nameof(values))).ToArray();
+        string[] literals = values.Values.Select(FormatSqlLiteral).ToArray();
+        return $"INSERT INTO {normalizedTableName} ({string.Join(", ", columns)}) VALUES ({string.Join(", ", literals)})";
+    }
+
+    private static string FormatSqlLiteral(object? value)
+    {
+        object? normalized = NormalizeValue(value);
+        return normalized switch
+        {
+            null => "NULL",
+            long integer => integer.ToString(CultureInfo.InvariantCulture),
+            double real => real.ToString(CultureInfo.InvariantCulture),
+            string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
+            byte[] => throw new InvalidOperationException("Blob values are not supported by the pipeline table destination."),
+            _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
+        };
+    }
+
+    private static object? NormalizeValue(object? value) => value switch
+    {
+        null => null,
+        bool boolean => boolean ? 1L : 0L,
+        byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+        float or double or decimal => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        string text => text,
+        byte[] blob => blob,
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture),
+    };
+
+    private static string RequireIdentifier(string value, string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, paramName);
+        if (!s_identifierPattern.IsMatch(value))
+            throw new InvalidOperationException($"Identifier '{value}' is not supported by the pipeline table destination.");
+        return value;
     }
 }
