@@ -61,7 +61,7 @@ public class WalCoreBenchmarks
     {
         _wal.BeginTransaction();
         await _wal.AppendFrameAsync(NextSinglePageId(), _pageBuffer);
-        await _wal.CommitAsync(SinglePageRange + 1);
+        await (await _wal.CommitAsync(SinglePageRange + 1)).WaitAsync();
     }
 
     [Benchmark(Description = "WAL core: 100-frame batch commit")]
@@ -73,7 +73,7 @@ public class WalCoreBenchmarks
             _batchFrameWrites[i] = new WalFrameWrite(NextBatchPageId(), _pageBuffer);
         }
 
-        await _wal.AppendFramesAndCommitAsync(_batchFrameWrites, BatchPageRange + 1);
+        await (await _wal.AppendFramesAndCommitAsync(_batchFrameWrites, BatchPageRange + 1)).WaitAsync();
     }
 
     [Benchmark(Description = "WAL core: manual checkpoint after N frames")]
@@ -86,7 +86,7 @@ public class WalCoreBenchmarks
         }
 
         uint pageCount = (uint)WalFramesBeforeCheckpoint + 1;
-        await _wal.CommitAsync(pageCount);
+        await (await _wal.CommitAsync(pageCount)).WaitAsync();
         await _wal.CheckpointAsync(_device, pageCount);
     }
 

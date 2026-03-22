@@ -8,14 +8,16 @@ namespace CSharpDB.Benchmarks.Infrastructure;
 public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
 {
     private readonly string _filePath;
+    private readonly DatabaseOptions _options;
     private Database? _db;
 
     public string FilePath => _filePath;
     public Database Db => _db ?? throw new InvalidOperationException("Database not open.");
 
-    private BenchmarkDatabase(string filePath, Database db)
+    private BenchmarkDatabase(string filePath, Database db, DatabaseOptions options)
     {
         _filePath = filePath;
+        _options = options;
         _db = db;
     }
 
@@ -26,9 +28,10 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     public static async Task<BenchmarkDatabase> CreateAsync(int? seedRowCount = null, DatabaseOptions? options = null)
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"csharpdb_bench_{Guid.NewGuid():N}.db");
-        var db = await Database.OpenAsync(filePath, options ?? new DatabaseOptions());
+        var resolvedOptions = BenchmarkDurability.Apply(options);
+        var db = await Database.OpenAsync(filePath, resolvedOptions);
 
-        var bench = new BenchmarkDatabase(filePath, db);
+        var bench = new BenchmarkDatabase(filePath, db, resolvedOptions);
 
         await db.ExecuteAsync(
             "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)");
@@ -47,8 +50,9 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     public static async Task<BenchmarkDatabase> CreateWithSchemaAsync(string createTableSql, DatabaseOptions? options = null)
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"csharpdb_bench_{Guid.NewGuid():N}.db");
-        var db = await Database.OpenAsync(filePath, options ?? new DatabaseOptions());
-        var bench = new BenchmarkDatabase(filePath, db);
+        var resolvedOptions = BenchmarkDurability.Apply(options);
+        var db = await Database.OpenAsync(filePath, resolvedOptions);
+        var bench = new BenchmarkDatabase(filePath, db, resolvedOptions);
         await db.ExecuteAsync(createTableSql);
         return bench;
     }
@@ -96,7 +100,7 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     {
         if (_db != null)
             await _db.DisposeAsync();
-        _db = await Database.OpenAsync(_filePath);
+        _db = await Database.OpenAsync(_filePath, _options);
         return _db;
     }
 

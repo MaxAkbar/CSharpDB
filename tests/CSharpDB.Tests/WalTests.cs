@@ -730,7 +730,7 @@ public class WalTests : IAsyncLifetime
                     new WalFrameWrite(1, originalLeaf),
                 },
                 ct);
-            await wal.CommitAsync(newDbPageCount: 2, ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
 
             bool completed = await wal.CheckpointStepAsync(device, pageCount: 2, maxPages: 1, ct);
             Assert.False(completed);
@@ -739,11 +739,11 @@ public class WalTests : IAsyncLifetime
 
             wal.BeginTransaction();
             await wal.AppendFrameAsync(1, retainedLeafV1, ct);
-            await wal.CommitAsync(newDbPageCount: 2, ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
 
             wal.BeginTransaction();
             await wal.AppendFrameAsync(1, retainedLeafV2, ct);
-            await wal.CommitAsync(newDbPageCount: 2, ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
 
             completed = await wal.CheckpointStepAsync(device, pageCount: 2, maxPages: 8, ct);
             Assert.True(completed);
@@ -801,7 +801,7 @@ public class WalTests : IAsyncLifetime
                 new WalFrameWrite(2, CreateFilledPage(0x43)),
             },
             ct);
-        await wal.CommitAsync(newDbPageCount: 3, ct);
+        await (await wal.CommitAsync(newDbPageCount: 3, ct)).WaitAsync(ct);
 
         bool completed = await wal.CheckpointStepAsync(device, pageCount: 3, maxPages: 1, ct);
         Assert.False(completed);
@@ -835,7 +835,7 @@ public class WalTests : IAsyncLifetime
                 new WalFrameWrite(1, CreateFilledPage(0x52)),
             },
             ct);
-        await wal.CommitAsync(newDbPageCount: 2, ct);
+        await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
 
         bool completed = await wal.CheckpointStepAsync(device, pageCount: 2, maxPages: 1, ct);
 
@@ -913,7 +913,7 @@ public class WalTests : IAsyncLifetime
             wal.BeginTransaction();
             await wal.AppendFrameAsync(0, CreateFilledPage(0x62), ct);
 
-            await wal.CommitAsync(newDbPageCount: 1, ct);
+            await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
 
             Assert.IsType<TrackingWalFlushPolicy>(wal.FlushPolicy);
             Assert.True(policy.FlushCount > 0);
@@ -922,6 +922,153 @@ public class WalTests : IAsyncLifetime
         {
             if (wal is not null)
                 await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_DurableCommit_IsNotVisibleUntilFlushCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_visibility_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new BlockingCommitWalFlushPolicy();
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(dbPath, new WalIndex(), checksumProvider: null, flushPolicy: policy);
+            await wal.OpenAsync(currentDbPageCount: 1, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0x71), ct);
+            WalCommitResult commit = await wal.CommitAsync(newDbPageCount: 1, ct);
+
+            await policy.WaitForCommitFlushStartAsync(ct);
+            Assert.Equal(0, wal.Index.FrameCount);
+            Assert.False(wal.Index.TryGetLatest(0, out _));
+
+            policy.Release();
+            await commit.WaitAsync(ct);
+
+            Assert.Equal(1, wal.Index.FrameCount);
+            Assert.True(wal.Index.TryGetLatest(0, out _));
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_DurableCommits_CanShareOneFlush()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_group_durable_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new BlockingCommitWalFlushPolicy();
+        WriteAheadLog? wal = null;
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(5);
+
+        try
+        {
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: batchWindow);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0x81), ct);
+            WalCommitResult commit1 = await wal.CommitAsync(newDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(1, CreateFilledPage(0x82), ct);
+            WalCommitResult commit2 = await wal.CommitAsync(newDbPageCount: 2, ct);
+
+            await policy.WaitForCommitFlushStartAsync(ct);
+            Assert.Equal(0, wal.Index.FrameCount);
+
+            policy.Release();
+            await commit1.WaitAsync(ct);
+            await commit2.WaitAsync(ct);
+
+            Assert.Equal(1, policy.CommitFlushCount);
+            Assert.Equal(2, wal.Index.FrameCount);
+            Assert.True(wal.Index.TryGetLatest(0, out _));
+            Assert.True(wal.Index.TryGetLatest(1, out _));
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_FlushFailure_FailsQueuedCommits_AndFaultsFutureWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_flush_failure_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new FailingCommitWalFlushPolicy();
+        WriteAheadLog? wal = null;
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(5);
+
+        try
+        {
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: batchWindow);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0xA1), ct);
+            WalCommitResult commit1 = await wal.CommitAsync(newDbPageCount: 2, ct);
+
+            Exception? secondCommitFailure = null;
+            WalCommitResult commit2 = WalCommitResult.Completed;
+            try
+            {
+                wal.BeginTransaction();
+                await wal.AppendFrameAsync(1, CreateFilledPage(0xA2), ct);
+                commit2 = await wal.CommitAsync(newDbPageCount: 2, ct);
+            }
+            catch (Exception ex)
+            {
+                secondCommitFailure = ex;
+            }
+
+            var error1 = await Assert.ThrowsAsync<CSharpDbException>(() => commit1.WaitAsync(ct).AsTask());
+            CSharpDbException error2 = secondCommitFailure switch
+            {
+                CSharpDbException walError => walError,
+                null => await Assert.ThrowsAsync<CSharpDbException>(() => commit2.WaitAsync(ct).AsTask()),
+                _ => throw new Xunit.Sdk.XunitException($"Unexpected exception type for second commit: {secondCommitFailure.GetType().FullName}")
+            };
+
+            Assert.Equal(ErrorCode.WalError, error1.Code);
+            Assert.Equal(ErrorCode.WalError, error2.Code);
+            Assert.Equal(0, wal.Index.FrameCount);
+
+            var writeFault = Assert.Throws<CSharpDbException>(() => wal.BeginTransaction());
+            Assert.Equal(ErrorCode.WalError, writeFault.Code);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.DisposeAsync();
             if (File.Exists(dbPath)) File.Delete(dbPath);
             if (File.Exists(walPath)) File.Delete(walPath);
         }
@@ -1074,12 +1221,80 @@ public class WalTests : IAsyncLifetime
         private int _flushCount;
 
         public int FlushCount => Volatile.Read(ref _flushCount);
+        public bool AllowsWriteConcurrencyDuringCommitFlush => false;
 
-        public ValueTask FlushAsync(FileStream stream, CancellationToken cancellationToken)
+        public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Interlocked.Increment(ref _flushCount);
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingCommitWalFlushPolicy : IWalFlushPolicy
+    {
+        private readonly TaskCompletionSource<bool> _commitFlushStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _allowCommitFlush =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _flushCount;
+
+        public int CommitFlushCount => Math.Max(0, Volatile.Read(ref _flushCount) - 1);
+        public bool AllowsWriteConcurrencyDuringCommitFlush => true;
+
+        public Task WaitForCommitFlushStartAsync(CancellationToken ct = default)
+        {
+            return _commitFlushStarted.Task.WaitAsync(ct);
+        }
+
+        public void Release()
+        {
+            _allowCommitFlush.TrySetResult(true);
+        }
+
+        public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int flushNumber = Interlocked.Increment(ref _flushCount);
+            if (flushNumber == 1)
+                return ValueTask.CompletedTask;
+
+            _commitFlushStarted.TrySetResult(true);
+            return new ValueTask(_allowCommitFlush.Task.WaitAsync(cancellationToken));
+        }
+    }
+
+    private sealed class FailingCommitWalFlushPolicy : IWalFlushPolicy
+    {
+        private int _flushCount;
+        public bool AllowsWriteConcurrencyDuringCommitFlush => true;
+
+        public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int flushNumber = Interlocked.Increment(ref _flushCount);
+            if (flushNumber == 1)
+                return ValueTask.CompletedTask;
+
+            return ValueTask.FromException(new IOException("Injected commit flush failure."));
         }
     }
 }

@@ -9,6 +9,7 @@ internal sealed class TransactionCoordinator : IDisposable
 {
     private readonly SemaphoreSlim _writerLock = new(1, 1);
     private bool _inTransaction;
+    private bool _writerLockReleased;
 
     public bool InTransaction => _inTransaction;
 
@@ -22,11 +23,26 @@ internal sealed class TransactionCoordinator : IDisposable
 
         wal.BeginTransaction();
         _inTransaction = true;
+        _writerLockReleased = false;
     }
 
     public void CompleteCommit()
     {
         _inTransaction = false;
+        if (_writerLockReleased)
+            return;
+
+        _writerLockReleased = true;
+        _writerLock.Release();
+    }
+
+    public void ReleaseWriterAfterCommitAppend()
+    {
+        _inTransaction = false;
+        if (_writerLockReleased)
+            return;
+
+        _writerLockReleased = true;
         _writerLock.Release();
     }
 
@@ -38,6 +54,10 @@ internal sealed class TransactionCoordinator : IDisposable
     public void CompleteRollback()
     {
         _inTransaction = false;
+        if (_writerLockReleased)
+            return;
+
+        _writerLockReleased = true;
         try { _writerLock.Release(); } catch (SemaphoreFullException) { }
     }
 

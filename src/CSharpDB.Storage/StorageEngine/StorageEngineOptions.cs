@@ -7,6 +7,7 @@ public sealed class StorageEngineOptions
 {
     /// <summary>
     /// Durability policy applied to file-backed WAL commits.
+    /// Buffered maps to SQLite WAL NORMAL semantics; Durable maps to FULL semantics.
     /// </summary>
     public DurabilityMode DurabilityMode { get; init; } = DurabilityMode.Durable;
 

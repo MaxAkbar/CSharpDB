@@ -135,7 +135,7 @@ public class ColdLookupBenchmarks
 
     private static DatabaseOptions CreateCachePressuredOptions()
     {
-        return new DatabaseOptions
+        return BenchmarkDurability.Apply(new DatabaseOptions
         {
             StorageEngineOptions = new StorageEngineOptions
             {
@@ -144,7 +144,7 @@ public class ColdLookupBenchmarks
                     MaxCachedPages = MaxCachedPages,
                 },
             },
-        };
+        });
     }
 
     private static SelectStatement CreateSqlLookupStatement(int id)

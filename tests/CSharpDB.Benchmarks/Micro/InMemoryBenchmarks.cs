@@ -64,7 +64,7 @@ public class InMemorySqlBenchmarks
     {
         _filePath = await InMemoryBenchmarkDatabaseFactory.CreateSeededSqlDatabaseAsync("memory-sql", SeedRowCount);
         _memoryDb = await Database.LoadIntoMemoryAsync(_filePath);
-        _fileDb = await Database.OpenAsync(_filePath);
+        _fileDb = await Database.OpenAsync(_filePath, BenchmarkDurability.Apply());
         _nextFileInsertId = SeedRowCount + 1_000_000;
         _nextMemoryInsertId = SeedRowCount + 2_000_000;
     }
@@ -137,7 +137,7 @@ public class InMemoryCollectionBenchmarks
     {
         _filePath = await InMemoryBenchmarkDatabaseFactory.CreateSeededCollectionDatabaseAsync("memory-collection", SeedRowCount);
         _memoryDb = await Database.LoadIntoMemoryAsync(_filePath);
-        _fileDb = await Database.OpenAsync(_filePath);
+        _fileDb = await Database.OpenAsync(_filePath, BenchmarkDurability.Apply());
         _fileCollection = await _fileDb.GetCollectionAsync<BenchDoc>("bench_docs");
         _memoryCollection = await _memoryDb.GetCollectionAsync<BenchDoc>("bench_docs");
         _nextFileId = SeedRowCount + 1_000_000;

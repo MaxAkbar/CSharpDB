@@ -116,7 +116,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
             cancellationToken);
     }
 
-    public async ValueTask AppendFramesAndCommitAsync(
+    public async ValueTask<WalCommitResult> AppendFramesAndCommitAsync(
         ReadOnlyMemory<WalFrameWrite> frames,
         uint newDbPageCount,
         CancellationToken cancellationToken = default)
@@ -140,6 +140,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         {
             await _storage.FlushAsync(cancellationToken);
             PublishCommittedFramesFromBatch(frames, firstFrameOffset);
+            return WalCommitResult.Completed;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
@@ -150,7 +151,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         }
     }
 
-    public async ValueTask CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default)
+    public async ValueTask<WalCommitResult> CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default)
     {
         EnsureOpen();
         if (_uncommittedFrames.Count == 0)
@@ -179,6 +180,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
             await _storage.WriteAsync(lastOffset, frameHeader.AsMemory(0, PageConstants.WalFrameHeaderSize), cancellationToken);
             await _storage.FlushAsync(cancellationToken);
             PublishCommittedFrames();
+            return WalCommitResult.Completed;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {

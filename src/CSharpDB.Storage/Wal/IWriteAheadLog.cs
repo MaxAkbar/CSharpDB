@@ -11,8 +11,8 @@ public interface IWriteAheadLog : IAsyncDisposable
     void BeginTransaction();
     ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken cancellationToken = default);
     ValueTask AppendFramesAsync(ReadOnlyMemory<WalFrameWrite> frames, CancellationToken cancellationToken = default);
-    ValueTask AppendFramesAndCommitAsync(ReadOnlyMemory<WalFrameWrite> frames, uint newDbPageCount, CancellationToken cancellationToken = default);
-    ValueTask CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default);
+    ValueTask<WalCommitResult> AppendFramesAndCommitAsync(ReadOnlyMemory<WalFrameWrite> frames, uint newDbPageCount, CancellationToken cancellationToken = default);
+    ValueTask<WalCommitResult> CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default);
     ValueTask RollbackAsync(CancellationToken cancellationToken = default);
     ValueTask<byte[]> ReadPageAsync(long walFrameOffset, CancellationToken cancellationToken = default);
     ValueTask ReadPageIntoAsync(long walFrameOffset, Memory<byte> destination, CancellationToken cancellationToken = default);
