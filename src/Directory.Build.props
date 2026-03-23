@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Authors>MaxAkbar</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/MaxAkbar/CSharpDB</PackageProjectUrl>
+    <PackageProjectUrl>https://csharpdb.com/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/MaxAkbar/CSharpDB.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>database;embedded;sql;dotnet;btree;wal</PackageTags>
