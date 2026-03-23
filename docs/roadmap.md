@@ -167,6 +167,7 @@ Major features already implemented:
 - [Source-Generated Collection Fast Path](source-generated-collections/README.md) — No-reflection typed collection models, generated codecs, and trim/AOT-safe collection access
 - [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
 - [Collation Support Plan](collation-support/README.md) — Case-insensitive matching, locale-aware sorting, and COLLATE clause for queries and index definitions
+- [Full-Text Search Plan](full-text-search/README.md) — Inverted-index design, hidden catalog stores, staged rollout, and planner integration for ranked text search
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library

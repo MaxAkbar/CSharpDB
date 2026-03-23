@@ -119,6 +119,9 @@ public sealed class SchemaCatalog
     public IReadOnlyList<IndexSchema> GetIndexesForTable(string tableName) =>
         _service.GetIndexesForTable(tableName);
 
+    public IReadOnlyList<IndexSchema> GetSqlIndexesForTable(string tableName) =>
+        _service.GetSqlIndexesForTable(tableName);
+
     public IIndexStore GetIndexStore(string indexName) => _service.GetIndexStore(indexName);
 
     public IIndexStore GetIndexStore(string indexName, Pager pager) => _service.GetIndexStore(indexName, pager);
