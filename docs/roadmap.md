@@ -58,7 +58,7 @@ SQL feature parity and ecosystem expansion.
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
-| **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Planned |
+| **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Done |
 | **Collation support** | Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and `COLLATE` clause in queries and index definitions | Planned |
 
 ---

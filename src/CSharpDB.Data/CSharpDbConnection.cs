@@ -35,6 +35,21 @@ public sealed class CSharpDbConnection : DbConnection
     public override string ServerVersion => "1.0";
     public override ConnectionState State => _state;
 
+    public override DataTable GetSchema()
+        => GetSchema(DbMetaDataCollectionNames.MetaDataCollections, null);
+
+    public override DataTable GetSchema(string collectionName)
+    {
+        ArgumentNullException.ThrowIfNull(collectionName);
+        return GetSchema(collectionName, null);
+    }
+
+    public override DataTable GetSchema(string collectionName, string?[]? restrictionValues)
+    {
+        ArgumentNullException.ThrowIfNull(collectionName);
+        return CSharpDbSchemaProvider.GetSchema(this, collectionName, restrictionValues);
+    }
+
     // ─── Open / Close ────────────────────────────────────────────────
 
     public override void Open()
