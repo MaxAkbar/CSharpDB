@@ -43,11 +43,36 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 
 ```csharp
 using CSharpDB.Execution;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Sql;
 
-var context = await InMemoryStorageEngineFactory.OpenAsync();
+var factory = new DefaultStorageEngineFactory();
+var context = await factory.OpenAsync("sample.db", new StorageEngineOptions());
+await using var pager = context.Pager;
+
 var planner = new QueryPlanner(context.Pager, context.Catalog, context.RecordSerializer);
+
+// Execution package is low-level: wrap writes in explicit Pager transactions.
+await pager.BeginTransactionAsync();
+try
+{
+    await using (await planner.ExecuteAsync(Parser.Parse(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")))
+    { }
+
+    await using (await planner.ExecuteAsync(Parser.Parse(
+        "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 19)")))
+    { }
+
+    await pager.CommitAsync();
+}
+catch
+{
+    await pager.RollbackAsync();
+    throw;
+}
+
 var statement = Parser.Parse("SELECT name, age FROM users WHERE age > 21");
 
 // Plan and execute (typically called through CSharpDB.Engine)
