@@ -3,20 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Database Modes — CSharpDB</title>
-    <meta name="description" content="Compare CSharpDB's three storage modes — file-based for durability, in-memory for speed, and hybrid for the best of both. Includes code examples.">
-    <meta name="keywords" content="CSharpDB modes, file database, in-memory database, hybrid storage, database comparison">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/database-modes.html">
-    <meta property="og:title" content="Database Modes — CSharpDB">
-    <meta property="og:description" content="Compare CSharpDB's three storage modes — file-based for durability, in-memory for speed, and hybrid for the best of both. Includes code examples.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/database-modes.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Database Modes — CSharpDB">
-    <meta name="twitter:description" content="Compare CSharpDB's three storage modes — file-based for durability, in-memory for speed, and hybrid for the best of both. Includes code examples.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -94,7 +80,16 @@
     </style>
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Database Modes',
+            description: 'CSharpDB database modes — file-based, in-memory, and hybrid (lazy-resident) storage. How each mode works and when to use it.',
+            keywords: 'CSharpDB database modes, file-based database, in-memory database, hybrid database, lazy-resident',
+            canonicalPath: 'docs/database-modes.html',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -132,11 +127,7 @@
                 <h2>File-Based (Default)</h2>
                 <p>The standard mode for production workloads. Uses <code>FileStorageDevice</code> for true async I/O via <code>RandomAccess.ReadAsync</code> / <code>RandomAccess.WriteAsync</code>. All committed data is durable on disk.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Open a file-based database</span>
-                    </div>
+                <div class="code-block" data-title="Open a file-based database">
                     <pre><code><span class="cm">// Simple — uses default options</span>
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
 
@@ -183,11 +174,7 @@
                 <h2>In-Memory</h2>
                 <p>The entire database lives in memory with no disk I/O. Uses <code>MemoryStorageDevice</code> — a thread-safe in-memory byte buffer. Fastest option but data is lost when the process exits unless explicitly saved.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Open an in-memory database</span>
-                    </div>
+                <div class="code-block" data-title="Open an in-memory database">
                     <pre><code><span class="cm">// Create a fresh in-memory database</span>
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
 
@@ -211,11 +198,7 @@
                 <h3>Shared In-Memory (ADO.NET)</h3>
                 <p>Multiple ADO.NET connections can share a single in-memory database instance. Useful for test scenarios where several connections need to see the same data.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Shared in-memory via ADO.NET</span>
-                    </div>
+                <div class="code-block" data-title="Shared in-memory via ADO.NET">
                     <pre><code><span class="cm">// Multiple connections share the same in-memory instance</span>
 <span class="kw">var</span> connStr = <span class="str">"Data Source=:memory:;SharedMemoryName=testdb"</span>;
 
@@ -237,11 +220,7 @@
                 <h2>Hybrid (Lazy-Resident)</h2>
                 <p>Combines the durability of file-based storage with the performance of in-memory caching. Uses <code>FileStorageDevice</code> for durable backing, but keeps touched pages resident in cache across checkpoints — unlike the default mode which evicts pages after checkpoint.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Open a hybrid database</span>
-                    </div>
+                <div class="code-block" data-title="Open a hybrid database">
                     <pre><code><span class="cm">// Simple — uses default hybrid options</span>
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(<span class="str">"myapp.db"</span>);
 

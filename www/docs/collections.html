@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Collection API — CSharpDB</title>
-    <meta name="description" content="CSharpDB Collection API — typed NoSQL document storage with Put, Get, Delete, Scan, secondary indexes, and nested path queries over C# objects.">
-    <meta name="keywords" content="CSharpDB Collection, NoSQL API, document database, typed collections, secondary indexes, C# NoSQL">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/collections.html">
-    <meta property="og:title" content="Collection API — CSharpDB">
-    <meta property="og:description" content="CSharpDB Collection API — typed NoSQL document storage with Put, Get, Delete, Scan, secondary indexes, and nested path queries over C# objects.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/collections.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Collection API — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB Collection API — typed NoSQL document storage with Put, Get, Delete, Scan, secondary indexes, and nested path queries over C# objects.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Collection API',
+            description: 'CSharpDB Collection API \u2014 typed NoSQL document storage with Put, Get, Delete, Scan, secondary indexes, and nested path queries over C# objects.',
+            keywords: 'CSharpDB Collection, NoSQL API, document database, typed collections, secondary indexes, C# NoSQL',
+            canonicalPath: 'docs/collections.html',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -33,11 +28,7 @@
 
                 <h2>Getting Started</h2>
                 <p>Collections serialize C# objects to JSON and store them in B+trees. Each document is keyed by a <code>long</code> identifier.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Basic Usage</span>
-                    </div>
+                <div class="code-block" data-title="Basic Usage">
                     <pre><code><span class="kw">public record</span> <span class="tp">Customer</span>(
     <span class="kw">string</span> Name,
     <span class="kw">string</span> Email,
@@ -52,11 +43,7 @@
                 </div>
 
                 <h2>CRUD Operations</h2>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Put / Get / Delete</span>
-                    </div>
+                <div class="code-block" data-title="Put / Get / Delete">
                     <pre><code><span class="cm">// Put (insert or update)</span>
 <span class="kw">await</span> customers.PutAsync(<span class="num">1</span>, <span class="kw">new</span> <span class="tp">Customer</span>(
     <span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>,
@@ -80,33 +67,21 @@
 
                 <h3>Scalar Member Index</h3>
                 <p>Index a top-level property for exact-match and range queries.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Scalar Index</span>
-                    </div>
+                <div class="code-block" data-title="Scalar Index">
                     <pre><code><span class="kw">await</span> customers.Index.OnAsync(c => c.Email);
 <span class="kw">var</span> results = <span class="kw">await</span> customers.FindAsync(c => c.Email, <span class="str">"alice@example.com"</span>);</code></pre>
                 </div>
 
                 <h3>Nested Object Path</h3>
                 <p>Index into nested objects using property path expressions like <code>$.address.city</code>.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Nested Path Index</span>
-                    </div>
+                <div class="code-block" data-title="Nested Path Index">
                     <pre><code><span class="kw">await</span> customers.Index.OnAsync(c => c.Address.City);
 <span class="kw">var</span> portlanders = <span class="kw">await</span> customers.FindAsync(c => c.Address.City, <span class="str">"Portland"</span>);</code></pre>
                 </div>
 
                 <h3>Array Element Path</h3>
                 <p>Index into terminal array elements for membership queries like <code>$.tags[]</code>.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Array Element Index</span>
-                    </div>
+                <div class="code-block" data-title="Array Element Index">
                     <pre><code><span class="cm">// Index array elements — one index entry per tag per document</span>
 <span class="kw">await</span> customers.Index.OnEachAsync(c => c.Tags);
 <span class="kw">var</span> premium = <span class="kw">await</span> customers.FindAsync(c => c.Tags, <span class="str">"premium"</span>);</code></pre>
@@ -114,11 +89,7 @@
 
                 <h3>Range Queries</h3>
                 <p>Query indexed properties with range bounds for ordered data.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Range Queries</span>
-                    </div>
+                <div class="code-block" data-title="Range Queries">
                     <pre><code><span class="kw">public record</span> <span class="tp">Order</span>(<span class="kw">string</span> Customer, <span class="kw">double</span> Total, <span class="kw">string</span> Date);
 
 <span class="kw">var</span> orders = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Order</span>&gt;();

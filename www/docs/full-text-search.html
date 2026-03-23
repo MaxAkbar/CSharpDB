@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Full-Text Search — CSharpDB</title>
-    <meta name="description" content="CSharpDB Full-Text Search — built-in FTS with Unicode tokenization, term-intersection queries, automatic index maintenance, and zero external dependencies.">
-    <meta name="keywords" content="CSharpDB full-text search, FTS, text search, tokenizer, inverted index, C# search engine">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/full-text-search.html">
-    <meta property="og:title" content="Full-Text Search — CSharpDB">
-    <meta property="og:description" content="CSharpDB Full-Text Search — built-in FTS with Unicode tokenization, term-intersection queries, automatic index maintenance, and zero external dependencies.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/full-text-search.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Full-Text Search — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB Full-Text Search — built-in FTS with Unicode tokenization, term-intersection queries, automatic index maintenance, and zero external dependencies.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Full-Text Search',
+            description: 'CSharpDB Full-Text Search \u2014 built-in FTS with Unicode tokenization, term-intersection queries, automatic index maintenance, and zero external dependencies.',
+            keywords: 'CSharpDB full-text search, FTS, text search, tokenizer, inverted index, C# search engine',
+            canonicalPath: 'docs/full-text-search.html',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -33,11 +28,7 @@
 
                 <h2>Creating an Index</h2>
                 <p>Use <code>EnsureFullTextIndexAsync</code> to create a full-text index on one or more TEXT columns. If the index already exists, the call is a no-op. Existing rows are backfilled automatically in the same transaction.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Create a Full-Text Index</span>
-                    </div>
+                <div class="code-block" data-title="Create a Full-Text Index">
                     <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
 
 <span class="cm">// Create a table with text content</span>
@@ -60,11 +51,7 @@
 
                 <h2>Searching</h2>
                 <p>Call <code>SearchAsync</code> with a query string. The query is tokenized with the same rules as the index, and all terms must match (AND semantics). Results are returned as a list of <code>FullTextSearchHit</code> values containing the <code>RowId</code> and a relevance <code>Score</code>.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Running Queries</span>
-                    </div>
+                <div class="code-block" data-title="Running Queries">
                     <pre><code><span class="cm">// Single-term search</span>
 <span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_docs"</span>, <span class="str">"storage"</span>);
 
@@ -82,11 +69,7 @@
 
                 <h2>Automatic Maintenance</h2>
                 <p>Once created, the full-text index is automatically kept in sync with DML operations on the source table. No manual re-indexing is needed.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Index Maintenance</span>
-                    </div>
+                <div class="code-block" data-title="Index Maintenance">
                     <pre><code><span class="cm">// INSERT — new row is automatically indexed</span>
 <span class="kw">await</span> db.ExecuteAsync(
     <span class="str">"INSERT INTO docs VALUES (3, 'Pipelines', 'ETL with CSV and JSON connectors')"</span>);
@@ -105,11 +88,7 @@
 
                 <h2>Index Options</h2>
                 <p>Customize tokenization behavior by passing a <code>FullTextIndexOptions</code> object when creating the index.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Custom Options</span>
-                    </div>
+                <div class="code-block" data-title="Custom Options">
                     <pre><code><span class="kw">await</span> db.EnsureFullTextIndexAsync(
     <span class="str">"fts_docs"</span>, <span class="str">"docs"</span>, [<span class="str">"title"</span>, <span class="str">"body"</span>],
     <span class="kw">new</span> <span class="tp">FullTextIndexOptions</span>
@@ -131,11 +110,7 @@
 
                 <h2>Tokenization</h2>
                 <p>The tokenizer splits text on non-word boundaries. Word characters are Unicode letters, digits, and apostrophes. Text is normalized and lowercased according to the index options before tokenization.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Tokenization Examples</span>
-                    </div>
+                <div class="code-block" data-title="Tokenization Examples">
                     <pre><code><span class="cm">// "Quick brown fox" → ["quick", "brown", "fox"]</span>
 <span class="cm">// "Runner's high"   → ["runner's", "high"]</span>
 <span class="cm">// "CSharpDB v2.4"   → ["csharpdb", "v2", "4"]</span></code></pre>
@@ -159,11 +134,7 @@
 
                 <h2>Dropping an Index</h2>
                 <p>Use standard SQL <code>DROP INDEX</code> to remove a full-text index. All four internal indexes are cascade-deleted automatically.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Drop Index</span>
-                    </div>
+                <div class="code-block" data-title="Drop Index">
                     <pre><code><span class="kw">await</span> db.ExecuteAsync(<span class="str">"DROP INDEX fts_docs"</span>);</code></pre>
                 </div>
 

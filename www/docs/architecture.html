@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Storage Architecture Deep Dive — CSharpDB</title>
-    <meta name="description" content="Deep dive into CSharpDB's storage architecture — page layout, B+tree structure, free-space management, WAL protocol, and crash recovery.">
-    <meta name="keywords" content="CSharpDB architecture, page layout, B+tree structure, crash recovery, storage internals">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/architecture.html">
-    <meta property="og:title" content="Storage Architecture Deep Dive — CSharpDB">
-    <meta property="og:description" content="Deep dive into CSharpDB's storage architecture — page layout, B+tree structure, free-space management, WAL protocol, and crash recovery.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/architecture.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Storage Architecture Deep Dive — CSharpDB">
-    <meta name="twitter:description" content="Deep dive into CSharpDB's storage architecture — page layout, B+tree structure, free-space management, WAL protocol, and crash recovery.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Architecture Deep Dive',
+        description: 'CSharpDB architecture deep dive \u2014 Pager, WAL, B+tree, SchemaCatalog, and how the storage engine components collaborate.',
+        keywords: 'CSharpDB architecture, database design, pager, WAL, B+tree, schema catalog, storage internals',
+        canonicalPath: 'docs/architecture.html',
+        ogType: 'article',
+    };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -85,11 +80,7 @@
                 <h2 id="high-level">High-Level Architecture</h2>
                 <p>At runtime, write/read operations flow through this stack:</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Runtime Stack</span>
-                    </div>
+                <div class="code-block" data-title="Runtime Stack">
                     <pre><code>┌──────────────────────────────────────────────────────────┐
 │  <span class="tp">Engine / Planner</span>                                       │
 │  Decides what logical records to read/write              │
@@ -128,11 +119,7 @@
                     <li>Remaining pages are fully usable for B+tree or freelist content</li>
                 </ul>
                 <p>The file header tracks:</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">File Header Layout (100 bytes)</span>
-                    </div>
+                <div class="code-block" data-title="File Header Layout (100 bytes)">
                     <pre><code>┌───────────────────────┬──────────────┐
 │ magic / version       │ bytes 0-15   │
 │ page size             │ bytes 16-19  │
@@ -146,11 +133,7 @@
 
                 <h3>Slotted Page Structure</h3>
                 <p>Each B+tree page uses a slotted layout:</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Slotted Page Layout</span>
-                    </div>
+                <div class="code-block" data-title="Slotted Page Layout">
                     <pre><code>┌──────────────────────────────────────────────────────────┐
 │  Page Header (type, cell count, content-start,           │
 │               right-child / next-leaf pointer)           │
@@ -230,11 +213,7 @@
                 </table>
 
                 <h4>Transaction Behavior</h4>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Transaction Lifecycle</span>
-                    </div>
+                <div class="code-block" data-title="Transaction Lifecycle">
                     <pre><code><span class="cm">// BeginTransactionAsync</span>
 <span class="cm">// → acquires writer lock, starts WAL transaction</span>
 
@@ -316,11 +295,7 @@
 
                 <h4>Record Encoding</h4>
                 <p>Rows are encoded as a column-count varint followed by repeated <code>[typeTag][valueData]</code> pairs. Optimized APIs avoid materializing full rows:</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">RecordEncoder Hot-Path APIs</span>
-                    </div>
+                <div class="code-block" data-title="RecordEncoder Hot-Path APIs">
                     <pre><code><span class="tp">DecodeInto</span>          <span class="cm">// reuse destination span</span>
 <span class="tp">DecodeUpTo</span>          <span class="cm">// prefix decode (first N columns)</span>
 <span class="tp">DecodeColumn</span>        <span class="cm">// single-column extraction</span>
@@ -597,11 +572,7 @@
                 <h2 id="mental-model">Practical Mental Model</h2>
                 <p>A useful way to reason about this storage engine:</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Four Concerns</span>
-                    </div>
+                <div class="code-block" data-title="Four Concerns">
                     <pre><code><span class="tp">BTree</span>          → <span class="str">"Where is this key/value logically?"</span>
 <span class="tp">Pager</span>          → <span class="str">"Which page image is authoritative right now?"</span>
 <span class="tp">WAL</span>            → <span class="str">"What is durable and recoverable after a crash?"</span>

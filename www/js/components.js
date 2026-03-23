@@ -1,11 +1,26 @@
 // ═══════════════════════════════════════════════════════════
-// CSharpDB Website — Shared Navigation & Footer Components
+// CSharpDB Website — Shared Components
+// ═══════════════════════════════════════════════════════════
+// Eliminates per-page duplication by generating:
+//   • <head> meta / SEO / OpenGraph / Twitter tags
+//   • Navigation bar
+//   • Footer
+//   • Code-block headers (dots + filename)
+//
+// Each page only needs to declare:
+//   window.currentPage   = 'docs';           // nav highlight
+//   window.pagePathPrefix = '../';            // asset prefix (omit for root)
+//   window.pageConfig    = { title, description, keywords, canonicalPath, ogType, jsonLd };
+//
 // ═══════════════════════════════════════════════════════════
 
 (function () {
     'use strict';
 
     const prefix = window.pagePathPrefix || '';
+    const BASE_URL = 'https://maxakbar.github.io/csharpdb/';
+
+    // ── SVG icons ───────────────────────────────────────────
 
     const logoSvg = `<svg width="28" height="28" viewBox="0 0 28 28" fill="none">
         <rect x="2" y="2" width="24" height="24" rx="6" stroke="currentColor" stroke-width="2"/>
@@ -16,6 +31,91 @@
 
     const sunSvg = `<svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
     const moonSvg = `<svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+
+    // ── <head> meta tags ────────────────────────────────────
+
+    function renderMeta() {
+        const cfg = window.pageConfig;
+        if (!cfg) return;
+
+        const title = cfg.title
+            ? (cfg.title.includes('CSharpDB') ? cfg.title : cfg.title + ' \u2014 CSharpDB')
+            : 'CSharpDB';
+        const desc = cfg.description || '';
+        const keywords = cfg.keywords || '';
+        const canonical = BASE_URL + (cfg.canonicalPath || '');
+        const ogType = cfg.ogType || 'website';
+        const ogImage = BASE_URL + 'images/og-banner.png';
+
+        document.title = title;
+
+        const metas = {
+            'description':         desc,
+            'keywords':            keywords,
+            'robots':              'index, follow',
+        };
+
+        const ogTags = {
+            'og:title':       title,
+            'og:description': desc,
+            'og:type':        ogType,
+            'og:url':         canonical,
+            'og:site_name':   'CSharpDB',
+            'og:image':       ogImage,
+        };
+
+        const twitterTags = {
+            'twitter:card':        'summary_large_image',
+            'twitter:title':       title,
+            'twitter:description': desc,
+        };
+
+        const head = document.head;
+
+        // Standard meta (name=...)
+        for (const [name, content] of Object.entries(metas)) {
+            setOrCreateMeta(head, 'name', name, content);
+        }
+
+        // OpenGraph (property=...)
+        for (const [prop, content] of Object.entries(ogTags)) {
+            setOrCreateMeta(head, 'property', prop, content);
+        }
+
+        // Twitter (name=...)
+        for (const [name, content] of Object.entries(twitterTags)) {
+            setOrCreateMeta(head, 'name', name, content);
+        }
+
+        // Canonical link
+        let link = head.querySelector('link[rel="canonical"]');
+        if (!link) {
+            link = document.createElement('link');
+            link.rel = 'canonical';
+            head.appendChild(link);
+        }
+        link.href = canonical;
+
+        // JSON-LD structured data (optional)
+        if (cfg.jsonLd) {
+            const script = document.createElement('script');
+            script.type = 'application/ld+json';
+            script.textContent = JSON.stringify(cfg.jsonLd);
+            head.appendChild(script);
+        }
+    }
+
+    function setOrCreateMeta(head, attr, value, content) {
+        let el = head.querySelector(`meta[${attr}="${value}"]`);
+        if (!el) {
+            el = document.createElement('meta');
+            el.setAttribute(attr, value);
+            head.appendChild(el);
+        }
+        el.setAttribute('content', content);
+    }
+
+    // ── Navigation ──────────────────────────────────────────
 
     function navLink(href, id, label) {
         const current = window.currentPage || 'home';
@@ -55,6 +155,8 @@
         </nav>`;
     }
 
+    // ── Footer ──────────────────────────────────────────────
+
     function renderFooter() {
         const el = document.getElementById('site-footer');
         if (!el) return;
@@ -89,6 +191,26 @@
         </footer>`;
     }
 
+    // ── Code-block headers ──────────────────────────────────
+    // Authoring: <div class="code-block" data-title="Filename">
+    //              <pre><code>...</code></pre>
+    //            </div>
+    // This function prepends the dots + filename header automatically.
+
+    function enhanceCodeBlocks() {
+        document.querySelectorAll('.code-block[data-title]').forEach(block => {
+            const title = block.getAttribute('data-title');
+            const header = document.createElement('div');
+            header.className = 'code-header';
+            header.innerHTML =
+                '<div class="code-dots"><span></span><span></span><span></span></div>' +
+                `<span class="code-filename">${title}</span>`;
+            block.prepend(header);
+        });
+    }
+
+    // ── Theme toggle ────────────────────────────────────────
+
     function initTheme() {
         const saved = localStorage.getItem('csharpdb-theme') || 'dark';
         document.documentElement.setAttribute('data-theme', saved);
@@ -102,6 +224,8 @@
         });
     }
 
+    // ── Mobile menu ─────────────────────────────────────────
+
     function initMobile() {
         document.addEventListener('click', (e) => {
             const btn = e.target.closest('#mobileToggle');
@@ -112,12 +236,16 @@
         });
     }
 
+    // ── Navbar scroll shadow ────────────────────────────────
+
     function initNavScroll() {
         window.addEventListener('scroll', () => {
             const nb = document.getElementById('navbar');
             if (nb) nb.style.boxShadow = window.scrollY > 50 ? 'var(--shadow-md)' : 'none';
         }, { passive: true });
     }
+
+    // ── Copy buttons ────────────────────────────────────────
 
     function initCopyButtons() {
         document.addEventListener('click', (e) => {
@@ -134,9 +262,13 @@
         });
     }
 
+    // ── Bootstrap ───────────────────────────────────────────
+
     document.addEventListener('DOMContentLoaded', () => {
+        renderMeta();
         renderNav();
         renderFooter();
+        enhanceCodeBlocks();
         initTheme();
         initMobile();
         initNavScroll();

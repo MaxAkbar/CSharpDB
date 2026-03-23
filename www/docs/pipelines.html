@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ETL Pipelines — CSharpDB</title>
-    <meta name="description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
-    <meta name="keywords" content="CSharpDB ETL, data pipeline, CSV import, JSON import, data transform, pipeline runtime">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/pipelines.html">
-    <meta property="og:title" content="ETL Pipelines — CSharpDB">
-    <meta property="og:description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/pipelines.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="ETL Pipelines — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'ETL Pipelines',
+        description: 'CSharpDB ETL pipeline API \u2014 built-in pipeline runtime with CSV/JSON connectors, transforms, validation, dry-run, and run history.',
+        keywords: 'CSharpDB ETL, pipelines, data import, CSV connector, JSON connector, data transformation',
+        canonicalPath: 'docs/pipelines.html',
+        ogType: 'article',
+    };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -86,11 +81,7 @@
 
                 <h2>Pipeline Package Definition</h2>
                 <p>Pipelines are defined as JSON packages that describe the source, transforms, and destination.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">pipeline.json</span>
-                    </div>
+                <div class="code-block" data-title="pipeline.json">
                     <pre><code>{
   <span class="str">"name"</span>: <span class="str">"import-products"</span>,
   <span class="str">"source"</span>: {
