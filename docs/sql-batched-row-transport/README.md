@@ -1,4 +1,30 @@
-# SQL Batched Row Transport Design
+# SQL Batched Row Transport Design (Paused)
+
+## Status At A Glance
+
+As of March 22, 2026, this document should be read as paused design context plus retained-in-repo groundwork, not as a shipped feature and not as an active implementation task.
+
+What is already done and retained:
+
+- `RowBatch` and `IBatchOperator` exist in `src/CSharpDB.Execution/IOperator.cs`
+- `BatchToRowOperatorAdapter` exists in `src/CSharpDB.Execution/BatchTransport.cs`
+- `QueryResult` can hold batch-native roots directly and preserve partial consumption correctly
+- `RowSelection`, `IFilterProjectionBatchPlan`, `DelegateFilterProjectionBatchPlan`, `BatchPlanCompiler`, and `SpecializedFilterProjectionBatchPlan` exist as internal scaffolding
+- several operators can already produce or consume batches internally, including scan/filter/projection paths plus retained sort/distinct/offset/limit support
+
+What is not done:
+
+- the SQL executor is not broadly planner-driven around true end-to-end batch transport
+- the executor still fundamentally centers on row-by-row `IOperator` transport
+- the generic expression evaluator contract has not been replaced
+- there is no stable broad production rollout that would justify calling this feature complete
+
+What this means:
+
+- keep the retained groundwork
+- do not describe batched row transport as shipped
+- do not resume this area with more adapter experiments or narrow delegate rewrites
+- only reopen it for a deeper evaluator-contract rewrite with benchmark gates agreed up front
 
 ## Summary
 
@@ -10,7 +36,7 @@ That is true even after the recent compact scan, compact payload, aggregate, loo
 - one `DbValue[] Current`
 - optional row-buffer reuse via `ReusesCurrentRowBuffer`
 
-That contract keeps the engine simple, but it also leaves performance on the table for scan-heavy, projection-heavy, and join-heavy workloads. The next larger executor step is to move from operator-local batching toward true batched row transport between operators.
+That contract keeps the engine simple, but it also leaves performance on the table for scan-heavy, projection-heavy, and join-heavy workloads. Internal batch-oriented scaffolding now exists, but true planner-driven batched row transport between operators is still not complete.
 
 ## Why This Exists
 
@@ -77,12 +103,13 @@ So the migration cannot be a big-bang replacement. It needs compatibility layers
 
 ## Current Status
 
-As of March 15, 2026, the branch has a partial retained implementation:
+As of March 22, 2026, the branch has a partial retained implementation:
 
 - `RowBatch` and `IBatchOperator` exist in `src/CSharpDB.Execution/IOperator.cs`
+- `BatchToRowOperatorAdapter` exists in `src/CSharpDB.Execution/BatchTransport.cs`; broad row-to-batch adapter expansion was tried and backed out
 - `RowSelection`, `IFilterProjectionBatchPlan`, and a delegate-backed compatibility plan now exist in `src/CSharpDB.Execution/BatchEvaluation.cs`
 - a narrow `BatchPlanCompiler` and `SpecializedFilterProjectionBatchPlan` now exist for simple integer predicates and simple integer-or-column projections, but they are still internal opt-in infrastructure rather than planner-driven behavior
-- several scan/filter/projection/sort/distinct operators can already produce or consume batches internally
+- several operators already implement `IBatchOperator`, including table/index scans, filter/projection paths, compact scan/payload projection paths, sort, distinct, offset, and limit
 - `QueryResult` in `src/CSharpDB.Execution/QueryResult.cs` now supports storing batch-native roots directly instead of always wrapping them in `BatchToRowOperatorAdapter`
 - partial-consumption behavior is covered: a caller can `MoveNextAsync()` on a batch-backed result and then call `ToListAsync()` without losing the remainder of the current batch
 
@@ -95,16 +122,18 @@ That is enough to justify keeping the specialized-plan direction, but not enough
 
 What is not solved yet:
 
+- the executor still fundamentally centers on `IOperator.MoveNextAsync()` plus one `DbValue[] Current`
 - the generic expression/filter/projection boundary still pays too much per-row cost
 - batch transport is still not cheap enough once the engine falls back to `Func<DbValue[], DbValue>`-style evaluation
 - adapter-heavy transport broadening has not produced stable wins
 - the new batch-plan contract is only wired as an internal opt-in path so far; it is not planner-driven yet
+- end-to-end production routing broad enough to call this feature "done" does not exist
 
 That means the next step is no longer "add more adapters" or "add a thin row-view wrapper". The next step is changing the evaluation contract inside the executor.
 
 ## Pause Decision
 
-As of March 15, 2026, this workstream should be treated as paused.
+As of March 22, 2026, this workstream should be treated as paused.
 
 Reason:
 
@@ -133,7 +162,9 @@ Only reopen this work when all of the following are true:
 
 If those conditions are not met, this document should be read as historical design context plus retained infrastructure notes, not as an active next task.
 
-## Proposed Direction
+## Restart Direction If Reopened
+
+The sections below are restart guidance, not an active implementation plan. They describe the next plausible direction only if the revisit gate above is met.
 
 ### 1. Add a batch-native internal contract
 
@@ -182,11 +213,11 @@ Recommended rule:
 
 That keeps the first implementation easier to reason about.
 
-## Proposed Types
+## Retained Types And Compatibility Seams
 
 ### `RowBatch`
 
-Suggested responsibilities:
+Implemented today:
 
 - own the flat `DbValue[]` storage
 - expose `Count` and `ColumnCount`
@@ -194,16 +225,18 @@ Suggested responsibilities:
 - provide `CopyRowTo(int rowIndex, DbValue[] destination)` for adapters
 - support reset/reuse between batch fills
 
-Suggested fields:
+Already present:
 
 - `DbValue[] Values`
 - `int Count`
 - `int Capacity`
 - `int ColumnCount`
 
+No new action is needed here unless a deeper evaluator rewrite requires changing the transport shape.
+
 ### `IBatchOperator`
 
-Suggested shape:
+Implemented today:
 
 - `ColumnDefinition[] OutputSchema`
 - `bool ReusesCurrentBatch`
@@ -215,29 +248,33 @@ This mirrors `IOperator`, but at batch granularity.
 
 ### Adapters
 
-Two adapters are needed early:
+What exists today:
 
-- `RowToBatchAdapter`
-  Wrap an existing row-based operator so downstream batch-native operators can consume it.
-- `BatchToRowAdapter`
-  Wrap a batch-native operator so existing row-based operators and `QueryResult` can still consume it.
+- `BatchToRowOperatorAdapter`
 
-These adapters are what make phased migration possible.
+What is not a retained rollout strategy:
 
-In practice, adapter use needs to stay narrow. Recent branch work showed that broadening adapter use too aggressively can erase the gains from batched transport, especially on join-expression and scan-projection workloads.
+- broad `RowToBatchAdapter` expansion across row-mode operators
 
-## Migration Strategy
+Compatibility seams are still useful, but recent branch work showed that broadening adapter use too aggressively can erase the gains from batched transport, especially on join-expression and scan-projection workloads.
 
-### Phase 1: Infrastructure
+## Restart Sequence If Reopened
 
-Deliverables:
+### Phase 1: Retained Infrastructure
+
+Already done and retained:
 
 - `RowBatch`
 - `IBatchOperator`
-- row/batch adapters
+- `BatchToRowOperatorAdapter`
 - batch-aware benchmark coverage
+- `QueryResult` batch-native root support
+- narrow batch-plan scaffolding
 
-No planner changes yet beyond targeted experiments.
+Not done in this phase:
+
+- a new evaluator contract
+- a production-worthy planner route for broad query shapes
 
 ### Phase 2: Batch-native scan sources
 
@@ -262,7 +299,7 @@ Next operators:
 - fused filter/projection
 - compact scan/payload projection variants
 
-This is where the current operator-local batching can be replaced with shared transport.
+This is where the current operator-local batching can be replaced with shared transport, but only after the evaluator contract problem is addressed.
 
 ### Phase 4: Batch-native aggregates
 
@@ -296,7 +333,7 @@ That is a second design layer, not the starting point.
 
 ## Operator Priority
 
-Best first operator set:
+If reopened after the evaluator rewrite, the best first operator set remains:
 
 1. `TableScanOperator`
 2. `IndexOrderedScanOperator`
@@ -316,15 +353,15 @@ Those should consume batches only after the producer and projection path is stab
 
 ## QueryResult Compatibility
 
-`QueryResult` should remain row-oriented at the public edge in the first implementation.
+This part is mostly already in place. `QueryResult` remains row-oriented at the public edge while supporting batch-native roots internally.
 
-Recommended approach:
+Retained direction:
 
 - keep external enumeration unchanged
 - allow `QueryResult` to hold either an `IOperator` or an `IBatchOperator`
 - materialize rows only at the public boundary when callers enumerate rows or call `ToListAsync()`
 
-This is now the retained branch direction. Earlier versions used `BatchToRowAdapter` at the boundary, but the current implementation keeps batch-native roots intact for longer while preserving the public API.
+Earlier versions leaned more heavily on `BatchToRowOperatorAdapter` at the boundary, but the current implementation keeps batch-native roots intact for longer while preserving the public API. If this area is reopened, preserve that boundary rather than reintroducing eager flattening.
 
 ## Tried And Backed Out
 
@@ -529,18 +566,17 @@ Conclusion:
 
 The current expression compiler works against `DbValue[]` rows.
 
-The first batch design should not replace that compiler. Instead:
+Earlier iterations of this design assumed the first batch pass could keep that compiler and simply expose row spans or temporary row views over `RowBatch`.
 
-- expose row spans or temporary row views over `RowBatch`
-- let the compiler continue evaluating one logical row at a time inside a batched outer loop
+That compatibility approach is still useful as retained scaffolding and for narrow internal paths, but the branch experiments showed it is not enough for a broad production rollout.
 
-This still reduces:
+If this area is reopened, the main task should be:
 
-- operator boundary overhead
-- repeated buffer allocation
-- repeated virtual dispatch per row
+- design a new internal evaluator contract that is not centered on `Func<DbValue[], DbValue>`
+- make generic projection/filter-projection consume that contract first
+- treat the current compiler as compatibility infrastructure, not as the final path
 
-Later work can specialize expression kernels if the benchmarks justify it.
+Later work can still specialize expression kernels if the benchmarks justify it.
 
 ## Memory Model
 
@@ -557,9 +593,9 @@ Batch size should be configurable internally, but the first default should be co
 
 The first design should not overfit batch size up front.
 
-## Benchmark Plan
+## Benchmark Gate If Reopened
 
-New benchmark coverage should be added for:
+Benchmark coverage should include:
 
 - full scan `SELECT *`
 - filtered scan `SELECT *`
@@ -568,7 +604,7 @@ New benchmark coverage should be added for:
 - join with expression projection
 - grouped aggregate over scan-heavy input
 
-Success criteria should be measured against current row transport:
+Success criteria should be agreed up front and measured against the current stable row-transport baseline:
 
 - lower allocation
 - fewer operator-local buffers
