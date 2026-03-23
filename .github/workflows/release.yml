@@ -95,6 +95,7 @@ jobs:
             src/CSharpDB.Storage/README.md \
             src/CSharpDB.Execution/README.md \
             src/CSharpDB.Engine/README.md \
+            src/CSharpDB.Pipelines/README.md \
             src/CSharpDB.Data/README.md \
             src/CSharpDB.Storage.Diagnostics/README.md \
             src/CSharpDB.Client/README.md
@@ -111,6 +112,7 @@ jobs:
           dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Execution/CSharpDB.Execution.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Engine/CSharpDB.Engine.csproj -c Release -o artifacts/nuget -p:Version="$version"
+          dotnet pack src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget -p:Version="$version"
