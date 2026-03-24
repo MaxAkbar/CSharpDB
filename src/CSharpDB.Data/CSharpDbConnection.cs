@@ -146,6 +146,8 @@ public sealed class CSharpDbConnection : DbConnection
 
     // ─── Command ─────────────────────────────────────────────────────
 
+    public new CSharpDbCommand CreateCommand() => new() { Connection = this };
+
     protected override DbCommand CreateDbCommand() => new CSharpDbCommand { Connection = this };
 
     public override void ChangeDatabase(string databaseName)

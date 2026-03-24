@@ -76,7 +76,12 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
         using var cmd = conn.CreateCommand();
         Assert.NotNull(cmd);
+        Assert.IsType<CSharpDbCommand>(cmd);
         Assert.Same(conn, cmd.Connection);
+
+        CSharpDbParameter parameter = cmd.Parameters.AddWithValue("@id", 1);
+        Assert.Equal("@id", parameter.ParameterName);
+        Assert.Equal(1, parameter.Value);
     }
 
     [Fact]
