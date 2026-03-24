@@ -841,6 +841,40 @@ code {
     padding: 4px 0;
 }
 
+/* Split rows inside arch layers */
+.arch-split {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+}
+.arch-split .arch-layer {
+    flex: 1;
+    padding: 14px 16px;
+}
+.arch-split-2 .arch-layer { flex: 1; }
+.arch-split-3 .arch-layer { flex: 1; }
+
+.arch-sub {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+    justify-content: center;
+}
+.arch-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-muted);
+    border: 1px solid rgba(255,255,255,0.08);
+}
+
+@media (max-width: 600px) {
+    .arch-split { flex-direction: column; gap: 0; }
+}
+
 /* ─── Format Diagrams ─── */
 .format-diagram {
     margin: 24px 0 48px;

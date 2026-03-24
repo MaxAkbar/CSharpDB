@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'Storage Engine Tutorial',
+            description: 'Hands-on tutorial for the CSharpDB storage engine — FileStorageDevice, Pager, B+trees, WAL, slotted pages, indexing, serialization, and file storage.',
+            keywords: 'CSharpDB storage tutorial, B+tree tutorial, WAL tutorial, pager tutorial, database internals',
+            canonicalPath: 'docs/tutorials/storage.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Storage Engine Tutorial</h1>
+                <p class="lead">A hands-on walkthrough of every layer in the CSharpDB storage stack &mdash; from raw file I/O up to a complete folder/file storage system.</p>
+
+                <div class="callout callout-info">
+                    <strong>Prerequisites:</strong> .NET 10 SDK installed. Basic familiarity with async/await in C#. Add the <code>CSharpDB.Storage</code> NuGet package (and <code>CSharpDB.Engine</code> for the higher-level sections).
+                </div>
+
+                <nav class="toc">
+                    <h2>Contents</h2>
+                    <ol>
+                        <li><a href="#architecture">Architecture Overview</a></li>
+                        <li><a href="#file-storage-device">FileStorageDevice</a></li>
+                        <li><a href="#device-scenarios">Device Scenarios</a></li>
+                        <li><a href="#pager">Pager</a></li>
+                        <li><a href="#btree">B+Tree</a></li>
+                        <li><a href="#wal">Write-Ahead Log (WAL)</a></li>
+                        <li><a href="#slotted-page">Slotted Page Layout</a></li>
+                        <li><a href="#indexing">Indexing</a></li>
+                        <li><a href="#serialization">Record Serialization</a></li>
+                        <li><a href="#schema-catalog">Schema Catalog</a></li>
+                        <li><a href="#folder-file-storage">Folder &amp; File Storage</a></li>
+                        <li><a href="#design-notes">Key Design Notes</a></li>
+                    </ol>
+                </nav>
+
+                <!-- ───────────────── Architecture ───────────────── -->
+                <h2 id="architecture">Architecture Overview</h2>
+                <p>The storage engine is organized in layers. Each layer depends only on the one below it, making individual components testable and replaceable.</p>
+
+                <div class="arch-diagram">
+                    <div class="arch-layer arch-layer-app">
+                        <div class="arch-label">Application</div>
+                        <div class="arch-desc">SQL Engine / Collection API</div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-catalog">
+                        <div class="arch-label">SchemaCatalog</div>
+                        <div class="arch-sub">
+                            <span class="arch-tag">Tables</span>
+                            <span class="arch-tag">Indexes</span>
+                            <span class="arch-tag">Views</span>
+                            <span class="arch-tag">Triggers</span>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-split arch-split-3">
+                        <div class="arch-layer arch-layer-storage">
+                            <div class="arch-label">BTree</div>
+                            <div class="arch-desc">Data storage</div>
+                        </div>
+                        <div class="arch-layer arch-layer-storage">
+                            <div class="arch-label">IndexStore</div>
+                            <div class="arch-desc">Secondary indexes</div>
+                        </div>
+                        <div class="arch-layer arch-layer-storage">
+                            <div class="arch-label">RecordEncoder</div>
+                            <div class="arch-desc">Row format</div>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-storage">
+                        <div class="arch-label">Pager</div>
+                        <div class="arch-sub">
+                            <span class="arch-tag">PageCache</span>
+                            <span class="arch-tag">DirtyTracking</span>
+                            <span class="arch-tag">PageAllocator</span>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-split arch-split-2">
+                        <div class="arch-layer arch-layer-wal">
+                            <div class="arch-label">WriteAheadLog</div>
+                            <div class="arch-desc">WAL + WalIndex</div>
+                        </div>
+                        <div class="arch-layer arch-layer-wal">
+                            <div class="arch-label">CheckpointCoordinator</div>
+                            <div class="arch-desc">Policy-driven</div>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#9660;</div>
+                    <div class="arch-layer arch-layer-device">
+                        <div class="arch-label">IStorageDevice</div>
+                        <div class="arch-desc">FileStorageDevice / memory</div>
+                    </div>
+                </div>
+                <p>Additional read-path optimizations layered on top:</p>
+                <ul>
+                    <li><strong>Memory-mapped reads</strong> for clean main-file pages when the storage device supports it</li>
+                    <li><strong>Speculative B+tree leaf read-ahead</strong> during sequential forward scans</li>
+                    <li><strong>Checkpoint residency preservation</strong> so already-owned pages stay hot in lazy-resident hybrid mode</li>
+                </ul>
+
+                <h3>Page Layout</h3>
+                <div class="code-block" data-title="On-Disk Format">
+                    <pre><code>Page 0 (File Header):
+  [Magic: 4 bytes <span class="str">"CSDB"</span>]
+  [FormatVersion: 4 bytes]
+  [PageSize: 4 bytes = <span class="num">4096</span>]
+  [PageCount: 4 bytes]
+  [SchemaRootPage: 4 bytes]
+  [FreelistHead: 4 bytes]
+  [ChangeCounter: 4 bytes]
+  [... reserved to 100 bytes ...]
+  [Slotted page content: 3996 bytes]
+
+Pages 1+:
+  [SlottedPage: <span class="num">4096</span> bytes]
+    [Header: 9 bytes]
+      PageType (1) &#9472; CellCount (2) &#9472; CellContentStart (2) &#9472; RightChild/NextLeaf (4)
+    [CellPointers: 2 bytes each]
+    [Free space]
+    [Cells: growing backward from page end]</code></pre>
+                </div>
+
+                <!-- ───────────────── FileStorageDevice ───────────────── -->
+                <h2 id="file-storage-device">FileStorageDevice</h2>
+                <p><code>FileStorageDevice</code> wraps a <code>SafeFileHandle</code> opened with <code>FileOptions.Asynchronous | FileOptions.RandomAccess</code>, providing:</p>
+                <ul>
+                    <li><strong>True async I/O</strong> via <code>RandomAccess.ReadAsync</code> / <code>WriteAsync</code></li>
+                    <li><strong>Position-independent reads and writes</strong> &mdash; no seek, no shared file pointer</li>
+                    <li><strong>Concurrent reads</strong> from other processes (<code>FileShare.Read</code>)</li>
+                    <li><strong>Direct fsync</strong> to durable storage via <code>RandomAccess.FlushToDisk</code></li>
+                </ul>
+                <div class="code-block" data-title="Constructor">
+                    <pre><code><span class="kw">public</span> <span class="tp">FileStorageDevice</span>(<span class="kw">string</span> filePath, <span class="kw">bool</span> createNew = <span class="kw">false</span>)</code></pre>
+                </div>
+                <table class="doc-table">
+                    <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>filePath</code></td><td>Path to the database file.</td></tr>
+                        <tr><td><code>createNew</code></td><td><code>true</code> &rarr; <code>FileMode.CreateNew</code> (fails if file exists). <code>false</code> &rarr; <code>OpenOrCreate</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>IStorageDevice Interface</h3>
+                <p>All storage operations go through <code>IStorageDevice</code>, making it easy to swap implementations for in-memory testing.</p>
+                <div class="code-block" data-title="Interface">
+                    <pre><code><span class="kw">public interface</span> <span class="tp">IStorageDevice</span> : <span class="tp">IAsyncDisposable</span>, <span class="tp">IDisposable</span>
+{
+    <span class="kw">long</span> Length { <span class="kw">get</span>; }
+    <span class="tp">ValueTask</span>&lt;<span class="kw">int</span>&gt; ReadAsync(<span class="kw">long</span> offset, <span class="tp">Memory</span>&lt;<span class="kw">byte</span>&gt; buffer, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">ValueTask</span> WriteAsync(<span class="kw">long</span> offset, <span class="tp">ReadOnlyMemory</span>&lt;<span class="kw">byte</span>&gt; buffer, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">ValueTask</span> FlushAsync(<span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">ValueTask</span> SetLengthAsync(<span class="kw">long</span> length, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+}</code></pre>
+                </div>
+
+                <!-- ───────────────── Device Scenarios ───────────────── -->
+                <h2 id="device-scenarios">Device Scenarios</h2>
+
+                <h3>1. Create a New File</h3>
+                <div class="code-block" data-title="Create New">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>, createNew: <span class="kw">true</span>);
+Console.WriteLine(<span class="str">$"File created. Length: {device.Length}"</span>); <span class="cm">// 0</span></code></pre>
+                </div>
+
+                <h3>2. Open an Existing File</h3>
+                <div class="code-block" data-title="Open Existing">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+Console.WriteLine(<span class="str">$"Opened. Length: {device.Length}"</span>);</code></pre>
+                </div>
+
+                <h3>3. Write Raw Bytes</h3>
+                <p>Writes are position-independent. Multiple writes at different offsets can be issued concurrently without locking.</p>
+                <div class="code-block" data-title="Write Bytes">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">byte</span>[] payload = <span class="str">"Hello, CSharpDB!"</span>u8.ToArray();
+<span class="kw">await</span> device.WriteAsync(offset: <span class="num">0</span>, payload);</code></pre>
+                </div>
+
+                <h3>4. Read Raw Bytes</h3>
+                <p><code>ReadAsync</code> loops internally until the buffer is fully filled or EOF is reached.</p>
+                <div class="code-block" data-title="Read Bytes">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">var</span> buffer = <span class="kw">new byte</span>[<span class="num">16</span>];
+<span class="kw">int</span> bytesRead = <span class="kw">await</span> device.ReadAsync(offset: <span class="num">0</span>, buffer);
+Console.WriteLine(<span class="str">$"Read {bytesRead} byte(s)"</span>);</code></pre>
+                </div>
+
+                <h3>5. Zero-Fill on Short Reads</h3>
+                <p>Reading past EOF zero-fills the remainder of the buffer &mdash; useful for treating uninitialized pages as zeroed memory.</p>
+                <div class="code-block" data-title="Zero-Fill">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">var</span> buffer = <span class="kw">new byte</span>[<span class="num">4096</span>];
+<span class="kw">int</span> bytesRead = <span class="kw">await</span> device.ReadAsync(offset: <span class="num">0</span>, buffer);
+Console.WriteLine(<span class="str">$"Bytes on disk: {bytesRead}"</span>);
+Console.WriteLine(<span class="str">$"Remainder is zeros: {buffer[16] == 0}"</span>);</code></pre>
+                </div>
+
+                <h3>6. Pre-allocate / Extend File</h3>
+                <p>Pre-allocating avoids fragmentation and is required before writing pages beyond the current end-of-file on some file systems.</p>
+                <div class="code-block" data-title="Pre-allocate">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>, createNew: <span class="kw">true</span>);
+<span class="kw">const int</span> PageSize = <span class="num">4096</span>;
+<span class="kw">await</span> device.SetLengthAsync(PageSize * <span class="num">8</span>);
+Console.WriteLine(<span class="str">$"Pre-allocated: {device.Length} bytes"</span>); <span class="cm">// 32768</span></code></pre>
+                </div>
+
+                <h3>7. Flush to Disk (fsync)</h3>
+                <p><code>FlushAsync</code> calls <code>RandomAccess.FlushToDisk</code>, issuing a full fsync. Call this after committing a transaction to guarantee durability.</p>
+                <div class="code-block" data-title="Flush">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">byte</span>[] data = <span class="kw">new byte</span>[<span class="num">4096</span>];
+<span class="kw">await</span> device.WriteAsync(offset: <span class="num">0</span>, data);
+<span class="kw">await</span> device.FlushAsync(); <span class="cm">// durable on disk after this returns</span></code></pre>
+                </div>
+
+                <h3>8. Writing Fixed-Size Pages (4 KB)</h3>
+                <p>The storage engine works in 4 096-byte pages. Write a page at a computed offset.</p>
+                <div class="code-block" data-title="Write Page">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>, createNew: <span class="kw">true</span>);
+<span class="kw">const int</span> PageSize = <span class="num">4096</span>;
+<span class="kw">await</span> device.SetLengthAsync(PageSize * <span class="num">4</span>);
+
+<span class="kw">byte</span>[] page = <span class="kw">new byte</span>[PageSize];
+System.Text.Encoding.UTF8.GetBytes(<span class="str">"page-0 data"</span>).CopyTo(page.AsSpan());
+
+<span class="kw">uint</span> pageId = <span class="num">0</span>;
+<span class="kw">await</span> device.WriteAsync(offset: (<span class="kw">long</span>)pageId * PageSize, page);</code></pre>
+                </div>
+
+                <h3>9. Cancellation Support</h3>
+                <p>All async methods accept a <code>CancellationToken</code> for clean abort of long I/O operations.</p>
+                <div class="code-block" data-title="Cancellation">
+                    <pre><code><span class="kw">using var</span> cts = <span class="kw">new</span> <span class="tp">CancellationTokenSource</span>(<span class="tp">TimeSpan</span>.FromSeconds(<span class="num">5</span>));
+<span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">var</span> buffer = <span class="kw">new byte</span>[<span class="num">4096</span>];
+<span class="kw">try</span>
+{
+    <span class="kw">await</span> device.ReadAsync(offset: <span class="num">0</span>, buffer, cts.Token);
+}
+<span class="kw">catch</span> (<span class="tp">OperationCanceledException</span>)
+{
+    Console.WriteLine(<span class="str">"Read was cancelled."</span>);
+}</code></pre>
+                </div>
+
+                <h3>10. Testability via IStorageDevice</h3>
+                <p>Program against <code>IStorageDevice</code> so you can substitute an in-memory implementation in tests.</p>
+                <div class="code-block" data-title="In-Memory Device">
+                    <pre><code><span class="kw">public sealed class</span> <span class="tp">MemoryStorageDevice</span> : <span class="tp">IStorageDevice</span>
+{
+    <span class="kw">private byte</span>[] _data = [];
+    <span class="kw">public long</span> Length =&gt; _data.Length;
+
+    <span class="kw">public</span> <span class="tp">ValueTask</span>&lt;<span class="kw">int</span>&gt; ReadAsync(<span class="kw">long</span> offset, <span class="tp">Memory</span>&lt;<span class="kw">byte</span>&gt; buffer, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>)
+    {
+        <span class="kw">int</span> available = (<span class="kw">int</span>)Math.Max(<span class="num">0</span>, _data.Length - offset);
+        <span class="kw">int</span> toCopy = Math.Min(buffer.Length, available);
+        _data.AsMemory((<span class="kw">int</span>)offset, toCopy).CopyTo(buffer);
+        buffer[toCopy..].Span.Clear();
+        <span class="kw">return</span> ValueTask.FromResult(toCopy);
+    }
+
+    <span class="kw">public</span> <span class="tp">ValueTask</span> WriteAsync(<span class="kw">long</span> offset, <span class="tp">ReadOnlyMemory</span>&lt;<span class="kw">byte</span>&gt; buffer, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>)
+    {
+        <span class="kw">long</span> needed = offset + buffer.Length;
+        <span class="kw">if</span> (needed &gt; _data.Length) Array.Resize(<span class="kw">ref</span> _data, (<span class="kw">int</span>)needed);
+        buffer.CopyTo(_data.AsMemory((<span class="kw">int</span>)offset));
+        <span class="kw">return</span> ValueTask.CompletedTask;
+    }
+
+    <span class="kw">public</span> <span class="tp">ValueTask</span> FlushAsync(<span class="tp">CancellationToken</span> ct = <span class="kw">default</span>) =&gt; ValueTask.CompletedTask;
+    <span class="kw">public</span> <span class="tp">ValueTask</span> SetLengthAsync(<span class="kw">long</span> length, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>)
+    {
+        Array.Resize(<span class="kw">ref</span> _data, (<span class="kw">int</span>)length);
+        <span class="kw">return</span> ValueTask.CompletedTask;
+    }
+
+    <span class="kw">public</span> <span class="tp">ValueTask</span> DisposeAsync() =&gt; ValueTask.CompletedTask;
+    <span class="kw">public void</span> Dispose() { }
+}</code></pre>
+                </div>
+
+                <!-- ───────────────── Pager ───────────────── -->
+                <h2 id="pager">Pager</h2>
+                <p>The <code>Pager</code> sits between the B+tree layer and the storage device. It owns the page cache, tracks dirty pages, coordinates transactions, manages WAL integration, and drives checkpointing.</p>
+
+                <h3>P1. Create a New Database</h3>
+                <div class="code-block" data-title="New Database">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>, createNew: <span class="kw">true</span>);
+<span class="kw">var</span> walIndex = <span class="kw">new</span> <span class="tp">WalIndex</span>();
+<span class="kw">await using var</span> wal = <span class="kw">new</span> <span class="tp">WriteAheadLog</span>(<span class="str">"mydb.cdb"</span>, walIndex);
+<span class="kw">await</span> wal.OpenAsync(currentDbPageCount: <span class="num">0</span>);
+
+<span class="kw">var</span> pager = <span class="kw">await</span> <span class="tp">Pager</span>.CreateAsync(device, wal, walIndex);
+<span class="kw">await</span> pager.InitializeNewDatabaseAsync(); <span class="cm">// writes file header (page 0)</span>
+
+Console.WriteLine(<span class="str">$"Pages: {pager.PageCount}"</span>); <span class="cm">// 1</span></code></pre>
+                </div>
+
+                <h3>P2. Open and Recover</h3>
+                <p>On startup, call <code>RecoverAsync</code> to redo any committed WAL frames that were not yet checkpointed.</p>
+                <div class="code-block" data-title="Recovery">
+                    <pre><code><span class="kw">await using var</span> device = <span class="kw">new</span> <span class="tp">FileStorageDevice</span>(<span class="str">"mydb.cdb"</span>);
+<span class="kw">var</span> walIndex = <span class="kw">new</span> <span class="tp">WalIndex</span>();
+<span class="kw">await using var</span> wal = <span class="kw">new</span> <span class="tp">WriteAheadLog</span>(<span class="str">"mydb.cdb"</span>, walIndex);
+
+<span class="kw">var</span> pager = <span class="kw">await</span> <span class="tp">Pager</span>.CreateAsync(device, wal, walIndex);
+<span class="kw">await</span> pager.RecoverAsync(); <span class="cm">// replays committed WAL frames</span></code></pre>
+                </div>
+
+                <h3>P3. Read and Write Pages</h3>
+                <div class="code-block" data-title="Page I/O">
+                    <pre><code><span class="cm">// Read a page (checks cache -> WAL -> device)</span>
+<span class="kw">byte</span>[] page = <span class="kw">await</span> pager.GetPageAsync(pageId: <span class="num">1</span>);
+
+<span class="cm">// Modify in-place, then mark dirty</span>
+page[<span class="num">0</span>] = <span class="num">0xFF</span>;
+<span class="kw">await</span> pager.MarkDirtyAsync(pageId: <span class="num">1</span>); <span class="cm">// tracked for WAL write on commit</span></code></pre>
+                </div>
+
+                <h3>P4. Allocate and Free Pages</h3>
+                <div class="code-block" data-title="Page Allocation">
+                    <pre><code><span class="cm">// Allocate (extends file or reuses from freelist)</span>
+<span class="kw">uint</span> newPageId = <span class="kw">await</span> pager.AllocatePageAsync();
+
+<span class="cm">// Free (adds to freelist for reuse)</span>
+<span class="kw">await</span> pager.FreePageAsync(newPageId);</code></pre>
+                </div>
+
+                <h3>P5. Transaction Lifecycle</h3>
+                <p>Single writer per database. Reads do not require transactions.</p>
+                <div class="code-block" data-title="Transactions">
+                    <pre><code><span class="kw">await</span> pager.BeginTransactionAsync();
+<span class="kw">try</span>
+{
+    <span class="cm">// ... modify pages via B+tree ...</span>
+    <span class="kw">await</span> pager.CommitAsync(); <span class="cm">// writes dirty pages to WAL, fsync</span>
+}
+<span class="kw">catch</span>
+{
+    <span class="kw">await</span> pager.RollbackAsync(); <span class="cm">// discards uncommitted WAL frames</span>
+    <span class="kw">throw</span>;
+}</code></pre>
+                </div>
+
+                <h3>P6. Snapshot Isolation</h3>
+                <p>Multiple readers run concurrently with the writer. Each reader sees a consistent point-in-time snapshot.</p>
+                <div class="callout callout-info">
+                    <strong>Key Insight:</strong> Readers capture the WAL state at the moment they start. Even as the writer commits new transactions, existing readers continue to see their original snapshot.
+                </div>
+                <div class="code-block" data-title="Snapshot Reader">
+                    <pre><code><span class="tp">WalSnapshot</span> snapshot = pager.AcquireReaderSnapshot();
+
+<span class="tp">Pager</span> snapshotPager = pager.CreateSnapshotReader(snapshot);
+<span class="kw">byte</span>[] page = <span class="kw">await</span> snapshotPager.GetPageAsync(pageId: <span class="num">1</span>);
+
+pager.ReleaseReaderSnapshot();</code></pre>
+                </div>
+
+                <h3>P7. Checkpoint Policies</h3>
+                <div class="code-block" data-title="Custom Checkpoint">
+                    <pre><code><span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">PagerOptions</span>
+{
+    CheckpointPolicy = <span class="kw">new</span> <span class="tp">AnyCheckpointPolicy</span>(
+        <span class="kw">new</span> <span class="tp">FrameCountCheckpointPolicy</span>(threshold: <span class="num">500</span>),
+        <span class="kw">new</span> <span class="tp">TimeIntervalCheckpointPolicy</span>(<span class="tp">TimeSpan</span>.FromMinutes(<span class="num">5</span>))
+    ),
+    AutoCheckpointExecutionMode = <span class="tp">AutoCheckpointExecutionMode</span>.Background,
+    AutoCheckpointMaxPagesPerStep = <span class="num">64</span>
+};</code></pre>
+                </div>
+                <table class="doc-table">
+                    <thead><tr><th>Policy</th><th>Triggers When</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>FrameCountCheckpointPolicy(n)</code></td><td>Committed frame count exceeds <code>n</code></td></tr>
+                        <tr><td><code>WalSizeCheckpointPolicy(bytes)</code></td><td>Estimated WAL size exceeds <code>bytes</code></td></tr>
+                        <tr><td><code>TimeIntervalCheckpointPolicy(span)</code></td><td>Elapsed time since last checkpoint exceeds <code>span</code></td></tr>
+                        <tr><td><code>AnyCheckpointPolicy(...)</code></td><td>Any sub-policy triggers</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ───────────────── B+Tree ───────────────── -->
+                <h2 id="btree">B+Tree</h2>
+                <p>B+tree keyed by signed 64-bit <code>long</code> keys. Leaf pages store <code>(key, payload)</code> pairs; interior pages store routing keys and child pointers. Supports forward-only cursor iteration and cache-only fast paths.</p>
+
+                <h3>B1. Create a New B+Tree</h3>
+                <div class="code-block" data-title="Create Tree">
+                    <pre><code><span class="kw">uint</span> rootPageId = <span class="kw">await</span> <span class="tp">BTree</span>.CreateNewAsync(pager);
+<span class="kw">var</span> tree = <span class="kw">new</span> <span class="tp">BTree</span>(pager, rootPageId);</code></pre>
+                </div>
+
+                <h3>B2. Insert a Key-Value Pair</h3>
+                <p>Payload is raw bytes &mdash; the B+tree has no opinion on format. If the leaf is full, the tree automatically splits.</p>
+                <div class="code-block" data-title="Insert">
+                    <pre><code><span class="kw">byte</span>[] payload = System.Text.Encoding.UTF8.GetBytes(<span class="str">"Hello, B+tree!"</span>);
+<span class="kw">await</span> tree.InsertAsync(key: <span class="num">42</span>, payload);</code></pre>
+                </div>
+
+                <h3>B3. Point Lookup</h3>
+                <div class="code-block" data-title="Lookup">
+                    <pre><code><span class="kw">byte</span>[]? result = <span class="kw">await</span> tree.FindAsync(key: <span class="num">42</span>);
+<span class="kw">if</span> (result <span class="kw">is not null</span>)
+    Console.WriteLine(System.Text.Encoding.UTF8.GetString(result));</code></pre>
+                </div>
+
+                <h3>B4. Cache-Only Fast Path</h3>
+                <p>Avoids async I/O when all required pages are already cached.</p>
+                <div class="code-block" data-title="Cache Fast Path">
+                    <pre><code><span class="kw">if</span> (tree.TryFindCached(key: <span class="num">42</span>, <span class="kw">out byte</span>[]? payload))
+    Console.WriteLine(<span class="str">$"Cache hit: {payload is not null}"</span>);
+<span class="kw">else</span>
+    payload = <span class="kw">await</span> tree.FindAsync(key: <span class="num">42</span>);</code></pre>
+                </div>
+
+                <h3>B5. Delete a Key</h3>
+                <div class="code-block" data-title="Delete">
+                    <pre><code><span class="kw">bool</span> deleted = <span class="kw">await</span> tree.DeleteAsync(key: <span class="num">42</span>);
+Console.WriteLine(deleted ? <span class="str">"Deleted."</span> : <span class="str">"Key not found."</span>);</code></pre>
+                </div>
+
+                <h3>B6. Forward Cursor Scan</h3>
+                <p>Iterate all entries in key order. The cursor follows leaf-to-leaf next pointers without interior page I/O.</p>
+                <div class="code-block" data-title="Cursor Scan">
+                    <pre><code><span class="kw">var</span> cursor = tree.CreateCursor();
+<span class="kw">while</span> (<span class="kw">await</span> cursor.MoveNextAsync())
+{
+    <span class="kw">long</span> key = cursor.CurrentKey;
+    <span class="tp">ReadOnlyMemory</span>&lt;<span class="kw">byte</span>&gt; value = cursor.CurrentValue;
+    Console.WriteLine(<span class="str">$"Key={key}, PayloadSize={value.Length}"</span>);
+}</code></pre>
+                </div>
+
+                <h3>B7. Seek to a Key</h3>
+                <p>Position the cursor at the first key &gt;= target, then iterate forward.</p>
+                <div class="code-block" data-title="Seek">
+                    <pre><code><span class="kw">var</span> cursor = tree.CreateCursor();
+<span class="kw">if</span> (<span class="kw">await</span> cursor.SeekAsync(targetKey: <span class="num">100</span>))
+{
+    <span class="kw">do</span>
+    {
+        Console.WriteLine(<span class="str">$"Key={cursor.CurrentKey}"</span>);
+    } <span class="kw">while</span> (<span class="kw">await</span> cursor.MoveNextAsync());
+}</code></pre>
+                </div>
+
+                <h3>B8. Count Entries</h3>
+                <div class="code-block" data-title="Count">
+                    <pre><code><span class="kw">long</span> count = <span class="kw">await</span> tree.CountEntriesAsync();
+Console.WriteLine(<span class="str">$"Tree contains {count} entries."</span>);</code></pre>
+                </div>
+
+                <!-- ───────────────── WAL ───────────────── -->
+                <h2 id="wal">Write-Ahead Log (WAL)</h2>
+                <p>Redo-style WAL for crash recovery and concurrent snapshot-isolated readers. Each commit writes dirty pages as frames to the WAL file. On checkpoint, committed frames are copied to the main database file.</p>
+                <div class="code-block" data-title="WAL Format">
+                    <pre><code>WAL File Format:
+  [WAL Header: <span class="num">32</span> bytes]
+    Magic &#9472; Version &#9472; PageSize &#9472; Checksum salt
+  [Frame 0: <span class="num">4120</span> bytes]
+    [FrameHeader: <span class="num">24</span> bytes] &#9472; PageId &#9472; DbPageCount &#9472; Checksum
+    [PageData: <span class="num">4096</span> bytes]
+  [Frame 1: <span class="num">4120</span> bytes]
+    ...</code></pre>
+                </div>
+
+                <h3>W1. Open or Create a WAL</h3>
+                <div class="code-block" data-title="Open WAL">
+                    <pre><code><span class="kw">var</span> walIndex = <span class="kw">new</span> <span class="tp">WalIndex</span>();
+<span class="kw">await using var</span> wal = <span class="kw">new</span> <span class="tp">WriteAheadLog</span>(<span class="str">"mydb.cdb"</span>, walIndex);
+<span class="kw">await</span> wal.OpenAsync(currentDbPageCount: pager.PageCount);</code></pre>
+                </div>
+
+                <h3>W2. Write Transaction to WAL</h3>
+                <div class="code-block" data-title="WAL Write">
+                    <pre><code>wal.BeginTransaction();
+
+<span class="kw">await</span> wal.AppendFrameAsync(pageId: <span class="num">1</span>, pageData);
+<span class="kw">await</span> wal.AppendFrameAsync(pageId: <span class="num">5</span>, pageData);
+
+<span class="kw">await</span> wal.CommitAsync(newDbPageCount: pager.PageCount);
+<span class="cm">// Or rollback: await wal.RollbackAsync();</span></code></pre>
+                </div>
+
+                <h3>W3. Reader Snapshot</h3>
+                <div class="code-block" data-title="WAL Snapshot">
+                    <pre><code><span class="tp">WalSnapshot</span> snapshot = walIndex.TakeSnapshot();
+
+<span class="kw">if</span> (snapshot.TryGet(pageId: <span class="num">1</span>, <span class="kw">out long</span> walOffset))
+{
+    <span class="kw">byte</span>[] page = <span class="kw">await</span> wal.ReadPageAsync(walOffset);
+}</code></pre>
+                </div>
+
+                <h3>W4. Checkpoint</h3>
+                <div class="code-block" data-title="Checkpoint">
+                    <pre><code><span class="kw">await</span> wal.CheckpointAsync(device, pageCount: pager.PageCount);
+walIndex.Reset();
+<span class="cm">// WAL is now empty; all data is in the main file</span></code></pre>
+                </div>
+
+                <!-- ───────────────── Slotted Page ───────────────── -->
+                <h2 id="slotted-page">Slotted Page Layout</h2>
+                <p><code>SlottedPage</code> is a struct that overlays a <code>byte[4096]</code> buffer, providing structured access to variable-size cells within a fixed-size page.</p>
+                <div class="code-block" data-title="Page Structure">
+                    <pre><code>[Header: <span class="num">9</span> bytes]
+  PageType (1) &#9472; CellCount (2) &#9472; CellContentStart (2) &#9472; RightChild/NextLeaf (4)
+[Cell Pointers: 2 bytes each, growing forward]
+[Free Space]
+[Cell Data: growing backward from page end]</code></pre>
+                </div>
+
+                <h3>S1. Initialize a Page</h3>
+                <div class="code-block" data-title="Init Page">
+                    <pre><code><span class="kw">byte</span>[] buffer = <span class="kw">new byte</span>[<span class="num">4096</span>];
+<span class="kw">var</span> sp = <span class="kw">new</span> <span class="tp">SlottedPage</span>(buffer, pageId: <span class="num">1</span>);
+sp.Initialize(<span class="tp">PageConstants</span>.PageTypeLeaf);
+
+Console.WriteLine(<span class="str">$"Type: {sp.PageType}"</span>);       <span class="cm">// Leaf</span>
+Console.WriteLine(<span class="str">$"Cells: {sp.CellCount}"</span>);     <span class="cm">// 0</span>
+Console.WriteLine(<span class="str">$"Free: {sp.FreeSpace} bytes"</span>); <span class="cm">// ~4085</span></code></pre>
+                </div>
+
+                <h3>S2. Insert and Read Cells</h3>
+                <div class="code-block" data-title="Cell Operations">
+                    <pre><code><span class="kw">byte</span>[] cellData = <span class="kw">new byte</span>[] { <span class="num">0x01</span>, <span class="num">0x02</span>, <span class="num">0x03</span>, <span class="num">0x04</span> };
+<span class="kw">bool</span> inserted = sp.InsertCell(index: <span class="num">0</span>, cellData);
+
+<span class="tp">Span</span>&lt;<span class="kw">byte</span>&gt; cell = sp.GetCell(index: <span class="num">0</span>);
+Console.WriteLine(<span class="str">$"Cell[0] length: {cell.Length}"</span>); <span class="cm">// 4</span></code></pre>
+                </div>
+
+                <h3>S3. Delete and Defragment</h3>
+                <div class="code-block" data-title="Delete + Defrag">
+                    <pre><code>sp.DeleteCell(index: <span class="num">0</span>);
+Console.WriteLine(<span class="str">$"Cells after delete: {sp.CellCount}"</span>); <span class="cm">// 0</span>
+
+<span class="cm">// After many inserts/deletes, free space may be fragmented</span>
+sp.Defragment(); <span class="cm">// rewrites cells contiguously at end of page</span></code></pre>
+                </div>
+
+                <!-- ───────────────── Indexing ───────────────── -->
+                <h2 id="indexing">Indexing</h2>
+                <p>Secondary B+tree-backed indexes with optional caching and ordered range scan support.</p>
+                <div class="code-block" data-title="IIndexStore">
+                    <pre><code><span class="kw">public interface</span> <span class="tp">IIndexStore</span>
+{
+    <span class="kw">uint</span> RootPageId { <span class="kw">get</span>; }
+    <span class="tp">ValueTask</span>&lt;<span class="kw">byte</span>[]?&gt; FindAsync(<span class="kw">long</span> key, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">ValueTask</span> InsertAsync(<span class="kw">long</span> key, <span class="tp">ReadOnlyMemory</span>&lt;<span class="kw">byte</span>&gt; payload, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">ValueTask</span>&lt;<span class="kw">bool</span>&gt; DeleteAsync(<span class="kw">long</span> key, <span class="tp">CancellationToken</span> ct = <span class="kw">default</span>);
+    <span class="tp">IIndexCursor</span> CreateCursor(<span class="tp">IndexScanRange</span> range);
+}</code></pre>
+                </div>
+
+                <h3>I1. Create an Index Store</h3>
+                <div class="code-block" data-title="Create Index">
+                    <pre><code><span class="kw">uint</span> indexRootPage = <span class="kw">await</span> <span class="tp">BTree</span>.CreateNewAsync(pager);
+<span class="kw">var</span> indexTree = <span class="kw">new</span> <span class="tp">BTree</span>(pager, indexRootPage);
+<span class="tp">IIndexStore</span> index = <span class="kw">new</span> <span class="tp">BTreeIndexStore</span>(indexTree);</code></pre>
+                </div>
+
+                <h3>I2. Insert and Lookup</h3>
+                <div class="code-block" data-title="Index Ops">
+                    <pre><code><span class="cm">// Insert: key = hashed column value, payload = rowid</span>
+<span class="kw">byte</span>[] rowIdPayload = BitConverter.GetBytes(<span class="num">42L</span>);
+<span class="kw">await</span> index.InsertAsync(key: hashOfColumnValue, rowIdPayload);
+
+<span class="cm">// Lookup</span>
+<span class="kw">byte</span>[]? result = <span class="kw">await</span> index.FindAsync(key: hashOfColumnValue);
+<span class="kw">if</span> (result <span class="kw">is not null</span>)
+{
+    <span class="kw">long</span> rowId = BitConverter.ToInt64(result);
+    Console.WriteLine(<span class="str">$"Found rowid: {rowId}"</span>);
+}</code></pre>
+                </div>
+
+                <h3>I3. Range Scan with Cursor</h3>
+                <div class="code-block" data-title="Range Scan">
+                    <pre><code><span class="kw">var</span> range = <span class="kw">new</span> <span class="tp">IndexScanRange</span>(
+    LowerBound: <span class="num">100</span>, LowerInclusive: <span class="kw">true</span>,
+    UpperBound: <span class="num">200</span>, UpperInclusive: <span class="kw">false</span>);
+
+<span class="kw">var</span> cursor = index.CreateCursor(range);
+<span class="kw">while</span> (<span class="kw">await</span> cursor.MoveNextAsync())
+    Console.WriteLine(<span class="str">$"IndexKey={cursor.CurrentKey}"</span>);
+
+<span class="cm">// Full scan / point lookup:</span>
+<span class="kw">var</span> fullCursor  = index.CreateCursor(<span class="tp">IndexScanRange</span>.All);
+<span class="kw">var</span> pointCursor = index.CreateCursor(<span class="tp">IndexScanRange</span>.At(<span class="num">42</span>));</code></pre>
+                </div>
+
+                <h3>I4. Add Caching to an Index</h3>
+                <div class="code-block" data-title="Cached Index">
+                    <pre><code><span class="tp">IIndexStore</span> cached = <span class="kw">new</span> <span class="tp">CachingIndexStore</span>(
+    inner: <span class="kw">new</span> <span class="tp">BTreeIndexStore</span>(indexTree),
+    capacity: <span class="num">2048</span>);
+
+<span class="kw">byte</span>[]? result = <span class="kw">await</span> cached.FindAsync(key: <span class="num">42</span>);</code></pre>
+                </div>
+
+                <!-- ───────────────── Serialization ───────────────── -->
+                <h2 id="serialization">Record Serialization</h2>
+                <p>Compact binary encoding for database rows. Supports selective column projection and fast filter evaluation without materializing managed strings.</p>
+                <div class="code-block" data-title="Binary Format">
+                    <pre><code>Binary Format:
+  [columnCount: varint]
+  [col0_typeTag: 1 byte] [col0_data: ...]
+  [col1_typeTag: 1 byte] [col1_data: ...]
+
+Type Tags:
+  Null    (<span class="num">0x00</span>) -&gt; no data
+  Integer (<span class="num">0x01</span>) -&gt; 8 bytes, little-endian long
+  Text    (<span class="num">0x02</span>) -&gt; [length: varint] [UTF-8 bytes]
+  Real    (<span class="num">0x03</span>) -&gt; 8 bytes, little-endian double (IEEE 754)
+  Blob    (<span class="num">0x04</span>) -&gt; [length: varint] [raw bytes]</code></pre>
+                </div>
+
+                <h3>R1. Encode and Decode a Row</h3>
+                <div class="code-block" data-title="Encode / Decode">
+                    <pre><code><span class="kw">var</span> values = <span class="kw">new</span> <span class="tp">DbValue</span>[]
+{
+    <span class="tp">DbValue</span>.FromInteger(<span class="num">1</span>),
+    <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>),
+    <span class="tp">DbValue</span>.FromInteger(<span class="num">30</span>)
+};
+
+<span class="kw">byte</span>[] encoded = <span class="tp">RecordEncoder</span>.Encode(values);
+<span class="tp">DbValue</span>[] decoded = <span class="tp">RecordEncoder</span>.Decode(encoded);
+
+Console.WriteLine(<span class="str">$"Id={decoded[0].AsInteger}, Name={decoded[1].AsText}, Age={decoded[2].AsInteger}"</span>);</code></pre>
+                </div>
+
+                <h3>R2. Selective Column Projection</h3>
+                <p>Decode only the columns you need &mdash; avoids materializing unused fields.</p>
+                <div class="code-block" data-title="Projection">
+                    <pre><code><span class="cm">// Decode only columns 0 and 1 (skip column 2)</span>
+<span class="tp">DbValue</span>[] partial = <span class="tp">RecordEncoder</span>.DecodeUpTo(encoded, maxColumnIndexInclusive: <span class="num">1</span>);
+
+<span class="cm">// Decode a single column by index</span>
+<span class="tp">DbValue</span> age = <span class="tp">RecordEncoder</span>.DecodeColumn(encoded, columnIndex: <span class="num">2</span>);</code></pre>
+                </div>
+
+                <h3>R3. Fast Filter Without Materialization</h3>
+                <div class="code-block" data-title="Fast Filter">
+                    <pre><code><span class="cm">// Check if column 1 equals "Alice" without creating a string</span>
+<span class="kw">byte</span>[] expectedUtf8 = <span class="str">"Alice"</span>u8.ToArray();
+<span class="kw">if</span> (<span class="tp">RecordEncoder</span>.TryColumnTextEquals(encoded, columnIndex: <span class="num">1</span>, expectedUtf8, <span class="kw">out bool</span> equals))
+    Console.WriteLine(<span class="str">$"Column 1 is Alice: {equals}"</span>);
+
+<span class="cm">// Check numeric column</span>
+<span class="kw">if</span> (<span class="tp">RecordEncoder</span>.TryDecodeNumericColumn(encoded, columnIndex: <span class="num">2</span>,
+    <span class="kw">out long</span> intValue, <span class="kw">out double</span> realValue, <span class="kw">out bool</span> isReal))
+    Console.WriteLine(<span class="str">$"Age: {intValue}"</span>);
+
+<span class="cm">// Check for null</span>
+<span class="kw">bool</span> isNull = <span class="tp">RecordEncoder</span>.IsColumnNull(encoded, columnIndex: <span class="num">0</span>);</code></pre>
+                </div>
+
+                <h3>R4. Varint Encoding</h3>
+                <div class="code-block" data-title="Varint">
+                    <pre><code><span class="tp">Span</span>&lt;<span class="kw">byte</span>&gt; buffer = <span class="kw">stackalloc byte</span>[<span class="num">10</span>];
+<span class="kw">int</span> bytesWritten = <span class="tp">Varint</span>.Write(buffer, <span class="num">300</span>UL);
+
+<span class="kw">ulong</span> value = <span class="tp">Varint</span>.Read(buffer, <span class="kw">out int</span> bytesRead);
+Console.WriteLine(<span class="str">$"Value: {value}, Bytes: {bytesRead}"</span>); <span class="cm">// 300, 2</span></code></pre>
+                </div>
+
+                <!-- ───────────────── Schema Catalog ───────────────── -->
+                <h2 id="schema-catalog">Schema Catalog</h2>
+                <p>B+tree-backed metadata store for tables, indexes, views, and triggers with in-memory caching and schema version tracking.</p>
+
+                <h3>C1. Initialize the Catalog</h3>
+                <div class="code-block" data-title="Init Catalog">
+                    <pre><code><span class="kw">var</span> catalog = <span class="kw">await</span> <span class="tp">SchemaCatalog</span>.CreateAsync(pager);
+Console.WriteLine(<span class="str">$"Schema version: {catalog.SchemaVersion}"</span>);</code></pre>
+                </div>
+
+                <h3>C2. Create and Query Tables</h3>
+                <div class="code-block" data-title="Tables">
+                    <pre><code><span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>
+{
+    TableName = <span class="str">"users"</span>,
+    Columns = <span class="kw">new</span>[]
+    {
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"id"</span>, Type = <span class="tp">DbType</span>.Integer, IsPrimaryKey = <span class="kw">true</span> },
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"name"</span>, Type = <span class="tp">DbType</span>.Text },
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"age"</span>, Type = <span class="tp">DbType</span>.Integer },
+    }
+};
+<span class="kw">await</span> catalog.CreateTableAsync(schema);
+
+<span class="tp">TableSchema</span>? users = catalog.GetTable(<span class="str">"users"</span>);
+<span class="kw">uint</span> rootPage = catalog.GetTableRootPage(<span class="str">"users"</span>);
+<span class="tp">BTree</span> tableTree = catalog.GetTableTree(<span class="str">"users"</span>);</code></pre>
+                </div>
+
+                <h3>C3. Create and Query Indexes</h3>
+                <div class="code-block" data-title="Indexes">
+                    <pre><code><span class="kw">var</span> indexSchema = <span class="kw">new</span> <span class="tp">IndexSchema</span>
+{
+    IndexName = <span class="str">"idx_users_name"</span>,
+    TableName = <span class="str">"users"</span>,
+    Columns = <span class="kw">new</span>[] { <span class="str">"name"</span> },
+    IsUnique = <span class="kw">false</span>,
+};
+<span class="kw">await</span> catalog.CreateIndexAsync(indexSchema);
+
+<span class="tp">IIndexStore</span> indexStore = catalog.GetIndexStore(<span class="str">"idx_users_name"</span>);
+<span class="tp">IReadOnlyList</span>&lt;<span class="tp">IndexSchema</span>&gt; indexes = catalog.GetIndexesForTable(<span class="str">"users"</span>);</code></pre>
+                </div>
+
+                <h3>C4. Views and Triggers</h3>
+                <div class="code-block" data-title="Views & Triggers">
+                    <pre><code><span class="cm">// Views</span>
+<span class="kw">await</span> catalog.CreateViewAsync(<span class="str">"active_users"</span>, <span class="str">"SELECT * FROM users WHERE age > 18"</span>);
+<span class="kw">string</span>? viewSql = catalog.GetViewSql(<span class="str">"active_users"</span>);
+
+<span class="cm">// Triggers</span>
+<span class="kw">var</span> trigger = <span class="kw">new</span> <span class="tp">TriggerSchema</span>
+{
+    TriggerName = <span class="str">"trg_users_audit"</span>,
+    TableName = <span class="str">"users"</span>,
+    Event = <span class="tp">TriggerEvent</span>.AfterInsert,
+    Body = <span class="str">"INSERT INTO audit_log (table_name, action) VALUES ('users', 'INSERT')"</span>,
+};
+<span class="kw">await</span> catalog.CreateTriggerAsync(trigger);</code></pre>
+                </div>
+
+                <!-- ───────────────── Folder & File Storage ───────────────── -->
+                <h2 id="folder-file-storage">Folder &amp; File Storage</h2>
+                <p>Build a complete folder/file storage system on top of the storage engine using the higher-level <code>Database</code> + <code>Collection&lt;T&gt;</code> API from <code>CSharpDB.Engine</code>.</p>
+
+                <h3>Domain Models</h3>
+                <div class="code-block" data-title="Models">
+                    <pre><code><span class="kw">public record</span> <span class="tp">FolderEntry</span>(
+    <span class="kw">string</span> Name,
+    <span class="kw">string</span> Path,
+    <span class="tp">DateTime</span> CreatedAt,
+    <span class="kw">string</span>? Description = <span class="kw">null</span>);
+
+<span class="kw">public record</span> <span class="tp">FileEntry</span>(
+    <span class="kw">string</span> Name,
+    <span class="kw">string</span> FolderPath,
+    <span class="kw">string</span> Content,
+    <span class="kw">string</span> ContentType,
+    <span class="kw">long</span> SizeBytes,
+    <span class="tp">DateTime</span> CreatedAt,
+    <span class="tp">DateTime</span> UpdatedAt);</code></pre>
+                </div>
+
+                <h3>F1. Bootstrap the Storage</h3>
+                <div class="code-block" data-title="Bootstrap">
+                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"storage.cdb"</span>);
+<span class="kw">var</span> folders = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">FolderEntry</span>&gt;(<span class="str">"folders"</span>);
+<span class="kw">var</span> files   = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">FileEntry</span>&gt;(<span class="str">"files"</span>);</code></pre>
+                </div>
+                <p>For long-lived processes, use hybrid lazy-resident mode:</p>
+                <div class="code-block" data-title="Hybrid Mode">
+                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"storage.cdb"</span>,
+    <span class="kw">new</span> <span class="tp">DatabaseOptions</span>(),
+    <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
+    {
+        PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
+        HotCollectionNames = [<span class="str">"folders"</span>, <span class="str">"files"</span>]
+    });</code></pre>
+                </div>
+
+                <h3>F2. Create a Folder</h3>
+                <div class="code-block" data-title="Create Folder">
+                    <pre><code><span class="kw">async</span> <span class="tp">Task</span> CreateFolderAsync(<span class="kw">string</span> path, <span class="kw">string</span>? description = <span class="kw">null</span>)
+{
+    <span class="kw">var</span> entry = <span class="kw">new</span> <span class="tp">FolderEntry</span>(
+        Name:        Path.GetFileName(path.TrimEnd(<span class="str">'/'</span>)),
+        Path:        path,
+        CreatedAt:   <span class="tp">DateTime</span>.UtcNow,
+        Description: description);
+    <span class="kw">await</span> folders.PutAsync(path, entry);
+}
+
+<span class="kw">await</span> CreateFolderAsync(<span class="str">"/documents"</span>);
+<span class="kw">await</span> CreateFolderAsync(<span class="str">"/documents/reports"</span>, description: <span class="str">"Monthly reports"</span>);</code></pre>
+                </div>
+
+                <h3>F3. Create a File</h3>
+                <div class="code-block" data-title="Create File">
+                    <pre><code><span class="kw">async</span> <span class="tp">Task</span> CreateFileAsync(<span class="kw">string</span> folderPath, <span class="kw">string</span> fileName,
+    <span class="kw">string</span> content, <span class="kw">string</span> contentType = <span class="str">"text/plain"</span>)
+{
+    <span class="kw">string</span> key = <span class="str">$"{folderPath}/{fileName}"</span>;
+    <span class="kw">var</span> entry = <span class="kw">new</span> <span class="tp">FileEntry</span>(
+        Name: fileName, FolderPath: folderPath, Content: content,
+        ContentType: contentType,
+        SizeBytes: System.Text.Encoding.UTF8.GetByteCount(content),
+        CreatedAt: <span class="tp">DateTime</span>.UtcNow, UpdatedAt: <span class="tp">DateTime</span>.UtcNow);
+    <span class="kw">await</span> files.PutAsync(key, entry);
+}
+
+<span class="kw">await</span> CreateFileAsync(<span class="str">"/documents/reports"</span>, <span class="str">"q1.txt"</span>, <span class="str">"Q1 earnings: $1.2M"</span>);</code></pre>
+                </div>
+
+                <h3>F4. Read a File</h3>
+                <div class="code-block" data-title="Read File">
+                    <pre><code><span class="tp">FileEntry</span>? file = <span class="kw">await</span> files.GetAsync(<span class="str">"/documents/reports/q1.txt"</span>);
+<span class="kw">if</span> (file <span class="kw">is not null</span>)
+    Console.WriteLine(<span class="str">$"{file.Name}: {file.Content}"</span>);</code></pre>
+                </div>
+
+                <h3>F5. List Files in a Folder</h3>
+                <div class="code-block" data-title="List Files">
+                    <pre><code><span class="kw">await foreach</span> (<span class="kw">var</span> kvp <span class="kw">in</span> files.FindAsync(f =&gt; f.FolderPath == <span class="str">"/documents/reports"</span>))
+    Console.WriteLine(<span class="str">$"  {kvp.Value.Name}  ({kvp.Value.SizeBytes} bytes)"</span>);</code></pre>
+                </div>
+
+                <h3>F6. Update File Content</h3>
+                <p><code>PutAsync</code> is an upsert &mdash; it replaces the document at the key if it already exists.</p>
+                <div class="code-block" data-title="Update File">
+                    <pre><code><span class="tp">FileEntry</span>? existing = <span class="kw">await</span> files.GetAsync(<span class="str">"/documents/reports/q1.txt"</span>);
+<span class="kw">if</span> (existing <span class="kw">is not null</span>)
+{
+    <span class="kw">var</span> updated = existing <span class="kw">with</span>
+    {
+        Content = <span class="str">"Q1 earnings: $1.4M (revised)"</span>,
+        SizeBytes = System.Text.Encoding.UTF8.GetByteCount(<span class="str">"Q1 earnings: $1.4M (revised)"</span>),
+        UpdatedAt = <span class="tp">DateTime</span>.UtcNow
+    };
+    <span class="kw">await</span> files.PutAsync(<span class="str">"/documents/reports/q1.txt"</span>, updated);
+}</code></pre>
+                </div>
+
+                <h3>F7. Delete a Folder and Contents</h3>
+                <div class="code-block" data-title="Delete Folder">
+                    <pre><code><span class="kw">var</span> toDelete = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="kw">string</span>&gt;();
+<span class="kw">await foreach</span> (<span class="kw">var</span> kvp <span class="kw">in</span> files.FindAsync(f =&gt;
+    f.FolderPath.StartsWith(<span class="str">"/documents/reports"</span>, <span class="tp">StringComparison</span>.Ordinal)))
+    toDelete.Add(kvp.Key);
+
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">try</span>
+{
+    <span class="kw">foreach</span> (<span class="kw">var</span> key <span class="kw">in</span> toDelete) <span class="kw">await</span> files.DeleteAsync(key);
+    <span class="kw">await</span> folders.DeleteAsync(<span class="str">"/documents/reports"</span>);
+    <span class="kw">await</span> db.CommitAsync();
+}
+<span class="kw">catch</span> { <span class="kw">await</span> db.RollbackAsync(); <span class="kw">throw</span>; }</code></pre>
+                </div>
+
+                <h3>F8. SQL-Based Approach</h3>
+                <p>If you prefer a relational model, create tables with SQL and use <code>ExecuteAsync</code>.</p>
+                <div class="code-block" data-title="SQL Approach">
+                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"storage.cdb"</span>);
+
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS folders (
+        id          INTEGER PRIMARY KEY,
+        path        TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )"</span>);
+
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS files (
+        id           INTEGER PRIMARY KEY,
+        folder_path  TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size_bytes   INTEGER NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    )"</span>);
+
+<span class="kw">var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT name, size_bytes FROM files WHERE folder_path = '/documents'"</span>);
+<span class="kw">foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> result.Rows)
+    Console.WriteLine(<span class="str">$"{row[0]}  ({row[1]} bytes)"</span>);</code></pre>
+                </div>
+
+                <!-- ───────────────── Design Notes ───────────────── -->
+                <h2 id="design-notes">Key Design Notes</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Concern</th><th>Detail</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>No shared file pointer</strong></td><td><code>RandomAccess</code> APIs are stateless w.r.t. position, so concurrent reads at different offsets are safe without locking.</td></tr>
+                        <tr><td><strong>Async-first</strong></td><td>All I/O is issued via <code>RandomAccess.ReadAsync</code> / <code>WriteAsync</code>, keeping the storage graph on the platform async file-I/O path.</td></tr>
+                        <tr><td><strong>Zero-fill on short reads</strong></td><td>Pages beyond EOF are returned as zeros, matching the uninitialized page convention used by the Pager.</td></tr>
+                        <tr><td><strong>fsync on flush</strong></td><td><code>FlushAsync</code> maps to <code>FlushFileBuffers</code> (Windows) or <code>fsync</code> (Linux/macOS), guaranteeing crash durability.</td></tr>
+                        <tr><td><strong>4 KB page size</strong></td><td>All pages are <code>PageConstants.PageSize</code> (4096 bytes). Page 0 reserves 100 bytes for the file header.</td></tr>
+                        <tr><td><strong>Single writer, multiple readers</strong></td><td><code>TransactionCoordinator</code> enforces a single writer via <code>SemaphoreSlim</code>. Readers use WAL snapshots for isolation.</td></tr>
+                        <tr><td><strong>Memory-mapped reads</strong></td><td>Optional via <code>PagerOptions.UseMemoryMappedReads</code> for clean main-file pages when the storage device supports it.</td></tr>
+                        <tr><td><strong>Sequential scan read-ahead</strong></td><td>Speculative next-leaf prefetch during forward scans via <code>EnableSequentialLeafReadAhead</code>.</td></tr>
+                        <tr><td><strong>Checkpoint residency</strong></td><td>With <code>PreserveOwnedPagesOnCheckpoint</code>, owned pages stay resident across checkpoint for the hybrid engine.</td></tr>
+                        <tr><td><strong>B+tree leaf linking</strong></td><td>Leaf pages are linked via <code>RightChildOrNextLeaf</code> pointers for efficient cursor scans without interior I/O.</td></tr>
+                        <tr><td><strong>Pluggable checkpoint policies</strong></td><td><code>ICheckpointPolicy</code> allows frame-count, WAL-size, time-interval, or custom composite triggers.</td></tr>
+                        <tr><td><strong>Schema versioning</strong></td><td><code>SchemaCatalog.SchemaVersion</code> increments on every DDL operation, enabling cache invalidation in upper layers.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="../storage.html" class="next-step-card">
+                            <h4>Storage Engine Reference</h4>
+                            <p>API-level storage engine documentation</p>
+                        </a>
+                        <a href="../../architecture.html" class="next-step-card">
+                            <h4>Architecture</h4>
+                            <p>Visual diagrams of layers, page format, and transaction flow</p>
+                        </a>
+                        <a href="../../benchmarks.html" class="next-step-card">
+                            <h4>Benchmarks</h4>
+                            <p>Performance characteristics of the storage engine</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

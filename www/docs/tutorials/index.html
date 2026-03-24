@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'Tutorials',
+            description: 'Step-by-step CSharpDB tutorials — storage engine, B+trees, WAL, indexing, collections, and more.',
+            keywords: 'CSharpDB tutorials, storage tutorial, B+tree tutorial, database tutorial',
+            canonicalPath: 'docs/tutorials/',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Tutorials</h1>
+                <p class="lead">Hands-on, step-by-step guides that walk you through CSharpDB internals with real code.</p>
+
+                <div class="hub-grid">
+                    <a href="storage.html" class="hub-card">
+                        <div class="hub-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        </div>
+                        <h3>Storage Engine</h3>
+                        <p>FileStorageDevice, Pager, B+trees, WAL, slotted pages, indexing, record serialization, schema catalog, and folder/file storage.</p>
+                    </a>
+                </div>
+
+                <div class="next-steps">
+                    <h2>Back to Docs</h2>
+                    <div class="next-steps-grid">
+                        <a href="../index.html" class="next-step-card">
+                            <h4>Documentation Hub</h4>
+                            <p>Return to the main documentation index</p>
+                        </a>
+                        <a href="../storage.html" class="next-step-card">
+                            <h4>Storage Engine Reference</h4>
+                            <p>API-level storage engine documentation</p>
+                        </a>
+                        <a href="../samples.html" class="next-step-card">
+                            <h4>Samples</h4>
+                            <p>End-to-end example projects</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
