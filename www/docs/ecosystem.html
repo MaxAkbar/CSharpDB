@@ -31,23 +31,29 @@
                 <h3>Engine API (In-Process)</h3>
                 <p>The <code>Database</code> class is the primary entry point for embedded use. It provides direct, high-performance, in-process access to the SQL engine and Collection API.</p>
                 <div class="code-block" data-title="Engine API">
-                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
-<span class="kw">var</span> result = <span class="kw">await</span> db.ExecuteAsync(<span class="str">"SELECT * FROM Users"</span>);
-<span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;();</code></pre>
+                    <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">public record</span> <span class="tp">User</span>(<span class="kw">string</span> Name, <span class="kw">string</span> Email);
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(<span class="str">"SELECT Name, Email FROM Users"</span>);
+<span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;(<span class="str">"users"</span>);</code></pre>
                 </div>
 
                 <h3>ADO.NET Provider</h3>
                 <p>Standard <code>DbConnection</code>, <code>DbCommand</code>, <code>DbDataReader</code>, and <code>DbTransaction</code> implementations. Compatible with ORMs and data access libraries that use ADO.NET.</p>
                 <div class="code-block" data-title="ADO.NET">
-                    <pre><code><span class="kw">using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+                    <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
 <span class="kw">await</span> conn.OpenAsync();
 
-<span class="kw">using var</span> tx = <span class="kw">await</span> conn.BeginTransactionAsync();
-<span class="kw">using var</span> cmd = conn.CreateCommand();
+<span class="kw">await using var</span> tx = <span class="kw">await</span> conn.BeginTransactionAsync();
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
 cmd.Transaction = tx;
 cmd.CommandText = <span class="str">"INSERT INTO Users VALUES (@id, @name)"</span>;
-cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
-cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
 <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 <span class="kw">await</span> tx.CommitAsync();</code></pre>
                 </div>
@@ -56,19 +62,21 @@ cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@name"</span>,
                 <h3>Client SDK</h3>
                 <p>A unified C# client with pluggable transports. Use the same <code>ICSharpDbClient</code> interface whether connecting locally, over HTTP, or via gRPC.</p>
                 <div class="code-block" data-title="Client SDK">
-                    <pre><code><span class="cm">// Direct (in-process)</span>
-<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateDirect(<span class="str">"myapp.db"</span>);
+                    <pre><code><span class="kw">await using var</span> client = <span class="tp">CSharpDbClient</span>.Create(<span class="kw">new</span> <span class="tp">CSharpDbClientOptions</span>
+{
+    Transport = <span class="tp">CSharpDbTransport</span>.Direct,
+    DataSource = <span class="str">"myapp.db"</span>
+});
 
-<span class="cm">// HTTP transport</span>
-<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateHttp(<span class="str">"http://localhost:5000"</span>);
+<span class="cm">// Swap the transport to talk to a host instead:</span>
+<span class="cm">// Transport = CSharpDbTransport.Http, Endpoint = "http://localhost:5000"</span>
+<span class="cm">// Transport = CSharpDbTransport.Grpc, Endpoint = "https://localhost:5001"</span>
 
-<span class="cm">// gRPC transport</span>
-<span class="kw">var</span> client = <span class="tp">CSharpDbClient</span>.CreateGrpc(<span class="str">"http://localhost:5001"</span>);
-
-<span class="cm">// Unified interface for all transports</span>
-<span class="kw">var</span> result = <span class="kw">await</span> client.Query.ExecuteAsync(<span class="str">"SELECT * FROM Users"</span>);
-<span class="kw">var</span> tables = <span class="kw">await</span> client.Schema.ListTablesAsync();
-<span class="kw">await</span> client.Procedures.ExecuteAsync(<span class="str">"GetUser"</span>, <span class="kw">new</span> { id = <span class="num">1</span> });</code></pre>
+<span class="kw">var</span> tables = <span class="kw">await</span> client.GetTableNamesAsync();
+<span class="kw">var</span> result = <span class="kw">await</span> client.ExecuteSqlAsync(<span class="str">"SELECT * FROM Users"</span>);
+<span class="kw">await</span> client.ExecuteProcedureAsync(
+    <span class="str">"GetUser"</span>,
+    <span class="kw">new</span> <span class="tp">Dictionary</span>&lt;<span class="kw">string</span>, <span class="kw">object</span>?&gt; { [<span class="str">"id"</span>] = <span class="num">1</span> });</code></pre>
                 </div>
 
                 <h2>Hosting &amp; Services</h2>

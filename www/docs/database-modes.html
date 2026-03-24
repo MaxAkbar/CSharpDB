@@ -200,10 +200,10 @@
 
                 <div class="code-block" data-title="Shared in-memory via ADO.NET">
                     <pre><code><span class="cm">// Multiple connections share the same in-memory instance</span>
-<span class="kw">var</span> connStr = <span class="str">"Data Source=:memory:;SharedMemoryName=testdb"</span>;
+<span class="kw">var</span> connStr = <span class="str">"Data Source=:memory:testdb"</span>;
 
-<span class="kw">using var</span> conn1 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
-<span class="kw">using var</span> conn2 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
+<span class="kw">await using var</span> conn1 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
+<span class="kw">await using var</span> conn2 = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connStr);
 <span class="kw">await</span> conn1.OpenAsync();
 <span class="kw">await</span> conn2.OpenAsync();
 
@@ -222,19 +222,19 @@
 
                 <div class="code-block" data-title="Open a hybrid database">
                     <pre><code><span class="cm">// Simple — uses default hybrid options</span>
-<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">await using var</span> defaultHybrid = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(<span class="str">"myapp.db"</span>);
 
-<span class="cm">// With custom options — preload hot tables and configure persistence</span>
+<span class="cm">// With custom options — preload hot tables and collections</span>
 <span class="kw">var</span> hybridOptions = <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
 {
     PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
-    PersistenceTriggers = <span class="tp">HybridPersistenceTrigger</span>.Commit
-                        | <span class="tp">HybridPersistenceTrigger</span>.Dispose,
     HotTableNames = [<span class="str">"Users"</span>, <span class="str">"Sessions"</span>],
     HotCollectionNames = [<span class="str">"Settings"</span>],
 };
-<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
-    <span class="str">"myapp.db"</span>, hybridOptions: hybridOptions);</code></pre>
+<span class="kw">await using var</span> tunedHybrid = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"myapp.db"</span>,
+    <span class="kw">new</span> <span class="tp">DatabaseOptions</span>(),
+    hybridOptions);</code></pre>
                 </div>
 
                 <h3>How It Works</h3>

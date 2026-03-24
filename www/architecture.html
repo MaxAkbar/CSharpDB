@@ -49,7 +49,7 @@
                     <div class="arch-arrow">&#9660;</div>
                     <div class="arch-layer arch-layer-catalog">
                         <div class="arch-label">Catalog &amp; Indexing</div>
-                        <div class="arch-desc">SchemaCatalog, BTreeIndexStore, CachingIndexStore, CollectionIndexBinding</div>
+                        <div class="arch-desc">SchemaCatalog, BTreeIndexStore, CachingIndexStore, collection path indexes</div>
                     </div>
                     <div class="arch-arrow">&#9660;</div>
                     <div class="arch-layer arch-layer-storage">
@@ -146,11 +146,11 @@
 
                 <h2>Database Modes</h2>
                 <table class="doc-table">
-                    <thead><tr><th>Mode</th><th>Factory</th><th>Characteristics</th></tr></thead>
+                    <thead><tr><th>Mode</th><th>Entry Point</th><th>Characteristics</th></tr></thead>
                     <tbody>
-                        <tr><td><strong>Default</strong></td><td><code>DefaultStorageEngineFactory</code></td><td>Standard file-backed with LRU cache. Full durability.</td></tr>
-                        <tr><td><strong>In-Memory</strong></td><td><code>InMemoryStorageEngineFactory</code></td><td>Dictionary-based page cache. No file I/O. Fast but non-persistent.</td></tr>
-                        <tr><td><strong>Hybrid</strong></td><td><code>HybridStorageEngineFactory</code></td><td>Lazy-resident pages with durable backing file. On-demand loading.</td></tr>
+                        <tr><td><strong>Default</strong></td><td><code>Database.OpenAsync(...)</code></td><td>Standard file-backed open with full durability.</td></tr>
+                        <tr><td><strong>In-Memory</strong></td><td><code>Database.OpenInMemoryAsync(...)</code></td><td>Dictionary-based page cache. No file I/O. Fast but non-persistent.</td></tr>
+                        <tr><td><strong>Hybrid</strong></td><td><code>Database.OpenHybridAsync(...)</code></td><td>Lazy-resident pages with durable backing file. On-demand loading.</td></tr>
                     </tbody>
                 </table>
 
