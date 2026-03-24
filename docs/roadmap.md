@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.2.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.4.0` state of the repo.
 
 ---
 
@@ -37,7 +37,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 
 ## Mid-Term
 
-SQL feature parity and ecosystem expansion.
+SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
@@ -133,6 +133,7 @@ Major features already implemented:
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
 - Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
+- ADO.NET `GetSchema()` metadata collections for `MetaDataCollections`, `Tables`, `Columns`, `Indexes`, and `Views`
 - ADO.NET connection pooling with `ClearPool` / `ClearAllPools`
 - In-memory database mode with explicit load-from-disk and save-to-disk APIs
 - Shared/private in-memory ADO.NET connections with named shared-memory hosts
@@ -152,6 +153,7 @@ Major features already implemented:
 - Binary direct-payload collection storage with direct hydration and field/path extraction
 - Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text
 - Collection path query APIs: `FindByPathAsync` and `FindByPathRangeAsync`
+- Full-text search with tokenization, stemming, and relevance ranking
 - Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache
 - Client-wide `BackupAsync` / `RestoreAsync` across direct, HTTP, gRPC, CLI, and Admin
 - `ReplaceAsync` for index stores

@@ -1,8 +1,14 @@
-# Manual-only fallback — the primary deploy runs as part of release.yml
-# Use this to push doc fixes without cutting a release.
-name: Deploy Docs (Manual)
+# Deploy docs from the main branch so the workflow satisfies the
+# github-pages environment branch protection rules.
+name: Deploy Docs
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/pages.yml"
+      - "www/**"
   workflow_dispatch:
 
 permissions:

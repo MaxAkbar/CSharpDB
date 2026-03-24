@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <style>
+        .screenshot {
+            border-radius: var(--radius-md, 10px);
+            border: 1px solid var(--border);
+            margin: 1.5rem 0 2rem;
+            width: 100%;
+            max-width: 960px;
+            display: block;
+            box-shadow: 0 4px 24px rgba(0,0,0,.35);
+        }
+        .screenshot-caption {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-top: -1rem;
+            margin-bottom: 2rem;
+        }
+        .feature-list {
+            list-style: none;
+            padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+        .feature-list li {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm, 6px);
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+        }
+        .feature-list li i {
+            color: var(--accent);
+            font-size: 1.25rem;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .feature-list li strong {
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+        .feature-list li span {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        .kbd-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.5rem 1.5rem;
+            margin: 1rem 0;
+        }
+        .kbd-grid kbd {
+            background: var(--tertiary-bg, var(--card-bg));
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.15rem 0.5rem;
+            font-family: var(--font-code, 'JetBrains Mono', monospace);
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Admin UI Guide',
+        description: 'CSharpDB Studio — a Blazor-based admin interface for browsing data, writing SQL, managing schemas, building pipelines, and inspecting storage.',
+        keywords: 'CSharpDB Admin, Studio, admin UI, database browser, SQL editor, pipeline designer, storage diagnostics',
+        canonicalPath: 'docs/admin-ui.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Admin UI Guide</h1>
+                <p class="lead">CSharpDB Studio is a full-featured, browser-based admin interface built with Blazor Server. Connect to any CSharpDB instance &mdash; local or remote &mdash; to browse data, run queries, manage schemas, design ETL pipelines, and inspect low-level storage.</p>
+
+                <img src="../images/admin/welcome.png" alt="CSharpDB Studio welcome screen" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">The welcome screen shows the Object Explorer, keyboard shortcuts, and connection status.</p>
+
+                <!-- ───────── Getting Started ───────── -->
+                <h2 id="getting-started">Getting Started</h2>
+
+                <h3>Launch with the Daemon (recommended)</h3>
+                <p>The easiest way to start the admin UI alongside the database daemon is with the bundled PowerShell script:</p>
+                <div class="code-block" data-title="Terminal">
+                    <pre><code>powershell -ExecutionPolicy Bypass -File .\scripts\Start-CSharpDbAdminAndDaemon.ps1 -OpenAdmin</code></pre>
+                </div>
+                <p>This configures gRPC transport, starts the daemon, waits for it to accept connections, then launches the admin site and opens it in your default browser.</p>
+
+                <h3>Launch Standalone</h3>
+                <p>If you want to run the admin site by itself (using an embedded local database), run it directly:</p>
+                <div class="code-block" data-title="Terminal">
+                    <pre><code>cd src/CSharpDB.Admin
+dotnet run</code></pre>
+                </div>
+                <p>The admin UI listens on <code>https://localhost:61816</code> by default. The connection endpoint and transport are configured in <code>appsettings.json</code>.</p>
+
+                <h3>Transport Options</h3>
+                <table>
+                    <thead>
+                        <tr><th>Transport</th><th>Config Value</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Direct</strong></td><td><code>direct</code></td><td>Embedded, in-process access (default for standalone)</td></tr>
+                        <tr><td><strong>gRPC</strong></td><td><code>grpc</code></td><td>Connect to a remote daemon over gRPC (recommended for production)</td></tr>
+                        <tr><td><strong>HTTP</strong></td><td><code>http</code></td><td>Connect to the REST API</td></tr>
+                        <tr><td><strong>Named Pipes</strong></td><td><code>namedpipes</code></td><td>Same-machine IPC</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ───────── Interface Overview ───────── -->
+                <h2 id="interface-overview">Interface Overview</h2>
+                <p>The Studio interface has four main areas:</p>
+                <ul class="feature-list">
+                    <li>
+                        <i class="bi bi-layout-sidebar"></i>
+                        <div><strong>Title Bar</strong><span>Shows the CSharpDB logo, connected endpoint URL, connection status indicator, and theme / layout toggle buttons.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-diagram-3"></i>
+                        <div><strong>Object Explorer (Sidebar)</strong><span>Tree view of User Tables, System Tables, System Catalog, Views, Indexes, Triggers, and Procedures. Includes a filter search box and quick-action buttons.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-window-stack"></i>
+                        <div><strong>Tab Bar &amp; Content Area</strong><span>Multi-tab workspace. Open as many query, table, storage, pipeline, and procedure tabs as you need. Tabs can be closed individually.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-info-circle"></i>
+                        <div><strong>Status Bar</strong><span>Displays connection state, server endpoint, and a summary of database objects (table, view, and procedure counts).</span></div>
+                    </li>
+                </ul>
+
+                <!-- ───────── Query Editor ───────── -->
+                <h2 id="query-editor">Query Editor</h2>
+                <p>Open a new query tab from the sidebar (<strong>New Query</strong> button) or press <kbd>Ctrl+N</kbd>. The query editor provides a full SQL editing experience with syntax highlighting.</p>
+
+                <img src="../images/admin/query-tab.png" alt="CSharpDB Studio query editor with results" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">Writing and executing a SELECT query with results displayed in a sortable grid.</p>
+
+                <h3>Toolbar Actions</h3>
+                <table>
+                    <thead>
+                        <tr><th>Button</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Run</strong></td><td>Execute the query and display results in the grid below. Shows row count and elapsed time.</td></tr>
+                        <tr><td><strong>Analyze</strong></td><td>Show the query execution plan without running the query.</td></tr>
+                        <tr><td><strong>Clear</strong></td><td>Clear the editor and results.</td></tr>
+                        <tr><td><strong>Format</strong></td><td>Auto-format and indent the SQL in the editor.</td></tr>
+                        <tr><td><strong>SQL / Designer</strong></td><td>Toggle between raw SQL mode and the visual query designer.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Stats Panel</h3>
+                <p>Below the toolbar, the <strong>Stats</strong> section provides access to <strong>Table Stats</strong> and <strong>Column Stats</strong> buttons that show detailed statistics for the tables referenced in your query.</p>
+
+                <h3>Saved Queries</h3>
+                <p>Name your query in the <strong>Saved</strong> section and click <strong>Save</strong> to persist it. Use the dropdown to reload any previously saved query. Saved queries are stored in the <code>sys.saved_queries</code> system catalog.</p>
+
+                <!-- ───────── Data Browser ───────── -->
+                <h2 id="data-browser">Data Browser</h2>
+                <p>Click any table in the Object Explorer to open it in a dedicated <strong>Data</strong> tab. The data browser shows all rows in a paginated, sortable, editable grid.</p>
+
+                <img src="../images/admin/data-tab.png" alt="CSharpDB Studio data browser" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">Browsing the Products table with typed column headers and per-column filter inputs.</p>
+
+                <h3>Features</h3>
+                <ul>
+                    <li><strong>Column headers</strong> display the column name, data type badge (<code>INTEGER</code>, <code>TEXT</code>, <code>REAL</code>), and a primary key indicator.</li>
+                    <li><strong>Per-column filter</strong> inputs let you narrow down rows by typing a filter value into the row beneath the header.</li>
+                    <li><strong>Click a column header</strong> to sort ascending/descending.</li>
+                    <li><strong>Add Row</strong> inserts a new empty row at the bottom for inline editing.</li>
+                    <li><strong>Delete Rows</strong> removes selected rows (click row numbers to select).</li>
+                    <li><strong>Save / Discard</strong> commits or reverts pending edits.</li>
+                    <li><strong>Pagination</strong> controls at the bottom let you choose 10, 25, 50, or 100 rows per page.</li>
+                </ul>
+
+                <!-- ───────── Schema Manager ───────── -->
+                <h2 id="schema-manager">Schema Manager</h2>
+                <p>While viewing a table, switch to the <strong>Schema</strong> view to inspect and modify the table structure.</p>
+
+                <img src="../images/admin/schema-tab.png" alt="CSharpDB Studio schema view" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">Schema view showing columns, types, constraints, and forms for creating indexes and triggers.</p>
+
+                <h3>Sections</h3>
+                <ul>
+                    <li><strong>Columns</strong> &mdash; Lists every column with its name, data type, primary key status, identity flag, and nullability.</li>
+                    <li><strong>Alter Table</strong> &mdash; Expandable section for adding or dropping columns.</li>
+                    <li><strong>Indexes</strong> &mdash; Shows existing indexes and provides a form to create new ones (with optional <code>UNIQUE</code> constraint).</li>
+                    <li><strong>Triggers</strong> &mdash; Lists existing triggers and provides a form to create <code>BEFORE</code>/<code>AFTER</code> triggers on <code>INSERT</code>, <code>UPDATE</code>, or <code>DELETE</code> events.</li>
+                </ul>
+
+                <!-- ───────── Stored Procedures ───────── -->
+                <h2 id="stored-procedures">Stored Procedures</h2>
+                <p>Create and manage stored procedures from the <strong>New Procedure</strong> button in the sidebar or by clicking an existing procedure in the Object Explorer.</p>
+
+                <img src="../images/admin/procedure-tab.png" alt="CSharpDB Studio procedure editor" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">The procedure editor with definition, parameters, and execution sections.</p>
+
+                <h3>Sections</h3>
+                <ul>
+                    <li><strong>Definition</strong> &mdash; Set the procedure name, description, enabled state, and SQL body with <code>@param</code> references.</li>
+                    <li><strong>Parameters</strong> &mdash; Define typed input parameters that map to <code>@param</code> placeholders in the body.</li>
+                    <li><strong>Execution</strong> &mdash; Provide a JSON object of argument values and click <strong>Run</strong> to test the procedure immediately.</li>
+                </ul>
+
+                <!-- ───────── Pipeline Designer ───────── -->
+                <h2 id="pipeline-designer">Pipeline Designer</h2>
+                <p>The Pipeline tab provides a visual ETL pipeline builder. Design data flows from source to destination with optional transforms &mdash; all without writing JSON by hand.</p>
+
+                <img src="../images/admin/pipeline-tab.png" alt="CSharpDB Studio pipeline designer" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">The visual pipeline designer with shape palette, transform toolbox, and run result panel.</p>
+
+                <h3>Pipeline Shape</h3>
+                <p>Every pipeline has four core sections configured through the left panel:</p>
+                <ul>
+                    <li><strong>Metadata</strong> &mdash; Pipeline name, version, and description.</li>
+                    <li><strong>Source</strong> &mdash; Choose from CSV file, JSON file, database table, or raw SQL query as input.</li>
+                    <li><strong>Destination</strong> &mdash; Output to a table, CSV file, or JSON file.</li>
+                    <li><strong>Options</strong> &mdash; Execution mode and incremental-load controls.</li>
+                </ul>
+
+                <h3>Transforms</h3>
+                <p>Drag transforms from the toolbox to build a processing chain:</p>
+                <table>
+                    <thead>
+                        <tr><th>Transform</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Select</strong></td><td>Keep only the listed columns.</td></tr>
+                        <tr><td><strong>Rename</strong></td><td>Rename source columns to new target names.</td></tr>
+                        <tr><td><strong>Cast</strong></td><td>Convert columns to specific CSharpDB data types.</td></tr>
+                        <tr><td><strong>Filter</strong></td><td>Keep rows matching a filter expression.</td></tr>
+                        <tr><td><strong>Derive</strong></td><td>Create new computed columns from expressions.</td></tr>
+                        <tr><td><strong>Deduplicate</strong></td><td>Remove duplicate rows by specified key columns.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Actions</h3>
+                <ul>
+                    <li><strong>Validate</strong> &mdash; Check the pipeline definition for errors without executing.</li>
+                    <li><strong>Dry Run</strong> &mdash; Simulate execution without writing to the destination.</li>
+                    <li><strong>Run</strong> &mdash; Execute the full pipeline and write results.</li>
+                    <li><strong>Save</strong> &mdash; Persist the pipeline definition for reuse.</li>
+                    <li><strong>Visual / JSON</strong> &mdash; Toggle between the visual builder and raw JSON editor.</li>
+                </ul>
+
+                <!-- ───────── Storage Diagnostics ───────── -->
+                <h2 id="storage-diagnostics">Storage Diagnostics</h2>
+                <p>The Storage tab gives you a deep look into the physical database file, WAL state, and B+tree internals.</p>
+
+                <img src="../images/admin/storage-tab.png" alt="CSharpDB Studio storage diagnostics" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">Storage diagnostics showing database header, WAL status, space usage, and fragmentation metrics.</p>
+
+                <h3>Panels</h3>
+                <ul>
+                    <li><strong>Database Header</strong> &mdash; File length, page count, magic bytes, version, page size, schema root, freelist head, and change counter.</li>
+                    <li><strong>WAL (Write-Ahead Log)</strong> &mdash; WAL file path, existence, length, frame count, commit frames, and integrity checks.</li>
+                    <li><strong>Space Usage</strong> &mdash; Database and WAL file sizes, page size, physical/declared page counts, and freelist utilization.</li>
+                    <li><strong>Fragmentation</strong> &mdash; B+tree free bytes, pages with free space, and tail freelist analysis.</li>
+                    <li><strong>Maintenance</strong> &mdash; Reindex (by scope: all, table, or index), vacuum (with confirmation), and backup/restore operations.</li>
+                    <li><strong>Page Type Histogram</strong> &mdash; Distribution of page types (leaf, internal, freelist, overflow).</li>
+                    <li><strong>Index Checks</strong> &mdash; Per-index integrity validation: root OK, table OK, columns OK, reachability.</li>
+                    <li><strong>Integrity Issues</strong> &mdash; Warnings or errors found during the latest diagnostics scan.</li>
+                    <li><strong>Page Drill-Down</strong> &mdash; Inspect any page by ID, optionally including a hex dump.</li>
+                </ul>
+
+                <!-- ───────── Keyboard Shortcuts ───────── -->
+                <h2 id="keyboard-shortcuts">Keyboard Shortcuts</h2>
+                <div class="kbd-grid">
+                    <kbd>Ctrl+N</kbd> <span>Open a new query tab</span>
+                    <kbd>Ctrl+B</kbd> <span>Toggle the sidebar</span>
+                    <kbd>Ctrl+Enter</kbd> <span>Run the current query</span>
+                    <kbd>Ctrl+Shift+L</kbd> <span>Toggle dark / light theme</span>
+                </div>
+
+                <!-- ───────── Next Steps ───────── -->
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="ecosystem.html" class="next-step-card">
+                            <h4>Tools &amp; Ecosystem</h4>
+                            <p>Explore the full toolkit: CLI, API, SDK, and more</p>
+                        </a>
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Full SQL syntax and statement reference</p>
+                        </a>
+                        <a href="pipelines.html" class="next-step-card">
+                            <h4>Pipelines</h4>
+                            <p>In-depth pipeline configuration guide</p>
+                        </a>
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Internals</h4>
+                            <p>B+tree pages, WAL, and file format details</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

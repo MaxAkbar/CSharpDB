@@ -110,7 +110,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Roadmap</h1>
-                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.3.0 state.</p>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.4.0 state.</p>
 
                 <!-- ════════ NEAR-TERM ════════ -->
                 <div class="roadmap-section">
@@ -118,7 +118,7 @@
                         Near-Term
                         <span class="roadmap-badge roadmap-badge-done">Completed</span>
                     </h2>
-                    <p>Recently completed improvements to query performance, storage behavior, maintenance workflows, and developer ergonomics.</p>
+                    <p>Recently completed improvements to query performance, storage behavior, provider/tooling compatibility, maintenance workflows, and developer ergonomics.</p>
 
                     <div class="roadmap-grid">
                         <div class="roadmap-item">
@@ -214,7 +214,7 @@
                         Mid-Term
                         <span class="roadmap-badge roadmap-badge-planned">In Progress</span>
                     </h2>
-                    <p>SQL feature parity and ecosystem expansion.</p>
+                    <p>SQL feature parity, provider/tooling compatibility, and ecosystem expansion.</p>
 
                     <div class="roadmap-grid">
                         <div class="roadmap-item">
@@ -276,9 +276,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>ADO.NET GetSchema</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Implement DbConnection.GetSchema() for standard metadata collections to support ORMs and tooling.</p>
+                            <p>DbConnection.GetSchema() now exposes standard metadata collections for tooling and ORM schema discovery.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -310,15 +310,15 @@
                         Long-Term
                         <span class="roadmap-badge roadmap-badge-research">Future</span>
                     </h2>
-                    <p>Advanced features and fundamental architecture enhancements.</p>
+                    <p>Advanced features and fundamental architecture enhancements, including long-range items that have since shipped.</p>
 
                     <div class="roadmap-grid">
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Full-Text Search</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Inverted index with tokenization, stemming, and relevance ranking.</p>
+                            <p>Inverted index support with tokenization, stemming, and relevance ranking.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -426,6 +426,7 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Prepared statement and query plan caching</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Views and triggers (BEFORE/AFTER)</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET provider with connection pooling</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET GetSchema metadata collections for tooling and ORMs</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> In-memory and hybrid database modes</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Document Collection API with path indexes</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ETL pipeline runtime with visual designer</div>
@@ -440,6 +441,7 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Background WAL auto-checkpointing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree delete rebalancing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide backup and restore</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization and ranking</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite</div>
                     </div>
                 </div>
