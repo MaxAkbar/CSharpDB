@@ -872,9 +872,23 @@ internal sealed class CatalogService
     }
 
     public async ValueTask DropIndexAsync(string indexName, CancellationToken ct = default)
+        => await DropIndexAsync(indexName, allowOwnedFullTextDrop: false, ct);
+
+    private async ValueTask DropIndexAsync(string indexName, bool allowOwnedFullTextDrop, CancellationToken ct)
     {
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
+
+        if (schema.Kind == IndexKind.FullTextInternal && !allowOwnedFullTextDrop)
+        {
+            string ownerIndexName = string.IsNullOrWhiteSpace(schema.OwnerIndexName)
+                ? "its owning full-text index"
+                : $"'{schema.OwnerIndexName}'";
+
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Full-text owned index '{indexName}' cannot be dropped directly; drop {ownerIndexName} instead.");
+        }
 
         if (schema.Kind == IndexKind.FullText)
         {
@@ -887,7 +901,7 @@ internal sealed class CatalogService
             for (int i = 0; i < ownedIndexes.Length; i++)
             {
                 if (_indexCache.ContainsKey(ownedIndexes[i]))
-                    await DropIndexAsync(ownedIndexes[i], ct);
+                    await DropIndexAsync(ownedIndexes[i], allowOwnedFullTextDrop: true, ct);
             }
         }
 

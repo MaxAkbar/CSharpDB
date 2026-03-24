@@ -478,13 +478,22 @@ public sealed class Database : IAsyncDisposable
         if (normalizedColumns.Length == 0)
             throw new CSharpDbException(ErrorCode.SyntaxError, "Full-text index must reference at least one TEXT column.");
 
+        FullTextIndexOptions resolvedOptions = options ?? new FullTextIndexOptions();
+
         InvalidateCachesIfSchemaChanged();
 
         var existing = _catalog.GetIndex(indexName);
         if (existing != null)
         {
             if (existing.Kind == IndexKind.FullText)
-                return;
+            {
+                if (FullTextIndexCatalog.MatchesDefinition(existing, tableName, normalizedColumns, resolvedOptions))
+                    return;
+
+                throw new CSharpDbException(
+                    ErrorCode.TableAlreadyExists,
+                    $"Full-text index '{indexName}' already exists with a different definition.");
+            }
 
             throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Index '{indexName}' already exists.");
         }
@@ -502,7 +511,7 @@ public sealed class Database : IAsyncDisposable
             indexName,
             tableName,
             normalizedColumns,
-            options ?? new FullTextIndexOptions());
+            resolvedOptions);
 
         if (!FullTextIndexMaintenance.TryResolveColumnIndices(logicalIndex, tableSchema, out _))
         {

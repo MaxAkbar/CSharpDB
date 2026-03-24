@@ -21,6 +21,31 @@ internal static class FullTextIndexCatalog
             OptionsJson = FullTextIndexOptionsCodec.Serialize(options),
         };
 
+    public static bool MatchesDefinition(
+        IndexSchema existingIndex,
+        string tableName,
+        IReadOnlyList<string> columns,
+        FullTextIndexOptions options)
+    {
+        if (existingIndex.Kind != IndexKind.FullText ||
+            !string.Equals(existingIndex.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+            existingIndex.Columns.Count != columns.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < columns.Count; i++)
+        {
+            if (!string.Equals(existingIndex.Columns[i], columns[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        FullTextIndexOptions existingOptions = FullTextIndexOptionsCodec.Deserialize(existingIndex.OptionsJson);
+        return existingOptions.Normalization == options.Normalization &&
+               existingOptions.LowercaseInvariant == options.LowercaseInvariant &&
+               existingOptions.StorePositions == options.StorePositions;
+    }
+
     public static IndexSchema[] CreateInternalSchemas(IndexSchema logicalIndex)
         => new[]
         {

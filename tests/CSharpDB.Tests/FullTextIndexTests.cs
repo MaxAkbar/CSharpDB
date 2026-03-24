@@ -1,5 +1,6 @@
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Tests;
 
@@ -87,6 +88,51 @@ public sealed class FullTextIndexTests : IAsyncLifetime
 
         var ex = await Assert.ThrowsAsync<CSharpDbException>(() => _db.SearchAsync("fts_docs", "hello", Ct).AsTask());
         Assert.Equal(ErrorCode.TableNotFound, ex.Code);
+    }
+
+    [Fact]
+    public async Task EnsureFullTextIndex_DirectDropOfOwnedStore_ThrowsAndLeavesLogicalIndexUsable()
+    {
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+        await _db.ExecuteAsync("INSERT INTO docs VALUES (1, 'hello world')", Ct);
+
+        await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
+
+        var ex = await Assert.ThrowsAsync<CSharpDbException>(() =>
+            _db.ExecuteAsync($"DROP INDEX {FullTextIndexNaming.GetPostingsIndexName("fts_docs")}", Ct).AsTask());
+
+        Assert.Equal(ErrorCode.SyntaxError, ex.Code);
+        Assert.Contains("cannot be dropped directly", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "hello", Ct), 1);
+    }
+
+    [Fact]
+    public async Task EnsureFullTextIndex_ExistingNameMustMatchDefinitionToBeIdempotent()
+    {
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)", Ct);
+        await _db.ExecuteAsync("CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+
+        await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
+        await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
+
+        Assert.Equal(5, _db.GetIndexes().Count(static index => index.IndexName.StartsWith("fts_docs", StringComparison.Ordinal)));
+
+        var differentColumns = await Assert.ThrowsAsync<CSharpDbException>(() =>
+            _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["title"], ct: Ct).AsTask());
+        Assert.Equal(ErrorCode.TableAlreadyExists, differentColumns.Code);
+
+        var differentTable = await Assert.ThrowsAsync<CSharpDbException>(() =>
+            _db.EnsureFullTextIndexAsync("fts_docs", "posts", ["body"], ct: Ct).AsTask());
+        Assert.Equal(ErrorCode.TableAlreadyExists, differentTable.Code);
+
+        var differentOptions = await Assert.ThrowsAsync<CSharpDbException>(() =>
+            _db.EnsureFullTextIndexAsync(
+                "fts_docs",
+                "docs",
+                ["body"],
+                new FullTextIndexOptions { LowercaseInvariant = false },
+                Ct).AsTask());
+        Assert.Equal(ErrorCode.TableAlreadyExists, differentOptions.Code);
     }
 
     [Fact]
