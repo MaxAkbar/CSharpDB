@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Documentation — CSharpDB</title>
-    <meta name="description" content="CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.">
-    <meta name="keywords" content="CSharpDB documentation, database docs, SQL guide, Collection API docs, tutorials">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/">
-    <meta property="og:title" content="Documentation — CSharpDB">
-    <meta property="og:description" content="CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Documentation — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Documentation',
+            description: 'CSharpDB documentation hub \u2014 guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.',
+            keywords: 'CSharpDB documentation, database docs, SQL guide, Collection API docs, tutorials',
+            canonicalPath: 'docs/',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -52,6 +47,13 @@
                         </div>
                         <h3>Collection API</h3>
                         <p>Typed Collection&lt;T&gt; with JSON serialization, nested path indexing, array-element queries, and range scans.</p>
+                    </a>
+                    <a href="full-text-search.html" class="hub-card">
+                        <div class="hub-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        </div>
+                        <h3>Full-Text Search</h3>
+                        <p>Built-in FTS with Unicode tokenization, term-intersection queries, and automatic index maintenance.</p>
                     </a>
                     <a href="pipelines.html" class="hub-card">
                         <div class="hub-icon">

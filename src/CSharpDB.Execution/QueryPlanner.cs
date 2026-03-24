@@ -510,6 +510,7 @@ public sealed class QueryPlanner
             TableName = stmt.TableName,
             Columns = stmt.Columns,
             IsUnique = stmt.IsUnique,
+            Kind = IndexKind.Sql,
         };
 
         await _catalog.CreateIndexAsync(indexSchema, ct);
@@ -3345,7 +3346,7 @@ public sealed class QueryPlanner
         }
         else
         {
-            var indexes = _catalog.GetIndexesForTable(lookup.TableName);
+            var indexes = _catalog.GetSqlIndexesForTable(lookup.TableName);
             matchedIndex = FindLookupIndexForColumn(indexes, schema.Columns[predicateColumnIndex].Name);
             if (matchedIndex == null)
                 return false;
@@ -4631,7 +4632,7 @@ public sealed class QueryPlanner
     private IndexSchema? FindCompositeGroupedIndex(string tableName, TableSchema schema, ReadOnlySpan<int> groupColumnIndices)
     {
         IndexSchema? best = null;
-        foreach (var index in _catalog.GetIndexesForTable(tableName))
+        foreach (var index in _catalog.GetSqlIndexesForTable(tableName))
         {
             if (index.Columns.Count < groupColumnIndices.Length || index.Columns.Count < 2)
                 continue;
@@ -5329,7 +5330,7 @@ public sealed class QueryPlanner
                     return false;
             }
 
-            var indexes = _catalog.GetIndexesForTable(rightSimple.TableName);
+            var indexes = _catalog.GetSqlIndexesForTable(rightSimple.TableName);
             IndexSchema? selected = null;
             int[]? selectedLeftKeyIndices = null;
             int[]? selectedRightKeyIndices = null;
@@ -5850,7 +5851,7 @@ public sealed class QueryPlanner
         bool hasIntegerPk = pkIdx >= 0 &&
             pkIdx < schema.Columns.Count &&
             schema.Columns[pkIdx].Type == DbType.Integer;
-        var indexes = _catalog.GetIndexesForTable(tableName);
+        var indexes = _catalog.GetSqlIndexesForTable(tableName);
 
         remaining = where;
         var conjuncts = new List<Expression>();
@@ -6399,7 +6400,7 @@ public sealed class QueryPlanner
         }
 
         var matchedIndex = FindLookupIndexForColumn(
-            _catalog.GetIndexesForTable(tableName),
+            _catalog.GetSqlIndexesForTable(tableName),
             schema.Columns[columnIndex].Name);
         if (matchedIndex == null || !UsesDirectIntegerIndexKey(matchedIndex, schema))
             return false;
@@ -6479,7 +6480,7 @@ public sealed class QueryPlanner
 
         ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere, out _);
 
-        var indexes = _catalog.GetIndexesForTable(tableRef.TableName);
+        var indexes = _catalog.GetSqlIndexesForTable(tableRef.TableName);
         foreach (var idx in indexes)
         {
             if (idx.Columns.Count != 1 ||
@@ -6796,7 +6797,7 @@ public sealed class QueryPlanner
         out Expression? remaining)
     {
         remaining = where;
-        var indexes = _catalog.GetIndexesForTable(tableName);
+        var indexes = _catalog.GetSqlIndexesForTable(tableName);
         if (indexes.Count == 0)
             return null;
 
@@ -7281,6 +7282,15 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
+            if (idx.Kind == IndexKind.FullText)
+            {
+                await FullTextIndexMaintenance.InsertAsync(_catalog, schema, idx, row, rowId, ct);
+                continue;
+            }
+
+            if (idx.Kind != IndexKind.Sql)
+                continue;
+
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
             if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
@@ -7328,6 +7338,15 @@ public sealed class QueryPlanner
     {
         foreach (var idx in indexes)
         {
+            if (idx.Kind == IndexKind.FullText)
+            {
+                await FullTextIndexMaintenance.DeleteAsync(_catalog, schema, idx, row, rowId, ct);
+                continue;
+            }
+
+            if (idx.Kind != IndexKind.Sql)
+                continue;
+
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
             if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
@@ -7346,6 +7365,15 @@ public sealed class QueryPlanner
 
         foreach (var idx in indexes)
         {
+            if (idx.Kind == IndexKind.FullText)
+            {
+                await FullTextIndexMaintenance.UpdateAsync(_catalog, schema, idx, oldRow, newRow, oldRowId, newRowId, ct);
+                continue;
+            }
+
+            if (idx.Kind != IndexKind.Sql)
+                continue;
+
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
 

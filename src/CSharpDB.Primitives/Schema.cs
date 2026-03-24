@@ -107,6 +107,10 @@ public sealed class IndexSchema
     public required string TableName { get; init; }
     public required IReadOnlyList<string> Columns { get; init; }
     public bool IsUnique { get; init; }
+    public IndexKind Kind { get; init; } = IndexKind.Sql;
+    public IndexState State { get; init; } = IndexState.Ready;
+    public string? OwnerIndexName { get; init; }
+    public string? OptionsJson { get; init; }
 }
 
 public sealed class TableStatistics
@@ -137,4 +141,18 @@ public sealed class TriggerSchema
     public required TriggerTiming Timing { get; init; }
     public required TriggerEvent Event { get; init; }
     public required string BodySql { get; init; }
+}
+
+public enum IndexKind
+{
+    Sql = 0,
+    Collection = 1,
+    FullText = 2,
+    FullTextInternal = 3,
+}
+
+public enum IndexState
+{
+    Ready = 0,
+    Building = 1,
 }

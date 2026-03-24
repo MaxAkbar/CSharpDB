@@ -87,7 +87,14 @@ await using var imported = await Database.LoadIntoMemoryAsync("cache.db");
 ```csharp
 using CSharpDB.Engine;
 
-await using var db = await Database.OpenHybridAsync(
+// Start with an empty in-memory database and create a table
+await using var db = await Database.OpenInMemoryAsync();
+await db.ExecuteAsync("CREATE TABLE cache (id INTEGER PRIMARY KEY, value TEXT)");
+
+// Persist the current committed state to disk
+await db.SaveToFileAsync("cache.db");
+
+await using var cacheDb = await Database.OpenHybridAsync(
     "cache.db",
     new DatabaseOptions(),
     new HybridDatabaseOptions
@@ -96,8 +103,7 @@ await using var db = await Database.OpenHybridAsync(
         HotTableNames = ["cache"]
     });
 
-await db.ExecuteAsync("CREATE TABLE cache (id INTEGER PRIMARY KEY, value TEXT)");
-await db.ExecuteAsync("INSERT INTO cache VALUES (1, 'hot data')");
+await cacheDb.ExecuteAsync("INSERT INTO cache VALUES (1, 'hot data')");
 ```
 
 `OpenHybridAsync(...)` opens from the backing file lazily, keeps owned pages
@@ -130,35 +136,91 @@ await using var snapshotHybrid = await Database.OpenHybridAsync(
 ### NoSQL Collection API
 
 ```csharp
-// Get a typed collection
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("myapp.db");
+
+// Opens the existing "users" collection, or creates it if it doesn't exist yet.
 var users = await db.GetCollectionAsync<User>("users");
 
 // Put a document
-await users.PutAsync("alice", new User { Name = "Alice", Age = 30 });
+await users.PutAsync("alice", new User
+{
+    Name = "Alice",
+    Email = "alice@example.com",
+    Age = 30
+});
 
 // Get a document
 var alice = await users.GetAsync("alice");
+if (alice is not null)
+{
+    Console.WriteLine($"{alice.Name} <{alice.Email}>");
+}
 
 // Scan all documents
-await foreach (var user in users.ScanAsync())
+await foreach (var entry in users.ScanAsync())
 {
-    Console.WriteLine(user.Name);
+    Console.WriteLine($"{entry.Key}: {entry.Value.Name}");
 }
 
 // Find with predicate
-var adults = await users.FindAsync(u => u.Age >= 18);
+await foreach (var entry in users.FindAsync(u => u.Age >= 18))
+{
+    Console.WriteLine($"Adult: {entry.Key} ({entry.Value.Name})");
+}
+
+public sealed class User
+{
+    public string Name { get; set; } = "";
+    public string Email { get; set; } = "";
+    public int Age { get; set; }
+}
 ```
+
+`GetCollectionAsync<T>("users")` is the create/open operation for collections. If
+the collection does not exist yet, CSharpDB creates its backing storage
+automatically the first time you call it.
 
 ### Concurrent Readers
 
 ```csharp
-// Create a snapshot-isolated reader session
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("myapp.db");
+await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+await db.ExecuteAsync("INSERT INTO users VALUES (1, 'Alice')");
+
+// Take a snapshot-isolated reader session.
 using var reader = db.CreateReaderSession();
-var result = await reader.ExecuteReadAsync("SELECT * FROM users");
-// Reads from a consistent snapshot while the writer continues
+
+// Writer continues changing the live database after the snapshot is created.
+await db.ExecuteAsync("INSERT INTO users VALUES (2, 'Bob')");
+
+// The reader still sees the earlier snapshot.
+await using (var snapshotResult = await reader.ExecuteReadAsync(
+    "SELECT id, name FROM users ORDER BY id"))
+{
+    while (await snapshotResult.MoveNextAsync())
+    {
+        Console.WriteLine(
+            $"{snapshotResult.Current[0].AsInteger}: {snapshotResult.Current[1].AsText}");
+    }
+}
+
+// The main database sees the latest committed state.
+await using var liveResult = await db.ExecuteAsync("SELECT COUNT(*) FROM users");
+await liveResult.MoveNextAsync();
+Console.WriteLine($"Live row count: {liveResult.Current[0].AsInteger}");
 ```
 
-Reuse the same `ReaderSession` for a burst of related reads when possible. The current file-backed tuning benchmarks show that reusing a snapshot is materially cheaper than creating a new reader session for every single query.
+`ReaderSession` gives you a stable snapshot from the moment it is created, even
+while the writer keeps committing changes. Dispose each `QueryResult` before
+executing the next query on the same reader session.
+
+Reuse the same `ReaderSession` for a burst of related reads when possible. The
+current file-backed tuning benchmarks show that reusing a snapshot is
+materially cheaper than creating a new reader session for every single query.
 
 ## Installation
 

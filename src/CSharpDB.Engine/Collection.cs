@@ -785,6 +785,7 @@ public sealed class Collection<
                 TableName = _catalogTableName,
                 Columns = [fieldPath],
                 IsUnique = false,
+                Kind = IndexKind.Collection,
             };
 
             await _catalog.CreateIndexAsync(indexSchema, ct);

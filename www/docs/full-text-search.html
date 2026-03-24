@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Full-Text Search',
+            description: 'CSharpDB Full-Text Search \u2014 built-in FTS with Unicode tokenization, term-intersection queries, automatic index maintenance, and zero external dependencies.',
+            keywords: 'CSharpDB full-text search, FTS, text search, tokenizer, inverted index, C# search engine',
+            canonicalPath: 'docs/full-text-search.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Full-Text Search</h1>
+                <p class="lead">Built-in full-text search over SQL tables. Create an index on one or more TEXT columns, then run term-intersection queries — all backed by B+trees with zero external dependencies.</p>
+
+                <h2>Creating an Index</h2>
+                <p>Use <code>EnsureFullTextIndexAsync</code> to create a full-text index on one or more TEXT columns. If the index already exists, the call is a no-op. Existing rows are backfilled automatically in the same transaction.</p>
+                <div class="code-block" data-title="Create a Full-Text Index">
+                    <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// Create a table with text content</span>
+<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)"</span>);
+
+<span class="cm">// Insert some documents</span>
+<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"INSERT INTO docs VALUES (1, 'Quick Start', 'Learn how to build fast apps')"</span>);
+<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"INSERT INTO docs VALUES (2, 'Storage Engine', 'B+tree paging and WAL internals')"</span>);
+
+<span class="cm">// Create a full-text index across title and body columns</span>
+<span class="kw">await</span> db.EnsureFullTextIndexAsync(
+    <span class="str">"fts_docs"</span>,     <span class="cm">// index name</span>
+    <span class="str">"docs"</span>,         <span class="cm">// table name</span>
+    [<span class="str">"title"</span>, <span class="str">"body"</span>]  <span class="cm">// TEXT columns to index</span>
+);</code></pre>
+                </div>
+
+                <h2>Searching</h2>
+                <p>Call <code>SearchAsync</code> with a query string. The query is tokenized with the same rules as the index, and all terms must match (AND semantics). Results are returned as a list of <code>FullTextSearchHit</code> values containing the <code>RowId</code> and a relevance <code>Score</code>.</p>
+                <div class="code-block" data-title="Running Queries">
+                    <pre><code><span class="cm">// Single-term search</span>
+<span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_docs"</span>, <span class="str">"storage"</span>);
+
+<span class="cm">// Multi-term search (AND — all terms must match)</span>
+<span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_docs"</span>, <span class="str">"fast apps"</span>);
+
+<span class="cm">// Use results to fetch full rows</span>
+<span class="kw">foreach</span> (<span class="kw">var</span> hit <span class="kw">in</span> hits)
+{
+    <span class="kw">var</span> row = <span class="kw">await</span> db.QuerySingleAsync(
+        <span class="str">$"SELECT * FROM docs WHERE id = {hit.RowId}"</span>);
+    Console.WriteLine(<span class="str">$"[{hit.Score:F2}] {row["title"]}"</span>);
+}</code></pre>
+                </div>
+
+                <h2>Automatic Maintenance</h2>
+                <p>Once created, the full-text index is automatically kept in sync with DML operations on the source table. No manual re-indexing is needed.</p>
+                <div class="code-block" data-title="Index Maintenance">
+                    <pre><code><span class="cm">// INSERT — new row is automatically indexed</span>
+<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"INSERT INTO docs VALUES (3, 'Pipelines', 'ETL with CSV and JSON connectors')"</span>);
+<span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_docs"</span>, <span class="str">"pipelines"</span>);
+<span class="cm">// hits contains row 3</span>
+
+<span class="cm">// UPDATE — old tokens removed, new tokens added</span>
+<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"UPDATE docs SET body = 'ETL runtime with validation' WHERE id = 3"</span>);
+<span class="cm">// "connectors" no longer matches row 3, "validation" now does</span>
+
+<span class="cm">// DELETE — tokens are removed from the index</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"DELETE FROM docs WHERE id = 3"</span>);
+<span class="cm">// row 3 no longer appears in any search results</span></code></pre>
+                </div>
+
+                <h2>Index Options</h2>
+                <p>Customize tokenization behavior by passing a <code>FullTextIndexOptions</code> object when creating the index.</p>
+                <div class="code-block" data-title="Custom Options">
+                    <pre><code><span class="kw">await</span> db.EnsureFullTextIndexAsync(
+    <span class="str">"fts_docs"</span>, <span class="str">"docs"</span>, [<span class="str">"title"</span>, <span class="str">"body"</span>],
+    <span class="kw">new</span> <span class="tp">FullTextIndexOptions</span>
+    {
+        Normalization    = NormalizationForm.FormKC,  <span class="cm">// Unicode normalization (default: NFKC)</span>
+        LowercaseInvariant = <span class="kw">true</span>,                   <span class="cm">// case-insensitive matching (default)</span>
+        StorePositions     = <span class="kw">true</span>,                   <span class="cm">// store token positions (default)</span>
+    });</code></pre>
+                </div>
+
+                <table class="doc-table">
+                    <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Normalization</code></td><td><code>FormKC</code></td><td>Unicode normalization form applied before tokenization</td></tr>
+                        <tr><td><code>LowercaseInvariant</code></td><td><code>true</code></td><td>Convert tokens to lowercase for case-insensitive search</td></tr>
+                        <tr><td><code>StorePositions</code></td><td><code>true</code></td><td>Store token positions in the postings list</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Tokenization</h2>
+                <p>The tokenizer splits text on non-word boundaries. Word characters are Unicode letters, digits, and apostrophes. Text is normalized and lowercased according to the index options before tokenization.</p>
+                <div class="code-block" data-title="Tokenization Examples">
+                    <pre><code><span class="cm">// "Quick brown fox" → ["quick", "brown", "fox"]</span>
+<span class="cm">// "Runner's high"   → ["runner's", "high"]</span>
+<span class="cm">// "CSharpDB v2.4"   → ["csharpdb", "v2", "4"]</span></code></pre>
+                </div>
+
+                <h2>How It Works</h2>
+                <p>Each full-text index is backed by four internal B+tree indexes managed by the catalog service:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Internal Index</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>__meta</code></td><td>Index-level metadata (corpus statistics, state, version)</td></tr>
+                        <tr><td><code>__terms</code></td><td>Term frequency and document frequency statistics per term</td></tr>
+                        <tr><td><code>__postings</code></td><td>Varint-encoded postings lists with delta-encoded DocIds and positions</td></tr>
+                        <tr><td><code>__docstats</code></td><td>Per-document statistics (document length)</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callout callout-info">
+                    <strong>No External Dependencies:</strong> Full-text search is implemented entirely within CSharpDB's existing B+tree and WAL infrastructure. All index data is stored inside the same database file and participates in transactions, snapshots, and checkpointing.
+                </div>
+
+                <h2>Dropping an Index</h2>
+                <p>Use standard SQL <code>DROP INDEX</code> to remove a full-text index. All four internal indexes are cascade-deleted automatically.</p>
+                <div class="code-block" data-title="Drop Index">
+                    <pre><code><span class="kw">await</span> db.ExecuteAsync(<span class="str">"DROP INDEX fts_docs"</span>);</code></pre>
+                </div>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>DDL, DML, JOINs, aggregates, and built-in functions</p>
+                        </a>
+                        <a href="collections.html" class="next-step-card">
+                            <h4>Collection API</h4>
+                            <p>Typed NoSQL document storage with secondary indexes</p>
+                        </a>
+                        <a href="storage.html" class="next-step-card">
+                            <h4>Storage Engine</h4>
+                            <p>B+tree operations, paging, and WAL internals</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

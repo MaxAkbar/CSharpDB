@@ -3,6 +3,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
 using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.Wal;
 
@@ -453,6 +454,145 @@ public sealed class Database : IAsyncDisposable
     /// Returns all indexes defined in the database.
     /// </summary>
     public IReadOnlyCollection<IndexSchema> GetIndexes() => _catalog.GetIndexes();
+
+    /// <summary>
+    /// Ensure a full-text index exists for the supplied SQL table and TEXT columns.
+    /// The index is stored inside the regular catalog/index subsystem and backfilled
+    /// in the same transaction that creates it.
+    /// </summary>
+    public async ValueTask EnsureFullTextIndexAsync(
+        string indexName,
+        string tableName,
+        IReadOnlyList<string> columns,
+        FullTextIndexOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        ArgumentNullException.ThrowIfNull(columns);
+
+        string[] normalizedColumns = columns
+            .Where(static column => !string.IsNullOrWhiteSpace(column))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedColumns.Length == 0)
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Full-text index must reference at least one TEXT column.");
+
+        FullTextIndexOptions resolvedOptions = options ?? new FullTextIndexOptions();
+
+        InvalidateCachesIfSchemaChanged();
+
+        var existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            if (existing.Kind == IndexKind.FullText)
+            {
+                if (FullTextIndexCatalog.MatchesDefinition(existing, tableName, normalizedColumns, resolvedOptions))
+                    return;
+
+                throw new CSharpDbException(
+                    ErrorCode.TableAlreadyExists,
+                    $"Full-text index '{indexName}' already exists with a different definition.");
+            }
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Index '{indexName}' already exists.");
+        }
+
+        if (_inTransaction)
+        {
+            throw new InvalidOperationException(
+                "Full-text indexes cannot be created while an explicit transaction is active.");
+        }
+
+        TableSchema tableSchema = _catalog.GetTable(tableName)
+            ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+
+        var logicalIndex = FullTextIndexCatalog.CreateLogicalSchema(
+            indexName,
+            tableName,
+            normalizedColumns,
+            resolvedOptions);
+
+        if (!FullTextIndexMaintenance.TryResolveColumnIndices(logicalIndex, tableSchema, out _))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                "Full-text indexes currently support only TEXT columns.");
+        }
+
+        bool createdLogicalIndex = false;
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+            await _catalog.CreateIndexAsync(logicalIndex, ct);
+            createdLogicalIndex = true;
+
+            foreach (var internalIndex in FullTextIndexCatalog.CreateInternalSchemas(logicalIndex))
+                await _catalog.CreateIndexAsync(internalIndex, ct);
+
+            await FullTextIndexMaintenance.BackfillAsync(
+                _catalog,
+                tableSchema,
+                logicalIndex,
+                _recordSerializer,
+                ct);
+
+            await _catalog.PersistRootPageChangesAsync(tableName, ct);
+            await _pager.CommitAsync(ct);
+        }
+        catch
+        {
+            if (createdLogicalIndex)
+            {
+                try
+                {
+                    await _catalog.DropIndexAsync(indexName, ct);
+                }
+                catch
+                {
+                    // Best-effort cleanup before rollback.
+                }
+            }
+
+            try
+            {
+                await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Run a basic term-intersection search against a previously created full-text index.
+    /// Query text is tokenized with the index's stored options; all query terms must match.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<FullTextSearchHit>> SearchAsync(
+        string indexName,
+        string query,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+
+        InvalidateCachesIfSchemaChanged();
+
+        IndexSchema indexSchema = _catalog.GetIndex(indexName)
+            ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
+        if (indexSchema.Kind != IndexKind.FullText)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"Index '{indexName}' is not a full-text index.");
+        }
+
+        return await FullTextIndexReader.SearchAsync(_catalog, indexSchema, query, ct);
+    }
 
     /// <summary>
     /// Returns all view names defined in the database.

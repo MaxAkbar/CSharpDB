@@ -3,46 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ETL Pipelines — CSharpDB</title>
-    <meta name="description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
-    <meta name="keywords" content="CSharpDB ETL, data pipeline, CSV import, JSON import, data transform, pipeline runtime">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/pipelines.html">
-    <meta property="og:title" content="ETL Pipelines — CSharpDB">
-    <meta property="og:description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/pipelines.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="ETL Pipelines — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB ETL pipeline runtime — CSV and JSON connectors, built-in transforms, validation, dry-run execution, checkpointing, and run history.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'ETL Pipelines',
+        description: 'CSharpDB ETL pipeline API \u2014 built-in pipeline runtime with CSV/JSON connectors, transforms, validation, dry-run, and run history.',
+        keywords: 'CSharpDB ETL, pipelines, data import, CSV connector, JSON connector, data transformation',
+        canonicalPath: 'docs/pipelines.html',
+        ogType: 'article',
+    };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>ETL Pipelines</h1>
-                <p class="lead">Built-in pipeline runtime for Extract-Transform-Load workflows. Define pipelines as JSON packages, execute with validation and dry-run, and track run history.</p>
+                <p class="lead">Built-in pipeline runtime for Extract-Transform-Load workflows. Define packages in JSON, validate them, serialize them, execute them in batches, and inspect run metrics.</p>
 
                 <h2>Overview</h2>
-                <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>.</p>
+                <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>. The built-in runtime currently supports CSV and JSON file connectors; table and SQL source contracts exist in the model but are not yet implemented by the default runtime factory.</p>
 
                 <div class="flow-container">
                     <div class="flow-column">
                         <h3>Pipeline Flow</h3>
                         <div class="flow-steps">
-                            <div class="flow-step">Source (CSV, JSON, SQL, Table)</div>
+                            <div class="flow-step">Source (CSV, JSON)</div>
                             <div class="flow-connector"></div>
                             <div class="flow-step">Transform Chain</div>
                             <div class="flow-connector"></div>
-                            <div class="flow-step">Destination (CSV, JSON, Table)</div>
+                            <div class="flow-step">Destination (CSV, JSON)</div>
                             <div class="flow-connector"></div>
                             <div class="flow-step flow-step-alt">Run History &amp; Diagnostics</div>
                         </div>
@@ -53,10 +48,10 @@
                 <table class="doc-table">
                     <thead><tr><th>Source</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>CsvPipelineSource</code></td><td>Read rows from CSV files with configurable delimiters and headers</td></tr>
-                        <tr><td><code>JsonPipelineSource</code></td><td>Read objects from JSON files or arrays</td></tr>
-                        <tr><td>SQL Query</td><td>Execute a SELECT statement and stream results</td></tr>
-                        <tr><td>CSharpDB Table</td><td>Read directly from a database table</td></tr>
+                        <tr><td><code>CsvFile</code></td><td>Built-in file source with configurable header handling</td></tr>
+                        <tr><td><code>JsonFile</code></td><td>Built-in file source for JSON documents and arrays</td></tr>
+                        <tr><td><code>SqlQuery</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
+                        <tr><td><code>CSharpDbTable</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
                     </tbody>
                 </table>
 
@@ -64,13 +59,12 @@
                 <table class="doc-table">
                     <thead><tr><th>Transform</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td>Projection</td><td>Select specific columns to pass through</td></tr>
-                        <tr><td>Column Rename</td><td>Rename columns in the data flow</td></tr>
-                        <tr><td>Type Coercion</td><td>Convert column types (e.g., text to integer)</td></tr>
-                        <tr><td>Row Filter</td><td>Include/exclude rows based on conditions</td></tr>
-                        <tr><td>Derived Column</td><td>Compute new columns from expressions</td></tr>
-                        <tr><td>Deduplication</td><td>Remove duplicate rows by key columns</td></tr>
-                        <tr><td>Ordered</td><td>Sort rows by specified columns</td></tr>
+                        <tr><td><code>Select</code></td><td>Pass through only the named columns</td></tr>
+                        <tr><td><code>Rename</code></td><td>Rename columns with explicit source/target mappings</td></tr>
+                        <tr><td><code>Cast</code></td><td>Convert columns to CSharpDB primitive types</td></tr>
+                        <tr><td><code>Filter</code></td><td>Keep rows that satisfy the filter expression</td></tr>
+                        <tr><td><code>Derive</code></td><td>Add new columns from simple expressions or literals</td></tr>
+                        <tr><td><code>Deduplicate</code></td><td>Remove duplicate rows using one or more key columns</td></tr>
                     </tbody>
                 </table>
 
@@ -78,34 +72,39 @@
                 <table class="doc-table">
                     <thead><tr><th>Destination</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>CsvPipelineDestination</code></td><td>Write rows to a CSV file</td></tr>
-                        <tr><td><code>JsonPipelineDestination</code></td><td>Write objects to a JSON file</td></tr>
-                        <tr><td>CSharpDB Table</td><td>Insert rows into a database table</td></tr>
+                        <tr><td><code>CsvFile</code></td><td>Built-in file destination for CSV output</td></tr>
+                        <tr><td><code>JsonFile</code></td><td>Built-in file destination for JSON output</td></tr>
+                        <tr><td><code>CSharpDbTable</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
                     </tbody>
                 </table>
 
                 <h2>Pipeline Package Definition</h2>
                 <p>Pipelines are defined as JSON packages that describe the source, transforms, and destination.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">pipeline.json</span>
-                    </div>
+                <div class="code-block" data-title="pipeline.json">
                     <pre><code>{
-  <span class="str">"name"</span>: <span class="str">"import-products"</span>,
+  <span class="str">"name"</span>: <span class="str">"customers-csv-to-json"</span>,
+  <span class="str">"version"</span>: <span class="str">"1.0.0"</span>,
   <span class="str">"source"</span>: {
-    <span class="str">"type"</span>: <span class="str">"csv"</span>,
-    <span class="str">"path"</span>: <span class="str">"products.csv"</span>,
-    <span class="str">"hasHeader"</span>: <span class="kw">true</span>
+    <span class="str">"kind"</span>: <span class="str">"csvFile"</span>,
+    <span class="str">"path"</span>: <span class="str">"data/customers.csv"</span>,
+    <span class="str">"hasHeaderRow"</span>: <span class="kw">true</span>
   },
   <span class="str">"transforms"</span>: [
-    { <span class="str">"type"</span>: <span class="str">"rename"</span>, <span class="str">"mappings"</span>: { <span class="str">"product_id"</span>: <span class="str">"Id"</span>, <span class="str">"product_name"</span>: <span class="str">"Name"</span> } },
-    { <span class="str">"type"</span>: <span class="str">"coerce"</span>, <span class="str">"columns"</span>: { <span class="str">"Id"</span>: <span class="str">"integer"</span>, <span class="str">"Price"</span>: <span class="str">"real"</span> } },
-    { <span class="str">"type"</span>: <span class="str">"filter"</span>, <span class="str">"expression"</span>: <span class="str">"Price > 0"</span> }
+    { <span class="str">"kind"</span>: <span class="str">"select"</span>, <span class="str">"selectColumns"</span>: [<span class="str">"id"</span>, <span class="str">"name"</span>, <span class="str">"status"</span>] },
+    { <span class="str">"kind"</span>: <span class="str">"rename"</span>, <span class="str">"renameMappings"</span>: [{ <span class="str">"source"</span>: <span class="str">"name"</span>, <span class="str">"target"</span>: <span class="str">"full_name"</span> }] },
+    { <span class="str">"kind"</span>: <span class="str">"cast"</span>, <span class="str">"castMappings"</span>: [{ <span class="str">"column"</span>: <span class="str">"id"</span>, <span class="str">"targetType"</span>: <span class="str">"integer"</span> }] },
+    { <span class="str">"kind"</span>: <span class="str">"filter"</span>, <span class="str">"filterExpression"</span>: <span class="str">"status == 'active'"</span> },
+    { <span class="str">"kind"</span>: <span class="str">"derive"</span>, <span class="str">"derivedColumns"</span>: [{ <span class="str">"name"</span>: <span class="str">"import_source"</span>, <span class="str">"expression"</span>: <span class="str">"'csv'"</span> }] },
+    { <span class="str">"kind"</span>: <span class="str">"deduplicate"</span>, <span class="str">"deduplicateKeys"</span>: [<span class="str">"id"</span>] }
   ],
   <span class="str">"destination"</span>: {
-    <span class="str">"type"</span>: <span class="str">"table"</span>,
-    <span class="str">"table"</span>: <span class="str">"Products"</span>
+    <span class="str">"kind"</span>: <span class="str">"jsonFile"</span>,
+    <span class="str">"path"</span>: <span class="str">"data/customers.cleaned.json"</span>
+  },
+  <span class="str">"options"</span>: {
+    <span class="str">"batchSize"</span>: <span class="num">500</span>,
+    <span class="str">"errorMode"</span>: <span class="str">"failFast"</span>,
+    <span class="str">"checkpointInterval"</span>: <span class="num">1</span>
   }
 }</code></pre>
                 </div>
@@ -115,8 +114,8 @@
                     <thead><tr><th>Mode</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td><strong>Validate</strong></td><td>Check the pipeline definition for errors without executing</td></tr>
-                        <tr><td><strong>Dry Run</strong></td><td>Simulate execution, reporting row counts and potential issues</td></tr>
-                        <tr><td><strong>Execute</strong></td><td>Run the full pipeline, writing to the destination</td></tr>
+                        <tr><td><strong>DryRun</strong></td><td>Open the source and run transforms, but skip destination writes</td></tr>
+                        <tr><td><strong>Run</strong></td><td>Execute the full pipeline and persist checkpoints</td></tr>
                         <tr><td><strong>Resume</strong></td><td>Resume a failed pipeline from the last checkpoint</td></tr>
                     </tbody>
                 </table>

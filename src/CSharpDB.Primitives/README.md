@@ -41,7 +41,7 @@ var balance = DbValue.FromReal(100.50);
 var empty = DbValue.Null;
 
 // Compare values
-bool isPositive = balance > DbValue.FromReal(0);
+bool isPositive = DbValue.Compare(balance, DbValue.FromReal(0)) > 0;
 
 // Define a schema
 var schema = new TableSchema
@@ -51,7 +51,7 @@ var schema = new TableSchema
     [
         new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true },
         new ColumnDefinition { Name = "name", Type = DbType.Text },
-        new ColumnDefinition { Name = "email", Type = DbType.Text, IsNullable = true }
+        new ColumnDefinition { Name = "email", Type = DbType.Text, Nullable = true }
     ]
 };
 ```

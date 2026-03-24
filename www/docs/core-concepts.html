@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Core Concepts — CSharpDB</title>
-    <meta name="description" content="Learn CSharpDB's foundational types — DbType, DbValue, ColumnDefinition, and schema definitions that power the SQL and Collection APIs.">
-    <meta name="keywords" content="CSharpDB types, DbType, DbValue, schema, column definition, core concepts">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/core-concepts.html">
-    <meta property="og:title" content="Core Concepts — CSharpDB">
-    <meta property="og:description" content="Learn CSharpDB's foundational types — DbType, DbValue, ColumnDefinition, and schema definitions that power the SQL and Collection APIs.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/core-concepts.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Core Concepts — CSharpDB">
-    <meta name="twitter:description" content="Learn CSharpDB's foundational types — DbType, DbValue, ColumnDefinition, and schema definitions that power the SQL and Collection APIs.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Core Concepts',
+            description: 'CSharpDB core concepts — DbType, DbValue, TableSchema, IndexSchema, and the foundational types that power the database engine.',
+            keywords: 'CSharpDB core concepts, DbType, DbValue, TableSchema, IndexSchema, database primitives',
+            canonicalPath: 'docs/core-concepts.html',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -46,11 +41,7 @@
 
                 <h2>DbValue</h2>
                 <p><code>DbValue</code> is a lightweight struct that represents a dynamically-typed database value. It wraps the five core types and provides type-safe access, comparison, and truthiness evaluation.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">DbValue Usage</span>
-                    </div>
+                <div class="code-block" data-title="DbValue Usage">
                     <pre><code><span class="kw">var</span> id    = <span class="tp">DbValue</span>.FromInteger(<span class="num">42</span>);
 <span class="kw">var</span> name  = <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>);
 <span class="kw">var</span> score = <span class="tp">DbValue</span>.FromReal(<span class="num">98.5</span>);
@@ -67,11 +58,7 @@
 
                 <h2>TableSchema</h2>
                 <p>Defines the structure of a table: its name, columns, types, nullability, and primary key.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Schema Definition</span>
-                    </div>
+                <div class="code-block" data-title="Schema Definition">
                     <pre><code><span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>(<span class="str">"Orders"</span>, [
     <span class="kw">new</span>(<span class="str">"OrderId"</span>,   <span class="tp">DbType</span>.Integer, isPrimaryKey: <span class="kw">true</span>),
     <span class="kw">new</span>(<span class="str">"CustomerId"</span>,<span class="tp">DbType</span>.Integer),
@@ -86,11 +73,7 @@
 
                 <h2>IndexSchema</h2>
                 <p><code>IndexSchema</code> defines secondary indexes on table columns. Indexes support composite keys, unique constraints, and efficient range scans via <code>BTreeIndexCursor</code>.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Index Definition</span>
-                    </div>
+                <div class="code-block" data-title="Index Definition">
                     <pre><code><span class="kw">var</span> index = <span class="kw">new</span> <span class="tp">IndexSchema</span>(
     name: <span class="str">"idx_orders_customer"</span>,
     tableName: <span class="str">"Orders"</span>,

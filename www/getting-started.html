@@ -3,26 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Getting Started — CSharpDB</title>
-    <meta name="description" content="Get started with CSharpDB in minutes. Install via NuGet, create databases, run SQL queries, and use the Collection API in your .NET projects.">
-    <meta name="keywords" content="CSharpDB getting started, install CSharpDB, NuGet, .NET database tutorial, quick start">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/getting-started.html">
-    <meta property="og:title" content="Getting Started — CSharpDB">
-    <meta property="og:description" content="Get started with CSharpDB in minutes. Install via NuGet, create databases, run SQL queries, and use the Collection API in your .NET projects.">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/getting-started.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Getting Started — CSharpDB">
-    <meta name="twitter:description" content="Get started with CSharpDB in minutes. Install via NuGet, create databases, run SQL queries, and use the Collection API in your .NET projects.">
     <link rel="stylesheet" href="css/style.css">
     <link rel="preload" href="js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'getting-started';</script>
+    <script>
+    window.currentPage = 'getting-started';
+    window.pageConfig = {
+        title: 'Getting Started',
+        description: 'Get started with CSharpDB in minutes. Install via NuGet, create databases, run SQL queries, and use the Collection API in your .NET projects.',
+        keywords: 'CSharpDB getting started, install CSharpDB, NuGet, .NET database tutorial, quick start',
+        canonicalPath: 'getting-started.html',
+    };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -32,31 +26,23 @@
                 <p class="lead">Get CSharpDB up and running in your .NET project in minutes. Choose the API that fits your needs.</p>
 
                 <h2>Installation</h2>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Terminal</span>
-                    </div>
+                <div class="code-block" data-title="Terminal">
                     <pre><code>dotnet add package CSharpDB</code></pre>
                 </div>
                 <p>This meta-package includes the storage engine, SQL engine, Collection API, ADO.NET provider, and diagnostics. For finer control, install individual packages like <code>CSharpDB.Storage</code>, <code>CSharpDB.Engine</code>, or <code>CSharpDB.Data</code>.</p>
 
                 <h2>Option 1: SQL via ADO.NET</h2>
                 <p>The most familiar approach for .NET developers. Use standard <code>DbConnection</code>, <code>DbCommand</code>, and <code>DbDataReader</code> APIs.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — ADO.NET</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — ADO.NET">
                     <pre><code><span class="kw">using</span> CSharpDB.Data;
 
-<span class="kw">using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
 <span class="kw">await</span> conn.OpenAsync();
 
 <span class="cm">// Create a table</span>
 <span class="kw">await using var</span> cmd = conn.CreateCommand();
 cmd.CommandText = <span class="str">@"
-    CREATE TABLE Products (
+    CREATE TABLE IF NOT EXISTS Products (
         Id    INTEGER PRIMARY KEY,
         Name  TEXT NOT NULL,
         Price REAL
@@ -66,13 +52,15 @@ cmd.CommandText = <span class="str">@"
 <span class="cm">// Insert rows with parameters</span>
 cmd.CommandText = <span class="str">"INSERT INTO Products VALUES (@id, @name, @price)"</span>;
 cmd.Parameters.Clear();
-cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
-cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@name"</span>, <span class="str">"Widget"</span>));
-cmd.Parameters.Add(<span class="kw">new</span>(<span class="str">"@price"</span>, <span class="num">9.99</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@name"</span>, <span class="str">"Widget"</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@price"</span>, <span class="num">9.99</span>));
 <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 
 <span class="cm">// Query</span>
-cmd.CommandText = <span class="str">"SELECT Id, Name, Price FROM Products WHERE Price > 5.0"</span>;
+cmd.CommandText = <span class="str">"SELECT Id, Name, Price FROM Products WHERE Price > @minPrice"</span>;
+cmd.Parameters.Clear();
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@minPrice"</span>, <span class="num">5.0</span>));
 <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
 <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
 {
@@ -82,11 +70,7 @@ cmd.CommandText = <span class="str">"SELECT Id, Name, Price FROM Products WHERE 
 
                 <h2>Option 2: Engine API with SQL</h2>
                 <p>Use the <code>Database</code> class directly for a lightweight, high-performance approach.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Engine API</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Engine API">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
@@ -102,90 +86,96 @@ cmd.CommandText = <span class="str">"SELECT Id, Name, Price FROM Products WHERE 
 <span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO Users VALUES (1, 'Alice', 'alice@example.com')"</span>);
 <span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO Users VALUES (2, 'Bob', 'bob@example.com')"</span>);
 
-<span class="kw">var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">"SELECT * FROM Users ORDER BY Name"</span>);
-<span class="kw">foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> results.Rows)
-    Console.WriteLine(<span class="str">$"{row[1]}: {row[2]}"</span>);</code></pre>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">"SELECT Name, Email FROM Users ORDER BY Name"</span>);
+<span class="kw">while</span> (<span class="kw">await</span> results.MoveNextAsync())
+{
+    Console.WriteLine(<span class="str">$"{results.Current[0].AsText}: {results.Current[1].AsText}"</span>);
+}</code></pre>
                 </div>
 
                 <h2>Option 3: Collection API (NoSQL)</h2>
                 <p>Work with typed C# objects — no SQL needed. Built-in JSON serialization and indexing.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Collections</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Collections">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">string</span>[] Tags);
 
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
-<span class="kw">var</span> products = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Product</span>&gt;();
+<span class="kw">var</span> products = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Product</span>&gt;(<span class="str">"products"</span>);
 
 <span class="cm">// Store objects</span>
-<span class="kw">await</span> products.PutAsync(<span class="num">1</span>, <span class="kw">new</span>(<span class="str">"Widget"</span>, <span class="num">9.99</span>, [<span class="str">"tools"</span>, <span class="str">"hardware"</span>]));
-<span class="kw">await</span> products.PutAsync(<span class="num">2</span>, <span class="kw">new</span>(<span class="str">"Gadget"</span>, <span class="num">24.99</span>, [<span class="str">"electronics"</span>]));
+<span class="kw">await</span> products.PutAsync(<span class="str">"widget"</span>, <span class="kw">new</span>(<span class="str">"Widget"</span>, <span class="num">9.99</span>, [<span class="str">"tools"</span>, <span class="str">"hardware"</span>]));
+<span class="kw">await</span> products.PutAsync(<span class="str">"gadget"</span>, <span class="kw">new</span>(<span class="str">"Gadget"</span>, <span class="num">24.99</span>, [<span class="str">"electronics"</span>]));
 
 <span class="cm">// Retrieve</span>
-<span class="kw">var</span> widget = <span class="kw">await</span> products.GetAsync(<span class="num">1</span>);
+<span class="kw">var</span> widget = <span class="kw">await</span> products.GetAsync(<span class="str">"widget"</span>);
 
 <span class="cm">// Index a property and query</span>
-<span class="kw">await</span> products.Index.OnAsync(p => p.Name);
-<span class="kw">var</span> results = <span class="kw">await</span> products.FindAsync(p => p.Name, <span class="str">"Gadget"</span>);
+<span class="kw">await</span> products.EnsureIndexAsync(p => p.Name);
+<span class="kw">await foreach</span> (<span class="kw">var</span> match <span class="kw">in</span> products.FindByIndexAsync(p => p.Name, <span class="str">"Gadget"</span>))
+    Console.WriteLine(match.Key);
 
 <span class="cm">// Scan all</span>
-<span class="kw">await foreach</span> (<span class="kw">var</span> (key, product) <span class="kw">in</span> products.ScanAsync())
-    Console.WriteLine(<span class="str">$"{product.Name}: ${product.Price:F2}"</span>);</code></pre>
+<span class="kw">await foreach</span> (<span class="kw">var</span> entry <span class="kw">in</span> products.ScanAsync())
+    Console.WriteLine(<span class="str">$"{entry.Key}: {entry.Value.Name}: ${entry.Value.Price:F2}"</span>);</code></pre>
                 </div>
 
                 <h2>Option 4: Low-Level Storage API</h2>
                 <p>For maximum control, use the storage engine directly with B+trees, pages, and the WAL.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Storage Engine</span>
-                    </div>
-                    <pre><code><span class="kw">using</span> CSharpDB.Storage;
+                <div class="code-block" data-title="Program.cs — Storage Engine">
+                    <pre><code><span class="kw">using</span> CSharpDB.Storage.BTrees;
+<span class="kw">using</span> CSharpDB.Storage.Paging;
+<span class="kw">using</span> CSharpDB.Storage.StorageEngine;
 
-<span class="kw">await using var</span> ctx = <span class="kw">await</span> <span class="tp">DefaultStorageEngineFactory</span>
-    .OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> storageOptions = <span class="kw">new</span> <span class="tp">StorageEngineOptionsBuilder</span>()
+    .UsePagerOptions(<span class="kw">new</span> <span class="tp">PagerOptions</span> { MaxCachedPages = <span class="num">1024</span> })
+    .UseBTreeIndexes()
+    .Build();
 
-<span class="cm">// Define schema</span>
-<span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>(<span class="str">"Events"</span>, [
-    <span class="kw">new</span>(<span class="str">"Id"</span>,      <span class="tp">DbType</span>.Integer, isPrimaryKey: <span class="kw">true</span>),
-    <span class="kw">new</span>(<span class="str">"Name"</span>,    <span class="tp">DbType</span>.Text),
-    <span class="kw">new</span>(<span class="str">"Payload"</span>, <span class="tp">DbType</span>.Blob, nullable: <span class="kw">true</span>),
-]);
-<span class="kw">await</span> ctx.Catalog.CreateTableAsync(schema);
+<span class="kw">var</span> factory = <span class="kw">new</span> <span class="tp">DefaultStorageEngineFactory</span>();
+<span class="kw">await using var</span> ctx = <span class="kw">await</span> factory.OpenAsync(<span class="str">"myapp.db"</span>, storageOptions);
 
-<span class="cm">// Write transaction</span>
-<span class="kw">await</span> ctx.Pager.BeginWriteTransactionAsync();
-<span class="kw">var</span> tree = ctx.Catalog.GetTableTree(<span class="str">"Events"</span>);
-<span class="kw">await</span> tree.InsertAsync(<span class="num">1</span>, encoder.Encode([
-    <span class="tp">DbValue</span>.FromInteger(<span class="num">1</span>),
-    <span class="tp">DbValue</span>.FromText(<span class="str">"startup"</span>),
-    <span class="tp">DbValue</span>.Null,
-]));
-<span class="kw">await</span> ctx.Pager.CommitTransactionAsync();</code></pre>
+<span class="kw">await</span> ctx.Pager.BeginTransactionAsync();
+<span class="kw">try</span>
+{
+    <span class="kw">uint</span> rootPageId = <span class="kw">await</span> <span class="tp">BTree</span>.CreateNewAsync(ctx.Pager);
+    <span class="kw">var</span> tree = <span class="kw">new</span> <span class="tp">BTree</span>(ctx.Pager, rootPageId);
+
+    <span class="kw">await</span> tree.InsertAsync(<span class="num">1</span>, <span class="kw">new byte</span>[] { <span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>, <span class="num">4</span> });
+    <span class="kw">byte</span>[]? payload = <span class="kw">await</span> tree.FindAsync(<span class="num">1</span>);
+
+    <span class="kw">await</span> ctx.Pager.CommitAsync();
+}
+<span class="kw">catch</span>
+{
+    <span class="kw">await</span> ctx.Pager.RollbackAsync();
+    <span class="kw">throw</span>;
+}</code></pre>
                 </div>
 
                 <h2>Custom Configuration</h2>
                 <p>Fine-tune the storage engine for your workload.</p>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs</span>
-                    </div>
-                    <pre><code><span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">StorageEngineOptionsBuilder</span>()
-    .WithCacheSize(<span class="num">2048</span>)
-    .WithLockTimeout(<span class="tp">TimeSpan</span>.FromSeconds(<span class="num">10</span>))
-    .WithCheckpointPolicy(<span class="kw">new</span> <span class="tp">FrameCountCheckpointPolicy</span>(<span class="num">500</span>))
-    .Build();
+                <div class="code-block" data-title="Program.cs">
+                    <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseDirectLookupOptimizedPreset();
+    });
 
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>, options);
 
 <span class="cm">// Also available: in-memory and hybrid modes</span>
 <span class="kw">await using var</span> mem = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
-<span class="kw">await using var</span> hybrid = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(<span class="str">"myapp.db"</span>);</code></pre>
+<span class="kw">await using var</span> hybrid = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"myapp.db"</span>,
+    <span class="kw">new</span> <span class="tp">DatabaseOptions</span>(),
+    <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
+    {
+        PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
+        HotTableNames = [<span class="str">"Products"</span>]
+    });</code></pre>
                 </div>
 
                 <div class="next-steps">

@@ -113,6 +113,10 @@ public static class SchemaSerializer
         }
 
         ms.WriteByte(index.IsUnique ? (byte)1 : (byte)0);
+        ms.WriteByte((byte)index.Kind);
+        ms.WriteByte((byte)index.State);
+        WriteNullableString(ms, index.OwnerIndexName);
+        WriteNullableString(ms, index.OptionsJson);
         return ms.ToArray();
     }
 
@@ -142,6 +146,24 @@ public static class SchemaSerializer
         }
 
         bool isUnique = data[pos] != 0;
+        pos++;
+
+        IndexKind kind = IndexKind.Sql;
+        IndexState state = IndexState.Ready;
+        string? ownerIndexName = null;
+        string? optionsJson = null;
+
+        if (pos < data.Length)
+            kind = (IndexKind)data[pos++];
+
+        if (pos < data.Length)
+            state = (IndexState)data[pos++];
+
+        if (pos < data.Length)
+            ownerIndexName = ReadNullableString(data, ref pos);
+
+        if (pos < data.Length)
+            optionsJson = ReadNullableString(data, ref pos);
 
         return new IndexSchema
         {
@@ -149,6 +171,10 @@ public static class SchemaSerializer
             TableName = tableName,
             Columns = columns,
             IsUnique = isUnique,
+            Kind = kind,
+            State = state,
+            OwnerIndexName = ownerIndexName,
+            OptionsJson = optionsJson,
         };
     }
 
@@ -257,5 +283,32 @@ public static class SchemaSerializer
         Span<byte> buf = stackalloc byte[10];
         int len = Varint.Write(buf, value);
         ms.Write(buf[..len]);
+    }
+
+    private static void WriteNullableString(MemoryStream ms, string? value)
+    {
+        if (value == null)
+        {
+            WriteVarint(ms, 0);
+            return;
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        WriteVarint(ms, checked((ulong)bytes.Length + 1));
+        ms.Write(bytes);
+    }
+
+    private static string? ReadNullableString(ReadOnlySpan<byte> data, ref int pos)
+    {
+        ulong encodedLength = Varint.Read(data[pos..], out int bytesRead);
+        pos += bytesRead;
+
+        if (encodedLength == 0)
+            return null;
+
+        int length = checked((int)encodedLength - 1);
+        string value = Encoding.UTF8.GetString(data.Slice(pos, length));
+        pos += length;
+        return value;
     }
 }

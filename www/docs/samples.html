@@ -3,26 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Samples &amp; Tutorials — CSharpDB</title>
-    <meta name="description" content="CSharpDB code samples — use the in-memory database as an ASP.NET cache, session store, and background refresh pattern with full source code.">
-    <meta name="keywords" content="CSharpDB samples, ASP.NET cache, in-memory cache, tutorials, code examples, session store">
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://maxakbar.github.io/csharpdb/docs/samples.html">
-    <meta property="og:title" content="Samples &amp; Tutorials — CSharpDB">
-    <meta property="og:description" content="CSharpDB code samples — use the in-memory database as an ASP.NET cache, session store, and background refresh pattern with full source code.">
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://maxakbar.github.io/csharpdb/docs/samples.html">
-    <meta property="og:site_name" content="CSharpDB">
-    <meta property="og:image" content="images/og-banner.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Samples &amp; Tutorials — CSharpDB">
-    <meta name="twitter:description" content="CSharpDB code samples — use the in-memory database as an ASP.NET cache, session store, and background refresh pattern with full source code.">
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <link rel="icon" type="image/png" href="../favicon.png">
 </head>
 <body>
-    <script>window.currentPage = 'docs'; window.pagePathPrefix = '../';</script>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'Samples & Tutorials',
+            description: 'CSharpDB code samples and tutorials \u2014 end-to-end examples for in-memory cache, storage engine, graph databases, and more.',
+            keywords: 'CSharpDB samples, tutorials, code examples, database examples, .NET tutorials',
+            canonicalPath: 'docs/samples.html',
+            ogType: 'article',
+        };
+    </script>
     <div id="site-nav"></div>
 
     <main class="page">
@@ -49,11 +44,7 @@
                 <h3>1. Register the Database as a Singleton</h3>
                 <p>Create a hosted service that manages the in-memory database lifecycle and registers it in DI.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">CacheDbHostedService.cs</span>
-                    </div>
+                <div class="code-block" data-title="CacheDbHostedService.cs">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">public sealed class</span> <span class="tp">CacheDbHostedService</span> : <span class="tp">IHostedLifecycleService</span>, <span class="tp">IAsyncDisposable</span>
@@ -128,11 +119,7 @@
 }</code></pre>
                 </div>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — DI Registration</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — DI Registration">
                     <pre><code><span class="kw">var</span> builder = <span class="tp">WebApplication</span>.CreateBuilder(args);
 
 <span class="cm">// Register the cache database as a hosted service + singleton</span>
@@ -151,11 +138,7 @@ builder.Services.AddSingleton(
                 <h3>2. Build a Cache Service</h3>
                 <p>Wrap the in-memory database in a typed service that your controllers and endpoints can inject.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">ProductCacheService.cs</span>
-                    </div>
+                <div class="code-block" data-title="ProductCacheService.cs">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">public sealed class</span> <span class="tp">ProductCacheService</span>
@@ -240,20 +223,12 @@ builder.Services.AddSingleton(
     <span class="kw">double</span> Price, <span class="kw">string</span> Category);</code></pre>
                 </div>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Register the service</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Register the service">
                     <pre><code>builder.Services.AddSingleton&lt;<span class="tp">ProductCacheService</span>&gt;();</code></pre>
                 </div>
 
                 <h3>3. Use It from Endpoints</h3>
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Minimal API Endpoints</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Minimal API Endpoints">
                     <pre><code>app.MapGet(<span class="str">"/products/{sku}"</span>, <span class="kw">async</span> (<span class="kw">string</span> sku, <span class="tp">ProductCacheService</span> cache) =>
 {
     <span class="kw">var</span> product = <span class="kw">await</span> cache.GetBySkuAsync(sku);
@@ -279,11 +254,7 @@ app.MapGet(<span class="str">"/products/stats"</span>, <span class="kw">async</s
                 <h3>4. Background Cache Refresh</h3>
                 <p>Use a background service to periodically refresh the cache from your primary data source (e.g., an external API, primary database, or message queue).</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">CacheRefreshWorker.cs</span>
-                    </div>
+                <div class="code-block" data-title="CacheRefreshWorker.cs">
                     <pre><code><span class="kw">public sealed class</span> <span class="tp">CacheRefreshWorker</span> : <span class="tp">BackgroundService</span>
 {
     <span class="kw">private readonly</span> <span class="tp">ProductCacheService</span> _cache;
@@ -325,11 +296,7 @@ app.MapGet(<span class="str">"/products/stats"</span>, <span class="kw">async</s
 }</code></pre>
                 </div>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Register the worker</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Register the worker">
                     <pre><code>builder.Services.AddHttpClient(<span class="str">"ProductApi"</span>,
     c => c.BaseAddress = <span class="kw">new</span> <span class="tp">Uri</span>(<span class="str">"https://api.example.com"</span>));
 builder.Services.AddHostedService&lt;<span class="tp">CacheRefreshWorker</span>&gt;();</code></pre>
@@ -338,11 +305,7 @@ builder.Services.AddHostedService&lt;<span class="tp">CacheRefreshWorker</span>&
                 <h3>5. Collection API as a Cache</h3>
                 <p>For typed object caching without SQL, use the Collection API instead. This is ideal when you want to cache complex objects and query by indexed properties.</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">SessionCacheService.cs</span>
-                    </div>
+                <div class="code-block" data-title="SessionCacheService.cs">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">public record</span> <span class="tp">UserSession</span>(
@@ -398,11 +361,7 @@ builder.Services.AddHostedService&lt;<span class="tp">CacheRefreshWorker</span>&
                 <h3>Complete Program.cs</h3>
                 <p>Putting it all together:</p>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Program.cs — Full example</span>
-                    </div>
+                <div class="code-block" data-title="Program.cs — Full example">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
 <span class="kw">var</span> builder = <span class="tp">WebApplication</span>.CreateBuilder(args);
@@ -452,11 +411,7 @@ app.Run();</code></pre>
                     <strong>Snapshot on shutdown:</strong> Set <code>"CacheDb:SnapshotPath"</code> in <code>appsettings.json</code> to persist cache state across restarts. The hosted service loads the snapshot on startup and saves on graceful shutdown.
                 </div>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">appsettings.json</span>
-                    </div>
+                <div class="code-block" data-title="appsettings.json">
                     <pre><code>{
   <span class="str">"CacheDb"</span>: {
     <span class="str">"SnapshotPath"</span>: <span class="str">"cache-snapshot.db"</span>
@@ -550,11 +505,7 @@ app.Run();</code></pre>
                     </div>
                 </div>
 
-                <div class="code-block">
-                    <div class="code-header">
-                        <div class="code-dots"><span></span><span></span><span></span></div>
-                        <span class="code-filename">Running the study examples</span>
-                    </div>
+                <div class="code-block" data-title="Running the study examples">
                     <pre><code><span class="cm"># Clone and run the interactive REPL</span>
 <span class="kw">cd</span> docs/tutorials/storage/examples
 <span class="kw">dotnet run</span> --project StorageStudyExamples.Repl
