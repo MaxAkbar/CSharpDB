@@ -35,6 +35,8 @@ public sealed class Collection<
     private readonly string _catalogTableName;
     private BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterWriteScopeAsync;
+    private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
@@ -47,6 +49,8 @@ public sealed class Collection<
         BTree tree,
         IRecordSerializer recordSerializer,
         Func<bool> isInTransaction,
+        Func<CancellationToken, ValueTask<IDisposable>> enterWriteScopeAsync,
+        Func<string, CancellationToken, ValueTask<PagerCommitResult>> beginImplicitCommitAsync,
         Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
     {
         _pager = pager;
@@ -55,6 +59,8 @@ public sealed class Collection<
         _tree = tree;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _enterWriteScopeAsync = enterWriteScopeAsync ?? throw new ArgumentNullException(nameof(enterWriteScopeAsync));
+        _beginImplicitCommitAsync = beginImplicitCommitAsync ?? throw new ArgumentNullException(nameof(beginImplicitCommitAsync));
         _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
         _observedSchemaVersion = catalog.SchemaVersion;
         ReloadCollectionIndexes();
@@ -772,6 +778,19 @@ public sealed class Collection<
                 "Collection indexes cannot be created while an explicit transaction is active.");
         }
 
+        using var writeScope = await _enterWriteScopeAsync(ct);
+        RefreshIndexesIfSchemaChanged();
+
+        if (_indexes.ContainsKey(fieldPath))
+            return;
+
+        existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            AttachIndexBinding(existing);
+            return;
+        }
+
         CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
 
         bool createdIndex = false;
@@ -794,8 +813,8 @@ public sealed class Collection<
             var binding = AttachIndexBinding(indexSchema);
             await BackfillIndexAsync(binding, ct);
 
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
+            PagerCommitResult commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
+            await commit.WaitAsync(ct);
             _observedSchemaVersion = _catalog.SchemaVersion;
         }
         catch
@@ -1130,14 +1149,14 @@ public sealed class Collection<
             return;
         }
 
-        await _pager.BeginTransactionAsync(ct);
+        PagerCommitResult commit = PagerCommitResult.Completed;
+        IDisposable? writeScope = null;
         try
         {
+            writeScope = await _enterWriteScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
             await action();
-            await _catalog.PersistDirtyTableStatisticsAsync(ct);
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
-            await _afterImplicitCommitAsync(ct);
+            commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
         }
         catch
         {
@@ -1145,5 +1164,12 @@ public sealed class Collection<
             await _catalog.ReloadAsync(ct);
             throw;
         }
+        finally
+        {
+            writeScope?.Dispose();
+        }
+
+        await commit.WaitAsync(ct);
+        await _afterImplicitCommitAsync(ct);
     }
 }

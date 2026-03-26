@@ -396,7 +396,9 @@ public sealed class BTree
     /// </summary>
     public async ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        var result = await InsertRecursiveAsync(_rootPageId, key, payload, ct);
+        var traversalPath = new List<uint>(capacity: 8);
+        var traversalSet = new HashSet<uint>();
+        var result = await InsertRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
 
         if (result.Split)
         {
@@ -426,7 +428,9 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, ct);
+        var traversalPath = new List<uint>(capacity: 8);
+        var traversalSet = new HashSet<uint>();
+        var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
         if (!result.Found)
             return false;
 
@@ -618,63 +622,89 @@ public sealed class BTree
         public InsertResult InsertResult { get; }
     }
 
-    private async ValueTask<InsertResult> InsertRecursiveAsync(uint pageId, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    private async ValueTask<InsertResult> InsertRecursiveAsync(
+        uint pageId,
+        long key,
+        ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct)
     {
+        EnterTraversal(pageId, key, traversalPath, traversalSet);
         var page = await _pager.GetPageAsync(pageId, ct);
         var sp = new SlottedPage(page, pageId);
-
-        if (sp.PageType == PageConstants.PageTypeLeaf)
+        try
         {
-            return await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+            {
+                return await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
+            }
+            else
+            {
+                // Find child to descend into
+                uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
+
+                var childResult = await InsertRecursiveAsync(childPageId, key, payload, traversalPath, traversalSet, ct);
+                if (!childResult.Split)
+                    return childResult;
+
+                // Child was split — insert the new separator key into this interior page
+                return await InsertIntoInteriorAsync(pageId, page, sp, childResult.SplitKey, childResult.NewPageId, childIdx, ct);
+            }
         }
-        else
+        finally
         {
-            // Find child to descend into
-            uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
-
-            var childResult = await InsertRecursiveAsync(childPageId, key, payload, ct);
-            if (!childResult.Split)
-                return childResult;
-
-            // Child was split — insert the new separator key into this interior page
-            return await InsertIntoInteriorAsync(pageId, page, sp, childResult.SplitKey, childResult.NewPageId, childIdx, ct);
+            ExitTraversal(pageId, traversalPath, traversalSet);
         }
     }
 
-    private async ValueTask<ReplaceResult> ReplaceRecursiveAsync(uint pageId, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    private async ValueTask<ReplaceResult> ReplaceRecursiveAsync(
+        uint pageId,
+        long key,
+        ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct)
     {
+        EnterTraversal(pageId, key, traversalPath, traversalSet);
         var page = await _pager.GetPageAsync(pageId, ct);
         var sp = new SlottedPage(page, pageId);
-
-        if (sp.PageType == PageConstants.PageTypeLeaf)
+        try
         {
-            int idx = FindKeyInLeaf(sp, key);
-            if (idx < 0)
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+            {
+                int idx = FindKeyInLeaf(sp, key);
+                if (idx < 0)
+                    return default;
+
+                sp.DeleteCell(idx);
+                sp.Defragment();
+                var insertResult = await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
+                return new ReplaceResult(found: true, insertResult);
+            }
+
+            uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
+            var childResult = await ReplaceRecursiveAsync(childPageId, key, payload, traversalPath, traversalSet, ct);
+            if (!childResult.Found)
                 return default;
 
-            sp.DeleteCell(idx);
-            sp.Defragment();
-            var insertResult = await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
-            return new ReplaceResult(found: true, insertResult);
+            if (!childResult.InsertResult.Split)
+                return childResult;
+
+            var interiorInsertResult = await InsertIntoInteriorAsync(
+                pageId,
+                page,
+                sp,
+                childResult.InsertResult.SplitKey,
+                childResult.InsertResult.NewPageId,
+                childIdx,
+                ct);
+            return new ReplaceResult(found: true, interiorInsertResult);
         }
-
-        uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
-        var childResult = await ReplaceRecursiveAsync(childPageId, key, payload, ct);
-        if (!childResult.Found)
-            return default;
-
-        if (!childResult.InsertResult.Split)
-            return childResult;
-
-        var interiorInsertResult = await InsertIntoInteriorAsync(
-            pageId,
-            page,
-            sp,
-            childResult.InsertResult.SplitKey,
-            childResult.InsertResult.NewPageId,
-            childIdx,
-            ct);
-        return new ReplaceResult(found: true, interiorInsertResult);
+        finally
+        {
+            ExitTraversal(pageId, traversalPath, traversalSet);
+        }
     }
 
     private async ValueTask<InsertResult> InsertIntoLeafAsync(uint pageId, byte[] page, SlottedPage sp, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
@@ -1272,6 +1302,28 @@ public sealed class BTree
     {
         ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
         return checked(headerBytes + (int)payloadSize);
+    }
+
+    private void EnterTraversal(uint pageId, long key, List<uint> traversalPath, HashSet<uint> traversalSet)
+    {
+        if (traversalSet.Add(pageId))
+        {
+            traversalPath.Add(pageId);
+            return;
+        }
+
+        string path = string.Join(" -> ", traversalPath.Append(pageId));
+        throw new CSharpDbException(
+            ErrorCode.CorruptDatabase,
+            $"Detected a B+tree cycle while traversing key {key}. Root page {_rootPageId}, repeated page {pageId}, path {path}.");
+    }
+
+    private static void ExitTraversal(uint pageId, List<uint> traversalPath, HashSet<uint> traversalSet)
+    {
+        if (traversalPath.Count > 0)
+            traversalPath.RemoveAt(traversalPath.Count - 1);
+
+        traversalSet.Remove(pageId);
     }
 
     private static void WriteInteriorCell(Span<byte> destination, uint leftChild, long key)

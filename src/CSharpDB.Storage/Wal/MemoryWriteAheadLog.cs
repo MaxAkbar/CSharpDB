@@ -8,7 +8,7 @@ namespace CSharpDB.Storage.Wal;
 /// In-memory WAL implementation that preserves the same frame/header format as the file-backed WAL.
 /// This allows load-from-disk recovery to run entirely in memory.
 /// </summary>
-public sealed class MemoryWriteAheadLog : IWriteAheadLog
+public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider
 {
     private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
@@ -70,7 +70,15 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     }
 
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool HasPendingCommitWork => false;
     public bool IsOpen => _isOpen;
+
+    WalFlushDiagnosticsSnapshot IWalRuntimeDiagnosticsProvider.GetWalFlushDiagnosticsSnapshot() =>
+        WalFlushDiagnosticsSnapshot.Empty;
+
+    void IWalRuntimeDiagnosticsProvider.ResetWalFlushDiagnostics()
+    {
+    }
 
     public void BeginTransaction()
     {

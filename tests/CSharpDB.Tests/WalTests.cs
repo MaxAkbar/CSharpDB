@@ -999,8 +999,13 @@ public class WalTests : IAsyncLifetime
             await commit1.WaitAsync(ct);
             await commit2.WaitAsync(ct);
 
+            WalFlushDiagnosticsSnapshot diagnostics =
+                ((IWalRuntimeDiagnosticsProvider)wal).GetWalFlushDiagnosticsSnapshot();
+
             Assert.Equal(1, policy.CommitFlushCount);
             Assert.Equal(2, wal.Index.FrameCount);
+            Assert.Equal(1, diagnostics.FlushCount);
+            Assert.Equal(2, diagnostics.FlushedCommitCount);
             Assert.True(wal.Index.TryGetLatest(0, out _));
             Assert.True(wal.Index.TryGetLatest(1, out _));
         }
@@ -1008,6 +1013,296 @@ public class WalTests : IAsyncLifetime
         {
             if (wal is not null)
                 await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_DurableCommitBatchWindow_BypassesDelayWhenQueueIsHeavy()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_group_bypass_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new BlockingCommitWalFlushPolicy();
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: TimeSpan.FromSeconds(30));
+            await wal.OpenAsync(currentDbPageCount: 8, ct);
+
+            var commits = new List<WalCommitResult>(WriteAheadLog.DurableCommitBatchBypassPendingCommitThreshold);
+            for (int i = 0; i < WriteAheadLog.DurableCommitBatchBypassPendingCommitThreshold; i++)
+            {
+                wal.BeginTransaction();
+                await wal.AppendFrameAsync((uint)i, CreateFilledPage((byte)(0xC0 + i)), ct);
+                commits.Add(await wal.CommitAsync(newDbPageCount: 8, ct));
+            }
+
+            Task flushStart = policy.WaitForCommitFlushStartAsync(ct);
+            Task winner = await Task.WhenAny(flushStart, Task.Delay(TimeSpan.FromSeconds(1), ct));
+            Assert.Same(flushStart, winner);
+
+            policy.Release();
+            foreach (WalCommitResult commit in commits)
+                await commit.WaitAsync(ct);
+
+            WalFlushDiagnosticsSnapshot diagnostics =
+                ((IWalRuntimeDiagnosticsProvider)wal).GetWalFlushDiagnosticsSnapshot();
+
+            Assert.Equal(1, policy.CommitFlushCount);
+            Assert.Equal(WriteAheadLog.DurableCommitBatchBypassPendingCommitThreshold, diagnostics.FlushedCommitCount);
+            Assert.True(diagnostics.BatchWindowThresholdBypassCount > 0);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_Recover_TruncatesPreallocatedTailAndRetainsCommittedFrames()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_prealloc_recover_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        const long preallocationChunkBytes = 1L * 1024 * 1024;
+
+        try
+        {
+            await using (var wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                durableCommitBatchWindow: TimeSpan.Zero,
+                walPreallocationChunkBytes: preallocationChunkBytes))
+            {
+                await wal.OpenAsync(currentDbPageCount: 1, ct);
+                wal.BeginTransaction();
+                await wal.AppendFrameAsync(0, CreateFilledPage(0xD1), ct);
+                await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
+
+                WalFlushDiagnosticsSnapshot diagnostics =
+                    ((IWalRuntimeDiagnosticsProvider)wal).GetWalFlushDiagnosticsSnapshot();
+
+                Assert.True(diagnostics.PreallocationCount > 0);
+                Assert.True(new FileInfo(walPath).Length > PageConstants.WalHeaderSize + PageConstants.WalFrameSize);
+            }
+
+            await using var reopened = new WriteAheadLog(dbPath, new WalIndex());
+            await reopened.OpenAsync(currentDbPageCount: 1, ct);
+
+            Assert.Equal(1, reopened.Index.FrameCount);
+            Assert.True(reopened.Index.TryGetLatest(0, out _));
+            Assert.Equal(PageConstants.WalHeaderSize + PageConstants.WalFrameSize, new FileInfo(walPath).Length);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_Checkpoint_RepairsStaleIndexOffsetsFromWalFile()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_repair_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+
+        try
+        {
+            await using var device = new FileStorageDevice(dbPath, createNew: true);
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 1, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0x91), ct);
+            await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
+
+            walIndex.OverwriteCommittedState(
+                new Dictionary<uint, long>
+                {
+                    [0] = PageConstants.WalHeaderSize + PageConstants.WalFrameSize,
+                },
+                frameCount: 1,
+                commitCounter: 1);
+
+            await wal.CheckpointAsync(device, pageCount: 1, ct);
+
+            Assert.Equal(0, wal.Index.FrameCount);
+            Assert.False(wal.Index.TryGetLatest(0, out _));
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+            await AssertPageFilledAsync(device, 0, 0x91, ct);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_Checkpoint_RepairsStaleInRangeIndexOffsetsFromWalFile()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_inrange_repair_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+
+        try
+        {
+            await using var device = new FileStorageDevice(dbPath, createNew: true);
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0xA1), ct);
+            await wal.AppendFrameAsync(1, CreateFilledPage(0xA2), ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
+
+            walIndex.OverwriteCommittedState(
+                new Dictionary<uint, long>
+                {
+                    [0] = PageConstants.WalHeaderSize + PageConstants.WalFrameSize,
+                    [1] = PageConstants.WalHeaderSize + PageConstants.WalFrameSize,
+                },
+                frameCount: 2,
+                commitCounter: 1);
+
+            await wal.CheckpointAsync(device, pageCount: 2, ct);
+
+            Assert.Equal(0, wal.Index.FrameCount);
+            Assert.False(wal.Index.TryGetLatest(0, out _));
+            Assert.False(wal.Index.TryGetLatest(1, out _));
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+            await AssertPageFilledAsync(device, 0, 0xA1, ct);
+            await AssertPageFilledAsync(device, 1, 0xA2, ct);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task Pager_BeginCommit_DoesNotClearNextWriterTransactionState()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pager_split_commit_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new BlockingCommitWalFlushPolicy();
+
+        try
+        {
+            await using var device = new FileStorageDevice(dbPath, createNew: true);
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(
+                dbPath,
+                walIndex,
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: TimeSpan.FromMilliseconds(5));
+            await using var pager = await Pager.CreateAsync(device, wal, walIndex, new PagerOptions(), ct);
+            await pager.InitializeNewDatabaseAsync(ct);
+            await pager.RecoverAsync(ct);
+
+            await pager.BeginTransactionAsync(ct);
+            uint firstPageId = await pager.AllocatePageAsync(ct);
+            byte[] firstPage = await pager.GetPageAsync(firstPageId, ct);
+            firstPage[0] = 0x31;
+            await pager.MarkDirtyAsync(firstPageId, ct);
+
+            PagerCommitResult firstCommit = await pager.BeginCommitAsync(ct);
+            await policy.WaitForCommitFlushStartAsync(ct);
+
+            await pager.BeginTransactionAsync(ct);
+            uint secondPageId = await pager.AllocatePageAsync(ct);
+            byte[] secondPage = await pager.GetPageAsync(secondPageId, ct);
+            secondPage[0] = 0x42;
+            await pager.MarkDirtyAsync(secondPageId, ct);
+
+            policy.Release();
+            await firstCommit.WaitAsync(ct);
+
+            await pager.CommitAsync(ct);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task BackgroundCheckpoint_DoesNotStartWhileNextWriterIsActive()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pager_checkpoint_writer_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var flushPolicy = new BlockingCommitWalFlushPolicy();
+        var interceptor = new BlockingCheckpointInterceptor();
+        interceptor.Arm();
+
+        try
+        {
+            await using var device = new FileStorageDevice(dbPath, createNew: true);
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(
+                dbPath,
+                walIndex,
+                checksumProvider: null,
+                flushPolicy: flushPolicy,
+                durableCommitBatchWindow: TimeSpan.FromMilliseconds(5));
+            await using var pager = await Pager.CreateAsync(
+                device,
+                wal,
+                walIndex,
+                new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(1),
+                    AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+                    Interceptors = [interceptor],
+                },
+                ct);
+            await pager.InitializeNewDatabaseAsync(ct);
+            await pager.RecoverAsync(ct);
+
+            await pager.BeginTransactionAsync(ct);
+            uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(1, BitConverter.GetBytes(1L), ct);
+
+            PagerCommitResult commit1 = await pager.BeginCommitAsync(ct);
+            await flushPolicy.WaitForCommitFlushStartAsync(ct);
+
+            await pager.BeginTransactionAsync(ct);
+            await tree.InsertAsync(2, BitConverter.GetBytes(2L), ct);
+
+            flushPolicy.Release();
+            await commit1.WaitAsync(ct);
+
+            Task checkpointStart = interceptor.WaitForCheckpointStartAsync(ct);
+            Task winner = await Task.WhenAny(checkpointStart, Task.Delay(100, ct));
+            Assert.NotSame(checkpointStart, winner);
+
+            PagerCommitResult commit2 = await pager.BeginCommitAsync(ct);
+            await checkpointStart.WaitAsync(ct);
+            interceptor.Release();
+            await commit2.WaitAsync(ct);
+        }
+        finally
+        {
             if (File.Exists(dbPath)) File.Delete(dbPath);
             if (File.Exists(walPath)) File.Delete(walPath);
         }

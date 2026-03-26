@@ -19,11 +19,14 @@ namespace CSharpDB.Storage.Wal;
 /// All frames from the previous commit marker (or start) up to and including
 /// the commit frame belong to that transaction.
 /// </summary>
-public sealed class WriteAheadLog : IWriteAheadLog
+public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider
 {
     private const int WalStreamBufferSize = 64 * 1024;
     private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
+    internal const int DurableCommitBatchBypassPendingCommitThreshold = 4;
+    internal const long DurableCommitBatchBypassPendingByteThreshold =
+        (long)AppendFrameChunkSize * PageConstants.WalFrameSize;
     private static readonly IComparer<KeyValuePair<uint, long>> PageIdComparer =
         Comparer<KeyValuePair<uint, long>>.Create(static (left, right) => left.Key.CompareTo(right.Key));
 
@@ -35,6 +38,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly bool _useAdditiveHeaderChecksum;
     private readonly IWalFlushPolicy _flushPolicy;
     private readonly TimeSpan _durableCommitBatchWindow;
+    private readonly long _walPreallocationChunkBytes;
 
     // WAL header fields
     private uint _salt1;
@@ -60,16 +64,33 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private readonly SemaphoreSlim _streamMutex = new(1, 1);
     private readonly object _pendingCommitSync = new();
     private readonly List<PendingCommitBatch> _pendingCommitBatches = new();
+    private TaskCompletionSource? _pendingCommitBatchWindowSignal;
     private long _nextCommitSequence;
+    private long _pendingCommitByteCount;
     private bool _flushInProgress;
     private CSharpDbException? _writeFault;
+    private long _flushCount;
+    private long _flushedCommitCount;
+    private long _flushedByteCount;
+    private long _batchWindowWaitCount;
+    private long _batchWindowThresholdBypassCount;
+    private long _preallocationCount;
+    private long _preallocatedByteCount;
 
     public WriteAheadLog(
         string databasePath,
         WalIndex index,
         IPageChecksumProvider? checksumProvider = null,
-        DurabilityMode durabilityMode = DurabilityMode.Durable)
-        : this(databasePath, index, checksumProvider, WalFlushPolicy.Create(durabilityMode), TimeSpan.Zero)
+        DurabilityMode durabilityMode = DurabilityMode.Durable,
+        TimeSpan? durableCommitBatchWindow = null,
+        long walPreallocationChunkBytes = 0)
+        : this(
+            databasePath,
+            index,
+            checksumProvider,
+            WalFlushPolicy.Create(durabilityMode),
+            durableCommitBatchWindow,
+            walPreallocationChunkBytes)
     {
     }
 
@@ -78,20 +99,57 @@ public sealed class WriteAheadLog : IWriteAheadLog
         WalIndex index,
         IPageChecksumProvider? checksumProvider,
         IWalFlushPolicy flushPolicy,
-        TimeSpan? durableCommitBatchWindow = null)
+        TimeSpan? durableCommitBatchWindow = null,
+        long walPreallocationChunkBytes = 0)
     {
         _walPath = databasePath + ".wal";
         _index = index;
         _checksumProvider = checksumProvider ?? new AdditiveChecksumProvider();
         _useAdditiveHeaderChecksum = _checksumProvider is AdditiveChecksumProvider;
         _flushPolicy = flushPolicy;
-        _durableCommitBatchWindow = durableCommitBatchWindow.GetValueOrDefault();
+        _durableCommitBatchWindow = flushPolicy.AllowsWriteConcurrencyDuringCommitFlush
+            ? durableCommitBatchWindow.GetValueOrDefault()
+            : TimeSpan.Zero;
+        _walPreallocationChunkBytes = walPreallocationChunkBytes;
     }
 
     public WalIndex Index => _index;
     public bool IsOpen => _stream != null;
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool HasPendingCommitWork
+    {
+        get
+        {
+            lock (_pendingCommitSync)
+            {
+                return _flushInProgress || _pendingCommitBatches.Count > 0;
+            }
+        }
+    }
     internal IWalFlushPolicy FlushPolicy => _flushPolicy;
+
+    WalFlushDiagnosticsSnapshot IWalRuntimeDiagnosticsProvider.GetWalFlushDiagnosticsSnapshot()
+    {
+        return new WalFlushDiagnosticsSnapshot(
+            Interlocked.Read(ref _flushCount),
+            Interlocked.Read(ref _flushedCommitCount),
+            Interlocked.Read(ref _flushedByteCount),
+            Interlocked.Read(ref _batchWindowWaitCount),
+            Interlocked.Read(ref _batchWindowThresholdBypassCount),
+            Interlocked.Read(ref _preallocationCount),
+            Interlocked.Read(ref _preallocatedByteCount));
+    }
+
+    void IWalRuntimeDiagnosticsProvider.ResetWalFlushDiagnostics()
+    {
+        Interlocked.Exchange(ref _flushCount, 0);
+        Interlocked.Exchange(ref _flushedCommitCount, 0);
+        Interlocked.Exchange(ref _flushedByteCount, 0);
+        Interlocked.Exchange(ref _batchWindowWaitCount, 0);
+        Interlocked.Exchange(ref _batchWindowThresholdBypassCount, 0);
+        Interlocked.Exchange(ref _preallocationCount, 0);
+        Interlocked.Exchange(ref _preallocatedByteCount, 0);
+    }
 
     // ============ Open / Create ============
 
@@ -183,6 +241,9 @@ public sealed class WriteAheadLog : IWriteAheadLog
         try
         {
             frameOffset = _writePosition;
+            EnsureAppendCapacity_NoLock(PageConstants.WalFrameSize);
+            // Checkpoint reads reuse the shared stream and can move its cursor away from the append tail.
+            _stream.Position = _writePosition;
             uint dataChecksum = WriteWalFrame(
                 _appendFrameBuffer.AsSpan(0, PageConstants.WalFrameSize),
                 pageId,
@@ -504,7 +565,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
-            var checkpoint = EnsureIncrementalCheckpointState();
+            var checkpoint = await EnsureIncrementalCheckpointStateAsync(cancellationToken);
             if (checkpoint is null)
                 return true;
 
@@ -722,34 +783,84 @@ public sealed class WriteAheadLog : IWriteAheadLog
         long[] checkpointBatchWalOffsets = _checkpointBatchWalOffsets
             ?? throw new CSharpDbException(ErrorCode.WalError, "Checkpoint WAL offset buffer was not initialized.");
 
-        if (hasContiguousWalOffsets)
+        await _streamMutex.WaitAsync(cancellationToken);
+        try
         {
-            int readByteCount = pageCount * PageConstants.WalFrameSize;
-            await ReadWalRangeIntoAsync(startWalOffset, checkpointReadBuffer.AsMemory(0, readByteCount), cancellationToken);
+            if (_stream == null)
+                throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
 
-            var sourceFrames = checkpointReadBuffer.AsSpan(0, readByteCount);
-            var destinationPages = checkpointWriteBuffer.AsSpan(0, pageCount * PageConstants.PageSize);
-            for (int i = 0; i < pageCount; i++)
+            if (hasContiguousWalOffsets)
             {
-                sourceFrames
-                    .Slice(i * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize, PageConstants.PageSize)
-                    .CopyTo(destinationPages.Slice(i * PageConstants.PageSize, PageConstants.PageSize));
+                int readByteCount = pageCount * PageConstants.WalFrameSize;
+                await ReadWalRangeFromStreamAsync(
+                    startWalOffset,
+                    checkpointReadBuffer.AsMemory(0, readByteCount),
+                    cancellationToken);
+
+                var sourceFrames = checkpointReadBuffer.AsSpan(0, readByteCount);
+                var destinationPages = checkpointWriteBuffer.AsSpan(0, pageCount * PageConstants.PageSize);
+                for (int i = 0; i < pageCount; i++)
+                {
+                    sourceFrames
+                        .Slice(i * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize, PageConstants.PageSize)
+                        .CopyTo(destinationPages.Slice(i * PageConstants.PageSize, PageConstants.PageSize));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < pageCount; i++)
+                {
+                    await ReadPageFromStreamIntoAsync(
+                        checkpointBatchWalOffsets[i],
+                        checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
+                        cancellationToken);
+                }
             }
         }
-        else
+        finally
         {
-            for (int i = 0; i < pageCount; i++)
-            {
-                await ReadPageIntoAsync(
-                    checkpointBatchWalOffsets[i],
-                    checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
-                    cancellationToken);
-            }
+            _streamMutex.Release();
         }
 
         long dbOffset = (long)startPageId * PageConstants.PageSize;
         int writeByteCount = pageCount * PageConstants.PageSize;
         await device.WriteAsync(dbOffset, checkpointWriteBuffer.AsMemory(0, writeByteCount), cancellationToken);
+    }
+
+    private async ValueTask ReadPageFromStreamIntoAsync(
+        long walFrameOffset,
+        Memory<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        await ReadWalRangeFromStreamAsync(
+            walFrameOffset + PageConstants.WalFrameHeaderSize,
+            destination,
+            cancellationToken);
+    }
+
+    private async ValueTask ReadWalRangeFromStreamAsync(
+        long walOffset,
+        Memory<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        if (_stream == null)
+            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+
+        _stream.Position = walOffset;
+        int bytesRead = 0;
+        while (bytesRead < destination.Length)
+        {
+            int read = await _stream.ReadAsync(destination.Slice(bytesRead), cancellationToken);
+            if (read == 0) break;
+            bytesRead += read;
+        }
+
+        if (bytesRead != destination.Length)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Short WAL stream read at walOffset={walOffset} (expected {destination.Length} bytes, read {bytesRead}).");
+        }
     }
 
     private async ValueTask ReadWalRangeIntoAsync(long walOffset, Memory<byte> destination, CancellationToken cancellationToken)
@@ -822,6 +933,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         try
         {
+            EnsureAppendCapacity_NoLock((long)totalFrameCount * PageConstants.WalFrameSize);
+            _stream.Position = _writePosition;
             while (frameIndex < totalFrameCount)
             {
                 int framesInChunk = Math.Min(AppendFrameChunkSize, totalFrameCount - frameIndex);
@@ -870,6 +983,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
     private WalCommitResult QueuePendingCommit(PendingCommitBatch batch)
     {
         bool startLeader = false;
+        TaskCompletionSource? batchWindowSignal = null;
         lock (_pendingCommitSync)
         {
             if (_writeFault is not null)
@@ -880,6 +994,13 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             batch.Sequence = ++_nextCommitSequence;
             _pendingCommitBatches.Add(batch);
+            _pendingCommitByteCount += batch.ByteCount;
+            if (_pendingCommitBatchWindowSignal is not null && ShouldBypassBatchWindow_NoLock())
+            {
+                batchWindowSignal = _pendingCommitBatchWindowSignal;
+                _pendingCommitBatchWindowSignal = null;
+            }
+
             if (!_flushInProgress)
             {
                 _flushInProgress = true;
@@ -887,10 +1008,37 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
         }
 
+        batchWindowSignal?.TrySetResult();
+
         if (startLeader)
             _ = ProcessPendingCommitsAsync();
 
         return new WalCommitResult(batch.Completion.Task);
+    }
+
+    private void EnsureAppendCapacity_NoLock(long appendByteCount)
+    {
+        if (_stream is null ||
+            _walPreallocationChunkBytes <= 0 ||
+            appendByteCount <= 0)
+        {
+            return;
+        }
+
+        long requiredLength = checked(_writePosition + appendByteCount);
+        long currentLength = _stream.Length;
+        if (requiredLength <= currentLength)
+            return;
+
+        long growthChunk = _walPreallocationChunkBytes;
+        long newLength = checked(((requiredLength + growthChunk - 1) / growthChunk) * growthChunk);
+        if (newLength <= currentLength)
+            return;
+
+        _stream.SetLength(newLength);
+        _stream.Position = _writePosition;
+        Interlocked.Increment(ref _preallocationCount);
+        Interlocked.Add(ref _preallocatedByteCount, newLength - currentLength);
     }
 
     private async Task ProcessPendingCommitsAsync()
@@ -909,11 +1057,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
             try
             {
-                if (_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush &&
-                    _durableCommitBatchWindow > TimeSpan.Zero)
-                {
-                    await Task.Delay(_durableCommitBatchWindow).ConfigureAwait(false);
-                }
+                await WaitForDurableCommitBatchWindowAsync().ConfigureAwait(false);
 
                 lock (_pendingCommitSync)
                 {
@@ -965,19 +1109,33 @@ public sealed class WriteAheadLog : IWriteAheadLog
             }
 
             List<PendingCommitBatch> committedBatches;
-            bool morePending;
             lock (_pendingCommitSync)
             {
                 committedBatches = DrainCommittedBatches(flushThroughSequence);
+            }
+
+            long flushedByteCount = 0;
+            foreach (var batch in committedBatches)
+            {
+                flushedByteCount += batch.ByteCount;
+                PublishCommittedBatch(batch);
+                batch.Completion.TrySetResult();
+            }
+
+            if (committedBatches.Count > 0)
+            {
+                Interlocked.Increment(ref _flushCount);
+                Interlocked.Add(ref _flushedCommitCount, committedBatches.Count);
+                Interlocked.Add(ref _flushedByteCount, flushedByteCount);
+            }
+
+            bool morePending;
+            lock (_pendingCommitSync)
+            {
+                // Keep commit work marked in-flight until flushed batches are visible in the WAL index.
                 morePending = _pendingCommitBatches.Count > 0;
                 if (!morePending)
                     _flushInProgress = false;
-            }
-
-            foreach (var batch in committedBatches)
-            {
-                PublishCommittedBatch(batch);
-                batch.Completion.TrySetResult();
             }
 
             if (!morePending)
@@ -985,18 +1143,69 @@ public sealed class WriteAheadLog : IWriteAheadLog
         }
     }
 
+    private async Task WaitForDurableCommitBatchWindowAsync()
+    {
+        if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush ||
+            _durableCommitBatchWindow <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        Task? pendingSignalTask = null;
+        lock (_pendingCommitSync)
+        {
+            if (_pendingCommitBatches.Count == 0)
+                return;
+
+            if (ShouldBypassBatchWindow_NoLock())
+            {
+                Interlocked.Increment(ref _batchWindowThresholdBypassCount);
+                return;
+            }
+
+            _pendingCommitBatchWindowSignal ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            pendingSignalTask = _pendingCommitBatchWindowSignal.Task;
+            Interlocked.Increment(ref _batchWindowWaitCount);
+        }
+
+        Task delayTask = Task.Delay(_durableCommitBatchWindow);
+        Task completedTask = await Task.WhenAny(delayTask, pendingSignalTask!).ConfigureAwait(false);
+        if (ReferenceEquals(completedTask, pendingSignalTask))
+            Interlocked.Increment(ref _batchWindowThresholdBypassCount);
+
+        lock (_pendingCommitSync)
+        {
+            if (_pendingCommitBatchWindowSignal is not null &&
+                ReferenceEquals(_pendingCommitBatchWindowSignal.Task, pendingSignalTask))
+            {
+                _pendingCommitBatchWindowSignal = null;
+            }
+        }
+    }
+
+    private bool ShouldBypassBatchWindow_NoLock()
+    {
+        return _pendingCommitBatches.Count >= DurableCommitBatchBypassPendingCommitThreshold ||
+               _pendingCommitByteCount >= DurableCommitBatchBypassPendingByteThreshold;
+    }
+
     private List<PendingCommitBatch> DrainCommittedBatches(long flushThroughSequence)
     {
         var committedBatches = new List<PendingCommitBatch>();
         int index = 0;
+        long drainedByteCount = 0;
         while (index < _pendingCommitBatches.Count && _pendingCommitBatches[index].Sequence <= flushThroughSequence)
         {
             committedBatches.Add(_pendingCommitBatches[index]);
+            drainedByteCount += _pendingCommitBatches[index].ByteCount;
             index++;
         }
 
         if (index > 0)
+        {
             _pendingCommitBatches.RemoveRange(0, index);
+            _pendingCommitByteCount -= drainedByteCount;
+        }
 
         return committedBatches;
     }
@@ -1015,6 +1224,8 @@ public sealed class WriteAheadLog : IWriteAheadLog
             _writeFault = fault;
             batches = new List<PendingCommitBatch>(_pendingCommitBatches);
             _pendingCommitBatches.Clear();
+            _pendingCommitByteCount = 0;
+            _pendingCommitBatchWindowSignal = null;
             _flushInProgress = false;
         }
 
@@ -1170,7 +1381,7 @@ public sealed class WriteAheadLog : IWriteAheadLog
         _checkpointCommittedPages = new KeyValuePair<uint, long>[newLength];
     }
 
-    private IncrementalCheckpointState? EnsureIncrementalCheckpointState()
+    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync(CancellationToken cancellationToken)
     {
         if (_incrementalCheckpoint is not null)
             return _incrementalCheckpoint;
@@ -1178,7 +1389,114 @@ public sealed class WriteAheadLog : IWriteAheadLog
         if (_stream is null)
             return null;
 
-        var committedPages = _index.GetCommittedPages();
+        var indexSnapshot = _index.GetCommittedStateSnapshot();
+        var committedPages = indexSnapshot.LatestPageMap;
+        int committedFrameCount = indexSnapshot.FrameCount;
+        long committedCommitCount = indexSnapshot.CommitCounter;
+        long streamLength;
+
+        await _streamMutex.WaitAsync(cancellationToken);
+        try
+        {
+            if (_stream is null)
+                return null;
+
+            streamLength = _stream.Length;
+            if (streamLength <= PageConstants.WalHeaderSize)
+                return null;
+
+            if (await RequiresCommittedStateRebuildAsync(
+                committedPages,
+                committedFrameCount,
+                streamLength,
+                cancellationToken))
+            {
+                committedPages = new Dictionary<uint, long>(Math.Max(4, committedPages.Count));
+                var pendingCommitFrames = new List<(uint PageId, long WalOffset)>(capacity: 16);
+                committedFrameCount = 0;
+                committedCommitCount = 0;
+
+                _stream.Position = PageConstants.WalHeaderSize;
+                byte[] frameHeaderBuffer = _recoveryFrameHeaderBuffer;
+                byte[] pageDataBuffer = _recoveryPageBuffer;
+
+                while (_stream.Position + PageConstants.WalFrameSize <= streamLength)
+                {
+                    long frameOffset = _stream.Position;
+
+                    int headerRead = await _stream.ReadAsync(
+                        frameHeaderBuffer.AsMemory(0, PageConstants.WalFrameHeaderSize),
+                        cancellationToken);
+                    int dataRead = await _stream.ReadAsync(
+                        pageDataBuffer.AsMemory(0, PageConstants.PageSize),
+                        cancellationToken);
+
+                    if (headerRead != PageConstants.WalFrameHeaderSize ||
+                        dataRead != PageConstants.PageSize)
+                    {
+                        streamLength = frameOffset;
+                        break;
+                    }
+
+                    uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
+                    uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
+                    if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
+                    {
+                        streamLength = frameOffset;
+                        break;
+                    }
+
+                    uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
+                    uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(20, 4));
+                    uint actualHeaderChecksum = ComputeHeaderChecksum(
+                        BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4)),
+                        BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4)),
+                        BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4)),
+                        BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4)),
+                        frameHeaderBuffer.AsSpan(0, 16));
+                    uint actualDataChecksum = _checksumProvider.Compute(pageDataBuffer);
+
+                    if (expectedHeaderChecksum != actualHeaderChecksum ||
+                        expectedDataChecksum != actualDataChecksum)
+                    {
+                        streamLength = frameOffset;
+                        break;
+                    }
+
+                    uint pageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4));
+                    uint dbPageCount = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4));
+
+                    pendingCommitFrames.Add((pageId, frameOffset));
+
+                    if (dbPageCount == 0)
+                        continue;
+
+                    committedFrameCount += pendingCommitFrames.Count;
+                    committedCommitCount++;
+                    foreach (var (committedPageId, committedOffset) in pendingCommitFrames)
+                        committedPages[committedPageId] = committedOffset;
+
+                    pendingCommitFrames.Clear();
+                }
+
+                if (pendingCommitFrames.Count > 0)
+                    streamLength = pendingCommitFrames[0].WalOffset;
+
+                if (_stream.Length != streamLength)
+                {
+                    _stream.SetLength(streamLength);
+                    _writePosition = streamLength;
+                    _uncommittedStartOffset = streamLength;
+                }
+
+                _index.OverwriteCommittedState(committedPages, committedFrameCount, committedCommitCount);
+            }
+        }
+        finally
+        {
+            _streamMutex.Release();
+        }
+
         int committedPageCount = committedPages.Count;
         if (committedPageCount == 0)
             return null;
@@ -1202,8 +1520,60 @@ public sealed class WriteAheadLog : IWriteAheadLog
 
         var snapshot = new KeyValuePair<uint, long>[committedPageCount];
         Array.Copy(sortedCommittedPages, 0, snapshot, 0, committedPageCount);
-        _incrementalCheckpoint = new IncrementalCheckpointState(snapshot, committedPageCount, _stream.Length);
+        _incrementalCheckpoint = new IncrementalCheckpointState(snapshot, committedPageCount, streamLength);
         return _incrementalCheckpoint;
+    }
+
+    private async ValueTask<bool> RequiresCommittedStateRebuildAsync(
+        IReadOnlyDictionary<uint, long> committedPages,
+        int committedFrameCount,
+        long streamLength,
+        CancellationToken cancellationToken)
+    {
+        if (committedFrameCount == 0)
+            return committedPages.Count != 0 || streamLength > PageConstants.WalHeaderSize;
+
+        if (committedPages.Count == 0 || streamLength < PageConstants.WalHeaderSize + PageConstants.WalFrameSize)
+            return true;
+
+        long maxFrameOffset = streamLength - PageConstants.WalFrameSize;
+        byte[] frameHeaderBuffer = _recoveryFrameHeaderBuffer;
+        foreach (var entry in committedPages)
+        {
+            uint expectedPageId = entry.Key;
+            long walOffset = entry.Value;
+            if (walOffset < PageConstants.WalHeaderSize || walOffset > maxFrameOffset)
+                return true;
+
+            if ((walOffset - PageConstants.WalHeaderSize) % PageConstants.WalFrameSize != 0)
+                return true;
+
+            await ReadWalRangeFromStreamAsync(
+                walOffset,
+                frameHeaderBuffer.AsMemory(0, PageConstants.WalFrameHeaderSize),
+                cancellationToken);
+
+            uint actualPageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4));
+            if (actualPageId != expectedPageId)
+                return true;
+
+            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
+            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
+            if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
+                return true;
+
+            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
+            uint actualHeaderChecksum = ComputeHeaderChecksum(
+                actualPageId,
+                BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4)),
+                frameSalt1,
+                frameSalt2,
+                frameHeaderBuffer.AsSpan(0, 16));
+            if (expectedHeaderChecksum != actualHeaderChecksum)
+                return true;
+        }
+
+        return false;
     }
 
     private async ValueTask FlushCheckpointSliceAsync(
@@ -1439,10 +1809,12 @@ public sealed class WriteAheadLog : IWriteAheadLog
         public PendingCommitBatch(PendingCommitEntry[] entries)
         {
             Entries = entries;
+            ByteCount = (long)entries.Length * PageConstants.WalFrameSize;
         }
 
         public long Sequence { get; set; }
         public PendingCommitEntry[] Entries { get; }
+        public long ByteCount { get; }
         public TaskCompletionSource Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }

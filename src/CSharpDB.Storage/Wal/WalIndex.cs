@@ -119,6 +119,14 @@ public sealed class WalIndex
         }
     }
 
+    internal (Dictionary<uint, long> LatestPageMap, int FrameCount, long CommitCounter) GetCommittedStateSnapshot()
+    {
+        lock (_gate)
+        {
+            return (new Dictionary<uint, long>(_pageMap), _frameCount, _commitCounter);
+        }
+    }
+
     /// <summary>
     /// Reset after a successful checkpoint. Clears all entries.
     /// Must only be called when no readers hold snapshots.
@@ -158,6 +166,31 @@ public sealed class WalIndex
 
             _frameCount = frameCount;
             _commitCounter += commitAdvanceCount;
+        }
+    }
+
+    internal void OverwriteCommittedState(
+        Dictionary<uint, long> latestPageMap,
+        int frameCount,
+        long commitCounter)
+    {
+        ArgumentNullException.ThrowIfNull(latestPageMap);
+
+        if (frameCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(frameCount));
+        if (commitCounter < 0)
+            throw new ArgumentOutOfRangeException(nameof(commitCounter));
+
+        lock (_gate)
+        {
+            _pageMap.Clear();
+            _pageMap.EnsureCapacity(latestPageMap.Count);
+
+            foreach (var entry in latestPageMap)
+                _pageMap[entry.Key] = entry.Value;
+
+            _frameCount = frameCount;
+            _commitCounter = commitCounter;
         }
     }
 }
