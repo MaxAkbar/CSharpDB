@@ -76,6 +76,40 @@ await using var db = await Database.OpenAsync("ingest.cdb", options);
 
 `UseWriteOptimizedPreset()` is the current recommended opt-in preset for file-backed write-heavy workloads. It keeps the existing cache and index configuration, raises the auto-checkpoint frame threshold to `4096`, and runs auto-checkpoints in background slices instead of blocking the triggering commit. `PagerOptions.AutoCheckpointMaxPagesPerStep` controls how much work each background slice performs; the default remains `64` pages. In the current durable-write diagnostics, the `64`-page background preset was the best measured background variant at `33.30K ops/sec`, slightly ahead of `256` pages at `33.24K` and foreground `FrameCount(4096)` at `33.13K`. The important difference is that background sliced mode kept checkpoint work off essentially all commits while the foreground policy still had `246` commits pay checkpoint cost in the median run.
 
+If you want to experiment with durable group commit, the storage builder now exposes `UseDurableCommitBatchWindow(...)`:
+
+```csharp
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseWriteOptimizedPreset();
+        builder.UseDurableCommitBatchWindow(TimeSpan.FromMilliseconds(0.25));
+    });
+
+await using var db = await Database.OpenAsync("ingest.cdb", options);
+```
+
+Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the final post-fix median-of-3 diagnostics, `250us` was only a narrow `4`-writer win and was not a consistent `8`-writer win, so it should stay opt-in.
+
+For sustained file-backed ingest, the builder also exposes `UseWalPreallocationChunkBytes(...)`:
+
+```csharp
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =>
+    {
+        builder.UseWriteOptimizedPreset();
+        builder.UseWalPreallocationChunkBytes(1 * 1024 * 1024);
+    });
+
+await using var db = await Database.OpenAsync("ingest.cdb", options);
+```
+
+Keep this at `0` by default. In the final post-fix diagnostics it was effectively flat to slightly negative: not a single-writer win, and basically neutral on the `8`-writer durable commit benchmark. Treat it as an experimental opt-in for specific local-disk ingest workloads rather than a general preset.
+
 ## Low-level use: open the storage graph directly
 
 If you need direct access to `Pager`, `SchemaCatalog`, or `BTree`, use the default storage engine factory:

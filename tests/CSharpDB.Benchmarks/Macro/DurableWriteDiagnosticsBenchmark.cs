@@ -4,6 +4,7 @@ using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
+using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Benchmarks.Macro;
 
@@ -49,6 +50,27 @@ public static class DurableWriteDiagnosticsBenchmark
             AutoCheckpointExecutionMode.Background,
             256),
         new(
+            "Frame4096Background256Prealloc1MiB",
+            "FrameCount(4096)+Background(256 pages/step)+WalPrealloc(1MiB)",
+            static () => new FrameCountCheckpointPolicy(4096),
+            AutoCheckpointExecutionMode.Background,
+            256,
+            WalPreallocationChunkBytes: 1L * 1024 * 1024),
+        new(
+            "Frame4096Background256Batch250us",
+            "FrameCount(4096)+Background(256 pages/step)+BatchWindow(250us)",
+            static () => new FrameCountCheckpointPolicy(4096),
+            AutoCheckpointExecutionMode.Background,
+            256,
+            TimeSpan.FromMilliseconds(0.25)),
+        new(
+            "Frame4096Background256Batch1ms",
+            "FrameCount(4096)+Background(256 pages/step)+BatchWindow(1ms)",
+            static () => new FrameCountCheckpointPolicy(4096),
+            AutoCheckpointExecutionMode.Background,
+            256,
+            TimeSpan.FromMilliseconds(1)),
+        new(
             "Wal4MiB",
             "WalSize(4 MiB)",
             static () => new WalSizeCheckpointPolicy(4L * 1024 * 1024),
@@ -70,13 +92,17 @@ public static class DurableWriteDiagnosticsBenchmark
         {
             var interceptor = new WritePathDiagnosticInterceptor();
             var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
+            {
                 builder.UsePagerOptions(new PagerOptions
                 {
                     CheckpointPolicy = scenario.CreatePolicy(),
                     AutoCheckpointExecutionMode = scenario.ExecutionMode,
                     AutoCheckpointMaxPagesPerStep = scenario.AutoCheckpointMaxPagesPerStep,
                     Interceptors = [interceptor],
-                }));
+                });
+                builder.UseDurableCommitBatchWindow(scenario.DurableCommitBatchWindow);
+                builder.UseWalPreallocationChunkBytes(scenario.WalPreallocationChunkBytes);
+            });
 
             await using var bench = await BenchmarkDatabase.CreateAsync(options: options);
             var result = await RunScenarioAsync(
@@ -113,6 +139,7 @@ public static class DurableWriteDiagnosticsBenchmark
             await OperationAsync();
         }
 
+        bench.Db.ResetWalFlushDiagnostics();
         interceptor.Reset();
 
         var histogram = new LatencyHistogram();
@@ -128,12 +155,16 @@ public static class DurableWriteDiagnosticsBenchmark
         }
 
         totalSw.Stop();
+        WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
 
         var result = CreateResult(
             name,
             histogram,
             totalSw.Elapsed.TotalMilliseconds,
-            interceptor.BuildSummary(policyDescription));
+            interceptor.BuildSummary(
+                policyDescription,
+                walDiagnostics,
+                totalSw.Elapsed.TotalMilliseconds));
 
         Console.WriteLine($"  {name}: {result.OpsPerSecond:N0} ops/sec, P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms");
         Console.WriteLine($"    {result.ExtraInfo}");
@@ -202,14 +233,26 @@ public static class DurableWriteDiagnosticsBenchmark
             }
         }
 
-        public string BuildSummary(string policyDescription)
+        public string BuildSummary(
+            string policyDescription,
+            WalFlushDiagnosticsSnapshot walDiagnostics,
+            double elapsedMs)
         {
             lock (_sync)
             {
                 double avgDirtyPages = _commitCount == 0 ? 0 : (double)_totalDirtyPages / _commitCount;
+                double elapsedSeconds = elapsedMs <= 0 ? 0 : elapsedMs / 1000.0;
+                double flushesPerSecond = elapsedSeconds <= 0 ? 0 : walDiagnostics.FlushCount / elapsedSeconds;
+                double commitsPerFlush = walDiagnostics.FlushCount == 0
+                    ? 0
+                    : (double)walDiagnostics.FlushedCommitCount / walDiagnostics.FlushCount;
+                double kibPerFlush = walDiagnostics.FlushCount == 0
+                    ? 0
+                    : walDiagnostics.FlushedByteCount / (double)walDiagnostics.FlushCount / 1024.0;
+                double preallocatedKiB = walDiagnostics.PreallocatedByteCount / 1024.0;
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"policy={policyDescription}, commits={_commitCount}, avgDirtyPages={avgDirtyPages:F2}, maxDirtyPages={_maxDirtyPages}, checkpoints={_checkpointCount}, commitsWithCheckpoint={_commitCountWithCheckpoint}, avgCommitMs={_commitLatencyMs.Mean:F3}, p99CommitMs={_commitLatencyMs.Percentile(0.99):F3}, avgCommitNoCheckpointMs={_commitWithoutCheckpointLatencyMs.Mean:F3}, avgCommitWithCheckpointMs={_commitWithCheckpointLatencyMs.Mean:F3}, avgCheckpointMs={_checkpointLatencyMs.Mean:F3}, p99CheckpointMs={_checkpointLatencyMs.Percentile(0.99):F3}");
+                    $"policy={policyDescription}, commits={_commitCount}, avgDirtyPages={avgDirtyPages:F2}, maxDirtyPages={_maxDirtyPages}, checkpoints={_checkpointCount}, commitsWithCheckpoint={_commitCountWithCheckpoint}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, avgCommitMs={_commitLatencyMs.Mean:F3}, p99CommitMs={_commitLatencyMs.Percentile(0.99):F3}, avgCommitNoCheckpointMs={_commitWithoutCheckpointLatencyMs.Mean:F3}, avgCommitWithCheckpointMs={_commitWithCheckpointLatencyMs.Mean:F3}, avgCheckpointMs={_checkpointLatencyMs.Mean:F3}, p99CheckpointMs={_checkpointLatencyMs.Percentile(0.99):F3}");
             }
         }
 
@@ -301,5 +344,7 @@ public static class DurableWriteDiagnosticsBenchmark
         string Description,
         Func<ICheckpointPolicy> CreatePolicy,
         AutoCheckpointExecutionMode ExecutionMode,
-        int AutoCheckpointMaxPagesPerStep = 64);
+        int AutoCheckpointMaxPagesPerStep = 64,
+        TimeSpan DurableCommitBatchWindow = default,
+        long WalPreallocationChunkBytes = 0);
 }

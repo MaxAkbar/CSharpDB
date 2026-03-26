@@ -8,6 +8,12 @@ The current snapshot in this README mixes the March 25-26, 2026 durable and buff
 - `Buffered reproducible macro capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260325-233253-median-of-3.csv`
 - `Full sequential reproducible in-memory rotating batch capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260325-125528-median-of-3.csv`
 - `Full sequential reproducible write diagnostics capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260325-125704-median-of-3.csv`
+- `Final post-fix write diagnostics capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260326-122757-median-of-3.csv`
+- `Final post-fix concurrent durable write capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260326-123705-median-of-3.csv`
+- `Smart batch-window write diagnostics capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260326-061640-median-of-3.csv`
+- `Smart batch-window concurrent durable write capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260326-062452-median-of-3.csv`
+- `Sequential WAL preallocation write diagnostics capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260326-070646-median-of-3.csv`
+- `Concurrent WAL preallocation durable write capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260326-071544-median-of-3.csv`
 - `Full sequential reproducible direct client transport capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260325-130329-median-of-3.csv`
 - `Buffered direct client transport capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260326-001622-median-of-3.csv`
 - `Full sequential reproducible hybrid storage-mode capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260325-130952-median-of-3.csv`
@@ -102,6 +108,9 @@ dotnet run -c Release -- --macro --repeat 3 --repro
 # Durable write variance diagnostics
 dotnet run -c Release -- --write-diagnostics --repeat 3 --repro
 
+# Concurrent durable write diagnostics
+dotnet run -c Release -- --concurrent-write-diagnostics --repeat 3 --repro
+
 # Focused direct hybrid transport comparison (no gRPC)
 dotnet run -c Release -- --direct-file-cache-transport --repeat 3 --repro
 
@@ -140,6 +149,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `CollectionIndexBenchmarks`: focused collection secondary-index lookup and indexed write-maintenance costs
 - `StorageTuningBenchmarks`: cache-size, index-provider, and reader-session matrix for file-backed indexed lookups
 - `DurableWriteDiagnosticsBenchmark`: file-backed single-row write diagnostics across frame-count and WAL-size checkpoint policies, including background sliced auto-checkpoint scheduling
+- `ConcurrentDurableWriteBenchmark`: shared-database multi-writer auto-commit sweep for durable batch-window tuning under actual writer contention
 - `InMemoryBatchBenchmark`: rotating x100 batch throughput for in-memory SQL and collections
 - `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
 - `SharedMemoryAdoNetBenchmark`: named shared-memory reader/writer contention through the provider host layer
@@ -536,6 +546,15 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - Smaller slices still reduce per-checkpoint task time but are no longer the throughput winner. At `16` pages/step, average checkpoint time fell to about `3.37 ms`, but throughput landed lower at `279.9 ops/sec` because more background steps were required.
 - The non-checkpoint commit path is now tight in the best background row: `FrameCount(4096)+Background(256 pages/step)` measured `3.365 ms` average no-checkpoint commit time with `3.982 ms` p99 commit latency.
 - Higher frame-count thresholds still help by making checkpoints less frequent, and background sliced scheduling helps by keeping almost all of that work off the write call that triggered it.
+- The final post-fix single-writer median-of-3 run in `write-diagnostics-20260326-122757-median-of-3.csv` put `FrameCount(4096)+Background(256 pages/step)` and `FrameCount(4096)+Background(64 pages/step)` in a virtual tie at `282 ops/sec`; the `256`-page row kept the slightly better p50/p99 pair (`3.427 ms` / `6.015 ms`), so it remains the reference durable write row.
+- In that same final single-writer median, `FrameCount(4096)+Background(256 pages/step)+BatchWindow(250us)` was not a win: `282 -> 278 ops/sec`, `P50 3.427 -> 3.473 ms`, `P99 6.015 -> 6.539 ms`, with `commitsPerFlush=1.00` and `batchWindowBypasses=0`. That confirms the smarter leader remains inert on the single-writer path, which is correct.
+- `BatchWindow(1ms)` is still clearly bad on the single-writer path: `66 ops/sec`, `P50 15.686 ms`, `P99 17.948 ms`.
+- The final post-fix concurrent median-of-3 run in `concurrent-write-diagnostics-20260326-123705-median-of-3.csv` was also mixed. With `4` writers, `BatchWindow(250us)` improved `542 -> 554 commits/sec` and reduced p99 from `13.002 ms` to `12.243 ms`. With `8` writers, the zero-window row still led on throughput (`1103` vs `1083` / `1079` commits/sec for `250us` / `500us`).
+- The smart leader still engaged under heavier overlap in the final concurrent median. The `8`-writer batched rows recorded `commitsPerFlush=4.00` and roughly `1.3K` threshold bypasses, but that did not turn into a stable default-quality throughput win on this machine.
+- Recommended interpretation for durable batching after the post-fix rerun: keep the default at `0`. Treat `250us` as a narrow opt-in experiment for some `4`-writer workloads, not a preset or new default. Use the `flushes/sec`, `commits/flush`, and `KiB/flush` counters to confirm that batching is actually helping on the target machine.
+- The final post-fix single-writer preallocation row was effectively neutral-to-negative. `FrameCount(4096)+Background(256 pages/step)` measured `282 ops/sec`, `P99 6.015 ms`; the matching `WalPrealloc(1MiB)` row landed at `280 ops/sec`, `P99 6.452 ms`, with `36` preallocations and about `36 MiB` reserved over the run.
+- The final post-fix concurrent preallocation rows were also basically flat. At `8` writers with no batch window, `WalPrealloc(1MiB)` moved `1103 -> 1101 commits/sec`; with `BatchWindow(250us)`, it moved `1083 -> 1084 commits/sec`, while p99 stayed in the same general range.
+- Recommended interpretation for preallocation after the post-fix rerun: keep the default at `0`, and treat `UseWalPreallocationChunkBytes(1 * 1024 * 1024)` as an experimental opt-in rather than a recommended preset. Use the `preallocations` and `preallocatedKiB` counters to confirm it is actually active before judging it.
 - Recommended file-backed write-heavy preset: `builder.UseWriteOptimizedPreset()`. This is opt-in and does not change the engine default checkpoint policy.
 
 ## CSharpDB Storage Mode Comparison

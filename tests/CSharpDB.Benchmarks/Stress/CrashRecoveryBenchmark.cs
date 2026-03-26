@@ -5,9 +5,9 @@ using CSharpDB.Engine;
 namespace CSharpDB.Benchmarks.Stress;
 
 /// <summary>
-/// Tests crash recovery reliability and timing.
-/// Inserts batches, simulates crashes by disposing without clean shutdown,
-/// then reopens and verifies committed data survives.
+/// Measures reopen/recovery timing after clean process shutdown with an
+/// abandoned uncommitted transaction. True process-crash durability coverage
+/// now lives in the test suite's process-level crash harness tests.
 /// </summary>
 public static class CrashRecoveryBenchmark
 {

@@ -16,6 +16,12 @@ public static class Program
             return;
         }
 
+        if (args[0].Equals("--crash-harness", StringComparison.OrdinalIgnoreCase))
+        {
+            await CrashHarness.RunAsync(args[1..]);
+            return;
+        }
+
         int repeatCount = ParseRepeatCount(args);
         bool enableRepro = HasFlag(args, "--repro");
         int? requestedCpuThreads = ParseCpuThreads(args);
@@ -49,6 +55,11 @@ public static class Program
             case "--write-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--concurrent-write-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
                 return;
 
             case "--direct-file-cache-transport":
@@ -86,6 +97,9 @@ public static class Program
                 Console.WriteLine();
                 Console.WriteLine("=== Direct File-Cache Transport Benchmark ===");
                 await RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount);
+                Console.WriteLine();
+                Console.WriteLine("=== Concurrent Durable Write Benchmark ===");
+                await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
                 Console.WriteLine();
                 Console.WriteLine("=== Hybrid Storage Mode Benchmark ===");
                 await RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount);
@@ -131,6 +145,14 @@ public static class Program
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
             await RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--concurrent-write-diagnostics"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -247,6 +269,12 @@ public static class Program
     {
         Console.WriteLine("--- Durable Write Diagnostics Benchmark ---");
         return await DurableWriteDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentWriteDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Concurrent Durable Write Benchmark ---");
+        return await ConcurrentDurableWriteBenchmark.RunAsync();
     }
 
     private static async Task<List<BenchmarkResult>> RunDirectFileCacheTransportOnceAsync()
@@ -465,6 +493,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --macro              Run macro-benchmarks (sustained workloads)");
         Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
+        Console.WriteLine("  dotnet run -- --concurrent-write-diagnostics  Run focused multi-writer durable commit diagnostics");
         Console.WriteLine("  dotnet run -- --direct-file-cache-transport  Run focused direct default-vs-tuned file-cache benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused file-backed vs in-memory vs persistent-memory hybrid benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-cold-open  Run focused engine-cold open + first read benchmark");
@@ -472,7 +501,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-post-checkpoint  Run focused post-checkpoint hot reread benchmark");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --scaling --repro    Run non-micro suite with high-priority + pinned CPU affinity");
         Console.WriteLine("  dotnet run -- --scaling --repro --cpu-threads 8   Pin to first 8 logical CPUs");
