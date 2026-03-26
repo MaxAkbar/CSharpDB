@@ -198,6 +198,7 @@ Defaults:
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
 - The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro` and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv` and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
+- The focused durability baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705` is checked in so fresh clones can run those durability comparisons without first regenerating the baseline locally.
 - The focused durability checks compare `Mean` against the stable median-of-3 durability rows only. Allocation comparison is intentionally skipped for those checks because the diagnostics CSVs emit raw millisecond values, not BenchmarkDotNet `Allocated` columns.
 
 ## Current Performance Snapshot

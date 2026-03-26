@@ -39,6 +39,13 @@ coverage*/
 *.txt
 tests/CSharpDB.Benchmarks/baselines/
 tests/CSharpDB.Benchmarks/results/
+!tests/CSharpDB.Benchmarks/baselines/
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/metadata.txt
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/macro-stress-scaling/
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/macro-stress-scaling/write-diagnostics-median-of-3.csv
+!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv
 
 ## Python
 __pycache__/
