@@ -23,7 +23,23 @@ internal static class CrashHarness
                 return;
 
             case "checkpoint-start":
-                await CrashDuringCheckpointAsync(dbPath, markerPath);
+                await CrashDuringCheckpointStartAsync(dbPath, markerPath);
+                return;
+
+            case "checkpoint-after-device-flush":
+                await CrashDuringCheckpointAtStoragePhaseAsync(
+                    dbPath,
+                    markerPath,
+                    crashPoint: "checkpoint-after-device-flush",
+                    insertedValue: 303);
+                return;
+
+            case "checkpoint-after-wal-finalize":
+                await CrashDuringCheckpointAtStoragePhaseAsync(
+                    dbPath,
+                    markerPath,
+                    crashPoint: "checkpoint-after-wal-finalize",
+                    insertedValue: 404);
                 return;
 
             default:
@@ -39,7 +55,7 @@ internal static class CrashHarness
         Environment.FailFast("Crash harness: commit returned, then process terminated immediately.");
     }
 
-    private static async Task CrashDuringCheckpointAsync(string dbPath, string markerPath)
+    private static async Task CrashDuringCheckpointStartAsync(string dbPath, string markerPath)
     {
         var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
         {
@@ -54,6 +70,31 @@ internal static class CrashHarness
         await db.CheckpointAsync();
 
         throw new InvalidOperationException("Checkpoint crash harness completed without terminating the process.");
+    }
+
+    private static async Task CrashDuringCheckpointAtStoragePhaseAsync(
+        string dbPath,
+        string markerPath,
+        string crashPoint,
+        int insertedValue)
+    {
+        AppContext.SetData("CSharpDB.TestCrashPoint", crashPoint);
+        AppContext.SetData("CSharpDB.TestCrashMarkerPath", markerPath);
+
+        try
+        {
+            await using var db = await Database.OpenAsync(dbPath);
+            await db.ExecuteAsync($"INSERT INTO t VALUES (1, {insertedValue})");
+            await db.CheckpointAsync();
+        }
+        finally
+        {
+            AppContext.SetData("CSharpDB.TestCrashPoint", null);
+            AppContext.SetData("CSharpDB.TestCrashMarkerPath", null);
+        }
+
+        throw new InvalidOperationException(
+            $"Checkpoint crash harness completed without terminating the process at '{crashPoint}'.");
     }
 
     private sealed class FailFastOnCheckpointStartInterceptor : IPageOperationInterceptor

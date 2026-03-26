@@ -1,5 +1,6 @@
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Caching;
+using CSharpDB.Storage.Internal;
 using System.Buffers;
 
 namespace CSharpDB.Storage.Paging;
@@ -801,6 +802,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return;
 
         await _wal.CheckpointAsync(_device, PageCount, ct);
+        ProcessCrashInjector.TripIfRequested(
+            "checkpoint-after-wal-finalize",
+            "checkpoint-after-wal-finalize");
         await RefreshStateAfterCheckpointCompletionAsync(ct);
     }
 

@@ -1,4 +1,5 @@
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Internal;
 using CSharpDB.Storage.StorageEngine;
 using Microsoft.Win32.SafeHandles;
 using System.Buffers.Binary;
@@ -582,12 +583,15 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
                 if (checkpoint.NextPageIndex < checkpoint.CommittedPageCount)
                     return false;
-            }
+                }
 
-            await device.FlushAsync(cancellationToken);
-            await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
-            return true;
-        }
+                await device.FlushAsync(cancellationToken);
+                ProcessCrashInjector.TripIfRequested(
+                    "checkpoint-after-device-flush",
+                    "checkpoint-after-device-flush");
+                await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
+                return true;
+            }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
             int committedPageCount = _incrementalCheckpoint?.CommittedPageCount ?? _index.FrameCount;

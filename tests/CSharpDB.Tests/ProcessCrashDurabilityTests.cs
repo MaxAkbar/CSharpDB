@@ -41,29 +41,55 @@ public sealed class ProcessCrashDurabilityTests
 
     [Fact]
     public async Task CheckpointCrash_DoesNotLoseCommittedWrite()
+        => await AssertCheckpointCrashDoesNotLoseCommittedWriteAsync(
+            scenario: "checkpoint-start",
+            markerFileName: "checkpoint-start.marker",
+            expectedValue: 202L,
+            TestContext.Current.CancellationToken);
+
+    [Fact]
+    public async Task CheckpointCrash_AfterDeviceFlush_DoesNotLoseCommittedWrite()
+        => await AssertCheckpointCrashDoesNotLoseCommittedWriteAsync(
+            scenario: "checkpoint-after-device-flush",
+            markerFileName: "checkpoint-after-device-flush.marker",
+            expectedValue: 303L,
+            TestContext.Current.CancellationToken);
+
+    [Fact]
+    public async Task CheckpointCrash_AfterWalFinalize_DoesNotLoseCommittedWrite()
+        => await AssertCheckpointCrashDoesNotLoseCommittedWriteAsync(
+            scenario: "checkpoint-after-wal-finalize",
+            markerFileName: "checkpoint-after-wal-finalize.marker",
+            expectedValue: 404L,
+            TestContext.Current.CancellationToken);
+
+    private static async Task AssertCheckpointCrashDoesNotLoseCommittedWriteAsync(
+        string scenario,
+        string markerFileName,
+        long expectedValue,
+        CancellationToken ct)
     {
-        var ct = TestContext.Current.CancellationToken;
         string workDir = NewTempDirectory();
-        string dbPath = Path.Combine(workDir, "checkpoint-crash.db");
-        string markerPath = Path.Combine(workDir, "checkpoint-start.marker");
+        string dbPath = Path.Combine(workDir, $"{scenario}.db");
+        string markerPath = Path.Combine(workDir, markerFileName);
 
         try
         {
             await CreateTestTableAsync(dbPath, ct);
 
-            CrashHarnessResult crash = await RunCrashHarnessAsync("checkpoint-start", dbPath, markerPath, ct);
+            CrashHarnessResult crash = await RunCrashHarnessAsync(scenario, dbPath, markerPath, ct);
             AssertCrashAfterMarker(crash, markerPath);
 
             await using (var db = await Database.OpenAsync(dbPath, ct))
             {
                 Assert.Equal(1L, await GetScalarAsync(db, "SELECT COUNT(*) FROM t", ct));
-                Assert.Equal(202L, await GetScalarAsync(db, "SELECT val FROM t WHERE id = 1", ct));
+                Assert.Equal(expectedValue, await GetScalarAsync(db, "SELECT val FROM t WHERE id = 1", ct));
                 await db.CheckpointAsync(ct);
             }
 
             await using var reopened = await Database.OpenAsync(dbPath, ct);
             Assert.Equal(1L, await GetScalarAsync(reopened, "SELECT COUNT(*) FROM t", ct));
-            Assert.Equal(202L, await GetScalarAsync(reopened, "SELECT val FROM t WHERE id = 1", ct));
+            Assert.Equal(expectedValue, await GetScalarAsync(reopened, "SELECT val FROM t WHERE id = 1", ct));
         }
         finally
         {
