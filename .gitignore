@@ -37,10 +37,8 @@ coverage*/
 *.log
 *.csv
 *.txt
-!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260304-000103/micro-results/CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv
-!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260304-005821/micro-results/CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv
-!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260304-013013/micro-results/CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv
-!tests/CSharpDB.Benchmarks/baselines/focused-validation/20260303-180221/micro-results/CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv
+tests/CSharpDB.Benchmarks/baselines/
+tests/CSharpDB.Benchmarks/results/
 
 ## Python
 __pycache__/

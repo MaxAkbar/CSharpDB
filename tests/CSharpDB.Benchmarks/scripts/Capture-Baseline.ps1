@@ -20,6 +20,8 @@ param(
         "*InsertBenchmarks*",
         "*JoinBenchmarks*",
         "*OrderByIndexBenchmarks*",
+        "*IndexAggregateBenchmarks*",
+        "*ScanProjectionBenchmarks*",
         "*ScalarAggregateBenchmarks*",
         "*ScalarAggregateLookupBenchmarks*",
         "*WalBenchmarks*",

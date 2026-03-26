@@ -183,7 +183,7 @@ public static class ExpressionEvaluator
     }
 
     /// <summary>SQL LIKE pattern matcher. % matches any sequence, _ matches any single char.</summary>
-    private static bool SqlLikeMatch(string text, string pattern, char? escape)
+    internal static bool SqlLikeMatch(string text, string pattern, char? escape)
     {
         int ti = 0, pi = 0;
         int starTi = -1, starPi = -1;

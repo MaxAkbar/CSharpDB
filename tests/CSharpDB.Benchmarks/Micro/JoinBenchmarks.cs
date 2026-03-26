@@ -139,6 +139,22 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task InnerJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop expression projection)")]
+    public async Task InnerJoin_1Kx1K_ForcedNestedLoop_ExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id + 0 = r.left_id");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "INNER JOIN on right PK (index nested-loop)")]
     public async Task InnerJoin_OnRightPk_IndexNestedLoop()
     {
@@ -203,6 +219,22 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite index lookup LIMIT 1)")]
+    public async Task InnerJoin_CompositeIndexLookup_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite index lookup expression projection)")]
+    public async Task InnerJoin_CompositeIndexLookup_ExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "RIGHT JOIN on left PK (rewritten index nested-loop)")]
     public async Task RightJoin_OnLeftPk_RewrittenIndexNestedLoop()
     {
@@ -227,11 +259,35 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "LEFT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task LeftJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l LEFT JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "RIGHT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task RightJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l RIGHT JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "CROSS JOIN 100x100")]
     public async Task CrossJoin_100x100()
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT a.name, b.name FROM small_t a CROSS JOIN small_t b");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "CROSS JOIN 100x100 LIMIT 1")]
+    public async Task CrossJoin_100x100_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT a.name, b.name FROM small_t a CROSS JOIN small_t b LIMIT 1");
         await result.ToListAsync();
     }
 

@@ -250,9 +250,14 @@ if (-not (Test-Path $ThresholdsPath))
 
 $config = Get-Content -Path $ThresholdsPath -Raw | ConvertFrom-Json
 $baselineRoot = Join-Path $benchDir "baselines"
+$hasCheckBaselineOverrides = @(
+    @($config.checks) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $_ -Name "baselineSnapshot" -DefaultValue "")) }
+).Count -gt 0
 
 $configuredBaseline = [string](Get-OptionalProperty -Object $config -Name "baselineSnapshot" -DefaultValue "")
 $baselineResolved = $false
+$baselineMicroDir = $null
 if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     if (-not [string]::IsNullOrWhiteSpace($configuredBaseline))
@@ -276,6 +281,7 @@ if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
     }
 }
 
+$reportBaselineLabel = $BaselineSnapshot
 if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     if (-not [System.IO.Path]::IsPathRooted($BaselineSnapshot))
@@ -293,7 +299,12 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
     }
 }
 
-if (-not $baselineResolved)
+if (-not $baselineResolved -and $hasCheckBaselineOverrides)
+{
+    $reportBaselineLabel = "<per-check overrides>"
+    Write-Host "Global baseline snapshot not found. Proceeding with per-check baseline overrides where available."
+}
+elseif (-not $baselineResolved)
 {
     Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
 }
@@ -303,7 +314,7 @@ $CurrentMicroResultsDir = Resolve-CurrentMicroResultsDirectory `
     -RepoRoot $repoRoot `
     -ConfiguredPath $CurrentMicroResultsDir
 
-if (-not $baselineResolved)
+if (-not $baselineResolved -and -not $hasCheckBaselineOverrides)
 {
     $summary = "No baseline snapshot available. Benchmark run completed but no regression comparison performed."
     Write-Host $summary
@@ -343,10 +354,6 @@ $defaults = Get-OptionalProperty -Object $config -Name "defaults" -DefaultValue 
 $defaultMeanRegression = [double](Get-OptionalProperty -Object $defaults -Name "maxMeanRegressionPercent" -DefaultValue 8.0)
 $defaultAllocRegressionPct = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionPercent" -DefaultValue 10.0)
 $defaultAllocRegressionBytes = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionBytes" -DefaultValue 256.0)
-$hasCheckBaselineOverrides = @(
-    @($config.checks) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $_ -Name "baselineSnapshot" -DefaultValue "")) }
-).Count -gt 0
 
 $results = New-Object System.Collections.Generic.List[object]
 $failureCount = 0
@@ -408,6 +415,24 @@ foreach ($check in $config.checks)
             $failureCount++
             continue
         }
+    }
+    elseif (-not $baselineResolved)
+    {
+        $results.Add([pscustomobject]@{
+                Csv = $csvName
+                Key = "<missing global baseline snapshot>"
+                BaselineMean = ""
+                CurrentMean = ""
+                MeanDeltaPct = ""
+                BaselineAlloc = ""
+                CurrentAlloc = ""
+                AllocDeltaPct = ""
+                AllocDeltaBytes = ""
+                Status = "FAIL"
+                Notes = "Global baseline snapshot missing for check without baselineSnapshot override"
+            })
+        $failureCount++
+        continue
     }
 
     $baselineFile = Join-Path $checkBaselineMicroDir $csvName
@@ -608,7 +633,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# Performance Guardrail Report")
     $lines.Add("")
-    $lines.Add("- Baseline: ``$BaselineSnapshot``")
+    $lines.Add("- Baseline: ``$reportBaselineLabel``")
     if ($hasCheckBaselineOverrides)
     {
         $lines.Add("- Note: one or more checks use per-check ``baselineSnapshot`` overrides")
