@@ -3,6 +3,7 @@ param(
     [string]$Configuration = "Release",
     [string]$OutputRoot = "",
     [int]$MacroRepeatCount = 3,
+    [int]$DurabilityRepeatCount = 3,
     [string[]]$MicroFilters = @(
         "*PointLookupBenchmarks*",
         "*InMemorySqlBenchmarks*",
@@ -31,6 +32,8 @@ param(
     [switch]$SkipMacro,
     [switch]$SkipStress,
     [switch]$SkipScaling,
+    [switch]$SkipWriteDiagnostics,
+    [switch]$SkipConcurrentWriteDiagnostics,
     [switch]$SkipRepro
 )
 
@@ -67,6 +70,48 @@ function Invoke-BenchmarkRun
     {
         throw "Benchmark step failed: $Label"
     }
+}
+
+function Get-LatestArtifactSince
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc
+    )
+
+    if (-not (Test-Path $SourceDir))
+    {
+        throw "Benchmark results directory not found: $SourceDir"
+    }
+
+    return Get-ChildItem -Path $SourceDir -File -Filter $Pattern |
+        Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc } |
+        Sort-Object LastWriteTimeUtc, Name |
+        Select-Object -Last 1
+}
+
+function Copy-LatestArtifactToSnapshot
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc,
+        [Parameter(Mandatory = $true)][string]$TargetSubDir,
+        [Parameter(Mandatory = $true)][string]$TargetFileName
+    )
+
+    $artifact = Get-LatestArtifactSince -SourceDir $SourceDir -Pattern $Pattern -NotBeforeUtc $NotBeforeUtc
+    if ($null -eq $artifact)
+    {
+        throw "No benchmark artifact matching '$Pattern' was produced after $NotBeforeUtc."
+    }
+
+    $targetDir = Join-Path $snapshotDir $TargetSubDir
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    $destinationPath = Join-Path $targetDir $TargetFileName
+    Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+    return $destinationPath
 }
 
 if (-not $SkipMicro)
@@ -114,6 +159,52 @@ if (-not $SkipScaling)
     Invoke-BenchmarkRun -Label "Scaling" -Arguments $scalingArgs
 }
 
+$writeDiagnosticsCapturePath = ""
+if (-not $SkipWriteDiagnostics)
+{
+    $writeDiagnosticsArgs = @("--write-diagnostics")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $writeDiagnosticsArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $writeDiagnosticsArgs += "--repro"
+    }
+
+    $writeDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Write Diagnostics" -Arguments $writeDiagnosticsArgs
+    $writeDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $writeDiagnosticsStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("write-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
+$concurrentWriteDiagnosticsCapturePath = ""
+if (-not $SkipConcurrentWriteDiagnostics)
+{
+    $concurrentWriteDiagnosticsArgs = @("--concurrent-write-diagnostics")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $concurrentWriteDiagnosticsArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $concurrentWriteDiagnosticsArgs += "--repro"
+    }
+
+    $concurrentWriteDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Concurrent Write Diagnostics" -Arguments $concurrentWriteDiagnosticsArgs
+    $concurrentWriteDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("concurrent-write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $concurrentWriteDiagnosticsStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("concurrent-write-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
 function Copy-NewArtifacts
 {
     param(
@@ -159,11 +250,14 @@ $dotnetInfo = & dotnet --info
     "Benchmark project: $benchmarkProject"
     "Configuration: $Configuration"
     "Macro repeat count: $MacroRepeatCount"
+    "Durability repeat count: $DurabilityRepeatCount"
     "Repro mode: $(if ($SkipRepro) { "disabled" } else { "enabled" })"
     "Commit: $gitHead"
     "Micro CSV copied: $copiedMicroCsv"
     "Micro logs copied: $copiedMicroLogs"
     "Macro/Stress/Scaling CSV copied: $copiedMacro"
+    "Write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeDiagnosticsCapturePath)) { "skipped" } else { $writeDiagnosticsCapturePath })"
+    "Concurrent write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($concurrentWriteDiagnosticsCapturePath)) { "skipped" } else { $concurrentWriteDiagnosticsCapturePath })"
     ""
     "git status --short:"
     ($gitStatus -join [Environment]::NewLine)

@@ -52,6 +52,12 @@ function Convert-TimeToNanoseconds
         }
     }
 
+    if ($text -match "^([0-9]*\.?[0-9]+)$")
+    {
+        # Macro/stress/scaling diagnostics currently emit raw millisecond values.
+        return ([double]$matches[1]) * 1000000.0
+    }
+
     throw "Unable to parse time value '$Value'."
 }
 
@@ -73,6 +79,11 @@ function Convert-SizeToBytes
             "MB" { return $number * 1024.0 * 1024.0 }
             "GB" { return $number * 1024.0 * 1024.0 * 1024.0 }
         }
+    }
+
+    if ($text -match "^([0-9]*\.?[0-9]+)$")
+    {
+        return [double]$matches[1]
     }
 
     throw "Unable to parse size value '$Value'."
@@ -230,6 +241,32 @@ function Resolve-CurrentMicroResultsDirectory
     return (Resolve-Path $stagingDir).Path
 }
 
+function Resolve-ResultsDirectory
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $false)][string]$ConfiguredPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ConfiguredPath))
+    {
+        return $null
+    }
+
+    $resolvedPath = $ConfiguredPath
+    if (-not [System.IO.Path]::IsPathRooted($resolvedPath))
+    {
+        $resolvedPath = Join-Path $RepoRoot $resolvedPath
+    }
+
+    if (-not (Test-Path $resolvedPath))
+    {
+        throw "Results directory not found: $resolvedPath"
+    }
+
+    return (Resolve-Path $resolvedPath).Path
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
@@ -257,7 +294,7 @@ $hasCheckBaselineOverrides = @(
 
 $configuredBaseline = [string](Get-OptionalProperty -Object $config -Name "baselineSnapshot" -DefaultValue "")
 $baselineResolved = $false
-$baselineMicroDir = $null
+$baselineSnapshotDir = $null
 if ([string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     if (-not [string]::IsNullOrWhiteSpace($configuredBaseline))
@@ -291,11 +328,8 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 
     if ((Test-Path $BaselineSnapshot))
     {
-        $baselineMicroDir = Join-Path $BaselineSnapshot "micro-results"
-        if ((Test-Path $baselineMicroDir))
-        {
-            $baselineResolved = $true
-        }
+        $baselineSnapshotDir = (Resolve-Path $BaselineSnapshot).Path
+        $baselineResolved = $true
     }
 }
 
@@ -309,10 +343,39 @@ elseif (-not $baselineResolved)
     Write-Host "No baseline snapshot found. Skipping comparison and reporting raw benchmark results only."
 }
 
-$CurrentMicroResultsDir = Resolve-CurrentMicroResultsDirectory `
-    -BenchDir $benchDir `
-    -RepoRoot $repoRoot `
-    -ConfiguredPath $CurrentMicroResultsDir
+$checksUsingDefaultCurrentResultsDir = @(
+    @($config.checks) |
+    Where-Object { [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $_ -Name "currentResultsDir" -DefaultValue "")) }
+).Count -gt 0
+
+$resolvedDefaultCurrentResultsDir = $null
+if ($checksUsingDefaultCurrentResultsDir)
+{
+    $resolvedDefaultCurrentResultsDir = Resolve-CurrentMicroResultsDirectory `
+        -BenchDir $benchDir `
+        -RepoRoot $repoRoot `
+        -ConfiguredPath $CurrentMicroResultsDir
+}
+
+$reportCurrentLabel =
+if ($checksUsingDefaultCurrentResultsDir)
+{
+    if (@(
+            @($config.checks) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $_ -Name "currentResultsDir" -DefaultValue "")) }
+        ).Count -gt 0)
+    {
+        "$resolvedDefaultCurrentResultsDir (+ per-check overrides)"
+    }
+    else
+    {
+        $resolvedDefaultCurrentResultsDir
+    }
+}
+else
+{
+    "<per-check current results directories>"
+}
 
 if (-not $baselineResolved -and -not $hasCheckBaselineOverrides)
 {
@@ -336,7 +399,7 @@ if (-not $baselineResolved -and -not $hasCheckBaselineOverrides)
         $lines.Add("# Performance Guardrail Report")
         $lines.Add("")
         $lines.Add("- Baseline: **not available** (baselines directory is not present)")
-        $lines.Add("- Current: ``$CurrentMicroResultsDir``")
+        $lines.Add("- Current: ``$reportCurrentLabel``")
         $lines.Add("- Thresholds: ``$ThresholdsPath``")
         $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
         $lines.Add("")
@@ -368,7 +431,7 @@ foreach ($check in $config.checks)
     }
 
     $checkBaselineSnapshot = [string](Get-OptionalProperty -Object $check -Name "baselineSnapshot" -DefaultValue "")
-    $checkBaselineMicroDir = $baselineMicroDir
+    $checkBaselineSnapshotDir = $baselineSnapshotDir
     if (-not [string]::IsNullOrWhiteSpace($checkBaselineSnapshot))
     {
         $checkBaselineSnapshotPath = $checkBaselineSnapshot
@@ -396,25 +459,7 @@ foreach ($check in $config.checks)
             continue
         }
 
-        $checkBaselineMicroDir = Join-Path $checkBaselineSnapshotPath "micro-results"
-        if (-not (Test-Path $checkBaselineMicroDir))
-        {
-            $results.Add([pscustomobject]@{
-                    Csv = $csvName
-                    Key = "<missing baseline micro-results>"
-                    BaselineMean = ""
-                    CurrentMean = ""
-                    MeanDeltaPct = ""
-                    BaselineAlloc = ""
-                    CurrentAlloc = ""
-                    AllocDeltaPct = ""
-                    AllocDeltaBytes = ""
-                    Status = "FAIL"
-                    Notes = "Baseline micro-results directory missing: $checkBaselineMicroDir"
-                })
-            $failureCount++
-            continue
-        }
+        $checkBaselineSnapshotDir = (Resolve-Path $checkBaselineSnapshotPath).Path
     }
     elseif (-not $baselineResolved)
     {
@@ -435,8 +480,59 @@ foreach ($check in $config.checks)
         continue
     }
 
-    $baselineFile = Join-Path $checkBaselineMicroDir $csvName
-    $currentFile = Join-Path $CurrentMicroResultsDir $csvName
+    $baselineSubDir = [string](Get-OptionalProperty -Object $check -Name "baselineSubDir" -DefaultValue "micro-results")
+    $checkBaselineResultsDir = Join-Path $checkBaselineSnapshotDir $baselineSubDir
+    if (-not (Test-Path $checkBaselineResultsDir))
+    {
+        $results.Add([pscustomobject]@{
+                Csv = $csvName
+                Key = "<missing baseline results directory>"
+                BaselineMean = ""
+                CurrentMean = ""
+                MeanDeltaPct = ""
+                BaselineAlloc = ""
+                CurrentAlloc = ""
+                AllocDeltaPct = ""
+                AllocDeltaBytes = ""
+                Status = "FAIL"
+                Notes = "Baseline results directory missing: $checkBaselineResultsDir"
+            })
+        $failureCount++
+        continue
+    }
+
+    $configuredCurrentResultsDir = [string](Get-OptionalProperty -Object $check -Name "currentResultsDir" -DefaultValue "")
+    $checkCurrentResultsDir =
+    if ([string]::IsNullOrWhiteSpace($configuredCurrentResultsDir))
+    {
+        $resolvedDefaultCurrentResultsDir
+    }
+    else
+    {
+        Resolve-ResultsDirectory -RepoRoot $repoRoot -ConfiguredPath $configuredCurrentResultsDir
+    }
+
+    if ([string]::IsNullOrWhiteSpace($checkCurrentResultsDir) -or -not (Test-Path $checkCurrentResultsDir))
+    {
+        $results.Add([pscustomobject]@{
+                Csv = $csvName
+                Key = "<missing current results directory>"
+                BaselineMean = ""
+                CurrentMean = ""
+                MeanDeltaPct = ""
+                BaselineAlloc = ""
+                CurrentAlloc = ""
+                AllocDeltaPct = ""
+                AllocDeltaBytes = ""
+                Status = "FAIL"
+                Notes = "Current results directory missing: $checkCurrentResultsDir"
+            })
+        $failureCount++
+        continue
+    }
+
+    $baselineFile = Join-Path $checkBaselineResultsDir $csvName
+    $currentFile = Join-Path $checkCurrentResultsDir $csvName
 
     if (-not (Test-Path $baselineFile))
     {
@@ -558,17 +654,51 @@ foreach ($check in $config.checks)
         $currentMeanNs = Convert-TimeToNanoseconds -Value $currentRow.Mean
         $meanDeltaPct = (($currentMeanNs - $baselineMeanNs) / $baselineMeanNs) * 100.0
 
-        $baselineAllocBytes = Convert-SizeToBytes -Value $baselineRow.Allocated
-        $currentAllocBytes = Convert-SizeToBytes -Value $currentRow.Allocated
-        $allocDeltaBytes = $currentAllocBytes - $baselineAllocBytes
-        $allocDeltaPct =
-        if ($baselineAllocBytes -eq 0.0)
+        $skipAllocationComparison = [bool](Get-OptionalProperty -Object $check -Name "skipAllocationComparison" -DefaultValue $false)
+
+        $baselineAlloc = [string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")
+        $currentAlloc = [string](Get-OptionalProperty -Object $currentRow -Name "Allocated" -DefaultValue "")
+        $allocComparisonEnabled = -not $skipAllocationComparison
+        if ($allocComparisonEnabled -and ([string]::IsNullOrWhiteSpace($baselineAlloc) -or [string]::IsNullOrWhiteSpace($currentAlloc)))
         {
-            if ($allocDeltaBytes -gt 0.0) { 100.0 } else { 0.0 }
+            $results.Add([pscustomobject]@{
+                    Csv = $csvName
+                    Key = $rowKey
+                    BaselineMean = (Format-Nanoseconds -Nanoseconds $baselineMeanNs)
+                    CurrentMean = (Format-Nanoseconds -Nanoseconds $currentMeanNs)
+                    MeanDeltaPct = ("{0:N2}" -f $meanDeltaPct)
+                    BaselineAlloc = $baselineAlloc
+                    CurrentAlloc = $currentAlloc
+                    AllocDeltaPct = ""
+                    AllocDeltaBytes = ""
+                    Status = "FAIL"
+                    Notes = "Allocation column missing; set skipAllocationComparison=true for this check if alloc should not be compared"
+                })
+            $failureCount++
+            continue
+        }
+
+        if ($allocComparisonEnabled)
+        {
+            $baselineAllocBytes = Convert-SizeToBytes -Value $baselineAlloc
+            $currentAllocBytes = Convert-SizeToBytes -Value $currentAlloc
+            $allocDeltaBytes = $currentAllocBytes - $baselineAllocBytes
+            $allocDeltaPct =
+            if ($baselineAllocBytes -eq 0.0)
+            {
+                if ($allocDeltaBytes -gt 0.0) { 100.0 } else { 0.0 }
+            }
+            else
+            {
+                ($allocDeltaBytes / $baselineAllocBytes) * 100.0
+            }
         }
         else
         {
-            ($allocDeltaBytes / $baselineAllocBytes) * 100.0
+            $baselineAllocBytes = 0.0
+            $currentAllocBytes = 0.0
+            $allocDeltaBytes = 0.0
+            $allocDeltaPct = 0.0
         }
 
         $maxMeanRegression = [double](Get-OptionalProperty -Object $check -Name "maxMeanRegressionPercent" -DefaultValue $defaultMeanRegression)
@@ -587,7 +717,9 @@ foreach ($check in $config.checks)
         }
 
         $meanRegressed = $meanDeltaPct -gt $maxMeanRegression
-        $allocRegressed = ($allocDeltaPct -gt $maxAllocRegressionPct) -and ($allocDeltaBytes -gt $maxAllocRegressionBytes)
+        $allocRegressed = $allocComparisonEnabled -and
+            ($allocDeltaPct -gt $maxAllocRegressionPct) -and
+            ($allocDeltaBytes -gt $maxAllocRegressionBytes)
 
         $status = if ($meanRegressed -or $allocRegressed) { "FAIL" } else { "PASS" }
         if ($status -eq "FAIL")
@@ -601,12 +733,18 @@ foreach ($check in $config.checks)
                 BaselineMean = (Format-Nanoseconds -Nanoseconds $baselineMeanNs)
                 CurrentMean = (Format-Nanoseconds -Nanoseconds $currentMeanNs)
                 MeanDeltaPct = ("{0:N2}" -f $meanDeltaPct)
-                BaselineAlloc = (Format-Bytes -Bytes $baselineAllocBytes)
-                CurrentAlloc = (Format-Bytes -Bytes $currentAllocBytes)
-                AllocDeltaPct = ("{0:N2}" -f $allocDeltaPct)
-                AllocDeltaBytes = ("{0:N0}" -f $allocDeltaBytes)
+                BaselineAlloc = $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $baselineAllocBytes } else { "n/a" })
+                CurrentAlloc = $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $currentAllocBytes } else { "n/a" })
+                AllocDeltaPct = $(if ($allocComparisonEnabled) { "{0:N2}" -f $allocDeltaPct } else { "n/a" })
+                AllocDeltaBytes = $(if ($allocComparisonEnabled) { "{0:N0}" -f $allocDeltaBytes } else { "n/a" })
                 Status = $status
-                Notes = "Mean<=${maxMeanRegression}% ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
+                Notes = $(if ($allocComparisonEnabled) {
+                        "Mean<=${maxMeanRegression}% ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
+                    }
+                    else
+                    {
+                        "Mean<=${maxMeanRegression}% ; Alloc skipped"
+                    })
             })
     }
 }
@@ -638,7 +776,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     {
         $lines.Add("- Note: one or more checks use per-check ``baselineSnapshot`` overrides")
     }
-    $lines.Add("- Current: ``$CurrentMicroResultsDir``")
+    $lines.Add("- Current: ``$reportCurrentLabel``")
     $lines.Add("- Thresholds: ``$ThresholdsPath``")
     $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
     $lines.Add("")

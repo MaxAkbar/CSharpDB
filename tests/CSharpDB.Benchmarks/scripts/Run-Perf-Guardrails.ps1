@@ -51,6 +51,150 @@ function Get-BenchmarkFilterFromCheck
     return ""
 }
 
+function Convert-ToStringArray
+{
+    param([Parameter(Mandatory = $false)]$Value)
+
+    if ($null -eq $Value)
+    {
+        return @()
+    }
+
+    $items = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @($Value))
+    {
+        if ($null -ne $entry)
+        {
+            $items.Add([string]$entry) | Out-Null
+        }
+    }
+
+    return @($items)
+}
+
+function Resolve-RepoRelativePath
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$CreateIfMissing
+    )
+
+    $resolvedPath = $Path
+    if (-not [System.IO.Path]::IsPathRooted($resolvedPath))
+    {
+        $resolvedPath = Join-Path $RepoRoot $resolvedPath
+    }
+
+    if ($CreateIfMissing)
+    {
+        New-Item -ItemType Directory -Path $resolvedPath -Force | Out-Null
+    }
+    elseif (-not (Test-Path $resolvedPath))
+    {
+        throw "Path not found: $resolvedPath"
+    }
+
+    return (Resolve-Path $resolvedPath).Path
+}
+
+function Get-ConfiguredSuiteDefinitions
+{
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Checks,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    $suiteDefinitions = @{}
+
+    foreach ($check in $Checks)
+    {
+        $suiteArgs = Convert-ToStringArray (Get-OptionalProperty -Object $check -Name "suiteArgs" -DefaultValue $null)
+        if ($suiteArgs.Count -eq 0)
+        {
+            continue
+        }
+
+        $csvName = [string](Get-OptionalProperty -Object $check -Name "csv" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($csvName))
+        {
+            throw "A guardrail check with suiteArgs is missing its csv property."
+        }
+
+        $suiteKey = [string](Get-OptionalProperty -Object $check -Name "suiteKey" -DefaultValue $csvName)
+        $suiteLabel = [string](Get-OptionalProperty -Object $check -Name "suiteLabel" -DefaultValue $suiteKey)
+        $outputPattern = [string](Get-OptionalProperty -Object $check -Name "outputPattern" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($outputPattern))
+        {
+            throw "Check '$csvName' defines suiteArgs but is missing outputPattern."
+        }
+
+        $currentResultsDir = [string](Get-OptionalProperty -Object $check -Name "currentResultsDir" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($currentResultsDir))
+        {
+            throw "Check '$csvName' defines suiteArgs but is missing currentResultsDir."
+        }
+
+        if (-not $suiteDefinitions.ContainsKey($suiteKey))
+        {
+            $suiteDefinitions[$suiteKey] = [pscustomobject]@{
+                Key = $suiteKey
+                Label = $suiteLabel
+                OutputPattern = $outputPattern
+                Arguments = @($suiteArgs)
+                Targets = New-Object System.Collections.Generic.List[object]
+            }
+        }
+        else
+        {
+            $existing = $suiteDefinitions[$suiteKey]
+            $sameArgs = ($existing.Arguments.Count -eq $suiteArgs.Count)
+            if ($sameArgs)
+            {
+                for ($i = 0; $i -lt $suiteArgs.Count; $i++)
+                {
+                    if ($existing.Arguments[$i] -ne $suiteArgs[$i])
+                    {
+                        $sameArgs = $false
+                        break
+                    }
+                }
+            }
+
+            if ($existing.OutputPattern -ne $outputPattern -or -not $sameArgs)
+            {
+                throw "Suite key '$suiteKey' is configured inconsistently across guardrail checks."
+            }
+        }
+
+        $suiteDefinitions[$suiteKey].Targets.Add([pscustomobject]@{
+                Csv = $csvName
+                CurrentResultsDir = Resolve-RepoRelativePath -RepoRoot $RepoRoot -Path $currentResultsDir -CreateIfMissing
+            }) | Out-Null
+    }
+
+    return @($suiteDefinitions.Values | Sort-Object Key)
+}
+
+function Get-LatestGeneratedArtifact
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc
+    )
+
+    if (-not (Test-Path $SourceDir))
+    {
+        throw "Benchmark results directory not found: $SourceDir"
+    }
+
+    return Get-ChildItem -Path $SourceDir -File -Filter $Pattern |
+        Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc } |
+        Sort-Object LastWriteTimeUtc, Name |
+        Select-Object -Last 1
+}
+
 function Add-SelectPlanDiagnosticsToReport
 {
     param(
@@ -106,6 +250,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
+$benchResultsDir = Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)
 $compareScript = Join-Path $scriptDir "Compare-Baseline.ps1"
 $reportPath = Join-Path $benchDir "results\\perf-guardrails-last.md"
 $runLogsDir = Join-Path $benchDir "results\\perf-guardrails-run-logs"
@@ -137,6 +282,7 @@ if (-not (Test-Path $resolvedThresholdsPath))
 }
 
 $thresholdConfig = Get-Content -Path $resolvedThresholdsPath -Raw | ConvertFrom-Json
+$configuredSuites = Get-ConfiguredSuiteDefinitions -Checks @($thresholdConfig.checks) -RepoRoot $repoRoot
 
 function Invoke-BenchmarkRun
 {
@@ -210,6 +356,29 @@ if (-not $SkipMicroRun)
     foreach ($filter in ($filters | Sort-Object))
     {
         Invoke-BenchmarkRun -Label "Micro ($filter)" -Arguments @("--micro", "--filter", $filter)
+    }
+}
+
+foreach ($suite in $configuredSuites)
+{
+    $suiteStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label $suite.Label -Arguments $suite.Arguments
+
+    $artifact = Get-LatestGeneratedArtifact `
+        -SourceDir $benchResultsDir `
+        -Pattern $suite.OutputPattern `
+        -NotBeforeUtc $suiteStartUtc
+
+    if ($null -eq $artifact)
+    {
+        throw "No benchmark artifact matching '$($suite.OutputPattern)' was produced for suite '$($suite.Label)'."
+    }
+
+    foreach ($target in $suite.Targets)
+    {
+        $destinationPath = Join-Path $target.CurrentResultsDir $target.Csv
+        Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+        Write-Host "Staged $($artifact.Name) -> $destinationPath"
     }
 }
 

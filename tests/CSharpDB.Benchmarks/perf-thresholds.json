@@ -383,6 +383,74 @@
           "maxMeanRegressionPercent": 25.0
         }
       ]
+    },
+    {
+      "csv": "write-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256_10s"
+        },
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s"
+        },
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 15.0,
+      "skipAllocationComparison": true,
+      "suiteKey": "write-diagnostics",
+      "suiteLabel": "Write Diagnostics",
+      "suiteArgs": [
+        "--write-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "write-diagnostics-*-median-of-3.csv"
+    },
+    {
+      "csv": "concurrent-write-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "ConcurrentDurableWrite_W4_Batch0_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W4_Batch250us_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch0_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch250us_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch0_Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 18.0,
+      "skipAllocationComparison": true,
+      "suiteKey": "concurrent-write-diagnostics",
+      "suiteLabel": "Concurrent Write Diagnostics",
+      "suiteArgs": [
+        "--concurrent-write-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "concurrent-write-diagnostics-*-median-of-3.csv"
     }
   ]
 }

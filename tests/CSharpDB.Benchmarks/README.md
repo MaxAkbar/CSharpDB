@@ -26,6 +26,7 @@ The current snapshot in this README mixes the March 25-26, 2026 durable and buff
 - `Focused scan projection baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-122734`
 - `Focused index aggregate baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-154942`
 - `Focused guardrail coverage baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-222637`
+- `Focused durability guardrail baseline refresh on March 26, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705`
 - `Latest full micro rerun on March 25, 2026: full sequential CSharpDB.Benchmarks.Micro suite`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
@@ -196,6 +197,8 @@ Defaults:
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
+- The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro` and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv` and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
+- The focused durability checks compare `Mean` against the stable median-of-3 durability rows only. Allocation comparison is intentionally skipped for those checks because the diagnostics CSVs emit raw millisecond values, not BenchmarkDotNet `Allocated` columns.
 
 ## Current Performance Snapshot
 
