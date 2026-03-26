@@ -24,7 +24,13 @@ internal static class HybridStorageEngineFactory
         var hybridPagerOptions = CreateHybridPagerOptions(options.PagerOptions);
         var device = new FileStorageDevice(fullPath);
         var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(fullPath, walIndex, options.ChecksumProvider, options.DurabilityMode);
+        var wal = new WriteAheadLog(
+            fullPath,
+            walIndex,
+            options.ChecksumProvider,
+            options.DurabilityMode,
+            options.DurableCommitBatchWindow,
+            options.WalPreallocationChunkBytes);
         var pager = await Pager.CreateAsync(device, wal, walIndex, hybridPagerOptions, ct);
 
         if (isNew)

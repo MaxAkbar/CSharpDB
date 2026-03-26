@@ -7,6 +7,8 @@ public sealed class StorageEngineOptionsBuilder
 {
     private PagerOptions _pagerOptions;
     private DurabilityMode _durabilityMode;
+    private TimeSpan _durableCommitBatchWindow;
+    private long _walPreallocationChunkBytes;
     private ISerializerProvider _serializerProvider;
     private IIndexProvider _indexProvider;
     private ICatalogStore _catalogStore;
@@ -23,6 +25,8 @@ public sealed class StorageEngineOptionsBuilder
 
         _pagerOptions = options.PagerOptions;
         _durabilityMode = options.DurabilityMode;
+        _durableCommitBatchWindow = options.DurableCommitBatchWindow;
+        _walPreallocationChunkBytes = options.WalPreallocationChunkBytes;
         _serializerProvider = options.SerializerProvider;
         _indexProvider = options.IndexProvider;
         _catalogStore = options.CatalogStore;
@@ -39,6 +43,24 @@ public sealed class StorageEngineOptionsBuilder
     public StorageEngineOptionsBuilder UseDurabilityMode(DurabilityMode durabilityMode)
     {
         _durabilityMode = durabilityMode;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UseDurableCommitBatchWindow(TimeSpan batchWindow)
+    {
+        if (batchWindow < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(batchWindow), "Value must be non-negative.");
+
+        _durableCommitBatchWindow = batchWindow;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UseWalPreallocationChunkBytes(long chunkBytes)
+    {
+        if (chunkBytes < 0)
+            throw new ArgumentOutOfRangeException(nameof(chunkBytes), "Value must be non-negative.");
+
+        _walPreallocationChunkBytes = chunkBytes;
         return this;
     }
 
@@ -280,6 +302,8 @@ public sealed class StorageEngineOptionsBuilder
         return new StorageEngineOptions
         {
             DurabilityMode = _durabilityMode,
+            DurableCommitBatchWindow = _durableCommitBatchWindow,
+            WalPreallocationChunkBytes = _walPreallocationChunkBytes,
             PagerOptions = _pagerOptions,
             SerializerProvider = _serializerProvider,
             IndexProvider = _indexProvider,

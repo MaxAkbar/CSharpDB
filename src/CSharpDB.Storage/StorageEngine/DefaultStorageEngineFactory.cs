@@ -13,7 +13,13 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
         bool isNew = !File.Exists(filePath);
         var device = new FileStorageDevice(filePath);
         var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(filePath, walIndex, options.ChecksumProvider, options.DurabilityMode);
+        var wal = new WriteAheadLog(
+            filePath,
+            walIndex,
+            options.ChecksumProvider,
+            options.DurabilityMode,
+            options.DurableCommitBatchWindow,
+            options.WalPreallocationChunkBytes);
         var pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
 
         if (isNew)

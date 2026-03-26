@@ -267,12 +267,50 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void StorageEngineOptions_DefaultsToZeroDurableCommitBatchWindow()
+    {
+        var options = new StorageEngineOptions();
+
+        Assert.Equal(TimeSpan.Zero, options.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void StorageEngineOptions_DefaultsToZeroWalPreallocationChunkBytes()
+    {
+        var options = new StorageEngineOptions();
+
+        Assert.Equal(0, options.WalPreallocationChunkBytes);
+    }
+
+    [Fact]
     public void DatabaseOptions_ConfigureStorageEngine_SetsDurabilityMode()
     {
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder => builder.UseDurabilityMode(DurabilityMode.Buffered));
 
         Assert.Equal(DurabilityMode.Buffered, options.StorageEngineOptions.DurabilityMode);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_SetsDurableCommitBatchWindow()
+    {
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
+
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableCommitBatchWindow(batchWindow));
+
+        Assert.Equal(batchWindow, options.StorageEngineOptions.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_SetsWalPreallocationChunkBytes()
+    {
+        const long chunkBytes = 1L * 1024 * 1024;
+
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseWalPreallocationChunkBytes(chunkBytes));
+
+        Assert.Equal(chunkBytes, options.StorageEngineOptions.WalPreallocationChunkBytes);
     }
 
     [Fact]
