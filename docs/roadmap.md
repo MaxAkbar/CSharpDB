@@ -77,7 +77,7 @@ Advanced features and fundamental architecture enhancements.
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Cost-based query optimizer** | Statistics-driven join ordering and index selection (initial support via ANALYZE in Near-Term; advanced histograms and adaptive re-optimization here) | Planned |
-| **Async I/O batching** | Group multiple page writes into fewer system calls during batch operations | Planned |
+| **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, and staged multi-page `AppendFrameAsync` commits now reduce syscall count on the main storage write paths; remaining batch/export paths still need auditing | In Progress |
 | **Low-latency durable writes** | Reduce file-backed durable auto-commit overhead by deferring advisory planner-stat persistence and separating exact versus estimated row-count semantics, while preserving exact per-commit WAL durability for committed user data | Planned |
 | **Group commit / deferred WAL flush** | Buffer committed WAL writes across transactions before flushing to improve auto-commit throughput | Planned |
 | **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |

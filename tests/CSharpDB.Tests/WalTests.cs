@@ -1406,6 +1406,96 @@ public class WalTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task FileWriteAheadLog_AppendFrameAsync_StagesFramesUntilCommit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_stage_commit_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+
+        try
+        {
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0xC1), ct);
+            await wal.AppendFrameAsync(1, CreateFilledPage(0xC2), ct);
+
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
+            await WaitForWalLengthAsync(
+                walPath,
+                PageConstants.WalHeaderSize + (2L * PageConstants.WalFrameSize),
+                TimeSpan.FromSeconds(2),
+                ct);
+
+            Assert.Equal(2, wal.Index.FrameCount);
+            Assert.True(wal.Index.TryGetLatest(0, out long page0Offset));
+            Assert.True(wal.Index.TryGetLatest(1, out long page1Offset));
+
+            byte[] page0 = await wal.ReadPageAsync(page0Offset, ct);
+            byte[] page1 = await wal.ReadPageAsync(page1Offset, ct);
+            Assert.All(page0, static b => Assert.Equal((byte)0xC1, b));
+            Assert.All(page1, static b => Assert.Equal((byte)0xC2, b));
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_AppendFrameAsync_CanMixWithAppendFramesAsyncInSameTransaction()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_stage_mixed_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+
+        try
+        {
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 3, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFrameAsync(0, CreateFilledPage(0xD1), ct);
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+
+            await wal.AppendFramesAsync(
+                new[]
+                {
+                    new WalFrameWrite(1, CreateFilledPage(0xD2)),
+                    new WalFrameWrite(2, CreateFilledPage(0xD3)),
+                },
+                ct);
+
+            await (await wal.CommitAsync(newDbPageCount: 3, ct)).WaitAsync(ct);
+
+            Assert.Equal(3, wal.Index.FrameCount);
+            Assert.True(wal.Index.TryGetLatest(0, out long page0Offset));
+            Assert.True(wal.Index.TryGetLatest(1, out long page1Offset));
+            Assert.True(wal.Index.TryGetLatest(2, out long page2Offset));
+
+            byte[] page0 = await wal.ReadPageAsync(page0Offset, ct);
+            byte[] page1 = await wal.ReadPageAsync(page1Offset, ct);
+            byte[] page2 = await wal.ReadPageAsync(page2Offset, ct);
+            Assert.All(page0, static b => Assert.Equal((byte)0xD1, b));
+            Assert.All(page1, static b => Assert.Equal((byte)0xD2, b));
+            Assert.All(page2, static b => Assert.Equal((byte)0xD3, b));
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
     private static async Task WaitForWalLengthAsync(
         string walPath,
         long expectedLength,

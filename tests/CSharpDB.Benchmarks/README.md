@@ -246,6 +246,19 @@ For the API snapshot, hot steady-state, and master comparison tables below, CSha
 | Collection put (minimal schema, in-memory) | 2.733 us | 1.28 KB | Auto-commit write with only the target collection loaded |
 | Collection put (48 extra tables + 48 extra collections, in-memory) | 2.760 us | 1.25 KB | Unrelated schema breadth still does not add measurable write tax |
 
+### WAL Core Micro Spot Checks (March 27, 2026)
+
+Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalCoreBenchmarks-report.csv`
+
+| Metric | 100 frames before checkpoint | 500 frames before checkpoint | 1000 frames before checkpoint | Notes |
+|--------|-----------------------------:|-----------------------------:|------------------------------:|-------|
+| WAL core: 100-frame batch commit | 4.560 ms | 4.126 ms | 4.465 ms | Direct `AppendFramesAndCommitAsync(...)` path |
+| WAL core: 100-frame staged commit | 4.595 ms | 4.499 ms | 4.696 ms | Repeated `AppendFrameAsync(...)` calls staged and emitted at `CommitAsync(...)` |
+| WAL core: single-frame commit | 4.491 ms | 3.779 ms | 3.630 ms | One page + one durable commit |
+| WAL core: manual checkpoint after N frames | 12.405 ms | 17.351 ms | 26.732 ms | Commit N single-page appends, then checkpoint |
+
+The important result for async I/O batching is the staged-vs-direct comparison: after the WAL staging change, the repeated-`AppendFrameAsync(...)` path now lands close to the direct batched WAL path instead of paying one file write per page before commit.
+
 ### Collection Path Index Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |

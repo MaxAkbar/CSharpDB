@@ -110,6 +110,8 @@ await using var db = await Database.OpenAsync("ingest.cdb", options);
 
 Keep this at `0` by default. In the final post-fix diagnostics it was effectively flat to slightly negative: not a single-writer win, and basically neutral on the `8`-writer durable commit benchmark. Treat it as an experimental opt-in for specific local-disk ingest workloads rather than a general preset.
 
+Separately from durable flush tuning, the storage write path now does partial async I/O batching on its own. Direct `AppendFramesAndCommitAsync(...)` already writes WAL frames in chunks, checkpoint copies already batch contiguous page writes back into the main database file, and repeated `AppendFrameAsync(...)` calls inside one transaction are now staged and emitted as chunked WAL writes at `CommitAsync(...)` time. The remaining roadmap work here is to audit the other batch/export paths and decide which ones are worth batching further.
+
 The current crash-level durability coverage is process-based rather than mock-based. The test suite now verifies recovery after a real process crash at four points: immediately after commit returns, at checkpoint start, after checkpoint page copies have been flushed to the main DB file, and after WAL checkpoint finalization but before pager state refresh completes.
 
 ## Low-level use: open the storage graph directly
