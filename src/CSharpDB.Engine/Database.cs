@@ -723,65 +723,72 @@ public sealed class Database : IAsyncDisposable
         IDisposable? writeScope = _inTransaction
             ? WriteOperationScope.NoOp
             : await AcquireWriteOperationScopeAsync(ct);
-        InvalidateCachesIfSchemaChanged();
-
-        string catalogName = $"{CollectionPrefix}{name}";
-
-        // Return cached instance if available
-        if (_collectionCache.TryGetValue(catalogName, out var cached))
-            return (Collection<T>)cached;
-
-        // Create the backing table if it doesn't exist
-        if (_catalog.GetTable(catalogName) == null)
+        try
         {
-            bool needsTx = !_inTransaction;
-            if (needsTx) await _pager.BeginTransactionAsync(ct);
-            try
+            InvalidateCachesIfSchemaChanged();
+
+            string catalogName = $"{CollectionPrefix}{name}";
+
+            // Return cached instance if available
+            if (_collectionCache.TryGetValue(catalogName, out var cached))
+                return (Collection<T>)cached;
+
+            // Create the backing table if it doesn't exist
+            if (_catalog.GetTable(catalogName) == null)
             {
-                // Double-check after acquiring write lock
-                if (_catalog.GetTable(catalogName) == null)
+                bool needsTx = !_inTransaction;
+                if (needsTx) await _pager.BeginTransactionAsync(ct);
+                try
                 {
-                    var schema = new TableSchema
+                    // Double-check after acquiring write lock
+                    if (_catalog.GetTable(catalogName) == null)
                     {
-                        TableName = catalogName,
-                        Columns = new[]
+                        var schema = new TableSchema
                         {
-                            new ColumnDefinition { Name = "_key", Type = DbType.Text, Nullable = false },
-                            new ColumnDefinition { Name = "_doc", Type = DbType.Text, Nullable = false },
-                        }
-                    };
-                    await _catalog.CreateTableAsync(schema, ct);
-                }
+                            TableName = catalogName,
+                            Columns = new[]
+                            {
+                                new ColumnDefinition { Name = "_key", Type = DbType.Text, Nullable = false },
+                                new ColumnDefinition { Name = "_doc", Type = DbType.Text, Nullable = false },
+                            }
+                        };
+                        await _catalog.CreateTableAsync(schema, ct);
+                    }
 
-                if (needsTx)
+                    if (needsTx)
+                    {
+                        PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+                        writeScope?.Dispose();
+                        writeScope = WriteOperationScope.NoOp;
+                        await commit.WaitAsync(ct);
+                        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+                    }
+                }
+                catch
                 {
-                    PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
-                    writeScope?.Dispose();
-                    writeScope = WriteOperationScope.NoOp;
-                    await commit.WaitAsync(ct);
-                    await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+                    if (needsTx) await _pager.RollbackAsync(ct);
+                    throw;
                 }
             }
-            catch
-            {
-                if (needsTx) await _pager.RollbackAsync(ct);
-                throw;
-            }
-        }
 
-        var tree = _catalog.GetTableTree(catalogName);
-        var collection = new Collection<T>(
-            _pager,
-            _catalog,
-            catalogName,
-            tree,
-            _recordSerializer,
-            () => _inTransaction,
-            AcquireWriteOperationScopeAsync,
-            BeginCommitForTableWithCatalogSyncAsync,
-            ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct));
-        _collectionCache[catalogName] = collection;
-        return collection;
+            var tree = _catalog.GetTableTree(catalogName);
+            var collection = new Collection<T>(
+                _pager,
+                _catalog,
+                catalogName,
+                tree,
+                _recordSerializer,
+                () => _inTransaction,
+                AcquireWriteOperationScopeAsync,
+                BeginCommitForTableWithCatalogSyncAsync,
+                ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct));
+            _collectionCache[catalogName] = collection;
+            return collection;
+        }
+        finally
+        {
+            writeScope?.Dispose();
+        }
     }
 
     /// <summary>

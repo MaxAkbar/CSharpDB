@@ -311,6 +311,25 @@ public class CollectionTests : IAsyncLifetime
         Assert.Equal(new[] { "logs", "products", "users" }, names);
     }
 
+    [Fact]
+    public async Task GetCollectionAsync_CachedCollectionLookup_ReleasesWriteGate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        await users.PutAsync("u:1", new User("Alice", 30, "a@b.com"), ct);
+
+        var cached = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.NotNull(await cached.GetAsync("u:1", ct));
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var cachedAgain = await _db.GetCollectionAsync<User>("users", timeoutCts.Token);
+        Assert.Same(cached, cachedAgain);
+        Assert.Equal(1, await cachedAgain.CountAsync(timeoutCts.Token));
+    }
+
     // ===== Persistence across reopen =====
 
     [Fact]
