@@ -481,13 +481,14 @@ internal static class CardinalityEstimator
 
         HashSet<DbValue>? unionValues = null;
         List<ColumnConstraint>? alternatives = null;
+        bool hasNullAlternative = false;
         bool allDiscrete = true;
         for (int i = 0; i < disjuncts.Count; i++)
         {
             if (!TryParseColumnConstraint(schema, disjuncts[i], out int disjunctColumnIndex, out var disjunctConstraint))
                 return false;
 
-            if (!IsUnionCompatibleConstraint(disjunctConstraint))
+            if (!IsUnionAlternativeConstraint(disjunctConstraint))
                 return false;
 
             if (columnIndex < 0)
@@ -499,7 +500,12 @@ internal static class CardinalityEstimator
                 return false;
             }
 
-            if (TryExtractDiscreteAllowedValues(disjunctConstraint, out var disjunctValues))
+            if (IsNullOnlyConstraint(disjunctConstraint))
+            {
+                hasNullAlternative = true;
+                allDiscrete = false;
+            }
+            else if (TryExtractDiscreteAllowedValues(disjunctConstraint, out var disjunctValues))
             {
                 unionValues ??= [];
                 unionValues.UnionWith(disjunctValues);
@@ -515,7 +521,7 @@ internal static class CardinalityEstimator
         if (columnIndex < 0)
             return false;
 
-        if (allDiscrete)
+        if (allDiscrete && !hasNullAlternative)
         {
             if (unionValues is not { Count: > 0 })
                 return false;
@@ -524,6 +530,12 @@ internal static class CardinalityEstimator
         }
         else
         {
+            if (hasNullAlternative)
+            {
+                alternatives ??= [];
+                alternatives.Add(new ColumnConstraint { NullFilter = NullFilterKind.IsNull });
+            }
+
             if (unionValues is { Count: > 0 })
             {
                 alternatives ??= [];
@@ -1193,6 +1205,22 @@ internal static class CardinalityEstimator
                constraint.Alternatives is not { Count: > 0 } &&
                constraint.NullFilter == NullFilterKind.None &&
                constraint.ExcludedValues is not { Count: > 0 };
+    }
+
+    private static bool IsUnionAlternativeConstraint(ColumnConstraint constraint)
+    {
+        return IsUnionCompatibleConstraint(constraint) || IsNullOnlyConstraint(constraint);
+    }
+
+    private static bool IsNullOnlyConstraint(ColumnConstraint constraint)
+    {
+        return !constraint.IsImpossible &&
+               constraint.Alternatives is not { Count: > 0 } &&
+               constraint.NullFilter == NullFilterKind.IsNull &&
+               constraint.AllowedValues is not { Count: > 0 } &&
+               constraint.ExcludedValues is not { Count: > 0 } &&
+               constraint.LowerBound is not DbValue &&
+               constraint.UpperBound is not DbValue;
     }
 
     private static void CollectOrDisjuncts(Expression expression, List<Expression> output)

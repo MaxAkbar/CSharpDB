@@ -101,7 +101,7 @@ public class JoinBenchmarks
         _bench.SeedAsync("reorder_big_t", 5000, i =>
         {
             int code = ((i - 1) % 200) + 1;
-            string nullableTag = i <= 5 ? "NULL" : "1";
+            string nullableTag = i <= 5 ? "NULL" : i.ToString();
             return $"INSERT INTO reorder_big_t VALUES ({i}, {code}, {i * 17}, {nullableTag})";
         }).GetAwaiter().GetResult();
         _bench.SeedAsync("reorder_mid_t", 200, i =>
@@ -355,6 +355,14 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id BETWEEN 1 AND 2 OR b.id BETWEEN 10 AND 11");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer NULL OR filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterNullOr()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.nullable_tag IS NULL OR b.nullable_tag = 42");
         await result.ToListAsync();
     }
 

@@ -58,7 +58,7 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         Assert.Null(freshOp);
         Assert.NotNull(freshRemaining);
 
-        await _db.ExecuteAsync("INSERT INTO planner_stats VALUES (1001, 1, 1001)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_stats VALUES (1001, 1, 1001, 1001)", ct);
 
         var (staleOp, staleRemaining) = InvokeTryBuildIndexScan(
             "planner_stats",
@@ -150,6 +150,20 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
             "SELECT * FROM planner_stats WHERE code IN (1, 2, 3) OR code BETWEEN 10 AND 11");
 
         Assert.Equal(5, estimatedRows);
+    }
+
+    [Fact]
+    public async Task FilteredRowEstimate_UsesNullAndDiscreteUnion()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSelectivityTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_stats", ct);
+
+        long estimatedRows = InvokeEstimateFilteredRows(
+            "planner_stats",
+            "SELECT * FROM planner_stats WHERE nullable_code IS NULL OR nullable_code = 42");
+
+        Assert.Equal(7, estimatedRows);
     }
 
     [Fact]
@@ -368,17 +382,34 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         Assert.Equal(["b", "m", "s"], order);
     }
 
+    [Fact]
+    public async Task InnerJoinChain_ReordersUsingSelectiveTopLevelNullOrPredicate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupReorderableJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_small", ct);
+
+        var reordered = InvokeTryReorderInnerJoinChain(
+            "SELECT b.id, s.flag FROM planner_reorder_small s JOIN planner_reorder_mid m ON m.code = s.code JOIN planner_reorder_big b ON b.code = m.code WHERE b.nullable_tag IS NULL OR b.nullable_tag = 42");
+
+        var order = FlattenJoinOrder(reordered).ToArray();
+        Assert.Equal(["b", "m", "s"], order);
+    }
+
     private async ValueTask SetupSelectivityTableAsync(CancellationToken ct)
     {
-        await _db.ExecuteAsync("CREATE TABLE planner_stats (id INTEGER PRIMARY KEY, low_group INTEGER, code INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_stats (id INTEGER PRIMARY KEY, low_group INTEGER, code INTEGER, nullable_code INTEGER)", ct);
         await _db.ExecuteAsync("CREATE INDEX idx_planner_stats_low_group ON planner_stats(low_group)", ct);
         await _db.ExecuteAsync("CREATE INDEX idx_planner_stats_code ON planner_stats(code)", ct);
 
         await _db.BeginTransactionAsync(ct);
         for (int i = 1; i <= 1000; i++)
         {
+            string nullableCode = i <= 5 ? "NULL" : i.ToString();
             await _db.ExecuteAsync(
-                $"INSERT INTO planner_stats VALUES ({i}, {i % 2}, {i})",
+                $"INSERT INTO planner_stats VALUES ({i}, {i % 2}, {i}, {nullableCode})",
                 ct);
         }
         await _db.CommitAsync(ct);
@@ -643,7 +674,7 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         for (int i = 1; i <= 5000; i++)
         {
             int code = ((i - 1) % 200) + 1;
-            string nullableTag = i <= 5 ? "NULL" : "1";
+            string nullableTag = i <= 5 ? "NULL" : i.ToString();
             await _db.ExecuteAsync(
                 $"INSERT INTO planner_reorder_big VALUES ({i}, {code}, {i * 3}, {nullableTag})",
                 ct);
