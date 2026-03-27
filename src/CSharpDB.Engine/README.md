@@ -222,6 +222,16 @@ Reuse the same `ReaderSession` for a burst of related reads when possible. The
 current file-backed tuning benchmarks show that reusing a snapshot is
 materially cheaper than creating a new reader session for every single query.
 
+## Thread Safety
+
+The supported threading model for `Database` is:
+
+- Auto-commit writes can be issued concurrently against the same `Database` or `Collection<T>`, but they are serialized internally behind a single writer gate.
+- Only one explicit transaction can be active per `Database`. Do not share one explicit transaction concurrently across multiple tasks.
+- Use one `ReaderSession` per concurrent SQL reader when you want snapshot-isolated reads alongside writes.
+- A single `ReaderSession` is not re-entrant and supports only one active query at a time.
+- The collection API does not yet expose its own snapshot-reader abstraction. For repeatable concurrent read isolation during writes, prefer SQL reads through `ReaderSession`.
+
 ## Installation
 
 ```
