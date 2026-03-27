@@ -472,10 +472,10 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - `SELECT DISTINCT`, composite indexes, prepared statement caching
 - `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
 - `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
+- Phase-1 cost-based planner work: stats-driven non-unique lookup choice, join method selection, hash build-side choice, and limited greedy inner-join reordering for selective filters
 
 **In progress**
-- Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
-- Broader statistics-driven planning for ranges, joins, and richer cost-based access-path choices
+- Advanced statistics-driven planning beyond phase 1: histograms, skew/correlation-aware estimates, and broader cost-based access-path choices
 - Service daemon expansion for persistent background hosting and same-machine local transport support
 - Named Pipes transport work for `CSharpDB.Client`
 

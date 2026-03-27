@@ -76,7 +76,7 @@ Advanced features and fundamental architecture enhancements.
 | **SQL batched row transport** | Introduce true internal row-batch transport between operators as the foundation for batch-oriented/vectorized scan-heavy execution | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
-| **Cost-based query optimizer** | Statistics-driven join ordering and index selection (initial support via ANALYZE in Near-Term; advanced histograms and adaptive re-optimization here) | Planned |
+| **Cost-based query optimizer** | In progress: fresh `ANALYZE` stats now drive non-unique lookup selection, hash-vs-lookup join choice, hash build-side choice, and limited greedy inner-join reordering for selective equality/range/`IN`/same-column `OR` filters; advanced histograms and adaptive re-optimization remain future work | In Progress |
 | **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, and staged multi-page `AppendFrameAsync` commits now reduce syscall count on the main storage write paths; remaining batch/export paths still need auditing | In Progress |
 | **Low-latency durable writes** | Reduce file-backed durable auto-commit overhead by deferring advisory planner-stat persistence and separating exact versus estimated row-count semantics, while preserving exact per-commit WAL durability for committed user data | Planned |
 | **Group commit / deferred WAL flush** | Buffer committed WAL writes across transactions before flushing to improve auto-commit throughput | Planned |
@@ -108,7 +108,7 @@ These are known simplifications in the current implementation:
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Storage** | Durable auto-commit single-row writes still pay a physical WAL flush per commit; current write-heavy presets mainly reduce checkpoint variance rather than the flush cost itself |
-| **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` exist, but range and join costing still lean on heuristics rather than broader statistics-driven estimation |
+| **Query** | `ANALYZE`, `sys.table_stats`, and `sys.column_stats` now feed phase-1 join/access-path costing, but there are still no histograms, no adaptive re-optimization, and complex skew/correlation cases can still fall back to heuristics |
 
 ---
 
@@ -129,7 +129,7 @@ Major features already implemented:
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
-- Initial statistics-guided non-unique equality lookup selection
+- Phase-1 statistics-guided access-path selection, join method choice, hash build-side choice, and limited greedy inner-join reordering for selective filters
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
