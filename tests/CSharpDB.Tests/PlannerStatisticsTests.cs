@@ -1,5 +1,6 @@
 using System.Reflection;
 using CSharpDB.Engine;
+using CSharpDB.Execution;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Tests;
@@ -65,6 +66,60 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         Assert.Null(staleRemaining);
     }
 
+    [Fact]
+    public async Task FreshColumnStats_NonUniqueJoin_PrefersIndexLookupWhenExpectedMatchesAreLow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSelectiveJoinTablesAsync(ct);
+
+        await using var preAnalyzeResult = await _db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM planner_join_left l JOIN planner_join_right r ON l.code = r.code",
+            ct);
+        Assert.IsType<HashJoinOperator>(GetRootOperator(preAnalyzeResult));
+
+        await _db.ExecuteAsync("ANALYZE planner_join_left", ct);
+        await _db.ExecuteAsync("ANALYZE planner_join_right", ct);
+
+        await using var postAnalyzeResult = await _db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM planner_join_left l JOIN planner_join_right r ON l.code = r.code",
+            ct);
+        Assert.IsType<IndexNestedLoopJoinOperator>(GetRootOperator(postAnalyzeResult));
+
+        var rows = await postAnalyzeResult.ToListAsync(ct);
+        Assert.Equal(6000, rows.Count);
+    }
+
+    [Fact]
+    public async Task StaleColumnStats_NonUniqueJoin_FallsBackToHashJoin()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSelectiveJoinTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_join_left", ct);
+        await _db.ExecuteAsync("ANALYZE planner_join_right", ct);
+
+        await _db.ExecuteAsync("INSERT INTO planner_join_right VALUES (10001, 5001, 123456)", ct);
+
+        await using var staleResult = await _db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM planner_join_left l JOIN planner_join_right r ON l.code = r.code",
+            ct);
+        Assert.IsType<HashJoinOperator>(GetRootOperator(staleResult));
+    }
+
+    [Fact]
+    public async Task HashJoin_BuildsSmallerEstimatedSide_WhenInputsAreClose()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupHashBuildSideTablesAsync(ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM planner_hash_left l JOIN planner_hash_right r ON l.code = r.code",
+            ct);
+
+        var rootOperator = Assert.IsType<HashJoinOperator>(GetRootOperator(result));
+        bool buildRightSide = GetPrivateField<bool>(rootOperator, "_buildRightSide");
+        Assert.False(buildRightSide);
+    }
+
     private async ValueTask SetupSelectivityTableAsync(CancellationToken ct)
     {
         await _db.ExecuteAsync("CREATE TABLE planner_stats (id INTEGER PRIMARY KEY, low_group INTEGER, code INTEGER)", ct);
@@ -99,5 +154,81 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         object?[] args = [tableName, select.Where, schema, null];
         object? op = method.Invoke(planner, args);
         return (op, (Expression?)args[3]);
+    }
+
+    private async ValueTask SetupSelectiveJoinTablesAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_join_left (id INTEGER PRIMARY KEY, code INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_join_right (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_planner_join_right_code ON planner_join_right(code)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 3000; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_join_left VALUES ({i}, {i})",
+                ct);
+        }
+
+        for (int i = 1; i <= 10000; i++)
+        {
+            int code = ((i - 1) % 5000) + 1;
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_join_right VALUES ({i}, {code}, {i * 10})",
+                ct);
+        }
+        await _db.CommitAsync(ct);
+    }
+
+    private static IOperator GetRootOperator(QueryResult result)
+    {
+        var storedOperator = GetStoredOperator(result);
+        return storedOperator is BatchToRowOperatorAdapter batchAdapter
+            ? batchAdapter.BatchSource as IOperator
+                ?? throw new InvalidOperationException("Batch adapter did not expose an operator root.")
+            : storedOperator;
+    }
+
+    private static IOperator GetStoredOperator(QueryResult result)
+    {
+        var operatorField = typeof(QueryResult).GetField("_operator", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult operator field not found.");
+        var storedOperator = (IOperator?)operatorField.GetValue(result);
+        if (storedOperator != null)
+            return storedOperator;
+
+        var batchOperatorField = typeof(QueryResult).GetField("_batchOperator", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("QueryResult batch operator field not found.");
+        return (IOperator?)batchOperatorField.GetValue(result)
+            ?? throw new InvalidOperationException("QueryResult did not contain an operator.");
+    }
+
+    private static T GetPrivateField<T>(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}.");
+        return (T)field.GetValue(target)!;
+    }
+
+    private async ValueTask SetupHashBuildSideTablesAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_hash_left (id INTEGER PRIMARY KEY, code INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_hash_right (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 800; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_hash_left VALUES ({i}, {i})",
+                ct);
+        }
+
+        for (int i = 1; i <= 1000; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_hash_right VALUES ({i}, {i}, {i * 7})",
+                ct);
+        }
+        await _db.CommitAsync(ct);
     }
 }

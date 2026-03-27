@@ -40,6 +40,18 @@ public class JoinBenchmarks
         db.ExecuteAsync(
             "CREATE TABLE right_comp_t (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, amount INTEGER, left_id INTEGER)")
             .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE mid_left_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, label TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE mid_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE stats_join_left_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE stats_join_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
 
         // Small table for cross join
         db.ExecuteAsync("CREATE TABLE small_t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -70,6 +82,26 @@ public class JoinBenchmarks
             $"INSERT INTO right_comp_t VALUES ({i}, {i % 100}, 'code_{i / 100}', {i * 3}, {i})")
             .GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_t_ab ON right_comp_t(a, b)")
+            .AsTask().GetAwaiter().GetResult();
+        _bench.SeedAsync("mid_left_t", 800, i =>
+            $"INSERT INTO mid_left_t VALUES ({i}, {i}, 'mid_left_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("mid_right_t", 1000, i =>
+            $"INSERT INTO mid_right_t VALUES ({i}, {i}, {i * 13})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("stats_join_left_t", 3000, i =>
+            $"INSERT INTO stats_join_left_t VALUES ({i}, {i})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("stats_join_right_t", 10000, i =>
+        {
+            int code = ((i - 1) % 5000) + 1;
+            return $"INSERT INTO stats_join_right_t VALUES ({i}, {code}, {i * 11})";
+        }).GetAwaiter().GetResult();
+        db.ExecuteAsync("CREATE INDEX idx_stats_join_right_t_code ON stats_join_right_t(code)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE stats_join_left_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE stats_join_right_t")
             .AsTask().GetAwaiter().GetResult();
 
         // Skewed table (20K rows) to stress hash build-side choice.
@@ -112,6 +144,14 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.label, r.amount FROM left_t l INNER JOIN right_big_t r ON l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 800x1K (planner builds smaller side)")]
+    public async Task InnerJoin_800x1K_BuildSmallerSide()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.payload FROM mid_left_t l INNER JOIN mid_right_t r ON l.code = r.code");
         await result.ToListAsync();
     }
 
@@ -216,6 +256,14 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.label, r.id, r.a, r.b FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a AND l.id = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 3Kx10K (stats-driven non-unique lookup)")]
+    public async Task InnerJoin_StatsDrivenNonUniqueLookup()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM stats_join_left_t l INNER JOIN stats_join_right_t r ON l.code = r.code");
         await result.ToListAsync();
     }
 

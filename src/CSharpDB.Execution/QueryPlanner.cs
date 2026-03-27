@@ -5389,8 +5389,8 @@ public sealed class QueryPlanner
                     rewrittenJoin,
                     rightOp,
                     leftOp,
-                    rightSchema.Columns.Count,
-                    leftSchema.Columns.Count,
+                    rightSchema,
+                    leftSchema,
                     swappedCompositeSchema,
                     out var swappedHashJoinOp))
                 {
@@ -5398,7 +5398,7 @@ public sealed class QueryPlanner
                 }
                 else
                 {
-                    int? swappedEstimatedOutputRowCount = TryEstimateJoinOutputRowCount(rewrittenJoin);
+                    int? swappedEstimatedOutputRowCount = TryEstimateJoinOutputRowCount(rewrittenJoin, rightSchema, leftSchema);
                     int? swappedRightRowCapacityHint = TryEstimateTableRefRowCountCapacityHint(rewrittenJoin.Right);
                     swappedJoinOp = new NestedLoopJoinOperator(
                         rightOp,
@@ -5441,15 +5441,15 @@ public sealed class QueryPlanner
                 join,
                 leftOp,
                 rightOp,
-                leftSchema.Columns.Count,
-                rightSchema.Columns.Count,
+                leftSchema,
+                rightSchema,
                 compositeSchema,
                 out var hashJoinOp))
             {
                 return (hashJoinOp!, compositeSchema);
             }
 
-            int? estimatedOutputRowCount = TryEstimateJoinOutputRowCount(join);
+            int? estimatedOutputRowCount = TryEstimateJoinOutputRowCount(join, leftSchema, rightSchema);
             int? rightRowCapacityHint = TryEstimateTableRefRowCountCapacityHint(join.Right);
             var joinOp = new NestedLoopJoinOperator(
                 leftOp, rightOp, join.JoinType, join.Condition,
@@ -5600,9 +5600,23 @@ public sealed class QueryPlanner
 
         bool hasOuterEstimate = TryEstimateTableRefRowCount(join.Left, out long outerRows);
         bool hasInnerEstimate = TryEstimateTableRefRowCount(join.Right, out long innerRows);
+        bool hasEstimatedOutputRows = TryEstimateJoinOutputRows(
+            join,
+            leftSchema,
+            rightSchema,
+            orderedLeftKeyIndices,
+            orderedRightKeyIndices,
+            out long estimatedOutputRows);
+
         if (hasOuterEstimate && hasInnerEstimate)
         {
-            if (!ShouldPreferIndexNestedLoop(outerRows, innerRows, lookupIsPrimaryKey, lookupIsUnique))
+            bool shouldUseLookup = lookupIsPrimaryKey || lookupIsUnique
+                ? ShouldPreferIndexNestedLoop(outerRows, innerRows, lookupIsPrimaryKey, lookupIsUnique)
+                : hasEstimatedOutputRows
+                    ? ShouldPreferNonUniqueIndexNestedLoop(outerRows, innerRows, estimatedOutputRows, usesDirectIntegerLookup)
+                    : ShouldPreferIndexNestedLoop(outerRows, innerRows, lookupIsPrimaryKey, lookupIsUnique);
+
+            if (!shouldUseLookup)
                 return false;
         }
         else if (!lookupIsUnique)
@@ -5613,7 +5627,9 @@ public sealed class QueryPlanner
 
         int? estimatedOutputRowCount = lookupIsUnique
             ? ToCapacityHint(outerRows)
-            : EstimateJoinOutputRowCount(join.JoinType, hasOuterEstimate, outerRows, hasInnerEstimate, innerRows);
+            : hasEstimatedOutputRows
+                ? ToCapacityHint(estimatedOutputRows)
+                : EstimateJoinOutputRowCount(join.JoinType, hasOuterEstimate, outerRows, hasInnerEstimate, innerRows);
 
         if (orderedLeftKeyIndices == null || orderedRightKeyIndices == null)
             return false;
@@ -5776,6 +5792,22 @@ public sealed class QueryPlanner
         return outerRows <= Math.Max(1, innerRows / 4);
     }
 
+    private static bool ShouldPreferNonUniqueIndexNestedLoop(
+        long outerRows,
+        long innerRows,
+        long estimatedOutputRows,
+        bool usesDirectIntegerLookup)
+    {
+        outerRows = Math.Max(outerRows, 1);
+        innerRows = Math.Max(innerRows, 1);
+        estimatedOutputRows = Math.Clamp(estimatedOutputRows, 1, SafeMultiply(outerRows, innerRows));
+
+        long hashJoinCost = SafeMultiply(innerRows, 1) + outerRows;
+        long lookupProbeCost = SafeMultiply(outerRows, usesDirectIntegerLookup ? 1 : 2);
+        long lookupJoinCost = lookupProbeCost + estimatedOutputRows;
+        return lookupJoinCost <= hashJoinCost;
+    }
+
     private static long SafeMultiply(long a, long b)
     {
         if (a <= 0 || b <= 0) return 0;
@@ -5787,8 +5819,8 @@ public sealed class QueryPlanner
         JoinTableRef join,
         IOperator leftOp,
         IOperator rightOp,
-        int leftColumnCount,
-        int rightColumnCount,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
         TableSchema compositeSchema,
         out IOperator? hashJoinOp)
     {
@@ -5800,7 +5832,7 @@ public sealed class QueryPlanner
         if (!TryAnalyzeHashJoinCondition(
                 join.Condition,
                 compositeSchema,
-                leftColumnCount,
+                leftSchema.Columns.Count,
                 out var leftKeyIndices,
                 out var rightKeyIndices,
                 out var residualCondition))
@@ -5811,13 +5843,13 @@ public sealed class QueryPlanner
         bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
         bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
 
-        // HashJoinOperator defaults to building the right input side. For INNER joins,
-        // flip the build side when left is much smaller.
+        // Build the smaller estimated side for INNER hash joins to reduce hash table
+        // memory and probe work.
         bool buildRightSide = true;
         if (join.JoinType == JoinType.Inner &&
             hasLeftEstimate &&
             hasRightEstimate &&
-            ShouldSwapInnerHashJoinBuild(leftRows, rightRows))
+            !ShouldBuildHashRightSide(leftRows, rightRows))
         {
             buildRightSide = false;
         }
@@ -5829,12 +5861,12 @@ public sealed class QueryPlanner
             buildRowCapacityHint = ToCapacityHint(buildRows);
         }
 
-        int? estimatedOutputRowCount = EstimateJoinOutputRowCount(
-            join.JoinType,
-            hasLeftEstimate,
-            leftRows,
-            hasRightEstimate,
-            rightRows);
+        int? estimatedOutputRowCount = TryEstimateJoinOutputRowCount(
+            join,
+            leftSchema,
+            rightSchema,
+            leftKeyIndices,
+            rightKeyIndices);
 
         hashJoinOp = new HashJoinOperator(
             leftOp,
@@ -5842,8 +5874,8 @@ public sealed class QueryPlanner
             join.JoinType,
             residualCondition,
             compositeSchema,
-            leftColumnCount,
-            rightColumnCount,
+            leftSchema.Columns.Count,
+            rightSchema.Columns.Count,
             leftKeyIndices,
             rightKeyIndices,
             buildRightSide,
@@ -5867,8 +5899,72 @@ public sealed class QueryPlanner
             : null;
     }
 
-    private int? TryEstimateJoinOutputRowCount(JoinTableRef join)
+    private bool TryEstimateJoinOutputRows(
+        JoinTableRef join,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
+        ReadOnlySpan<int> leftKeyIndices,
+        ReadOnlySpan<int> rightKeyIndices,
+        out long estimatedRows)
     {
+        bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
+        bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
+
+        estimatedRows = 0;
+        if (!hasLeftEstimate || !hasRightEstimate)
+            return false;
+
+        if (leftKeyIndices.Length == 0 &&
+            rightKeyIndices.Length == 0 &&
+            join.Condition != null)
+        {
+            var compositeSchema = TableSchema.CreateJoinSchema(leftSchema, rightSchema);
+            if (TryAnalyzeHashJoinCondition(
+                    join.Condition,
+                    compositeSchema,
+                    leftSchema.Columns.Count,
+                    out var analyzedLeftKeyIndices,
+                    out var analyzedRightKeyIndices,
+                    out _))
+            {
+                leftKeyIndices = analyzedLeftKeyIndices;
+                rightKeyIndices = analyzedRightKeyIndices;
+            }
+        }
+
+        if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
+            return false;
+
+        return CardinalityEstimator.TryEstimateEqualityJoinRowCount(
+            _catalog,
+            join.JoinType,
+            leftSchema,
+            rightSchema,
+            leftKeyIndices,
+            rightKeyIndices,
+            leftRows,
+            rightRows,
+            out estimatedRows);
+    }
+
+    private int? TryEstimateJoinOutputRowCount(
+        JoinTableRef join,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
+        ReadOnlySpan<int> leftKeyIndices = default,
+        ReadOnlySpan<int> rightKeyIndices = default)
+    {
+        if (TryEstimateJoinOutputRows(
+                join,
+                leftSchema,
+                rightSchema,
+                leftKeyIndices,
+                rightKeyIndices,
+                out long estimatedRows))
+        {
+            return ToCapacityHint(estimatedRows);
+        }
+
         bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
         bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
         return EstimateJoinOutputRowCount(
@@ -5886,34 +5982,14 @@ public sealed class QueryPlanner
         bool hasRightEstimate,
         long rightRows)
     {
-        if (!hasLeftEstimate && !hasRightEstimate)
+        long estimate = CardinalityEstimator.EstimateFallbackJoinRowCount(
+            joinType,
+            hasLeftEstimate,
+            leftRows,
+            hasRightEstimate,
+            rightRows);
+        if (estimate <= 0)
             return null;
-
-        long estimate = joinType switch
-        {
-            JoinType.Cross => hasLeftEstimate && hasRightEstimate
-                ? SafeMultiply(leftRows, rightRows)
-                : hasLeftEstimate
-                    ? leftRows
-                    : rightRows,
-            JoinType.LeftOuter => hasLeftEstimate
-                ? leftRows
-                : rightRows,
-            JoinType.RightOuter => hasRightEstimate
-                ? rightRows
-                : leftRows,
-            JoinType.Inner => hasLeftEstimate && hasRightEstimate
-                ? Math.Max(leftRows, rightRows)
-                : hasLeftEstimate
-                    ? leftRows
-                    : rightRows,
-            _ => hasLeftEstimate && hasRightEstimate
-                ? Math.Max(leftRows, rightRows)
-                : hasLeftEstimate
-                    ? leftRows
-                    : rightRows,
-        };
-
         return ToCapacityHint(estimate);
     }
 
@@ -5927,13 +6003,11 @@ public sealed class QueryPlanner
         return (int)Math.Min(count, maxCapacityHint);
     }
 
-    private static bool ShouldSwapInnerHashJoinBuild(long leftRows, long rightRows)
+    private static bool ShouldBuildHashRightSide(long leftRows, long rightRows)
     {
         leftRows = Math.Max(leftRows, 1);
         rightRows = Math.Max(rightRows, 1);
-
-        // Keep a conservative threshold to avoid churn when sizes are near-equal.
-        return SafeMultiply(leftRows, 2) < rightRows;
+        return rightRows <= leftRows;
     }
 
     private static bool TryAnalyzeHashJoinCondition(
@@ -6244,19 +6318,13 @@ public sealed class QueryPlanner
 
     private bool TryEstimateLookupRowCount(string tableName, string columnName, out long estimatedRows, out long tableRowCount)
     {
-        estimatedRows = 0;
-        tableRowCount = 0;
-
-        if (!TryGetTableRowCount(tableName, out tableRowCount) ||
-            tableRowCount <= 0 ||
-            !_catalog.TryGetFreshColumnStatistics(tableName, columnName, out var stats) ||
-            stats.DistinctCount <= 0)
-        {
-            return false;
-        }
-
-        estimatedRows = Math.Max(1, DivideRoundUp(tableRowCount, stats.DistinctCount));
-        return true;
+        return CardinalityEstimator.TryEstimateLookupRowCount(
+            _tableRowCountProvider,
+            _catalog,
+            tableName,
+            columnName,
+            out estimatedRows,
+            out tableRowCount);
     }
 
     private static bool ShouldUseLookupCandidate(LookupCandidate candidate)
