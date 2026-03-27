@@ -845,10 +845,8 @@ internal static class CardinalityEstimator
         var segments = new List<(long Start, long End)>(alternatives.Count);
         for (int i = 0; i < alternatives.Count; i++)
         {
-            if (!TryConvertConstraintToIntegerSegment(alternatives[i], min, max, out var segment))
+            if (!TryConvertConstraintToIntegerSegments(alternatives[i], min, max, segments))
                 return false;
-
-            segments.Add(segment);
         }
 
         long covered = MergeIntegerSegmentsAndMeasure(segments);
@@ -906,28 +904,26 @@ internal static class CardinalityEstimator
         };
     }
 
-    private static bool TryConvertConstraintToIntegerSegment(
+    private static bool TryConvertConstraintToIntegerSegments(
         ColumnConstraint constraint,
         long min,
         long max,
-        out (long Start, long End) segment)
+        List<(long Start, long End)> segments)
     {
-        segment = default;
-
         if (!IsUnionCompatibleConstraint(constraint))
             return false;
 
         if (constraint.AllowedValues is { Count: > 0 } allowedValues)
         {
-            if (allowedValues.Count != 1)
-                return false;
+            foreach (DbValue value in allowedValues)
+            {
+                if (value.Type != DbType.Integer)
+                    return false;
 
-            DbValue onlyValue = allowedValues.First();
-            if (onlyValue.Type != DbType.Integer)
-                return false;
+                long point = Math.Clamp(value.AsInteger, min, max);
+                segments.Add((point, point));
+            }
 
-            long point = Math.Clamp(onlyValue.AsInteger, min, max);
-            segment = (point, point);
             return true;
         }
 
@@ -959,7 +955,7 @@ internal static class CardinalityEstimator
         if (upper < lower)
             return false;
 
-        segment = (lower, upper);
+        segments.Add((lower, upper));
         return true;
     }
 

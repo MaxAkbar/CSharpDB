@@ -139,6 +139,20 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FilteredRowEstimate_UsesMixedDiscreteAndRangeUnion()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSelectivityTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_stats", ct);
+
+        long estimatedRows = InvokeEstimateFilteredRows(
+            "planner_stats",
+            "SELECT * FROM planner_stats WHERE code IN (1, 2, 3) OR code BETWEEN 10 AND 11");
+
+        Assert.Equal(5, estimatedRows);
+    }
+
+    [Fact]
     public async Task FreshColumnStats_NonUniqueJoin_PrefersIndexLookupWhenExpectedMatchesAreLow()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -335,6 +349,22 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
 
         var order = InvokeChooseGreedyInnerJoinOrder(
             "SELECT b.id, s.flag FROM planner_reorder_small s JOIN planner_reorder_mid m ON m.code = s.code JOIN planner_reorder_big b ON b.code = m.code WHERE b.id BETWEEN 1 AND 2 OR b.id BETWEEN 10 AND 11");
+        Assert.Equal(["b", "m", "s"], order);
+    }
+
+    [Fact]
+    public async Task InnerJoinChain_ReordersUsingSelectiveTopLevelMixedUnionPredicate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupReorderableJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_small", ct);
+
+        var reordered = InvokeTryReorderInnerJoinChain(
+            "SELECT b.id, s.flag FROM planner_reorder_small s JOIN planner_reorder_mid m ON m.code = s.code JOIN planner_reorder_big b ON b.code = m.code WHERE b.id IN (1, 2, 3) OR b.id BETWEEN 10 AND 11");
+
+        var order = FlattenJoinOrder(reordered).ToArray();
         Assert.Equal(["b", "m", "s"], order);
     }
 
