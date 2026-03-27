@@ -56,6 +56,116 @@ New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
 $startUtc = (Get-Date).ToUniversalTime()
 
+function Get-OsPlatformName
+{
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows))
+    {
+        return "Windows"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux))
+    {
+        return "Linux"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX))
+    {
+        return "macOS"
+    }
+
+    return "Unknown"
+}
+
+function Get-ProcessorName
+{
+    $cpuName = ""
+
+    try
+    {
+        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
+            (Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
+        {
+            $cpuName = [string](Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+        }
+    }
+    catch
+    {
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command lscpu -ErrorAction SilentlyContinue)
+            {
+                $modelLine = & lscpu 2>$null | Where-Object { $_ -match "^Model name:\s*(.+)$" } | Select-Object -First 1
+                if ($modelLine -match "^Model name:\s*(.+)$")
+                {
+                    $cpuName = [string]$matches[1]
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command sysctl -ErrorAction SilentlyContinue)
+            {
+                $cpuName = [string]((& sysctl -n machdep.cpu.brand_string 2>$null) | Select-Object -First 1)
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        $cpuName = [string]$env:PROCESSOR_IDENTIFIER
+    }
+
+    return $cpuName.Trim()
+}
+
+function Get-MachineFingerprint
+{
+    $dotnetVersion = ""
+    try
+    {
+        $dotnetVersion = [string]((& dotnet --version) | Select-Object -First 1)
+    }
+    catch
+    {
+    }
+
+    $dotnetVersion = $dotnetVersion.Trim()
+    $dotnetMajorMinor = ""
+    if ($dotnetVersion -match "^(?<major>\d+)\.(?<minor>\d+)")
+    {
+        $dotnetMajorMinor = "$($matches.major).$($matches.minor)"
+    }
+
+    return [ordered]@{
+        fingerprintVersion = 1
+        capturedUtc = (Get-Date).ToUniversalTime().ToString("o")
+        runnerId = [string]$env:CSHARPDB_PERF_RUNNER_ID
+        machineName = [Environment]::MachineName
+        cpuName = Get-ProcessorName
+        logicalCoreCount = [Environment]::ProcessorCount
+        osPlatform = Get-OsPlatformName
+        osDescription = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
+        osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        dotnetVersion = $dotnetVersion
+        dotnetMajorMinor = $dotnetMajorMinor
+    }
+}
+
 function Invoke-BenchmarkRun
 {
     param(
@@ -240,9 +350,11 @@ $copiedMicroLogs = Copy-NewArtifacts -SourceDir $bdnRoot -TargetSubDir "micro-lo
 $copiedMacro = Copy-NewArtifacts -SourceDir $benchResults -TargetSubDir "macro-stress-scaling" -Pattern "*.csv"
 
 $metadataPath = Join-Path $snapshotDir "metadata.txt"
+$machineFingerprintPath = Join-Path $snapshotDir "machine.json"
 $gitHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 $gitStatus = & git -C $repoRoot status --short
 $dotnetInfo = & dotnet --info
+$machineFingerprint = Get-MachineFingerprint
 
 @(
     "UTC Timestamp: $runTimestamp"
@@ -258,6 +370,7 @@ $dotnetInfo = & dotnet --info
     "Macro/Stress/Scaling CSV copied: $copiedMacro"
     "Write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeDiagnosticsCapturePath)) { "skipped" } else { $writeDiagnosticsCapturePath })"
     "Concurrent write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($concurrentWriteDiagnosticsCapturePath)) { "skipped" } else { $concurrentWriteDiagnosticsCapturePath })"
+    "Machine fingerprint: $(Split-Path -Leaf $machineFingerprintPath)"
     ""
     "git status --short:"
     ($gitStatus -join [Environment]::NewLine)
@@ -265,6 +378,8 @@ $dotnetInfo = & dotnet --info
     "dotnet --info:"
     $dotnetInfo
 ) | Set-Content -Path $metadataPath -Encoding UTF8
+
+$machineFingerprint | ConvertTo-Json -Depth 4 | Set-Content -Path $machineFingerprintPath -Encoding UTF8
 
 Write-Host ""
 Write-Host "Baseline snapshot written to: $snapshotDir"

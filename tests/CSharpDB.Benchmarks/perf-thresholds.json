@@ -1,5 +1,5 @@
 {
-  "baselineSnapshot": "20260302-001757",
+  "baselineSnapshot": "focused-validation/20260326-123705",
   "defaults": {
     "maxMeanRegressionPercent": 8.0,
     "maxAllocRegressionPercent": 10.0,
@@ -8,7 +8,7 @@
   "checks": [
     {
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "PreSeededRows"
@@ -30,7 +30,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -73,7 +73,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method"
       ],
@@ -100,14 +100,14 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-112510",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method"
       ]
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-122734",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -182,7 +182,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-112510",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -205,7 +205,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.IndexAggregateBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-154942",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -232,7 +232,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -241,7 +241,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -250,7 +250,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -279,7 +279,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -304,7 +304,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -341,7 +341,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -370,7 +370,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260324-222637",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "WalFramesBeforeCheckpoint"

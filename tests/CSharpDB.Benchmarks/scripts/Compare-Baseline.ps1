@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 function Get-OptionalProperty
 {
     param(
-        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$Object,
         [Parameter(Mandatory = $true)][string]$Name,
         [object]$DefaultValue = $null
     )
@@ -29,6 +29,237 @@ function Get-OptionalProperty
     }
 
     return $DefaultValue
+}
+
+function Normalize-ComparableText
+{
+    param([Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][string]$Value)
+
+    if ($null -eq $Value)
+    {
+        return ""
+    }
+
+    return (($Value.Trim().ToLowerInvariant()) -replace "\s+", " ")
+}
+
+function Get-OsPlatformName
+{
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows))
+    {
+        return "Windows"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux))
+    {
+        return "Linux"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX))
+    {
+        return "macOS"
+    }
+
+    return "Unknown"
+}
+
+function Get-ProcessorName
+{
+    $cpuName = ""
+
+    try
+    {
+        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
+            (Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
+        {
+            $cpuName = [string](Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+        }
+    }
+    catch
+    {
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command lscpu -ErrorAction SilentlyContinue)
+            {
+                $modelLine = & lscpu 2>$null | Where-Object { $_ -match "^Model name:\s*(.+)$" } | Select-Object -First 1
+                if ($modelLine -match "^Model name:\s*(.+)$")
+                {
+                    $cpuName = [string]$matches[1]
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command sysctl -ErrorAction SilentlyContinue)
+            {
+                $cpuName = [string]((& sysctl -n machdep.cpu.brand_string 2>$null) | Select-Object -First 1)
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        $cpuName = [string]$env:PROCESSOR_IDENTIFIER
+    }
+
+    return $cpuName.Trim()
+}
+
+function Get-DotnetMajorMinor
+{
+    param([Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][string]$Version)
+
+    $trimmed = [string]$Version
+    if ($trimmed -match "^(?<major>\d+)\.(?<minor>\d+)")
+    {
+        return "$($matches.major).$($matches.minor)"
+    }
+
+    return ""
+}
+
+function Get-MachineFingerprint
+{
+    $dotnetVersion = ""
+    try
+    {
+        $dotnetVersion = [string]((& dotnet --version) | Select-Object -First 1)
+    }
+    catch
+    {
+    }
+
+    $dotnetVersion = $dotnetVersion.Trim()
+
+    return [pscustomobject]@{
+        fingerprintVersion = 1
+        capturedUtc = (Get-Date).ToUniversalTime().ToString("o")
+        runnerId = [string]$env:CSHARPDB_PERF_RUNNER_ID
+        machineName = [Environment]::MachineName
+        cpuName = Get-ProcessorName
+        logicalCoreCount = [Environment]::ProcessorCount
+        osPlatform = Get-OsPlatformName
+        osDescription = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
+        osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        dotnetVersion = $dotnetVersion
+        dotnetMajorMinor = Get-DotnetMajorMinor -Version $dotnetVersion
+    }
+}
+
+function Get-SnapshotMachineFingerprint
+{
+    param([Parameter(Mandatory = $true)][string]$SnapshotDir)
+
+    $machinePath = Join-Path $SnapshotDir "machine.json"
+    if (-not (Test-Path $machinePath))
+    {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Path = $machinePath
+        Data = (Get-Content -Path $machinePath -Raw | ConvertFrom-Json)
+    }
+}
+
+function Format-MachineSummary
+{
+    param([Parameter(Mandatory = $true)]$Fingerprint)
+
+    $runnerId = [string](Get-OptionalProperty -Object $Fingerprint -Name "runnerId" -DefaultValue "")
+    $runnerDisplay = if ([string]::IsNullOrWhiteSpace($runnerId)) { "runner=<unset>" } else { "runner=$runnerId" }
+    $cpuName = [string](Get-OptionalProperty -Object $Fingerprint -Name "cpuName" -DefaultValue "<unknown cpu>")
+    $cores = [string](Get-OptionalProperty -Object $Fingerprint -Name "logicalCoreCount" -DefaultValue "?")
+    $os = [string](Get-OptionalProperty -Object $Fingerprint -Name "osDescription" -DefaultValue "<unknown os>")
+    $dotnet = [string](Get-OptionalProperty -Object $Fingerprint -Name "dotnetVersion" -DefaultValue "<unknown dotnet>")
+    return "$runnerDisplay; cpu=$cpuName; cores=$cores; os=$os; dotnet=$dotnet"
+}
+
+function Get-MachineCompatibility
+{
+    param(
+        [Parameter(Mandatory = $false)]$BaselineFingerprint,
+        [Parameter(Mandatory = $true)]$CurrentFingerprint
+    )
+
+    if ($null -eq $BaselineFingerprint)
+    {
+        return [pscustomobject]@{
+            Classification = "legacy"
+            Enforcement = "strict"
+            Summary = "Strict (legacy baseline without machine fingerprint)"
+            Notes = "Baseline snapshot has no machine.json; retaining strict comparison."
+        }
+    }
+
+    $baselineRunnerId = Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "runnerId" -DefaultValue ""))
+    $currentRunnerId = Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "runnerId" -DefaultValue ""))
+
+    $sameRunnerId = (-not [string]::IsNullOrWhiteSpace($baselineRunnerId)) -and
+        (-not [string]::IsNullOrWhiteSpace($currentRunnerId)) -and
+        ($baselineRunnerId -eq $currentRunnerId)
+    $sameMachineName = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "machineName" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "machineName" -DefaultValue "")))
+    $sameCpu = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "cpuName" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "cpuName" -DefaultValue "")))
+    $sameCoreCount = ([int](Get-OptionalProperty -Object $BaselineFingerprint -Name "logicalCoreCount" -DefaultValue 0)) -eq
+        ([int](Get-OptionalProperty -Object $CurrentFingerprint -Name "logicalCoreCount" -DefaultValue -1))
+    $sameOsPlatform = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "osPlatform" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "osPlatform" -DefaultValue "")))
+    $sameOsArchitecture = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "osArchitecture" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "osArchitecture" -DefaultValue "")))
+    $sameProcessArchitecture = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "processArchitecture" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "processArchitecture" -DefaultValue "")))
+    $baselineDotnetMajorMinor = Normalize-ComparableText (Get-DotnetMajorMinor -Version ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "dotnetMajorMinor" -DefaultValue (Get-OptionalProperty -Object $BaselineFingerprint -Name "dotnetVersion" -DefaultValue ""))))
+    $currentDotnetMajorMinor = Normalize-ComparableText (Get-DotnetMajorMinor -Version ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "dotnetMajorMinor" -DefaultValue (Get-OptionalProperty -Object $CurrentFingerprint -Name "dotnetVersion" -DefaultValue ""))))
+    $sameDotnetMajorMinor = (-not [string]::IsNullOrWhiteSpace($baselineDotnetMajorMinor)) -and ($baselineDotnetMajorMinor -eq $currentDotnetMajorMinor)
+    $sameOsDescription = (Normalize-ComparableText ([string](Get-OptionalProperty -Object $BaselineFingerprint -Name "osDescription" -DefaultValue ""))) -eq
+        (Normalize-ComparableText ([string](Get-OptionalProperty -Object $CurrentFingerprint -Name "osDescription" -DefaultValue "")))
+
+    $sameHardware = $sameCpu -and $sameCoreCount -and $sameOsPlatform -and $sameOsArchitecture -and $sameProcessArchitecture
+    $sameRuntimeFamily = $sameDotnetMajorMinor
+
+    if ($sameRunnerId -or (($sameMachineName -and $sameOsDescription) -and $sameHardware -and $sameRuntimeFamily))
+    {
+        return [pscustomobject]@{
+            Classification = "exact"
+            Enforcement = "strict"
+            Summary = $(if ($sameRunnerId) { "Strict (matching perf runner)" } else { "Strict (same machine fingerprint)" })
+            Notes = $(if ($sameRunnerId) { "Current runner matches the baseline perf runner." } else { "Current machine fingerprint matches the baseline snapshot." })
+        }
+    }
+
+    if ($sameHardware -and $sameRuntimeFamily)
+    {
+        return [pscustomobject]@{
+            Classification = "compatible"
+            Enforcement = "warn"
+            Summary = "Warn-only (compatible hardware/runtime)"
+            Notes = "Hardware/runtime match the baseline, but this is not the authoritative perf runner."
+        }
+    }
+
+    return [pscustomobject]@{
+        Classification = "different"
+        Enforcement = "skip"
+        Summary = "Skipped (different machine fingerprint)"
+        Notes = "Machine fingerprint differs materially from the baseline; regression enforcement is skipped."
+    }
 }
 
 function Convert-TimeToNanoseconds
@@ -267,6 +498,40 @@ function Resolve-ResultsDirectory
     return (Resolve-Path $resolvedPath).Path
 }
 
+function Add-ComparisonResult
+{
+    param(
+        [Parameter(Mandatory = $true)]$Results,
+        [Parameter(Mandatory = $true)][string]$Csv,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [string]$BaselineMean = "",
+        [string]$CurrentMean = "",
+        [string]$MeanDeltaPct = "",
+        [string]$BaselineAlloc = "",
+        [string]$CurrentAlloc = "",
+        [string]$AllocDeltaPct = "",
+        [string]$AllocDeltaBytes = "",
+        [Parameter(Mandatory = $true)][string]$Enforcement,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Notes
+    )
+
+    $Results.Add([pscustomobject]@{
+            Csv = $Csv
+            Key = $Key
+            BaselineMean = $BaselineMean
+            CurrentMean = $CurrentMean
+            MeanDeltaPct = $MeanDeltaPct
+            BaselineAlloc = $BaselineAlloc
+            CurrentAlloc = $CurrentAlloc
+            AllocDeltaPct = $AllocDeltaPct
+            AllocDeltaBytes = $AllocDeltaBytes
+            Enforcement = $Enforcement
+            Status = $Status
+            Notes = $Notes
+        }) | Out-Null
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
@@ -418,6 +683,9 @@ $defaultMeanRegression = [double](Get-OptionalProperty -Object $defaults -Name "
 $defaultAllocRegressionPct = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionPercent" -DefaultValue 10.0)
 $defaultAllocRegressionBytes = [double](Get-OptionalProperty -Object $defaults -Name "maxAllocRegressionBytes" -DefaultValue 256.0)
 
+$currentMachineFingerprint = Get-MachineFingerprint
+$baselineMachineFingerprintCache = @{}
+$machineCompatibilityCache = @{}
 $results = New-Object System.Collections.Generic.List[object]
 $failureCount = 0
 
@@ -442,19 +710,12 @@ foreach ($check in $config.checks)
 
         if (-not (Test-Path $checkBaselineSnapshotPath))
         {
-            $results.Add([pscustomobject]@{
-                    Csv = $csvName
-                    Key = "<missing baseline snapshot>"
-                    BaselineMean = ""
-                    CurrentMean = ""
-                    MeanDeltaPct = ""
-                    BaselineAlloc = ""
-                    CurrentAlloc = ""
-                    AllocDeltaPct = ""
-                    AllocDeltaBytes = ""
-                    Status = "FAIL"
-                    Notes = "Baseline snapshot missing: $checkBaselineSnapshotPath"
-                })
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key "<missing baseline snapshot>" `
+                -Enforcement "Strict" `
+                -Status "FAIL" `
+                -Notes "Baseline snapshot missing: $checkBaselineSnapshotPath"
             $failureCount++
             continue
         }
@@ -463,40 +724,51 @@ foreach ($check in $config.checks)
     }
     elseif (-not $baselineResolved)
     {
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = "<missing global baseline snapshot>"
-                BaselineMean = ""
-                CurrentMean = ""
-                MeanDeltaPct = ""
-                BaselineAlloc = ""
-                CurrentAlloc = ""
-                AllocDeltaPct = ""
-                AllocDeltaBytes = ""
-                Status = "FAIL"
-                Notes = "Global baseline snapshot missing for check without baselineSnapshot override"
-            })
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key "<missing global baseline snapshot>" `
+            -Enforcement "Strict" `
+            -Status "FAIL" `
+            -Notes "Global baseline snapshot missing for check without baselineSnapshot override"
         $failureCount++
         continue
     }
+
+    if (-not $baselineMachineFingerprintCache.ContainsKey($checkBaselineSnapshotDir))
+    {
+        $baselineMachineFingerprintCache[$checkBaselineSnapshotDir] = Get-SnapshotMachineFingerprint -SnapshotDir $checkBaselineSnapshotDir
+    }
+
+    if (-not $machineCompatibilityCache.ContainsKey($checkBaselineSnapshotDir))
+    {
+        $baselineFingerprintEntry = $baselineMachineFingerprintCache[$checkBaselineSnapshotDir]
+        $baselineFingerprintData =
+        if ($null -eq $baselineFingerprintEntry)
+        {
+            $null
+        }
+        else
+        {
+            $baselineFingerprintEntry.Data
+        }
+
+        $machineCompatibilityCache[$checkBaselineSnapshotDir] = Get-MachineCompatibility `
+            -BaselineFingerprint $baselineFingerprintData `
+            -CurrentFingerprint $currentMachineFingerprint
+    }
+
+    $machineCompatibility = $machineCompatibilityCache[$checkBaselineSnapshotDir]
 
     $baselineSubDir = [string](Get-OptionalProperty -Object $check -Name "baselineSubDir" -DefaultValue "micro-results")
     $checkBaselineResultsDir = Join-Path $checkBaselineSnapshotDir $baselineSubDir
     if (-not (Test-Path $checkBaselineResultsDir))
     {
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = "<missing baseline results directory>"
-                BaselineMean = ""
-                CurrentMean = ""
-                MeanDeltaPct = ""
-                BaselineAlloc = ""
-                CurrentAlloc = ""
-                AllocDeltaPct = ""
-                AllocDeltaBytes = ""
-                Status = "FAIL"
-                Notes = "Baseline results directory missing: $checkBaselineResultsDir"
-            })
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key "<missing baseline results directory>" `
+            -Enforcement $machineCompatibility.Summary `
+            -Status "FAIL" `
+            -Notes "Baseline results directory missing: $checkBaselineResultsDir"
         $failureCount++
         continue
     }
@@ -514,19 +786,12 @@ foreach ($check in $config.checks)
 
     if ([string]::IsNullOrWhiteSpace($checkCurrentResultsDir) -or -not (Test-Path $checkCurrentResultsDir))
     {
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = "<missing current results directory>"
-                BaselineMean = ""
-                CurrentMean = ""
-                MeanDeltaPct = ""
-                BaselineAlloc = ""
-                CurrentAlloc = ""
-                AllocDeltaPct = ""
-                AllocDeltaBytes = ""
-                Status = "FAIL"
-                Notes = "Current results directory missing: $checkCurrentResultsDir"
-            })
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key "<missing current results directory>" `
+            -Enforcement $machineCompatibility.Summary `
+            -Status "FAIL" `
+            -Notes "Current results directory missing: $checkCurrentResultsDir"
         $failureCount++
         continue
     }
@@ -536,38 +801,24 @@ foreach ($check in $config.checks)
 
     if (-not (Test-Path $baselineFile))
     {
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = "<missing baseline file>"
-                BaselineMean = ""
-                CurrentMean = ""
-                MeanDeltaPct = ""
-                BaselineAlloc = ""
-                CurrentAlloc = ""
-                AllocDeltaPct = ""
-                AllocDeltaBytes = ""
-                Status = "FAIL"
-                Notes = "Baseline CSV missing"
-            })
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key "<missing baseline file>" `
+            -Enforcement $machineCompatibility.Summary `
+            -Status "FAIL" `
+            -Notes "Baseline CSV missing"
         $failureCount++
         continue
     }
 
     if (-not (Test-Path $currentFile))
     {
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = "<missing current file>"
-                BaselineMean = ""
-                CurrentMean = ""
-                MeanDeltaPct = ""
-                BaselineAlloc = ""
-                CurrentAlloc = ""
-                AllocDeltaPct = ""
-                AllocDeltaBytes = ""
-                Status = "FAIL"
-                Notes = "Current CSV missing"
-            })
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key "<missing current file>" `
+            -Enforcement $machineCompatibility.Summary `
+            -Status "FAIL" `
+            -Notes "Current CSV missing"
         $failureCount++
         continue
     }
@@ -591,19 +842,12 @@ foreach ($check in $config.checks)
             $match = $baselineRows | Where-Object { Test-RowMatch -Row $_ -Criteria $required } | Select-Object -First 1
             if ($null -eq $match)
             {
-                $results.Add([pscustomobject]@{
-                        Csv = $csvName
-                        Key = (Build-RowKey -Row $required -KeyColumns @($required.PSObject.Properties.Name))
-                        BaselineMean = ""
-                        CurrentMean = ""
-                        MeanDeltaPct = ""
-                        BaselineAlloc = ""
-                        CurrentAlloc = ""
-                        AllocDeltaPct = ""
-                        AllocDeltaBytes = ""
-                        Status = "FAIL"
-                        Notes = "Required row missing in baseline"
-                    })
+                Add-ComparisonResult -Results $results `
+                    -Csv $csvName `
+                    -Key (Build-RowKey -Row $required -KeyColumns @($required.PSObject.Properties.Name)) `
+                    -Enforcement $machineCompatibility.Summary `
+                    -Status "FAIL" `
+                    -Notes "Required row missing in baseline"
                 $failureCount++
                 continue
             }
@@ -633,19 +877,14 @@ foreach ($check in $config.checks)
         $rowKey = Build-RowKey -Row $baselineRow -KeyColumns $keyColumns
         if ($null -eq $currentRow)
         {
-            $results.Add([pscustomobject]@{
-                    Csv = $csvName
-                    Key = $rowKey
-                    BaselineMean = $baselineRow.Mean
-                    CurrentMean = ""
-                    MeanDeltaPct = ""
-                    BaselineAlloc = $baselineRow.Allocated
-                    CurrentAlloc = ""
-                    AllocDeltaPct = ""
-                    AllocDeltaBytes = ""
-                    Status = "FAIL"
-                    Notes = "Row missing in current results"
-                })
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key $rowKey `
+                -BaselineMean ([string](Get-OptionalProperty -Object $baselineRow -Name "Mean" -DefaultValue "")) `
+                -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
+                -Enforcement $machineCompatibility.Summary `
+                -Status "FAIL" `
+                -Notes "Row missing in current results"
             $failureCount++
             continue
         }
@@ -661,19 +900,17 @@ foreach ($check in $config.checks)
         $allocComparisonEnabled = -not $skipAllocationComparison
         if ($allocComparisonEnabled -and ([string]::IsNullOrWhiteSpace($baselineAlloc) -or [string]::IsNullOrWhiteSpace($currentAlloc)))
         {
-            $results.Add([pscustomobject]@{
-                    Csv = $csvName
-                    Key = $rowKey
-                    BaselineMean = (Format-Nanoseconds -Nanoseconds $baselineMeanNs)
-                    CurrentMean = (Format-Nanoseconds -Nanoseconds $currentMeanNs)
-                    MeanDeltaPct = ("{0:N2}" -f $meanDeltaPct)
-                    BaselineAlloc = $baselineAlloc
-                    CurrentAlloc = $currentAlloc
-                    AllocDeltaPct = ""
-                    AllocDeltaBytes = ""
-                    Status = "FAIL"
-                    Notes = "Allocation column missing; set skipAllocationComparison=true for this check if alloc should not be compared"
-                })
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key $rowKey `
+                -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
+                -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
+                -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
+                -BaselineAlloc $baselineAlloc `
+                -CurrentAlloc $currentAlloc `
+                -Enforcement $machineCompatibility.Summary `
+                -Status "FAIL" `
+                -Notes "Allocation column missing; set skipAllocationComparison=true for this check if alloc should not be compared"
             $failureCount++
             continue
         }
@@ -721,39 +958,65 @@ foreach ($check in $config.checks)
             ($allocDeltaPct -gt $maxAllocRegressionPct) -and
             ($allocDeltaBytes -gt $maxAllocRegressionBytes)
 
-        $status = if ($meanRegressed -or $allocRegressed) { "FAIL" } else { "PASS" }
+        if ($machineCompatibility.Classification -eq "different")
+        {
+            $status = "SKIP"
+        }
+        elseif ($meanRegressed -or $allocRegressed)
+        {
+            $status = $(if ($machineCompatibility.Classification -eq "compatible") { "WARN" } else { "FAIL" })
+        }
+        else
+        {
+            $status = "PASS"
+        }
+
         if ($status -eq "FAIL")
         {
             $failureCount++
         }
 
-        $results.Add([pscustomobject]@{
-                Csv = $csvName
-                Key = $rowKey
-                BaselineMean = (Format-Nanoseconds -Nanoseconds $baselineMeanNs)
-                CurrentMean = (Format-Nanoseconds -Nanoseconds $currentMeanNs)
-                MeanDeltaPct = ("{0:N2}" -f $meanDeltaPct)
-                BaselineAlloc = $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $baselineAllocBytes } else { "n/a" })
-                CurrentAlloc = $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $currentAllocBytes } else { "n/a" })
-                AllocDeltaPct = $(if ($allocComparisonEnabled) { "{0:N2}" -f $allocDeltaPct } else { "n/a" })
-                AllocDeltaBytes = $(if ($allocComparisonEnabled) { "{0:N0}" -f $allocDeltaBytes } else { "n/a" })
-                Status = $status
-                Notes = $(if ($allocComparisonEnabled) {
-                        "Mean<=${maxMeanRegression}% ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
-                    }
-                    else
-                    {
-                        "Mean<=${maxMeanRegression}% ; Alloc skipped"
-                    })
-            })
+        $thresholdNote =
+        if ($allocComparisonEnabled)
+        {
+            "Mean<=${maxMeanRegression}% ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
+        }
+        else
+        {
+            "Mean<=${maxMeanRegression}% ; Alloc skipped"
+        }
+
+        $machineNote =
+        switch ($machineCompatibility.Classification)
+        {
+            "compatible" { "$thresholdNote ; $($machineCompatibility.Notes)" }
+            "different" { "$thresholdNote ; $($machineCompatibility.Notes)" }
+            default { $thresholdNote }
+        }
+
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key $rowKey `
+            -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
+            -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
+            -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
+            -BaselineAlloc $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $baselineAllocBytes } else { "n/a" }) `
+            -CurrentAlloc $(if ($allocComparisonEnabled) { Format-Bytes -Bytes $currentAllocBytes } else { "n/a" }) `
+            -AllocDeltaPct $(if ($allocComparisonEnabled) { "{0:N2}" -f $allocDeltaPct } else { "n/a" }) `
+            -AllocDeltaBytes $(if ($allocComparisonEnabled) { "{0:N0}" -f $allocDeltaBytes } else { "n/a" }) `
+            -Enforcement $machineCompatibility.Summary `
+            -Status $status `
+            -Notes $machineNote
     }
 }
 
-$passCount = ($results | Where-Object Status -eq "PASS").Count
+$passCount = @($results | Where-Object Status -eq "PASS").Count
+$warnCount = @($results | Where-Object Status -eq "WARN").Count
+$skipCount = @($results | Where-Object Status -eq "SKIP").Count
 $rowCount = $results.Count
-$summary = "Compared $rowCount rows against baseline. PASS=$passCount, FAIL=$failureCount"
+$summary = "Compared $rowCount rows against baseline. PASS=$passCount, WARN=$warnCount, SKIP=$skipCount, FAIL=$failureCount"
 Write-Host $summary
-$results | Sort-Object Csv, Key | Format-Table Csv, Key, MeanDeltaPct, AllocDeltaPct, AllocDeltaBytes, Status -AutoSize
+$results | Sort-Object Csv, Key | Format-Table Csv, Key, MeanDeltaPct, AllocDeltaPct, AllocDeltaBytes, Enforcement, Status -AutoSize
 
 if (-not [string]::IsNullOrWhiteSpace($ReportPath))
 {
@@ -779,14 +1042,18 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     $lines.Add("- Current: ``$reportCurrentLabel``")
     $lines.Add("- Thresholds: ``$ThresholdsPath``")
     $lines.Add("- Generated (UTC): $((Get-Date).ToUniversalTime().ToString('u'))")
+    $lines.Add("- Current machine: ``$(Format-MachineSummary -Fingerprint $currentMachineFingerprint)``")
+    $lines.Add("- Machine policy: strict on matching perf runner or same-machine fingerprint; warn on compatible hardware/runtime; skip on materially different machines")
     $lines.Add("")
     $lines.Add($summary)
     $lines.Add("")
-    $lines.Add("| CSV | Key | Mean Δ% | Alloc Δ% | Alloc Δ B | Status |")
-    $lines.Add("|---|---|---:|---:|---:|---|")
+    $lines.Add("| CSV | Key | Mean Δ% | Alloc Δ% | Alloc Δ B | Enforcement | Status | Notes |")
+    $lines.Add("|---|---|---:|---:|---:|---|---|---|")
     foreach ($result in ($results | Sort-Object Csv, Key))
     {
-        $lines.Add("| $($result.Csv) | $($result.Key) | $($result.MeanDeltaPct) | $($result.AllocDeltaPct) | $($result.AllocDeltaBytes) | $($result.Status) |")
+        $notes = [string]$result.Notes
+        $notes = $notes -replace "\|", "\\|"
+        $lines.Add("| $($result.Csv) | $($result.Key) | $($result.MeanDeltaPct) | $($result.AllocDeltaPct) | $($result.AllocDeltaBytes) | $($result.Enforcement) | $($result.Status) | $notes |")
     }
 
     Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
