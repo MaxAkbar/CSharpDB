@@ -120,6 +120,22 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         Assert.False(buildRightSide);
     }
 
+    [Fact]
+    public async Task InnerJoinChain_ReordersToSmallestConnectedTables()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupReorderableJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_small", ct);
+
+        var reordered = InvokeTryReorderInnerJoinChain(
+            "SELECT b.id, s.flag FROM planner_reorder_big b JOIN planner_reorder_mid m ON b.code = m.code JOIN planner_reorder_small s ON m.code = s.code");
+
+        var order = FlattenJoinOrder(reordered).ToArray();
+        Assert.Equal(["s", "m", "b"], order);
+    }
+
     private async ValueTask SetupSelectivityTableAsync(CancellationToken ct)
     {
         await _db.ExecuteAsync("CREATE TABLE planner_stats (id INTEGER PRIMARY KEY, low_group INTEGER, code INTEGER)", ct);
@@ -154,6 +170,25 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         object?[] args = [tableName, select.Where, schema, null];
         object? op = method.Invoke(planner, args);
         return (op, (Expression?)args[3]);
+    }
+
+    private TableRef InvokeTryReorderInnerJoinChain(string sql)
+    {
+        var plannerField = typeof(Database).GetField("_planner", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(plannerField);
+        object? planner = plannerField.GetValue(_db);
+        Assert.NotNull(planner);
+
+        var method = planner.GetType().GetMethod("TryReorderInnerJoinChain", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var select = Assert.IsType<SelectStatement>(Parser.Parse(sql));
+        var join = Assert.IsType<JoinTableRef>(select.From);
+
+        object?[] args = [join, null!];
+        bool reordered = (bool)(method.Invoke(planner, args) ?? false);
+        Assert.True(reordered);
+        return Assert.IsAssignableFrom<TableRef>(args[1]);
     }
 
     private async ValueTask SetupSelectiveJoinTablesAsync(CancellationToken ct)
@@ -230,5 +265,51 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
                 ct);
         }
         await _db.CommitAsync(ct);
+    }
+
+    private async ValueTask SetupReorderableJoinChainTablesAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder_big (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder_mid (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, marker INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder_small (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, flag INTEGER NOT NULL)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 5000; i++)
+        {
+            int code = ((i - 1) % 200) + 1;
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_reorder_big VALUES ({i}, {code}, {i * 3})",
+                ct);
+        }
+
+        for (int i = 1; i <= 200; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_reorder_mid VALUES ({i}, {i}, {i * 5})",
+                ct);
+        }
+
+        for (int i = 1; i <= 10; i++)
+        {
+            await _db.ExecuteAsync(
+                $"INSERT INTO planner_reorder_small VALUES ({i}, {i}, {i * 7})",
+                ct);
+        }
+        await _db.CommitAsync(ct);
+    }
+
+    private static IEnumerable<string> FlattenJoinOrder(TableRef tableRef)
+    {
+        if (tableRef is SimpleTableRef simple)
+        {
+            yield return simple.Alias ?? simple.TableName;
+            yield break;
+        }
+
+        var join = Assert.IsType<JoinTableRef>(tableRef);
+        foreach (string name in FlattenJoinOrder(join.Left))
+            yield return name;
+        foreach (string name in FlattenJoinOrder(join.Right))
+            yield return name;
     }
 }

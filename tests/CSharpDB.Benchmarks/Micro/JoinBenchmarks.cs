@@ -47,6 +47,15 @@ public class JoinBenchmarks
             "CREATE TABLE mid_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync(
+            "CREATE TABLE reorder_big_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE reorder_mid_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, marker INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE reorder_small_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, flag INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
             "CREATE TABLE stats_join_left_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL)")
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync(
@@ -89,6 +98,17 @@ public class JoinBenchmarks
         _bench.SeedAsync("mid_right_t", 1000, i =>
             $"INSERT INTO mid_right_t VALUES ({i}, {i}, {i * 13})")
             .GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_big_t", 5000, i =>
+        {
+            int code = ((i - 1) % 200) + 1;
+            return $"INSERT INTO reorder_big_t VALUES ({i}, {code}, {i * 17})";
+        }).GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_mid_t", 200, i =>
+            $"INSERT INTO reorder_mid_t VALUES ({i}, {i}, {i * 19})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_small_t", 10, i =>
+            $"INSERT INTO reorder_small_t VALUES ({i}, {i}, {i * 23})")
+            .GetAwaiter().GetResult();
         _bench.SeedAsync("stats_join_left_t", 3000, i =>
             $"INSERT INTO stats_join_left_t VALUES ({i}, {i})")
             .GetAwaiter().GetResult();
@@ -102,6 +122,12 @@ public class JoinBenchmarks
         db.ExecuteAsync("ANALYZE stats_join_left_t")
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync("ANALYZE stats_join_right_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_big_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_mid_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_small_t")
             .AsTask().GetAwaiter().GetResult();
 
         // Skewed table (20K rows) to stress hash build-side choice.
@@ -264,6 +290,14 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.id, r.payload FROM stats_join_left_t l INNER JOIN stats_join_right_t r ON l.code = r.code");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (planner reorder chain)")]
+    public async Task InnerJoin_ReorderedThreeWayChain()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_big_t b INNER JOIN reorder_mid_t m ON b.code = m.code INNER JOIN reorder_small_t s ON m.code = s.code");
         await result.ToListAsync();
     }
 

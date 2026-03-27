@@ -13,6 +13,21 @@ public sealed class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
 
+    private readonly record struct ReorderableJoinLeaf(
+        SimpleTableRef TableRef,
+        TableSchema Schema,
+        long RowCount,
+        int OriginalIndex,
+        string Identifier,
+        string[] ReferenceNames);
+
+    private sealed class ReorderableJoinPredicate
+    {
+        public required Expression Expression { get; init; }
+        public required HashSet<string> ReferencedTables { get; init; }
+        public required int OriginalIndex { get; init; }
+    }
+
     private static readonly ColumnDefinition[] SystemTablesColumns =
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
@@ -5355,6 +5370,9 @@ public sealed class QueryPlanner
 
         if (tableRef is JoinTableRef join)
         {
+            if (TryReorderInnerJoinChain(join, out var reordered))
+                return BuildFromOperator(reordered);
+
             var (leftOp, leftSchema) = BuildFromOperator(join.Left);
             var (rightOp, rightSchema) = BuildFromOperator(join.Right);
 
@@ -5460,6 +5478,449 @@ public sealed class QueryPlanner
         }
 
         throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
+    }
+
+    private bool TryReorderInnerJoinChain(JoinTableRef join, out TableRef reordered)
+    {
+        reordered = join;
+
+        var leaves = new List<ReorderableJoinLeaf>();
+        var predicates = new List<ReorderableJoinPredicate>();
+        int leafIndex = 0;
+        int predicateIndex = 0;
+        if (!TryCollectReorderableInnerJoinChain(join, leaves, predicates, ref leafIndex, ref predicateIndex))
+            return false;
+
+        if (leaves.Count < 3)
+            return false;
+
+        var originalOrder = leaves.OrderBy(static l => l.OriginalIndex).Select(static l => l.Identifier).ToArray();
+        if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out var orderedLeaves))
+            return false;
+
+        var reorderedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
+        if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
+            return false;
+
+        var remainingPredicates = predicates
+            .OrderBy(static p => p.OriginalIndex)
+            .ToList();
+
+        var selectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            orderedLeaves[0].Identifier
+        };
+
+        TableRef current = orderedLeaves[0].TableRef;
+        for (int i = 1; i < orderedLeaves.Count; i++)
+        {
+            var candidate = orderedLeaves[i];
+            var nextSelectedIds = new HashSet<string>(selectedIds, StringComparer.OrdinalIgnoreCase)
+            {
+                candidate.Identifier
+            };
+
+            var attachPredicates = remainingPredicates
+                .Where(p => ShouldAttachInnerJoinPredicate(p, selectedIds, nextSelectedIds))
+                .OrderBy(static p => p.OriginalIndex)
+                .ToList();
+
+            if (attachPredicates.Count == 0)
+                return false;
+
+            current = new JoinTableRef
+            {
+                Left = current,
+                Right = candidate.TableRef,
+                JoinType = JoinType.Inner,
+                Condition = CombineConjuncts(attachPredicates.Select(static p => p.Expression).ToList()),
+            };
+
+            foreach (var predicate in attachPredicates)
+                remainingPredicates.Remove(predicate);
+
+            selectedIds = nextSelectedIds;
+        }
+
+        if (remainingPredicates.Count != 0)
+            return false;
+
+        reordered = current;
+        return true;
+    }
+
+    private bool TryCollectReorderableInnerJoinChain(
+        TableRef tableRef,
+        List<ReorderableJoinLeaf> leaves,
+        List<ReorderableJoinPredicate> predicates,
+        ref int leafIndex,
+        ref int predicateIndex)
+    {
+        if (tableRef is SimpleTableRef simple)
+        {
+            if (!TryCreateReorderableJoinLeaf(simple, leafIndex++, out var leaf))
+                return false;
+
+            leaves.Add(leaf);
+            return true;
+        }
+
+        if (tableRef is not JoinTableRef join ||
+            join.JoinType != JoinType.Inner ||
+            join.Condition == null)
+        {
+            return false;
+        }
+
+        if (!TryCollectReorderableInnerJoinChain(join.Left, leaves, predicates, ref leafIndex, ref predicateIndex) ||
+            !TryCollectReorderableInnerJoinChain(join.Right, leaves, predicates, ref leafIndex, ref predicateIndex))
+        {
+            return false;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(join.Condition, conjuncts);
+        foreach (var conjunct in conjuncts)
+        {
+            if (!TryResolveReferencedJoinTables(conjunct, leaves, out var referencedTables) ||
+                referencedTables.Count == 0)
+            {
+                return false;
+            }
+
+            predicates.Add(new ReorderableJoinPredicate
+            {
+                Expression = conjunct,
+                ReferencedTables = referencedTables,
+                OriginalIndex = predicateIndex++,
+            });
+        }
+
+        return true;
+    }
+
+    private bool TryCreateReorderableJoinLeaf(SimpleTableRef simple, int originalIndex, out ReorderableJoinLeaf leaf)
+    {
+        leaf = default;
+
+        if (_cteData != null && _cteData.ContainsKey(simple.TableName))
+            return false;
+
+        if (IsSystemCatalogTable(simple.TableName) || _catalog.GetViewSql(simple.TableName) != null)
+            return false;
+
+        var schema = GetSchema(simple.TableName);
+        if (!TryEstimateTableRefRowCount(simple, out long rowCount) || rowCount <= 0)
+            return false;
+
+        string identifier = simple.Alias ?? simple.TableName;
+        string[] referenceNames = simple.Alias is { Length: > 0 }
+            ? [simple.Alias, simple.TableName]
+            : [simple.TableName];
+
+        var qualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (string referenceName in referenceNames)
+        {
+            for (int i = 0; i < schema.Columns.Count; i++)
+                qualifiedMappings[$"{referenceName}.{schema.Columns[i].Name}"] = i;
+        }
+
+        var qualifiedSchema = new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            QualifiedMappings = qualifiedMappings,
+        };
+
+        leaf = new ReorderableJoinLeaf(simple, qualifiedSchema, rowCount, originalIndex, identifier, referenceNames);
+        return true;
+    }
+
+    private bool TryChooseGreedyInnerJoinOrder(
+        List<ReorderableJoinLeaf> leaves,
+        List<ReorderableJoinPredicate> predicates,
+        out List<ReorderableJoinLeaf> orderedLeaves)
+    {
+        orderedLeaves = new List<ReorderableJoinLeaf>(leaves.Count);
+
+        var remaining = leaves
+            .OrderBy(static l => l.OriginalIndex)
+            .ToList();
+
+        var start = remaining
+            .OrderBy(static l => l.RowCount)
+            .ThenBy(static l => l.OriginalIndex)
+            .First();
+
+        orderedLeaves.Add(start);
+        remaining.Remove(start);
+
+        long currentEstimate = start.RowCount;
+        var selectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            start.Identifier
+        };
+
+        while (remaining.Count > 0)
+        {
+            ReorderableJoinLeaf? bestCandidate = null;
+            long bestEstimate = long.MaxValue;
+            long bestRowCount = long.MaxValue;
+
+            for (int i = 0; i < remaining.Count; i++)
+            {
+                var candidate = remaining[i];
+                if (!TryEstimateNextJoinStep(leaves, predicates, orderedLeaves, selectedIds, currentEstimate, candidate, out long stepEstimate))
+                    continue;
+
+                if (stepEstimate < bestEstimate ||
+                    (stepEstimate == bestEstimate && candidate.RowCount < bestRowCount) ||
+                    (stepEstimate == bestEstimate && candidate.RowCount == bestRowCount && candidate.OriginalIndex < bestCandidate?.OriginalIndex))
+                {
+                    bestCandidate = candidate;
+                    bestEstimate = stepEstimate;
+                    bestRowCount = candidate.RowCount;
+                }
+            }
+
+            if (bestCandidate is not ReorderableJoinLeaf chosen)
+                return false;
+
+            orderedLeaves.Add(chosen);
+            remaining.Remove(chosen);
+            selectedIds.Add(chosen.Identifier);
+            currentEstimate = bestEstimate;
+        }
+
+        return true;
+    }
+
+    private bool TryEstimateNextJoinStep(
+        IReadOnlyList<ReorderableJoinLeaf> allLeaves,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        IReadOnlyList<ReorderableJoinLeaf> selectedLeaves,
+        HashSet<string> selectedIds,
+        long currentEstimate,
+        ReorderableJoinLeaf candidate,
+        out long estimatedRows)
+    {
+        estimatedRows = 0;
+
+        var nextSelectedIds = new HashSet<string>(selectedIds, StringComparer.OrdinalIgnoreCase)
+        {
+            candidate.Identifier
+        };
+
+        var attachablePredicates = predicates
+            .Where(p => ShouldAttachInnerJoinPredicate(p, selectedIds, nextSelectedIds))
+            .ToList();
+
+        if (attachablePredicates.Count == 0)
+            return false;
+
+        long bestStepEstimate = long.MaxValue;
+        foreach (var selectedLeaf in selectedLeaves)
+        {
+            var pairPredicates = attachablePredicates
+                .Where(p =>
+                    p.ReferencedTables.Count == 2 &&
+                    p.ReferencedTables.Contains(selectedLeaf.Identifier) &&
+                    p.ReferencedTables.Contains(candidate.Identifier))
+                .OrderBy(static p => p.OriginalIndex)
+                .ToList();
+
+            if (pairPredicates.Count == 0)
+                continue;
+
+            if (!TryEstimatePairwiseJoinRows(selectedLeaf, candidate, pairPredicates, out long pairwiseRows))
+                continue;
+
+            long scaledEstimate = Math.Max(
+                1,
+                DivideRoundUp(
+                    SafeMultiply(currentEstimate, Math.Max(pairwiseRows, 1)),
+                    Math.Max(selectedLeaf.RowCount, 1)));
+
+            if (scaledEstimate < bestStepEstimate)
+                bestStepEstimate = scaledEstimate;
+        }
+
+        if (bestStepEstimate != long.MaxValue)
+        {
+            estimatedRows = bestStepEstimate;
+            return true;
+        }
+
+        estimatedRows = CardinalityEstimator.EstimateFallbackJoinRowCount(
+            JoinType.Inner,
+            hasLeftEstimate: true,
+            currentEstimate,
+            hasRightEstimate: true,
+            candidate.RowCount);
+        return true;
+    }
+
+    private bool TryEstimatePairwiseJoinRows(
+        ReorderableJoinLeaf left,
+        ReorderableJoinLeaf right,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        out long estimatedRows)
+    {
+        estimatedRows = 0;
+
+        var condition = CombineConjuncts(predicates.Select(static p => p.Expression).ToList());
+        if (condition == null)
+            return false;
+
+        var compositeSchema = TableSchema.CreateJoinSchema(left.Schema, right.Schema);
+        if (!TryAnalyzeHashJoinCondition(
+                condition,
+                compositeSchema,
+                left.Schema.Columns.Count,
+                out var leftKeyIndices,
+                out var rightKeyIndices,
+                out _))
+        {
+            return false;
+        }
+
+        if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
+            return false;
+
+        return CardinalityEstimator.TryEstimateEqualityJoinRowCount(
+            _catalog,
+            JoinType.Inner,
+            left.Schema,
+            right.Schema,
+            leftKeyIndices,
+            rightKeyIndices,
+            left.RowCount,
+            right.RowCount,
+            out estimatedRows);
+    }
+
+    private static bool ShouldAttachInnerJoinPredicate(
+        ReorderableJoinPredicate predicate,
+        HashSet<string> selectedIds,
+        HashSet<string> nextSelectedIds)
+    {
+        if (!predicate.ReferencedTables.IsSubsetOf(nextSelectedIds))
+            return false;
+
+        return predicate.ReferencedTables.Count == 1 ||
+               !predicate.ReferencedTables.IsSubsetOf(selectedIds);
+    }
+
+    private static bool TryResolveReferencedJoinTables(
+        Expression expression,
+        IReadOnlyList<ReorderableJoinLeaf> leaves,
+        out HashSet<string> referencedTables)
+    {
+        referencedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return TryCollectReferencedJoinTables(expression, leaves, referencedTables);
+    }
+
+    private static bool TryCollectReferencedJoinTables(
+        Expression expression,
+        IReadOnlyList<ReorderableJoinLeaf> leaves,
+        HashSet<string> referencedTables)
+    {
+        switch (expression)
+        {
+            case ColumnRefExpression columnRef:
+                if (!TryResolveColumnReferenceTable(columnRef, leaves, out string identifier))
+                    return false;
+
+                referencedTables.Add(identifier);
+                return true;
+
+            case BinaryExpression binary:
+                return TryCollectReferencedJoinTables(binary.Left, leaves, referencedTables) &&
+                       TryCollectReferencedJoinTables(binary.Right, leaves, referencedTables);
+
+            case UnaryExpression unary:
+                return TryCollectReferencedJoinTables(unary.Operand, leaves, referencedTables);
+
+            case LikeExpression like:
+                return TryCollectReferencedJoinTables(like.Operand, leaves, referencedTables) &&
+                       TryCollectReferencedJoinTables(like.Pattern, leaves, referencedTables) &&
+                       (like.EscapeChar == null || TryCollectReferencedJoinTables(like.EscapeChar, leaves, referencedTables));
+
+            case InExpression inExpr:
+                if (!TryCollectReferencedJoinTables(inExpr.Operand, leaves, referencedTables))
+                    return false;
+                for (int i = 0; i < inExpr.Values.Count; i++)
+                {
+                    if (!TryCollectReferencedJoinTables(inExpr.Values[i], leaves, referencedTables))
+                        return false;
+                }
+                return true;
+
+            case BetweenExpression between:
+                return TryCollectReferencedJoinTables(between.Operand, leaves, referencedTables) &&
+                       TryCollectReferencedJoinTables(between.Low, leaves, referencedTables) &&
+                       TryCollectReferencedJoinTables(between.High, leaves, referencedTables);
+
+            case IsNullExpression isNull:
+                return TryCollectReferencedJoinTables(isNull.Operand, leaves, referencedTables);
+
+            case FunctionCallExpression functionCall:
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryCollectReferencedJoinTables(functionCall.Arguments[i], leaves, referencedTables))
+                        return false;
+                }
+                return true;
+
+            case LiteralExpression:
+            case ParameterExpression:
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryResolveColumnReferenceTable(
+        ColumnRefExpression columnRef,
+        IReadOnlyList<ReorderableJoinLeaf> leaves,
+        out string identifier)
+    {
+        identifier = string.Empty;
+
+        if (!string.IsNullOrEmpty(columnRef.TableAlias))
+        {
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                if (leaves[i].ReferenceNames.Any(name => string.Equals(name, columnRef.TableAlias, StringComparison.OrdinalIgnoreCase)))
+                {
+                    identifier = leaves[i].Identifier;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        ReorderableJoinLeaf? match = null;
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            if (!leaves[i].Schema.Columns.Any(c => string.Equals(c.Name, columnRef.ColumnName, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (match.HasValue)
+                return false;
+
+            match = leaves[i];
+        }
+
+        if (match.HasValue)
+        {
+            identifier = match.Value.Identifier;
+            return true;
+        }
+
+        return false;
     }
 
     private static int[] BuildSwappedJoinProjectionMap(int leftColumnCount, int rightColumnCount)
