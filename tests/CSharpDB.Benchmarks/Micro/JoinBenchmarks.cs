@@ -358,6 +358,14 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer mixed union filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterMixedUnion()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id IN (1, 2, 3) OR b.id BETWEEN 10 AND 11");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer NULL OR filter)")]
     public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterNullOr()
     {
