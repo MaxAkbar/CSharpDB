@@ -2147,7 +2147,7 @@ public sealed class QueryPlanner
     {
         ValidateCorrelatedSelectSupport(stmt);
 
-        var (sourceOp, sourceSchema) = BuildFromOperator(stmt.From);
+        var (sourceOp, sourceSchema) = BuildFromOperator(stmt.From, stmt.Where);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -2915,7 +2915,7 @@ public sealed class QueryPlanner
     private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
     {
         // Build the FROM operator (single table scan, join tree, or view expansion)
-        var (op, schema) = BuildFromOperator(stmt.From);
+        var (op, schema) = BuildFromOperator(stmt.From, stmt.Where);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -5201,7 +5201,7 @@ public sealed class QueryPlanner
     /// Returns the operator and the schema (with qualified column mappings for JOINs).
     /// If the table name references a view, expands the view.
     /// </summary>
-    private (IOperator op, TableSchema schema) BuildFromOperator(TableRef tableRef)
+    private (IOperator op, TableSchema schema) BuildFromOperator(TableRef tableRef, Expression? outerWhere = null)
     {
         if (tableRef is SimpleTableRef simple)
         {
@@ -5370,7 +5370,7 @@ public sealed class QueryPlanner
 
         if (tableRef is JoinTableRef join)
         {
-            if (TryReorderInnerJoinChain(join, out var reordered))
+            if (TryReorderInnerJoinChain(join, outerWhere, out var reordered))
                 return BuildFromOperator(reordered);
 
             var (leftOp, leftSchema) = BuildFromOperator(join.Left);
@@ -5480,7 +5480,7 @@ public sealed class QueryPlanner
         throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
     }
 
-    private bool TryReorderInnerJoinChain(JoinTableRef join, out TableRef reordered)
+    private bool TryReorderInnerJoinChain(JoinTableRef join, Expression? outerWhere, out TableRef reordered)
     {
         reordered = join;
 
@@ -5494,6 +5494,8 @@ public sealed class QueryPlanner
         if (leaves.Count < 3)
             return false;
 
+        ApplyLocalPredicateRowEstimates(leaves, predicates, outerWhere);
+
         var originalOrder = leaves.OrderBy(static l => l.OriginalIndex).Select(static l => l.Identifier).ToArray();
         if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out var orderedLeaves))
             return false;
@@ -5502,9 +5504,10 @@ public sealed class QueryPlanner
         if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
             return false;
 
-        var remainingPredicates = predicates
+        var orderedPredicates = predicates
             .OrderBy(static p => p.OriginalIndex)
             .ToList();
+        var attachedPredicateIndexes = new HashSet<int>();
 
         var selectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -5520,8 +5523,10 @@ public sealed class QueryPlanner
                 candidate.Identifier
             };
 
-            var attachPredicates = remainingPredicates
-                .Where(p => ShouldAttachInnerJoinPredicate(p, selectedIds, nextSelectedIds))
+            var attachPredicates = orderedPredicates
+                .Where(p =>
+                    !attachedPredicateIndexes.Contains(p.OriginalIndex) &&
+                    ShouldAttachInnerJoinPredicate(p, selectedIds, nextSelectedIds))
                 .OrderBy(static p => p.OriginalIndex)
                 .ToList();
 
@@ -5537,16 +5542,64 @@ public sealed class QueryPlanner
             };
 
             foreach (var predicate in attachPredicates)
-                remainingPredicates.Remove(predicate);
+                attachedPredicateIndexes.Add(predicate.OriginalIndex);
 
             selectedIds = nextSelectedIds;
         }
 
-        if (remainingPredicates.Count != 0)
+        if (orderedPredicates.Any(p => !attachedPredicateIndexes.Contains(p.OriginalIndex)))
             return false;
 
         reordered = current;
         return true;
+    }
+
+    private void ApplyLocalPredicateRowEstimates(
+        List<ReorderableJoinLeaf> leaves,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        Expression? outerWhere)
+    {
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            var leaf = leaves[i];
+            var localPredicates = predicates
+                .Where(p => p.ReferencedTables.Count == 1 && p.ReferencedTables.Contains(leaf.Identifier))
+                .OrderBy(static p => p.OriginalIndex)
+                .Select(static p => p.Expression)
+                .ToList();
+
+            if (outerWhere != null)
+            {
+                var outerConjuncts = new List<Expression>();
+                CollectAndConjuncts(outerWhere, outerConjuncts);
+                for (int conjunctIndex = 0; conjunctIndex < outerConjuncts.Count; conjunctIndex++)
+                {
+                    if (!TryResolveReferencedJoinTables(outerConjuncts[conjunctIndex], leaves, out var referencedTables) ||
+                        referencedTables.Count != 1 ||
+                        !referencedTables.Contains(leaf.Identifier))
+                    {
+                        continue;
+                    }
+
+                    localPredicates.Add(outerConjuncts[conjunctIndex]);
+                }
+            }
+
+            if (localPredicates.Count == 0)
+                continue;
+
+            if (!CardinalityEstimator.TryEstimateFilteredRowCount(
+                    _catalog,
+                    leaf.Schema,
+                    leaf.RowCount,
+                    localPredicates,
+                    out long estimatedRows))
+            {
+                continue;
+            }
+
+            leaves[i] = leaf with { RowCount = estimatedRows };
+        }
     }
 
     private bool TryCollectReorderableInnerJoinChain(

@@ -47,7 +47,7 @@ public class JoinBenchmarks
             "CREATE TABLE mid_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync(
-            "CREATE TABLE reorder_big_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            "CREATE TABLE reorder_big_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL, nullable_tag INTEGER)")
             .AsTask().GetAwaiter().GetResult();
         db.ExecuteAsync(
             "CREATE TABLE reorder_mid_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, marker INTEGER NOT NULL)")
@@ -101,7 +101,8 @@ public class JoinBenchmarks
         _bench.SeedAsync("reorder_big_t", 5000, i =>
         {
             int code = ((i - 1) % 200) + 1;
-            return $"INSERT INTO reorder_big_t VALUES ({i}, {code}, {i * 17})";
+            string nullableTag = i <= 5 ? "NULL" : "1";
+            return $"INSERT INTO reorder_big_t VALUES ({i}, {code}, {i * 17}, {nullableTag})";
         }).GetAwaiter().GetResult();
         _bench.SeedAsync("reorder_mid_t", 200, i =>
             $"INSERT INTO reorder_mid_t VALUES ({i}, {i}, {i * 19})")
@@ -298,6 +299,62 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT b.payload, s.flag FROM reorder_big_t b INNER JOIN reorder_mid_t m ON b.code = m.code INNER JOIN reorder_small_t s ON m.code = s.code");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with selective leaf)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveLeaf()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code AND b.id = 42");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer WHERE filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterWhere()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id = 42");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer range filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterRange()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id BETWEEN 1 AND 5");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer IN filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterIn()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id IN (1, 2, 3)");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer IS NULL filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterIsNull()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.nullable_tag IS NULL");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer OR filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterOr()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id = 1 OR b.id = 2 OR b.id = 3");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer OR range filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterOrRange()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id BETWEEN 1 AND 2 OR b.id BETWEEN 10 AND 11");
         await result.ToListAsync();
     }
 
