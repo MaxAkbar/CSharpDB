@@ -1,18 +1,18 @@
-# Multilingual Text Support Plan
+# Multilingual Text Support
 
-> **Status (March 2026):** In progress. `BINARY`, `NOCASE`, and `NOCASE_AI` are now implemented across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly locale-aware `ICU:<locale>` collation, ordered SQL text index optimization, and benchmark hardening.
+> **Status (March 2026):** Implemented for `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` collations across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly dedicated ordered SQL text index optimization plus benchmark and compatibility hardening.
 
-CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting still remain ordinal unless users opt into collation explicitly, but `BINARY`, `NOCASE`, and `NOCASE_AI` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
+CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting remain ordinal unless users opt into collation explicitly, but `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
 
 ---
 
 ## Remaining Gaps
 
-The first multilingual-text slice is in place, but three important limitations still remain:
+The core multilingual-text feature set is now in place, but three important limitations still remain:
 
 1. Default text semantics are still ordinal. Users must opt into `COLLATE NOCASE` on columns, indexes, collection indexes, or query expressions.
-2. Locale-aware `ICU:<locale>` collation remains future work.
-3. SQL text `ORDER BY` and range semantics are now collation-correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.
+2. SQL text `ORDER BY` and range semantics are collation-correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.
+3. ICU-based sort semantics depend on the active .NET globalization data for the runtime environment. If those rules change across upgrades, collated indexes should be rebuilt with `REINDEX`.
 
 The current implementation centers collation in these paths:
 
@@ -56,7 +56,7 @@ The current implementation centers collation in these paths:
 | `NOCASE_AI` | Case-insensitive, accent-insensitive | Unicode decomposition + combining-mark stripping + invariant-case normalization |
 | `ICU:<locale>` | Full locale-aware collation | `CompareInfo.GetSortKey()` from `System.Globalization` for the specified culture |
 
-`NOCASE` and `NOCASE_AI` cover the common case-insensitive text scenarios today, while `ICU:<locale>` remains the path for future locale-specific linguistic behavior.
+`NOCASE` and `NOCASE_AI` cover the common invariant case-insensitive text scenarios, while `ICU:<locale>` handles locale-specific linguistic behavior when you need culture-aware equality and ordering.
 
 ### SQL Syntax
 
@@ -85,11 +85,11 @@ SELECT * FROM users ORDER BY name COLLATE NOCASE;
 
 ---
 
-## Implementation Plan
+## Delivery Summary
 
 ### Phase 1: NOCASE Collation
 
-**Goal:** Ship `COLLATE NOCASE` for column definitions, indexes, and query expressions.
+**Status:** Implemented.
 
 Parser changes:
 - Add `COLLATE` as a recognized token and keyword
@@ -120,13 +120,13 @@ Collection changes:
 
 ### Phase 2: ICU Locale-Aware Collation
 
-**Goal:** Support `COLLATE ICU:<locale>` for full linguistic sorting.
+**Status:** Implemented as a built-in engine feature.
 
 - Use `CultureInfo.GetCultureInfo(locale).CompareInfo.GetSortKey(text)` to generate binary sort keys
-- Store sort keys as the B+tree index key bytes
-- Sort keys are larger than raw UTF-8 (typically 2–3x) — this is the main storage cost
-- Equality uses sort-key comparison, not original text comparison
-- Original text is still stored in the table row; sort keys are index-only
+- Canonicalize locale names through `CultureInfo.GetCultureInfo(locale)` before persisting metadata
+- Encode sort-key bytes into ordinal-safe text for equality and ordered text index paths
+- Equality and ordering use sort-key comparison rather than raw original-text comparison
+- Original text is still stored in the table row; normalized keys remain an index/comparison concern
 
 ### Phase 3: NOCASE_AI (Accent-Insensitive)
 
@@ -227,8 +227,7 @@ Several engine paths rebuild AST objects. Any new collation fields must be prese
 ### Suggested remaining delivery order
 
 1. SQL ordered text collation/index strategy
-2. ICU locale-aware collation
-3. Benchmark and compatibility hardening
+2. Benchmark and compatibility hardening
 
 ---
 
@@ -248,6 +247,7 @@ For the first implementation:
 - **Index size increase:** Locale-aware sort keys are larger than raw UTF-8. For `NOCASE` the overhead is minimal (same byte length, different case). For ICU collations, sort keys can be 2–3x larger.
 - **Write overhead:** Generating collation keys on every INSERT/UPDATE adds CPU cost. Pre-computation means this is per-write, not per-read.
 - **REINDEX requirement:** Changing a column's collation requires rebuilding all indexes that reference it. This should be enforced, not silent.
+- **Runtime globalization drift:** `ICU:<locale>` behavior comes from the active .NET globalization data. If runtime or OS collation rules change, persisted ICU-backed index state may need `REINDEX`.
 - **NativeAOT compatibility:** `System.Globalization` and ICU are available in NativeAOT but require ICU data files to be bundled. `NOCASE` using `ToLowerInvariant()` has no ICU dependency.
 
 ---
@@ -260,10 +260,10 @@ For the first implementation:
 - Query-level `COLLATE` override on a `BINARY` column
 - Round-trip: store mixed-case text, retrieve original casing, sort case-insensitively
 - Multi-language text: Chinese, Arabic, Japanese, Emoji with `BINARY` and `NOCASE`
-- ICU collation: German `ä` sorts near `a`, not after `z`
+- ICU collation: locale-aware equality and ordering match `CompareInfo` semantics for cultures such as `sv-SE`, `tr-TR`, or `de-DE`
 - Performance: benchmark collated vs non-collated index writes, lookups, and range scans
 - REINDEX after collation change
-- Collection path index with `NOCASE` collation
+- Collection path index with `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation
 
 ---
 

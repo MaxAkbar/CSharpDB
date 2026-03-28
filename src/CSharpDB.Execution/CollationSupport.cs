@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using CSharpDB.Primitives;
@@ -10,6 +11,7 @@ internal static class CollationSupport
     public const string BinaryCollation = "BINARY";
     public const string NoCaseCollation = "NOCASE";
     public const string NoCaseAccentInsensitiveCollation = "NOCASE_AI";
+    public const string IcuCollationPrefix = "ICU:";
 
     private static readonly RegisteredCollation BinaryDefinition = new BinaryCollationDefinition();
     private static readonly RegisteredCollation NoCaseDefinition = new NoCaseCollationDefinition();
@@ -20,9 +22,10 @@ internal static class CollationSupport
         BinaryCollation,
         NoCaseCollation,
         NoCaseAccentInsensitiveCollation,
+        "ICU:<locale>",
     ];
 
-    private static readonly Dictionary<string, RegisteredCollation> Registry =
+    private static readonly ConcurrentDictionary<string, RegisteredCollation> Registry =
         new(StringComparer.Ordinal)
         {
             [BinaryCollation] = BinaryDefinition,
@@ -211,7 +214,32 @@ internal static class CollationSupport
     }
 
     private static bool TryResolveRegistered(string normalized, out RegisteredCollation definition) =>
-        Registry.TryGetValue(normalized, out definition!);
+        Registry.TryGetValue(normalized, out definition!) || TryResolveIcuCollation(normalized, out definition);
+
+    private static bool TryResolveIcuCollation(string normalized, out RegisteredCollation definition)
+    {
+        definition = null!;
+        if (!normalized.StartsWith(IcuCollationPrefix, StringComparison.Ordinal))
+            return false;
+
+        string locale = normalized[IcuCollationPrefix.Length..];
+        if (string.IsNullOrWhiteSpace(locale))
+            return false;
+
+        CultureInfo culture;
+        try
+        {
+            culture = CultureInfo.GetCultureInfo(locale);
+        }
+        catch (CultureNotFoundException)
+        {
+            return false;
+        }
+
+        string canonicalName = $"{IcuCollationPrefix}{culture.Name}";
+        definition = Registry.GetOrAdd(canonicalName, static (_, state) => new IcuCollationDefinition(state), culture);
+        return true;
+    }
 
     private abstract class RegisteredCollation
     {
@@ -279,5 +307,22 @@ internal static class CollationSupport
 
             return builder.ToString().Normalize(NormalizationForm.FormC);
         }
+    }
+
+    private sealed class IcuCollationDefinition : RegisteredCollation
+    {
+        private readonly CompareInfo _compareInfo;
+
+        public IcuCollationDefinition(CultureInfo culture)
+            : base($"{IcuCollationPrefix}{culture.Name}", isBinaryLike: false)
+        {
+            _compareInfo = culture.CompareInfo;
+        }
+
+        public override int CompareText(string left, string right) =>
+            string.CompareOrdinal(NormalizeText(left), NormalizeText(right));
+
+        public override string NormalizeText(string text) =>
+            Convert.ToHexString(_compareInfo.GetSortKey(text, CompareOptions.None).KeyData);
     }
 }

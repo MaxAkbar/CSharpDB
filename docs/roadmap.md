@@ -59,7 +59,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
 | **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Done |
-| **Multilingual text support** | In progress: `BINARY`, `NOCASE`, and `NOCASE_AI` collation now work across SQL schema/query semantics, metadata surfaces, and collection path indexes; locale-aware ICU-style collation and ordered SQL text index optimization remain planned | In Progress |
+| **Multilingual text support** | `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` collation now work across SQL schema/query semantics, metadata surfaces, and collection path indexes; dedicated ordered SQL text index optimization remains planned | Done |
 
 ---
 
@@ -102,7 +102,7 @@ These are known simplifications in the current implementation:
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
-| **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, and `NOCASE_AI` collation are now implemented for SQL and collection indexes. Locale-aware ICU-style collation remains planned |
+| **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |

@@ -2315,8 +2315,28 @@ public sealed class Parser
         return ParseRequiredCollationName();
     }
 
-    private string ParseRequiredCollationName() =>
-        ExpectIdentifier().ToUpperInvariant();
+    private string ParseRequiredCollationName()
+    {
+        string name = ExpectIdentifier().ToUpperInvariant();
+        if (!TryConsume(TokenType.Colon))
+            return name;
+
+        string locale = ParseCollationLocaleSegment();
+        while (TryConsume(TokenType.Minus))
+            locale += "-" + ParseCollationLocaleSegment();
+
+        return $"{name}:{locale}";
+    }
+
+    private string ParseCollationLocaleSegment()
+    {
+        var token = Peek();
+        if (token.Type != TokenType.Identifier)
+            throw Error($"Expected collation locale segment, got '{token.Value}' ({token.Type}).");
+
+        Advance();
+        return token.Value;
+    }
 
     private bool TryConsume(TokenType type)
     {

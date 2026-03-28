@@ -60,6 +60,15 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateTable_WithIcuColumnCollation()
+    {
+        var stmt = Parser.Parse("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE ICU:tr-TR NOT NULL)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.Equal("ICU:tr-TR", create.Columns[1].Collation);
+    }
+
+    [Fact]
     public void Parse_Insert()
     {
         var stmt = Parser.Parse("INSERT INTO users (name, age) VALUES ('Alice', 30)");
@@ -121,6 +130,17 @@ public class ParserTests
 
         Assert.Equal("NOCASE", collate.Collation);
         Assert.IsType<ColumnRefExpression>(collate.Operand);
+    }
+
+    [Fact]
+    public void Parse_Select_WithExplicitIcuComparisonCollation()
+    {
+        var stmt = Parser.Parse("SELECT * FROM users WHERE name COLLATE ICU:sv-SE = 'z'");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var where = Assert.IsType<BinaryExpression>(select.Where);
+        var collate = Assert.IsType<CollateExpression>(where.Left);
+
+        Assert.Equal("ICU:sv-SE", collate.Collation);
     }
 
     [Fact]
@@ -830,6 +850,16 @@ public class ParserTests
         Assert.Equal(2, create.ColumnCollations.Count);
         Assert.Equal("NOCASE", create.ColumnCollations[0]);
         Assert.Null(create.ColumnCollations[1]);
+    }
+
+    [Fact]
+    public void Parse_CreateIndex_WithIcuColumnCollation()
+    {
+        var stmt = Parser.Parse("CREATE INDEX idx_name ON users (name COLLATE ICU:de-DE)");
+        var create = Assert.IsType<CreateIndexStatement>(stmt);
+
+        Assert.Equal(["name"], create.Columns);
+        Assert.Equal(["ICU:de-DE"], create.ColumnCollations);
     }
 
     [Fact]

@@ -105,6 +105,7 @@ public enum TokenType
 
     // Punctuation
     Comma,
+    Colon,
     Dot,
     LeftParen,
     RightParen,

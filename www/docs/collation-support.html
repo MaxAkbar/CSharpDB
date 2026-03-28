@@ -12,8 +12,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Collation Guide',
-        description: 'How to use text collation in CSharpDB - BINARY, NOCASE, NOCASE_AI, SQL examples, collection indexes, performance, and current limitations.',
-        keywords: 'CSharpDB collation, multilingual text, COLLATE, NOCASE, NOCASE_AI, BINARY, case-insensitive search, SQL sorting, collection indexes',
+        description: 'How to use text collation in CSharpDB - BINARY, NOCASE, NOCASE_AI, ICU:<locale>, SQL examples, collection indexes, performance, and current limitations.',
+        keywords: 'CSharpDB collation, multilingual text, COLLATE, NOCASE, NOCASE_AI, ICU, locale-aware sorting, BINARY, case-insensitive search, SQL sorting, collection indexes',
         canonicalPath: 'docs/collation-support.html',
         ogType: 'article',
     };
@@ -49,14 +49,14 @@
 
             <div class="doc-content">
                 <h1>Collation Guide</h1>
-                <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code>, <code>NOCASE</code>, or <code>NOCASE_AI</code>, and how to apply collation in SQL and collection indexes.</p>
+                <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, or <code>ICU:&lt;locale&gt;</code>, and how to apply collation in SQL and collection indexes.</p>
 
                 <div class="callout callout-success">
-                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, and <code>NOCASE_AI</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
+                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
                 </div>
 
                 <div class="callout callout-warning">
-                    <strong>Still planned:</strong> Locale-aware collation (<code>ICU:&lt;locale&gt;</code>) and dedicated ordered SQL text index optimization are not implemented yet.
+                    <strong>Still planned:</strong> Dedicated ordered SQL text index optimization is not implemented yet. SQL text ordering is collation-correct today, but it is not yet backed by a dedicated ordered SQL index path.
                 </div>
 
                 <h2 id="overview">Overview</h2>
@@ -145,8 +145,8 @@
                         <tr>
                             <td><code>ICU:&lt;locale&gt;</code></td>
                             <td>You need locale-aware linguistic sorting rules</td>
-                            <td>Not implemented yet</td>
-                            <td>Planned</td>
+                            <td>Built-in locale-aware comparison and ordering using .NET globalization sort keys for the specified culture</td>
+                            <td>Available</td>
                         </tr>
                     </tbody>
                 </table>
@@ -185,6 +185,19 @@ FROM users
 ORDER BY name COLLATE NOCASE;</code></pre>
                 </div>
                 <p>Query-level collation is the right choice when the table defaults to <code>BINARY</code> but one report, search, or sort needs case-insensitive behavior.</p>
+
+                <h3>Locale-Aware Example</h3>
+                <p>Use <code>ICU:&lt;locale&gt;</code> when sorting or matching should follow a specific culture's linguistic rules.</p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>CREATE TABLE products (
+    id INTEGER PRIMARY KEY,
+    name TEXT COLLATE ICU:sv-SE
+);
+
+SELECT *
+FROM products
+ORDER BY name COLLATE ICU:sv-SE;</code></pre>
+                </div>
 
                 <h2 id="collection-usage">Collection Usage</h2>
                 <p>The collection API supports the same idea for text path indexes. Declare the collation when you create the index; lookups and range scans then use that index's rules.</p>
@@ -238,7 +251,7 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                         </tr>
                         <tr>
                             <td>Locale-aware linguistic ordering for a specific language or region</td>
-                            <td>Not available yet; planned as <code>ICU:&lt;locale&gt;</code></td>
+                            <td><code>ICU:&lt;locale&gt;</code></td>
                         </tr>
                     </tbody>
                 </table>
@@ -250,7 +263,8 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                         <tr>
                             <th>Area</th>
                             <th>Default / <code>BINARY</code></th>
-                            <th><code>NOCASE</code></th>
+                            <th><code>NOCASE</code> / <code>NOCASE_AI</code></th>
+                            <th><code>ICU:&lt;locale&gt;</code></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -258,21 +272,25 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                             <td>Reads without collation</td>
                             <td>No extra overhead</td>
                             <td>Not applicable</td>
+                            <td>Not applicable</td>
                         </tr>
                         <tr>
                             <td>Indexed equality lookup</td>
                             <td>Ordinal key match</td>
                             <td>Normalized key match</td>
+                            <td>Culture sort-key match</td>
                         </tr>
                         <tr>
                             <td>INSERT / UPDATE on collated index</td>
                             <td>Raw text path</td>
                             <td>Extra normalization work on write</td>
+                            <td>Extra sort-key generation work on write</td>
                         </tr>
                         <tr>
                             <td>Collection text index</td>
                             <td>Ordinal text key</td>
                             <td>Normalized text key</td>
+                            <td>Normalized culture sort-key text</td>
                         </tr>
                     </tbody>
                 </table>
@@ -281,8 +299,8 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                 <h2 id="limitations">Current Limitations</h2>
                 <ul>
                     <li><strong>Default behavior is still ordinal.</strong> If you never declare collation, text comparisons and ordering stay case-sensitive and byte-order based.</li>
-                    <li><strong>Only <code>BINARY</code> and <code>NOCASE</code> are implemented.</strong> There is no accent-insensitive or locale-specific collation yet.</li>
                     <li><strong>SQL text ordering is not fully index-optimized.</strong> The semantics are correct, but a dedicated ordered SQL text index strategy is still future work.</li>
+                    <li><strong>ICU behavior follows runtime globalization data.</strong> If you move a database across environments or upgrade globalization data, rebuild ICU-backed indexes with <code>REINDEX</code> if you need deterministic persisted ordering.</li>
                     <li><strong>Changing collation means rebuilding index state.</strong> Existing index bytes were written with a specific interpretation and should not be silently reused under different rules.</li>
                 </ul>
 
@@ -294,8 +312,11 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                 <h3>If I do not use <code>COLLATE</code>, is there a performance penalty?</h3>
                 <p>No meaningful one is expected. Collation is opt-in, and the default ordinal path stays in place when you do not declare it.</p>
 
+                <h3>Can I use locale-aware sorting now?</h3>
+                <p>Yes. Use <code>ICU:&lt;locale&gt;</code> such as <code>ICU:sv-SE</code> or <code>ICU:tr-TR</code> when you want sorting and equality to follow a specific culture's rules.</p>
+
                 <h3>Will <code>NOCASE</code> change the stored text?</h3>
-                <p>No. Your original text is still stored and returned as written. The collation only affects how values are compared, sorted, and indexed.</p>
+                <p>No. Your original text is still stored and returned as written. Collation only affects how values are compared, sorted, and indexed.</p>
 
                 <h3>Should I use column-level or query-level collation?</h3>
                 <p>Use column-level collation when a field should usually behave case-insensitively. Use query-level collation when most queries should stay ordinal but one report or lookup needs an override.</p>

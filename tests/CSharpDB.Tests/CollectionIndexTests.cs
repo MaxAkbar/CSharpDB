@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text;
 using System.Reflection;
+using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Storage.BTrees;
@@ -122,6 +123,43 @@ public sealed class CollectionIndexTests : IAsyncLifetime
 
         var binding = GetBinding(users, nameof(User.Name));
         Assert.Equal("NOCASE_AI", binding.Collation);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForStringField_WithIcuCollation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_name_icu", ct);
+        const string locale = "en-US";
+        string collation = $"ICU:{locale}";
+
+        await users.PutAsync("u:1", new User("résumé", 30, "resume1@example.com"), ct);
+        await users.PutAsync("u:2", new User("résumé", 31, "resume2@example.com"), ct);
+        await users.PutAsync("u:3", new User("resume", 32, "resume3@example.com"), ct);
+
+        await users.EnsureIndexAsync(x => x.Name, collation, ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Name, "résumé", ct), ct);
+        var compareInfo = CultureInfo.GetCultureInfo(locale).CompareInfo;
+        string[] allKeys = ["u:1", "u:2", "u:3"];
+        string[] expected = allKeys
+            .Where(key =>
+            {
+                string name = key switch
+                {
+                    "u:1" => "résumé",
+                    "u:2" => "résumé",
+                    _ => "resume",
+                };
+
+                return compareInfo.Compare(name, "résumé", CompareOptions.None) == 0;
+            })
+            .ToArray();
+
+        Assert.Equal(expected.OrderBy(static key => key).ToArray(), matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+
+        var binding = GetBinding(users, nameof(User.Name));
+        Assert.Equal($"ICU:{CultureInfo.GetCultureInfo(locale).Name}", binding.Collation);
     }
 
     [Fact]
@@ -417,6 +455,47 @@ public sealed class CollectionIndexTests : IAsyncLifetime
             ct);
 
         Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
+    public async Task FindByPathRange_TextPath_UsesIcuOrderedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_name_range_icu", ct);
+        const string locale = "sv-SE";
+        string collation = $"ICU:{locale}";
+        (string Key, string Name)[] rows =
+        [
+            ("u:1", "a"),
+            ("u:2", "z"),
+            ("u:3", "å"),
+            ("u:4", "ä"),
+            ("u:5", "ö"),
+        ];
+
+        foreach (var row in rows)
+            await users.PutAsync(row.Key, new User(row.Name, 20, $"{row.Key}@example.com"), ct);
+
+        await users.EnsureIndexAsync(x => x.Name, collation, ct);
+
+        var binding = GetBinding(users, nameof(User.Name));
+        Assert.True(binding.TryBuildKeyFromValue("z", out long zIndexKey));
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(zIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ICU ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
+        var matches = await CollectAsync(users.FindByPathRangeAsync("Name", "z", "ä", ct: ct), ct);
+
+        var compareInfo = CultureInfo.GetCultureInfo(locale).CompareInfo;
+        string[] expected = rows
+            .Where(row =>
+                compareInfo.Compare(row.Name, "z", CompareOptions.None) >= 0 &&
+                compareInfo.Compare(row.Name, "ä", CompareOptions.None) <= 0)
+            .Select(static row => row.Key)
+            .OrderBy(static key => key)
+            .ToArray();
+
+        Assert.Equal(expected, matches.Select(x => x.Key).OrderBy(x => x).ToArray());
     }
 
     [Fact]
