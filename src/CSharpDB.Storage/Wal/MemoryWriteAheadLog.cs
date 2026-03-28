@@ -1,5 +1,7 @@
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Device;
+using CSharpDB.Storage.Paging;
+using System.Buffers;
 using System.Buffers.Binary;
 
 namespace CSharpDB.Storage.Wal;
@@ -8,7 +10,7 @@ namespace CSharpDB.Storage.Wal;
 /// In-memory WAL implementation that preserves the same frame/header format as the file-backed WAL.
 /// This allows load-from-disk recovery to run entirely in memory.
 /// </summary>
-public sealed class MemoryWriteAheadLog : IWriteAheadLog
+public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider, ICommitPathDiagnosticsProvider
 {
     private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
@@ -26,6 +28,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     private uint _salt1;
     private uint _salt2;
     private readonly List<(uint PageId, long WalOffset)> _uncommittedFrames = new(capacity: 256);
+    private readonly List<BufferedUncommittedFrame> _bufferedUncommittedFrames = new(capacity: 256);
     private uint _lastUncommittedDataChecksum;
     private readonly List<(uint PageId, long WalOffset)> _recoverUncommittedBatch = new();
     private long _uncommittedStartOffset;
@@ -70,44 +73,66 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     }
 
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool HasPendingCommitWork => false;
     public bool IsOpen => _isOpen;
+
+    WalFlushDiagnosticsSnapshot IWalRuntimeDiagnosticsProvider.GetWalFlushDiagnosticsSnapshot() =>
+        WalFlushDiagnosticsSnapshot.Empty;
+
+    void IWalRuntimeDiagnosticsProvider.ResetWalFlushDiagnostics()
+    {
+    }
+
+    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() =>
+        CommitPathDiagnosticsSnapshot.Empty;
+
+    void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()
+    {
+    }
 
     public void BeginTransaction()
     {
         EnsureOpen();
         _uncommittedFrames.Clear();
+        ClearBufferedUncommittedFrames();
         _lastUncommittedDataChecksum = 0;
         _uncommittedStartOffset = _storage.Length;
     }
 
-    public async ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken cancellationToken = default)
+    public ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken cancellationToken = default)
     {
         EnsureOpen();
 
-        long frameOffset = _storage.Length;
+        if (_uncommittedFrames.Count > 0)
+            return AppendFrameDirectAsync(pageId, pageData, cancellationToken);
 
         try
         {
-            uint dataChecksum = WriteWalFrame(
-                _appendFrameBuffer.AsSpan(0, PageConstants.WalFrameSize),
-                pageId,
-                pageData.Span,
-                dbPageCount: 0u);
-            await _storage.WriteAsync(frameOffset, _appendFrameBuffer.AsMemory(0, PageConstants.WalFrameSize), cancellationToken);
-            _uncommittedFrames.Add((pageId, frameOffset));
-            _lastUncommittedDataChecksum = dataChecksum;
+            cancellationToken.ThrowIfCancellationRequested();
+            _bufferedUncommittedFrames.Add(CreateBufferedUncommittedFrame(pageId, pageData));
+            return ValueTask.CompletedTask;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
             throw new CSharpDbException(
                 ErrorCode.WalError,
-                $"Failed to append in-memory WAL frame for pageId={pageId} at walOffset={frameOffset}.",
+                $"Failed to buffer in-memory WAL frame for pageId={pageId}.",
                 ex);
         }
     }
 
     public async ValueTask AppendFramesAsync(ReadOnlyMemory<WalFrameWrite> frames, CancellationToken cancellationToken = default)
     {
+        if (_bufferedUncommittedFrames.Count > 0)
+        {
+            await AppendBufferedFramesCoreAsync(
+                commitOnLastFrame: false,
+                newDbPageCount: 0u,
+                trackUncommittedFrames: true,
+                cancellationToken);
+            ClearBufferedUncommittedFrames();
+        }
+
         await AppendFramesCoreAsync(
             frames,
             commitOnLastFrame: false,
@@ -123,7 +148,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     {
         if (frames.IsEmpty)
             throw new CSharpDbException(ErrorCode.WalError, "No frames to commit.");
-        if (_uncommittedFrames.Count != 0)
+        if (_uncommittedFrames.Count != 0 || _bufferedUncommittedFrames.Count != 0)
             throw new CSharpDbException(ErrorCode.WalError, "AppendFramesAndCommitAsync cannot be used with existing uncommitted frames.");
 
         EnsureOpen();
@@ -154,8 +179,32 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     public async ValueTask<WalCommitResult> CommitAsync(uint newDbPageCount, CancellationToken cancellationToken = default)
     {
         EnsureOpen();
-        if (_uncommittedFrames.Count == 0)
+        if (_uncommittedFrames.Count == 0 && _bufferedUncommittedFrames.Count == 0)
             throw new CSharpDbException(ErrorCode.WalError, "No frames to commit.");
+
+        if (_bufferedUncommittedFrames.Count > 0)
+        {
+            int bufferedFrameCount = _bufferedUncommittedFrames.Count;
+            try
+            {
+                await AppendBufferedFramesCoreAsync(
+                    commitOnLastFrame: true,
+                    newDbPageCount,
+                    trackUncommittedFrames: true,
+                    cancellationToken);
+                ClearBufferedUncommittedFrames();
+                await _storage.FlushAsync(cancellationToken);
+                PublishCommittedFrames();
+                return WalCommitResult.Completed;
+            }
+            catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.WalError,
+                    $"Failed to commit buffered in-memory WAL transaction with {bufferedFrameCount} frame(s), newDbPageCount={newDbPageCount}.",
+                    ex);
+            }
+        }
 
         var (lastPageId, lastOffset) = _uncommittedFrames[^1];
         uint lastDataChecksum = _lastUncommittedDataChecksum;
@@ -196,11 +245,19 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         if (!_isOpen)
             return;
 
+        if (_uncommittedFrames.Count == 0)
+        {
+            ClearBufferedUncommittedFrames();
+            _lastUncommittedDataChecksum = 0;
+            return;
+        }
+
         try
         {
             await _storage.SetLengthAsync(_uncommittedStartOffset, cancellationToken);
             await _storage.FlushAsync(cancellationToken);
             _uncommittedFrames.Clear();
+            ClearBufferedUncommittedFrames();
             _lastUncommittedDataChecksum = 0;
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
@@ -292,6 +349,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     {
         _isOpen = false;
         _uncommittedFrames.Clear();
+        ClearBufferedUncommittedFrames();
         _lastUncommittedDataChecksum = 0;
         _recoverUncommittedBatch.Clear();
         _incrementalCheckpoint = null;
@@ -304,6 +362,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     {
         _isOpen = false;
         _uncommittedFrames.Clear();
+        ClearBufferedUncommittedFrames();
         _lastUncommittedDataChecksum = 0;
         _recoverUncommittedBatch.Clear();
         _incrementalCheckpoint = null;
@@ -314,6 +373,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     {
         _incrementalCheckpoint = null;
         _uncommittedFrames.Clear();
+        ClearBufferedUncommittedFrames();
         _lastUncommittedDataChecksum = 0;
         _recoverUncommittedBatch.Clear();
         _index.Reset();
@@ -331,6 +391,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
     {
         _incrementalCheckpoint = null;
         _uncommittedFrames.Clear();
+        ClearBufferedUncommittedFrames();
         _lastUncommittedDataChecksum = 0;
         _recoverUncommittedBatch.Clear();
         _index.Reset();
@@ -498,6 +559,87 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         _index.AdvanceCommit();
         _uncommittedFrames.Clear();
         _lastUncommittedDataChecksum = 0;
+    }
+
+    private async ValueTask AppendFrameDirectAsync(
+        uint pageId,
+        ReadOnlyMemory<byte> pageData,
+        CancellationToken cancellationToken)
+    {
+        long frameOffset = _storage.Length;
+
+        try
+        {
+            uint dataChecksum = WriteWalFrame(
+                _appendFrameBuffer.AsSpan(0, PageConstants.WalFrameSize),
+                pageId,
+                pageData.Span,
+                dbPageCount: 0u);
+            await _storage.WriteAsync(frameOffset, _appendFrameBuffer.AsMemory(0, PageConstants.WalFrameSize), cancellationToken);
+            _uncommittedFrames.Add((pageId, frameOffset));
+            _lastUncommittedDataChecksum = dataChecksum;
+        }
+        catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Failed to append in-memory WAL frame for pageId={pageId} at walOffset={frameOffset}.",
+                ex);
+        }
+    }
+
+    private async ValueTask AppendBufferedFramesCoreAsync(
+        bool commitOnLastFrame,
+        uint newDbPageCount,
+        bool trackUncommittedFrames,
+        CancellationToken cancellationToken)
+    {
+        if (_bufferedUncommittedFrames.Count == 0)
+            return;
+
+        WalFrameWrite[] rentedFrames = ArrayPool<WalFrameWrite>.Shared.Rent(_bufferedUncommittedFrames.Count);
+        try
+        {
+            for (int i = 0; i < _bufferedUncommittedFrames.Count; i++)
+            {
+                var frame = _bufferedUncommittedFrames[i];
+                rentedFrames[i] = new WalFrameWrite(frame.PageId, frame.Buffer.AsMemory(0, PageConstants.PageSize));
+            }
+
+            await AppendFramesCoreAsync(
+                rentedFrames.AsMemory(0, _bufferedUncommittedFrames.Count),
+                commitOnLastFrame,
+                newDbPageCount,
+                trackUncommittedFrames,
+                cancellationToken);
+        }
+        finally
+        {
+            rentedFrames.AsSpan(0, _bufferedUncommittedFrames.Count).Clear();
+            ArrayPool<WalFrameWrite>.Shared.Return(rentedFrames, clearArray: false);
+        }
+    }
+
+    private BufferedUncommittedFrame CreateBufferedUncommittedFrame(uint pageId, ReadOnlyMemory<byte> pageData)
+    {
+        if (pageData.Length != PageConstants.PageSize)
+        {
+            throw new CSharpDbException(
+                ErrorCode.WalError,
+                $"Invalid in-memory WAL page payload size for pageId={pageId}. Expected {PageConstants.PageSize}, got {pageData.Length}.");
+        }
+
+        byte[] pageBuffer = ArrayPool<byte>.Shared.Rent(PageConstants.PageSize);
+        pageData.Span.CopyTo(pageBuffer.AsSpan(0, PageConstants.PageSize));
+        return new BufferedUncommittedFrame(pageId, pageBuffer);
+    }
+
+    private void ClearBufferedUncommittedFrames()
+    {
+        for (int i = 0; i < _bufferedUncommittedFrames.Count; i++)
+            ArrayPool<byte>.Shared.Return(_bufferedUncommittedFrames[i].Buffer, clearArray: false);
+
+        _bufferedUncommittedFrames.Clear();
     }
 
     private uint WriteWalFrame(Span<byte> frameDestination, uint pageId, ReadOnlySpan<byte> pageData, uint dbPageCount)
@@ -876,4 +1018,6 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog
         public int NextPageIndex { get; set; }
         public long RetainedWalStartOffset { get; }
     }
+
+    private readonly record struct BufferedUncommittedFrame(uint PageId, byte[] Buffer);
 }

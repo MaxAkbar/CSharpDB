@@ -118,6 +118,7 @@ public sealed class TableStatistics
     public required string TableName { get; init; }
     public long RowCount { get; init; }
     public bool HasStaleColumns { get; init; }
+    public uint LastPersistedChangeCounter { get; init; }
 }
 
 public sealed class ColumnStatistics

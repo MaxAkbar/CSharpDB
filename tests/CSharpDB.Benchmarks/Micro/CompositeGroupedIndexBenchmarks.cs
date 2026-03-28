@@ -52,6 +52,40 @@ public class CompositeGroupedIndexBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "GROUP BY a,b COUNT+SUM+AVG (no index)")]
+    public async Task GroupByCompositeCountSumAvg_NoIndex()
+    {
+        await using var result = await _noIndex.Db.ExecuteAsync(
+            "SELECT a, b, COUNT(*), SUM(id), AVG(id) FROM bench_comp_group GROUP BY a, b");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "GROUP BY a,b COUNT+SUM+AVG (composite index)")]
+    public async Task GroupByCompositeCountSumAvg_CompositeIndex()
+    {
+        await using var result = await _withCompositeIndex.Db.ExecuteAsync(
+            "SELECT a, b, COUNT(*), SUM(id), AVG(id) FROM bench_comp_group GROUP BY a, b");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "GROUP BY a,b WHERE a BETWEEN COUNT+SUM+AVG (no index)")]
+    public async Task GroupByCompositeCountSumAvg_Filtered_NoIndex()
+    {
+        await using var result = await _noIndex.Db.ExecuteAsync(
+            "SELECT a, b, COUNT(*), SUM(id), AVG(id) " +
+            "FROM bench_comp_group WHERE a BETWEEN 25 AND 74 GROUP BY a, b");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "GROUP BY a,b WHERE a BETWEEN COUNT+SUM+AVG (composite index)")]
+    public async Task GroupByCompositeCountSumAvg_Filtered_CompositeIndex()
+    {
+        await using var result = await _withCompositeIndex.Db.ExecuteAsync(
+            "SELECT a, b, COUNT(*), SUM(id), AVG(id) " +
+            "FROM bench_comp_group WHERE a BETWEEN 25 AND 74 GROUP BY a, b");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "GROUP BY a COUNT(*) (no index)")]
     public async Task GroupByPrefixCount_NoIndex()
     {

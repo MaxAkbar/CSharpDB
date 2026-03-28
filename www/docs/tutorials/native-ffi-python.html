@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+    window.pageConfig = {
+        title: 'Python FFI Tutorial',
+        description: 'Use CSharpDB from Python via the built-in ctypes module. No external packages required.',
+        keywords: 'CSharpDB Python, ctypes, FFI, NativeAOT, Python wrapper',
+        canonicalPath: 'docs/tutorials/native-ffi-python.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h3>On this page</h3>
+                    <ul>
+                        <li><a href="#files">Files</a></li>
+                        <li><a href="#prerequisites">Prerequisites</a></li>
+                        <li><a href="#quick-start">Quick Start</a></li>
+                        <li><a href="#using-the-wrapper-in-your-project">Using the Wrapper in Your Project</a></li>
+                        <li><a href="#api-summary">API Summary</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content">
+                <h1>Python FFI Tutorial</h1>
+
+                <p>Use CSharpDB from Python via the built-in <code>ctypes</code> module. No external packages required.</p>
+
+                <h2 id="files">Files</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>csharpdb.py</code></td>
+                            <td>Reusable wrapper module with typed query results, transactions, and context manager</td>
+                        </tr>
+                        <tr>
+                            <td><code>example_crud.py</code></td>
+                            <td>Create, read, update, delete operations</td>
+                        </tr>
+                        <tr>
+                            <td><code>example_transactions.py</code></td>
+                            <td>Explicit and automatic transactions, rollback on error</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="prerequisites">Prerequisites</h2>
+
+                <ol>
+                    <li>Python 3.10+</li>
+                    <li>The CSharpDB native library (see <a href="native-ffi.html">build instructions</a>)</li>
+                </ol>
+
+                <h2 id="quick-start">Quick Start</h2>
+
+                <ol>
+                    <li>
+                        <strong>Set the library path</strong> (or edit the <code>LIB_PATH</code> in the example files):
+                        <div class="code-block" data-title="Bash"><pre><code># Windows
+set CSHARPDB_NATIVE_PATH=C:\path\to\CSharpDB.Native.dll
+
+# Linux / macOS
+export CSHARPDB_NATIVE_PATH=/path/to/CSharpDB.Native.so</code></pre></div>
+                    </li>
+                    <li>
+                        <strong>Run the examples</strong>:
+                        <div class="code-block" data-title="Bash"><pre><code>cd docs/tutorials/native-ffi/python
+
+python example_crud.py
+python example_transactions.py</code></pre></div>
+                    </li>
+                </ol>
+
+                <h2 id="using-the-wrapper-in-your-project">Using the Wrapper in Your Project</h2>
+
+                <p>Copy <code>csharpdb.py</code> into your project and use it:</p>
+
+                <div class="code-block" data-title="Python"><pre><code>from csharpdb import CSharpDB
+
+with CSharpDB("/path/to/CSharpDB.Native.dll") as db:
+    db.open("myapp.db")
+
+    db.execute("CREATE TABLE items (id INTEGER, name TEXT, price REAL)")
+    db.execute("INSERT INTO items VALUES (1, 'Widget', 9.99)")
+
+    for row in db.query("SELECT * FROM items"):
+        print(row)  # {'id': 1, 'name': 'Widget', 'price': 9.99}</code></pre></div>
+
+                <h2 id="api-summary">API Summary</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>CSharpDB(lib_path)</code></td><td>Load the native library</td></tr>
+                        <tr><td><code>db.open(path)</code></td><td>Open or create a database</td></tr>
+                        <tr><td><code>db.close()</code></td><td>Close the database</td></tr>
+                        <tr><td><code>db.execute(sql)</code></td><td>Run INSERT/UPDATE/DELETE/DDL, returns rows affected</td></tr>
+                        <tr><td><code>db.query(sql)</code></td><td>Run SELECT, returns <code>list[dict]</code></td></tr>
+                        <tr><td><code>db.query_one(sql)</code></td><td>Run SELECT, returns first row or <code>None</code></td></tr>
+                        <tr><td><code>db.begin()</code></td><td>Start a transaction</td></tr>
+                        <tr><td><code>db.commit()</code></td><td>Commit the transaction</td></tr>
+                        <tr><td><code>db.rollback()</code></td><td>Rollback the transaction</td></tr>
+                        <tr><td><code>db.transaction(fn)</code></td><td>Run <code>fn</code> in a transaction with auto commit/rollback</td></tr>
+                    </tbody>
+                </table>
+
+                <p>The class also supports <code>with</code> statements for automatic cleanup.</p>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

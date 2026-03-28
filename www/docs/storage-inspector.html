@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Storage Inspector',
+        description: 'CSharpDB Storage Inspector reference — read-only diagnostics for database and WAL file integrity, CLI commands, JSON contract, exit codes, and rule IDs.',
+        keywords: 'CSharpDB storage inspector, diagnostics, database inspection, WAL, integrity check, CLI, JSON contract',
+        canonicalPath: 'docs/storage-inspector.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#scope">Scope (v1)</a></li>
+                        <li><a href="#commands">Commands</a></li>
+                        <li><a href="#client-api-admin">Client/API/Admin</a></li>
+                        <li><a href="#exit-codes">Exit Codes</a></li>
+                        <li><a href="#json-contract">JSON Contract</a></li>
+                        <li><a href="#integrity-rule-ids">Integrity Rule IDs (v1)</a></li>
+                        <li><a href="#examples">Examples</a></li>
+                        <li><a href="#troubleshooting">Troubleshooting</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Storage Inspector</h1>
+                <p>The Storage Inspector is a read-only diagnostics toolkit for understanding the physical state of a CSharpDB database (<code>.db</code>) and WAL (<code>.db.wal</code>) file.</p>
+                <p>It is CLI-first and deterministic:</p>
+                <ul>
+                    <li>no data mutation</li>
+                    <li>machine-readable JSON output (<code>schemaVersion: "1.0"</code>)</li>
+                    <li>fixed exit codes for automation</li>
+                </ul>
+
+                <h2 id="scope">Scope (v1)</h2>
+                <p>Diagnostics cover:</p>
+                <ul>
+                    <li>database file header and page map</li>
+                    <li>B+tree page and cell structure checks</li>
+                    <li>WAL header/frame/checksum checks</li>
+                    <li>catalog and index-root reachability checks</li>
+                </ul>
+                <p>Out of scope:</p>
+                <ul>
+                    <li>repair/auto-fix</li>
+                    <li>compaction/vacuum</li>
+                    <li>on-disk format changes</li>
+                </ul>
+
+                <h2 id="commands">Commands</h2>
+                <p>Run commands through the CLI command mode:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb inspect &lt;dbfile&gt; [--json] [--out &lt;file&gt;] [--include-pages]
+csharpdb inspect-page &lt;dbfile&gt; &lt;pageId&gt; [--json] [--hex]
+csharpdb check-wal &lt;dbfile&gt; [--json]
+csharpdb check-indexes &lt;dbfile&gt; [--index &lt;name&gt;] [--sample &lt;n&gt;] [--json]</code></pre></div>
+                <p><code>inspect</code> supports <code>--out</code> to write JSON to a file.</p>
+
+                <h2 id="client-api-admin">Client/API/Admin</h2>
+                <p>Client SDK methods (<code>CSharpDB.Client</code>):</p>
+                <ul>
+                    <li><code>InspectStorageAsync(path?, includePages?)</code></li>
+                    <li><code>CheckWalAsync(path?)</code></li>
+                    <li><code>InspectPageAsync(pageId, includeHex?, path?)</code></li>
+                    <li><code>CheckIndexesAsync(path?, indexName?, sampleSize?)</code></li>
+                </ul>
+                <p>REST endpoints (<code>CSharpDB.Api</code>):</p>
+                <ul>
+                    <li><code>GET /api/inspect</code></li>
+                    <li><code>GET /api/inspect/wal</code></li>
+                    <li><code>GET /api/inspect/page/{id}</code></li>
+                    <li><code>GET /api/inspect/indexes</code></li>
+                </ul>
+                <p>Admin UI (<code>CSharpDB.Admin</code>):</p>
+                <ul>
+                    <li>Sidebar <code>Storage</code> action opens the <strong>Storage</strong> tab</li>
+                    <li>Displays header summary, page histogram, index checks, issue list, and page drill-down</li>
+                    <li>Also exposes maintenance actions plus backup/restore, with paths resolved on the connected host</li>
+                </ul>
+
+                <h2 id="exit-codes">Exit Codes</h2>
+                <ul>
+                    <li><code>0</code>: no warnings/errors</li>
+                    <li><code>1</code>: warnings present, no errors</li>
+                    <li><code>2</code>: one or more errors present</li>
+                    <li><code>64</code>: invalid CLI usage/arguments</li>
+                </ul>
+
+                <h2 id="json-contract">JSON Contract</h2>
+                <p>All inspector JSON responses include:</p>
+                <ul>
+                    <li><code>schemaVersion</code> (current: <code>"1.0"</code>)</li>
+                </ul>
+                <p>The top-level report object depends on the command:</p>
+                <ul>
+                    <li><code>inspect</code> &rarr; <code>DatabaseInspectReport</code></li>
+                    <li><code>inspect-page</code> &rarr; <code>PageInspectReport</code></li>
+                    <li><code>check-wal</code> &rarr; <code>WalInspectReport</code></li>
+                    <li><code>check-indexes</code> &rarr; <code>IndexInspectReport</code></li>
+                </ul>
+                <p><code>issues</code> entries use:</p>
+                <ul>
+                    <li><code>code</code> (stable rule identifier)</li>
+                    <li><code>severity</code> (<code>Info</code>, <code>Warning</code>, <code>Error</code>)</li>
+                    <li><code>message</code></li>
+                    <li>optional <code>pageId</code></li>
+                    <li>optional <code>offset</code></li>
+                </ul>
+
+                <h2 id="integrity-rule-ids">Integrity Rule IDs (v1)</h2>
+
+                <h3>Database/header/page checks</h3>
+                <ul>
+                    <li><code>DB_HEADER_SHORT</code></li>
+                    <li><code>DB_HEADER_BAD_MAGIC</code></li>
+                    <li><code>DB_HEADER_BAD_VERSION</code></li>
+                    <li><code>DB_HEADER_BAD_PAGE_SIZE</code></li>
+                    <li><code>DB_PAGE_COUNT_MISMATCH</code></li>
+                    <li><code>DB_FILE_TRAILING_BYTES</code></li>
+                    <li><code>DB_PAGE_SHORT_READ</code></li>
+                    <li><code>PAGE_HEADER_OUT_OF_RANGE</code></li>
+                    <li><code>PAGE_CELL_COUNT_OVERFLOW</code></li>
+                    <li><code>PAGE_CELL_CONTENT_START_OOB</code></li>
+                    <li><code>PAGE_CELL_CONTENT_OVERLAP</code></li>
+                    <li><code>PAGE_DUPLICATE_CELL_POINTER</code></li>
+                    <li><code>PAGE_CELL_POINTER_OOB</code></li>
+                    <li><code>CELL_VARINT_INVALID</code></li>
+                    <li><code>CELL_HEADER_INVALID</code></li>
+                    <li><code>CELL_TOTAL_SIZE_OOB</code></li>
+                    <li><code>LEAF_CELL_PAYLOAD_TOO_SMALL</code></li>
+                    <li><code>LEAF_CELL_KEY_OOB</code></li>
+                    <li><code>LEAF_CELL_PAYLOAD_OOB</code></li>
+                    <li><code>INTERIOR_CELL_PAYLOAD_TOO_SMALL</code></li>
+                    <li><code>INTERIOR_CELL_BYTES_OOB</code></li>
+                    <li><code>BTREE_LEAF_KEY_ORDER</code></li>
+                    <li><code>PAGE_TYPE_UNKNOWN</code></li>
+                </ul>
+
+                <h3>B+tree reachability/cross checks</h3>
+                <ul>
+                    <li><code>SCHEMA_ROOT_MISSING</code></li>
+                    <li><code>BTREE_CHILD_OUT_OF_RANGE</code></li>
+                    <li><code>BTREE_PAGE_MISSING</code></li>
+                    <li><code>BTREE_PAGE_TYPE_INVALID</code></li>
+                    <li><code>BTREE_NULL_CHILD_REFERENCE</code></li>
+                    <li><code>CATALOG_ROOT_OUT_OF_RANGE</code></li>
+                    <li><code>CATALOG_ROOT_MISSING</code></li>
+                    <li><code>CATALOG_ROOT_BAD_PAGE_TYPE</code></li>
+                    <li><code>CATALOG_ENTRY_PAYLOAD_SHORT</code></li>
+                    <li><code>CATALOG_TABLE_SCHEMA_DECODE_FAILED</code></li>
+                    <li><code>CATALOG_INDEX_ENTRY_PAYLOAD_SHORT</code></li>
+                    <li><code>CATALOG_INDEX_SCHEMA_DECODE_FAILED</code></li>
+                    <li><code>CATALOG_VIEW_SCHEMA_DECODE_FAILED</code></li>
+                    <li><code>CATALOG_TRIGGER_SCHEMA_DECODE_FAILED</code></li>
+                    <li><code>INDEX_NOT_FOUND</code></li>
+                    <li><code>INDEX_ROOT_OUT_OF_RANGE</code></li>
+                    <li><code>INDEX_ROOT_MISSING</code></li>
+                    <li><code>INDEX_ROOT_BAD_PAGE_TYPE</code></li>
+                    <li><code>INDEX_TABLE_MISSING</code></li>
+                    <li><code>INDEX_COLUMN_MISSING</code></li>
+                </ul>
+
+                <h3>WAL checks</h3>
+                <ul>
+                    <li><code>WAL_HEADER_SHORT</code></li>
+                    <li><code>WAL_HEADER_BAD_MAGIC</code></li>
+                    <li><code>WAL_HEADER_BAD_VERSION</code></li>
+                    <li><code>WAL_HEADER_BAD_PAGE_SIZE</code></li>
+                    <li><code>WAL_TRAILING_PARTIAL_FRAME</code></li>
+                    <li><code>WAL_FRAME_HEADER_SHORT</code></li>
+                    <li><code>WAL_FRAME_PAGE_SHORT</code></li>
+                    <li><code>WAL_FRAME_SALT_MISMATCH</code></li>
+                    <li><code>WAL_FRAME_HEADER_CHECKSUM_MISMATCH</code></li>
+                    <li><code>WAL_FRAME_DATA_CHECKSUM_MISMATCH</code></li>
+                    <li><code>WAL_NO_COMMIT_MARKER</code></li>
+                </ul>
+
+                <h2 id="examples">Examples</h2>
+                <p>Human-readable summary:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb inspect mydata.db</code></pre></div>
+
+                <p>Machine-readable JSON:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb inspect mydata.db --json</code></pre></div>
+
+                <p>Write JSON report to file:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb inspect mydata.db --json --out inspect-report.json</code></pre></div>
+
+                <p>Inspect one page including hex dump:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb inspect-page mydata.db 12 --hex</code></pre></div>
+
+                <p>Check WAL state:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb check-wal mydata.db</code></pre></div>
+
+                <p>Check all indexes:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb check-indexes mydata.db</code></pre></div>
+
+                <p>Check one index:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb check-indexes mydata.db --index idx_users_name --json</code></pre></div>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <ul>
+                    <li>If <code>check-wal</code> reports no WAL file, that is usually normal after clean close/checkpoint.</li>
+                    <li>If DB checks report page-count mismatch with no errors, run <code>check-wal</code> to determine whether recent committed data still resides in WAL.</li>
+                    <li>If checks run while a writer is active, warnings can appear due to concurrent file changes; rerun diagnostics after write activity stops.</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

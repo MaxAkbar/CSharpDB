@@ -169,6 +169,7 @@ Major features already implemented:
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
+- [Low-Latency Durable Writes Plan](low-latency-durable-writes/README.md) — Exact-durability auto-commit write optimization plan, advisory stats deferral, and benchmark gates
 - [Collation Support Plan](collation-support/README.md) — Case-insensitive matching, locale-aware sorting, and COLLATE clause for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog

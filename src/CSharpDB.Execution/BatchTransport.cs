@@ -92,3 +92,8 @@ internal static class BatchSourceHelper
             _ => null,
         };
 }
+
+internal interface IUnaryOperatorSource
+{
+    IOperator Source { get; }
+}

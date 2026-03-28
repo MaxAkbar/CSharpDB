@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+    window.pageConfig = {
+        title: 'JavaScript / Node.js FFI Tutorial',
+        description: 'Use CSharpDB from Node.js via koffi, a zero-dependency FFI library. ESM wrapper with typed queries and transactions.',
+        keywords: 'CSharpDB JavaScript, Node.js FFI, koffi, NativeAOT, ESM wrapper',
+        canonicalPath: 'docs/tutorials/native-ffi-javascript.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h3>On this page</h3>
+                    <ul>
+                        <li><a href="#files">Files</a></li>
+                        <li><a href="#prerequisites">Prerequisites</a></li>
+                        <li><a href="#quick-start">Quick Start</a></li>
+                        <li><a href="#using-the-wrapper-in-your-project">Using the Wrapper in Your Project</a></li>
+                        <li><a href="#api-summary">API Summary</a></li>
+                        <li><a href="#value-types">Value Types</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content">
+                <h1>JavaScript / Node.js FFI Tutorial</h1>
+
+                <p>Use CSharpDB from Node.js via <a href="https://koffi.dev/">koffi</a>, a zero-dependency FFI library.</p>
+
+                <h2 id="files">Files</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>csharpdb.mjs</code></td>
+                            <td>Reusable ESM wrapper module with typed queries and transactions</td>
+                        </tr>
+                        <tr>
+                            <td><code>example_crud.mjs</code></td>
+                            <td>Create, read, update, delete operations</td>
+                        </tr>
+                        <tr>
+                            <td><code>example_transactions.mjs</code></td>
+                            <td>Explicit and automatic transactions, rollback on error</td>
+                        </tr>
+                        <tr>
+                            <td><code>package.json</code></td>
+                            <td>npm project with koffi dependency</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="prerequisites">Prerequisites</h2>
+
+                <ol>
+                    <li>Node.js 18+</li>
+                    <li>The CSharpDB native library (see <a href="native-ffi.html">build instructions</a>)</li>
+                </ol>
+
+                <h2 id="quick-start">Quick Start</h2>
+
+                <ol>
+                    <li>
+                        <strong>Install dependencies</strong>:
+                        <div class="code-block" data-title="Bash"><pre><code>cd docs/tutorials/native-ffi/javascript
+npm install</code></pre></div>
+                    </li>
+                    <li>
+                        <strong>Set the library path</strong> (or edit the <code>LIB_PATH</code> in the example files):
+                        <div class="code-block" data-title="Bash"><pre><code># Windows
+set CSHARPDB_NATIVE_PATH=C:\path\to\CSharpDB.Native.dll
+
+# Linux / macOS
+export CSHARPDB_NATIVE_PATH=/path/to/CSharpDB.Native.so</code></pre></div>
+                    </li>
+                    <li>
+                        <strong>Run the examples</strong>:
+                        <div class="code-block" data-title="Bash"><pre><code>node example_crud.mjs
+node example_transactions.mjs</code></pre></div>
+                        <p>Or use npm scripts:</p>
+                        <div class="code-block" data-title="Bash"><pre><code>npm run crud
+npm run transactions</code></pre></div>
+                    </li>
+                </ol>
+
+                <h2 id="using-the-wrapper-in-your-project">Using the Wrapper in Your Project</h2>
+
+                <p>Copy <code>csharpdb.mjs</code> into your project and use it:</p>
+
+                <div class="code-block" data-title="JavaScript"><pre><code>import { CSharpDB } from './csharpdb.mjs';
+
+const db = new CSharpDB('/path/to/CSharpDB.Native.dll');
+db.open('myapp.db');
+
+db.execute('CREATE TABLE items (id INTEGER, name TEXT, price REAL)');
+db.execute("INSERT INTO items VALUES (1, 'Widget', 9.99)");
+
+const rows = db.query('SELECT * FROM items');
+console.log(rows);  // [{ id: 1, name: 'Widget', price: 9.99 }]
+
+db.close();</code></pre></div>
+
+                <p>For a production-ready TypeScript package with full type safety, see the <code>clients/node/</code> directory in the repository.</p>
+
+                <h2 id="api-summary">API Summary</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>new CSharpDB(libPath)</code></td><td>Load the native library</td></tr>
+                        <tr><td><code>db.open(path)</code></td><td>Open or create a database</td></tr>
+                        <tr><td><code>db.close()</code></td><td>Close the database</td></tr>
+                        <tr><td><code>db.execute(sql)</code></td><td>Run INSERT/UPDATE/DELETE/DDL, returns rows affected</td></tr>
+                        <tr><td><code>db.query(sql)</code></td><td>Run SELECT, returns array of objects</td></tr>
+                        <tr><td><code>db.queryOne(sql)</code></td><td>Run SELECT, returns first row or <code>null</code></td></tr>
+                        <tr><td><code>db.begin()</code></td><td>Start a transaction</td></tr>
+                        <tr><td><code>db.commit()</code></td><td>Commit the transaction</td></tr>
+                        <tr><td><code>db.rollback()</code></td><td>Rollback the transaction</td></tr>
+                        <tr><td><code>db.transaction(fn)</code></td><td>Run <code>fn</code> in a transaction with auto commit/rollback</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="value-types">Value Types</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>CSharpDB Type</th>
+                            <th>JavaScript Type</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>INTEGER</td><td><code>Number</code> (auto-converted from BigInt if safe)</td></tr>
+                        <tr><td>REAL</td><td><code>Number</code></td></tr>
+                        <tr><td>TEXT</td><td><code>String</code></td></tr>
+                        <tr><td>NULL</td><td><code>null</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

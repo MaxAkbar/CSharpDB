@@ -6,6 +6,7 @@ namespace CSharpDB.Storage.Wal;
 public interface IWriteAheadLog : IAsyncDisposable
 {
     bool HasPendingCheckpoint { get; }
+    bool HasPendingCommitWork { get; }
     bool IsOpen { get; }
     ValueTask OpenAsync(uint currentDbPageCount, CancellationToken cancellationToken = default);
     void BeginTransaction();

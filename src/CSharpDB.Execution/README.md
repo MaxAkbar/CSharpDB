@@ -22,7 +22,7 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 - Compiled expression cache (up to 4096 entries) for repeated queries
 - Trigger body caching with schema-sensitive invalidation
 - Sync point-lookup fast path for `SELECT ... WHERE pk = value`
-- Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, and fresh-column-stat-guided non-unique lookup selection
+- Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, fresh-column-stat-guided non-unique lookup selection, join method choice, and limited greedy inner-join reordering
 
 ### Operator Tree (Iterator Model)
 - `IOperator` interface: `OpenAsync`, `MoveNextAsync`, `Current`, `OutputSchema`

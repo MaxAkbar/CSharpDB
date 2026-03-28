@@ -29,7 +29,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
 | **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries including `sys.table_stats` and `sys.column_stats` |
-| **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — 1.44M reads/sec |
+| **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — up to 1.99M point gets/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC; Named Pipes planned), with gRPC hosted by `CSharpDB.Daemon` |
 | **Native FFI** | NativeAOT-compiled C library (`.dll`/`.so`/`.dylib`/static lib) — use CSharpDB from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, iOS, and more |
@@ -49,6 +49,16 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 - `v2.0` low-level/shared-type usage should target `CSharpDB.Primitives`.
 - The legacy `CSharpDB.Service` compatibility package is removed from the `v2.0` repo surface.
 - The permanent primitives rename migration guide is [docs/migrations/core-to-primitives.md](docs/migrations/core-to-primitives.md).
+
+## Thread Safety
+
+`Database` instances can be shared across multiple tasks, but the concurrency model is intentionally narrow:
+
+- Auto-commit writes are safe to issue from multiple tasks on the same `Database` or `Collection<T>`. CSharpDB serializes writes internally, so correctness is preserved, but writes do not execute in parallel.
+- Only one explicit transaction can be active per `Database`. Treat an explicit transaction as single-owner and do not use the same transaction concurrently from multiple tasks.
+- For parallel SQL reads, use one `ReaderSession` per concurrent reader. Each session sees a snapshot taken when it is created and does not block the writer.
+- A single `ReaderSession` supports only one active query at a time. Dispose the previous `QueryResult` before issuing the next query on that same session.
+- The `Collection<T>` API does not currently expose a separate snapshot-reader abstraction. If you need repeatable snapshot reads while writes are happening, use the SQL `ReaderSession` path today.
 
 ## Admin UI Preview
 
@@ -416,16 +426,16 @@ dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --
 
 ## Performance Highlights
 
-Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. The published snapshot below combines the latest March 12, 2026 macro reruns with focused micro validation from the current branch. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
+Benchmarks run on Intel i9-11900K, .NET 10, Windows 11. The validated snapshot below uses the tracked March 25-26, 2026 reproducible macro baselines plus the latest checked-in micro spot checks. Rows are shown as `Durable / Buffered` when both modes were measured. Full results in [tests/CSharpDB.Benchmarks/README.md](tests/CSharpDB.Benchmarks/README.md).
 
 | Metric | Result |
 |--------|--------|
-| Single INSERT (auto-commit, durable) | 24,429 ops/sec |
-| Batched INSERT (100 rows/tx) | ~684K rows/sec |
-| Point lookup by PK (1K rows, hot) | ~1.60M ops/sec |
-| Collection `GetAsync` (10K docs) | 1,458,108 ops/sec |
-| Concurrent readers (8 readers, reused snapshots x32) | 4,753 COUNT(*) ops/sec |
-| ADO.NET `ExecuteScalar` (`:memory:`) | 138 ns |
+| Single INSERT (auto-commit SQL) | 287.5 / 21.21K ops/sec |
+| Batched INSERT (100 rows/tx) | ~27.24K / ~587.69K rows/sec |
+| Point lookup by PK (10K rows) | 1.46M / 1.28M ops/sec |
+| Collection `GetAsync` (10K docs) | 1.99M / 1.87M ops/sec |
+| Concurrent readers (8 readers, reused snapshots x32) | 9.47M / 8.17M COUNT(*) ops/sec |
+| ADO.NET `ExecuteScalar` (`:memory:`) | 238.7 ns |
 
 ## Samples
 
@@ -462,10 +472,10 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - `SELECT DISTINCT`, composite indexes, prepared statement caching
 - `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
 - `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
+- Phase-1 cost-based planner work: stats-driven non-unique lookup choice, join method selection, hash build-side choice, and limited greedy inner-join reordering for selective filters
 
 **In progress**
-- Broader index range-scan planning (`<`, `>`, `<=`, `>=`, `BETWEEN`)
-- Broader statistics-driven planning for ranges, joins, and richer cost-based access-path choices
+- Advanced statistics-driven planning beyond phase 1: histograms, skew/correlation-aware estimates, and broader cost-based access-path choices
 - Service daemon expansion for persistent background hosting and same-machine local transport support
 - Named Pipes transport work for `CSharpDB.Client`
 

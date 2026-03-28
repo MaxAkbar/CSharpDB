@@ -315,7 +315,7 @@ public static class DirectFileCacheTransportBenchmark
     {
         string filePath = Path.Combine(Path.GetTempPath(), $"csharpdb_direct_hybrid_{Guid.NewGuid():N}.db");
 
-        await using var db = await Database.OpenAsync(filePath);
+        await using var db = await Database.OpenAsync(filePath, BenchmarkDurability.Apply());
         await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, category TEXT);");
         var collection = await db.GetCollectionAsync<JsonElement>("bench_docs");
         var batch = db.PrepareInsertBatch("bench", initialCapacity: 512);
@@ -351,12 +351,17 @@ public static class DirectFileCacheTransportBenchmark
         return filePath;
     }
 
-    private static DatabaseOptions CreateDirectLookupOptimizedOptions()
+    private static DatabaseOptions CreateDirectDatabaseOptions(bool tunedFileCache)
     {
-        return new DatabaseOptions
+        if (!tunedFileCache)
+        {
+            return BenchmarkDurability.Apply();
+        }
+
+        return BenchmarkDurability.Apply(new DatabaseOptions
         {
             StorageEngineOptions = new StorageEngineOptions().Configure(static builder => builder.UseDirectLookupOptimizedPreset()),
-        };
+        });
     }
 
     private static void AssertBatchCount(int expected, int actual)
@@ -402,7 +407,7 @@ public static class DirectFileCacheTransportBenchmark
             {
                 Transport = CSharpDbTransport.Direct,
                 DataSource = _dbPath,
-                DirectDatabaseOptions = tunedFileCache ? CreateDirectLookupOptimizedOptions() : null,
+                DirectDatabaseOptions = CreateDirectDatabaseOptions(tunedFileCache),
             });
         }
 

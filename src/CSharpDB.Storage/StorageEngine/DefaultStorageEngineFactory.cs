@@ -13,7 +13,13 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
         bool isNew = !File.Exists(filePath);
         var device = new FileStorageDevice(filePath);
         var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(filePath, walIndex, options.ChecksumProvider, options.DurabilityMode);
+        var wal = new WriteAheadLog(
+            filePath,
+            walIndex,
+            options.ChecksumProvider,
+            options.DurabilityMode,
+            options.DurableCommitBatchWindow,
+            options.WalPreallocationChunkBytes);
         var pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
 
         if (isNew)
@@ -32,6 +38,7 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
             schemaSerializer,
             options.IndexProvider,
             options.CatalogStore,
+            options.AdvisoryStatisticsPersistenceMode,
             ct);
 
         return new StorageEngineContext
@@ -42,6 +49,7 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
             SchemaSerializer = schemaSerializer,
             IndexProvider = options.IndexProvider,
             ChecksumProvider = options.ChecksumProvider,
+            AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
         };
     }
 }

@@ -76,6 +76,18 @@ public class WalCoreBenchmarks
         await (await _wal.AppendFramesAndCommitAsync(_batchFrameWrites, BatchPageRange + 1)).WaitAsync();
     }
 
+    [Benchmark(Description = "WAL core: 100-frame staged commit")]
+    public async Task CommitBatch_100Frames_AppendFrameLoop()
+    {
+        _wal.BeginTransaction();
+        for (int i = 0; i < 100; i++)
+        {
+            await _wal.AppendFrameAsync(NextBatchPageId(), _pageBuffer);
+        }
+
+        await (await _wal.CommitAsync(BatchPageRange + 1)).WaitAsync();
+    }
+
     [Benchmark(Description = "WAL core: manual checkpoint after N frames")]
     public async Task ManualCheckpoint()
     {

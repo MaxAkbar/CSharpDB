@@ -50,6 +50,31 @@ internal interface IFilterProjectionBatchPlan
     int Execute(RowBatch sourceBatch, RowSelection selection, RowBatch destination);
 }
 
+internal interface IScalarAggregateBatchPlan
+{
+    BatchPushdownFilter[] PushdownFilters { get; }
+
+    void Reset();
+
+    void Accumulate(RowBatch sourceBatch);
+
+    DbValue GetResult();
+}
+
+internal readonly struct BatchPushdownFilter
+{
+    public BatchPushdownFilter(int columnIndex, BinaryOp op, DbValue literal)
+    {
+        ColumnIndex = columnIndex;
+        Op = op;
+        Literal = literal;
+    }
+
+    public int ColumnIndex { get; }
+    public BinaryOp Op { get; }
+    public DbValue Literal { get; }
+}
+
 internal sealed class DelegateFilterProjectionBatchPlan : IFilterProjectionBatchPlan
 {
     private readonly Func<DbValue[], DbValue>? _predicateEvaluator;
@@ -156,6 +181,58 @@ internal static class BatchPlanCompiler
         return new SpecializedFilterProjectionBatchPlan(boundPredicate, projections);
     }
 
+    public static IScalarAggregateBatchPlan? TryCreateScalarAggregate(
+        Expression? predicate,
+        string functionName,
+        int columnIndex,
+        bool isCountStar,
+        bool isDistinct,
+        TableSchema schema)
+    {
+        ArgumentNullException.ThrowIfNull(functionName);
+        ArgumentNullException.ThrowIfNull(schema);
+
+        if (predicate == null)
+            return null;
+
+        var boundPredicate = TryBindPredicate(predicate, schema);
+        if (boundPredicate == null)
+            return null;
+
+        var kind = functionName switch
+        {
+            "COUNT" => BatchScalarAggregateKind.Count,
+            "SUM" => BatchScalarAggregateKind.Sum,
+            "AVG" => BatchScalarAggregateKind.Avg,
+            "MIN" => BatchScalarAggregateKind.Min,
+            "MAX" => BatchScalarAggregateKind.Max,
+            _ => BatchScalarAggregateKind.None,
+        };
+
+        if (kind == BatchScalarAggregateKind.None)
+            return null;
+
+        if (!isCountStar)
+        {
+            if ((uint)columnIndex >= (uint)schema.Columns.Count)
+                return null;
+
+            if (kind is BatchScalarAggregateKind.Sum or BatchScalarAggregateKind.Avg &&
+                !IsNumericType(schema.Columns[columnIndex].Type))
+            {
+                return null;
+            }
+        }
+
+        return new SpecializedScalarAggregateBatchPlan(
+            boundPredicate,
+            CreatePushdownFilters(boundPredicate),
+            kind,
+            columnIndex,
+            isCountStar,
+            isDistinct);
+    }
+
     private static BatchPredicateTerm[]? TryBindPredicate(Expression? predicate, TableSchema schema)
     {
         if (predicate == null)
@@ -170,6 +247,15 @@ internal static class BatchPlanCompiler
         if (predicate is BinaryExpression { Op: BinaryOp.And } andExpression)
             return TryCollectPredicateTerms(andExpression.Left, schema, terms) &&
                    TryCollectPredicateTerms(andExpression.Right, schema, terms);
+
+        if (predicate is InExpression inExpression)
+            return TryBindInPredicate(inExpression, schema, terms);
+
+        if (predicate is BetweenExpression betweenExpression)
+            return TryBindBetweenPredicate(betweenExpression, schema, terms);
+
+        if (predicate is LikeExpression likeExpression)
+            return TryBindLikePredicate(likeExpression, schema, terms);
 
         if (predicate is IsNullExpression isNull &&
             TryResolveColumnIndex(isNull.Operand, schema, out int isNullColumnIndex))
@@ -188,6 +274,172 @@ internal static class BatchPlanCompiler
             TryBindColumnLiteralPredicate(comparison.Right, comparison.Left, ReverseComparison(comparison.Op), schema, out predicateTerm))
         {
             terms.Add(predicateTerm);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryBindLikePredicate(LikeExpression likeExpression, TableSchema schema, List<BatchPredicateTerm> terms)
+    {
+        if (!TryResolveColumnIndex(likeExpression.Operand, schema, out int columnIndex) ||
+            schema.Columns[columnIndex].Type != DbType.Text ||
+            likeExpression.Pattern is not LiteralExpression patternLiteral ||
+            !TryCreateLiteral(patternLiteral, out DbValue patternValue) ||
+            patternValue.IsNull ||
+            patternValue.Type != DbType.Text ||
+            !TryCreateEscapeChar(likeExpression.EscapeChar, out char? escapeChar))
+        {
+            return false;
+        }
+
+        terms.Add(BatchPredicateTerm.CreateLike(columnIndex, patternValue.AsText, escapeChar, likeExpression.Negated));
+        return true;
+    }
+
+    private static bool TryBindInPredicate(InExpression inExpression, TableSchema schema, List<BatchPredicateTerm> terms)
+    {
+        if (!TryResolveColumnIndex(inExpression.Operand, schema, out int columnIndex) ||
+            inExpression.Values.Count == 0)
+        {
+            return false;
+        }
+
+        DbType columnType = schema.Columns[columnIndex].Type;
+        if (columnType == DbType.Integer)
+        {
+            var values = new List<long>(inExpression.Values.Count);
+            bool hasNull = false;
+            for (int i = 0; i < inExpression.Values.Count; i++)
+            {
+                if (inExpression.Values[i] is not LiteralExpression literal ||
+                    !TryCreateLiteral(literal, out DbValue value))
+                {
+                    return false;
+                }
+
+                if (value.IsNull)
+                {
+                    hasNull = true;
+                    continue;
+                }
+
+                if (value.Type != DbType.Integer)
+                    return false;
+
+                values.Add(value.AsInteger);
+            }
+
+            terms.Add(BatchPredicateTerm.CreateIntegerIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull));
+            return true;
+        }
+
+        if (IsNumericType(columnType))
+        {
+            var values = new List<double>(inExpression.Values.Count);
+            bool hasNull = false;
+            for (int i = 0; i < inExpression.Values.Count; i++)
+            {
+                if (inExpression.Values[i] is not LiteralExpression literal ||
+                    !TryCreateLiteral(literal, out DbValue value))
+                {
+                    return false;
+                }
+
+                if (value.IsNull)
+                {
+                    hasNull = true;
+                    continue;
+                }
+
+                if (!IsNumericType(value.Type))
+                    return false;
+
+                values.Add(value.AsReal);
+            }
+
+            terms.Add(BatchPredicateTerm.CreateNumericIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull));
+            return true;
+        }
+
+        if (columnType == DbType.Text)
+        {
+            var values = new List<string>(inExpression.Values.Count);
+            bool hasNull = false;
+            for (int i = 0; i < inExpression.Values.Count; i++)
+            {
+                if (inExpression.Values[i] is not LiteralExpression literal ||
+                    !TryCreateLiteral(literal, out DbValue value))
+                {
+                    return false;
+                }
+
+                if (value.IsNull)
+                {
+                    hasNull = true;
+                    continue;
+                }
+
+                if (value.Type != DbType.Text)
+                    return false;
+
+                values.Add(value.AsText);
+            }
+
+            terms.Add(BatchPredicateTerm.CreateTextIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull));
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryBindBetweenPredicate(BetweenExpression between, TableSchema schema, List<BatchPredicateTerm> terms)
+    {
+        if (!TryResolveColumnIndex(between.Operand, schema, out int columnIndex) ||
+            between.Low is not LiteralExpression lowLiteral ||
+            !TryCreateLiteral(lowLiteral, out DbValue lowValue) ||
+            between.High is not LiteralExpression highLiteral ||
+            !TryCreateLiteral(highLiteral, out DbValue highValue) ||
+            lowValue.IsNull ||
+            highValue.IsNull)
+        {
+            return false;
+        }
+
+        DbType columnType = schema.Columns[columnIndex].Type;
+        if (columnType == DbType.Integer &&
+            lowValue.Type == DbType.Integer &&
+            highValue.Type == DbType.Integer)
+        {
+            terms.Add(BatchPredicateTerm.CreateIntegerRange(
+                columnIndex,
+                lowValue.AsInteger,
+                highValue.AsInteger,
+                between.Negated));
+            return true;
+        }
+
+        if (IsNumericType(columnType) &&
+            IsNumericType(lowValue.Type) &&
+            IsNumericType(highValue.Type))
+        {
+            terms.Add(BatchPredicateTerm.CreateNumericRange(
+                columnIndex,
+                lowValue.AsReal,
+                highValue.AsReal,
+                between.Negated));
+            return true;
+        }
+
+        if (columnType == DbType.Text &&
+            lowValue.Type == DbType.Text &&
+            highValue.Type == DbType.Text)
+        {
+            terms.Add(BatchPredicateTerm.CreateTextRange(
+                columnIndex,
+                lowValue.AsText,
+                highValue.AsText,
+                between.Negated));
             return true;
         }
 
@@ -219,15 +471,46 @@ internal static class BatchPlanCompiler
             return true;
         }
 
+        if (IsNumericType(columnType) && IsNumericType(literalValue.Type))
+        {
+            predicate = BatchPredicateTerm.CreateNumericCompare(columnIndex, op, literalValue.AsReal);
+            return true;
+        }
+
         if (columnType == DbType.Text &&
-            literalValue.Type == DbType.Text &&
-            (op == BinaryOp.Equals || op == BinaryOp.NotEquals))
+            literalValue.Type == DbType.Text)
         {
             predicate = BatchPredicateTerm.CreateTextCompare(columnIndex, op, literalValue.AsText);
             return true;
         }
 
         return false;
+    }
+
+    private static bool TryCreateEscapeChar(Expression? escapeExpression, out char? escapeChar)
+    {
+        escapeChar = null;
+        if (escapeExpression == null)
+            return true;
+
+        if (escapeExpression is not LiteralExpression literal ||
+            !TryCreateLiteral(literal, out DbValue escapeValue))
+        {
+            return false;
+        }
+
+        if (escapeValue.IsNull)
+            return true;
+
+        if (escapeValue.Type != DbType.Text)
+            return false;
+
+        string escapeText = escapeValue.AsText;
+        if (escapeText.Length != 1)
+            return false;
+
+        escapeChar = escapeText[0];
+        return true;
     }
 
     private static BatchProjectionTerm[]? TryBindProjections(IReadOnlyList<Expression> projections, TableSchema schema)
@@ -260,47 +543,47 @@ internal static class BatchPlanCompiler
         }
 
         if (projection is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
-            TryBindIntegerOperand(unaryMinus.Operand, schema, out var unaryOperand))
+            TryBindNumericOperand(unaryMinus.Operand, schema, out var unaryOperand))
         {
-            term = BatchProjectionTerm.CreateNegatedInteger(unaryOperand);
+            term = BatchProjectionTerm.CreateNegatedNumeric(unaryOperand);
             return true;
         }
 
         if (projection is BinaryExpression arithmetic &&
             IsArithmeticOp(arithmetic.Op) &&
-            TryBindIntegerOperand(arithmetic.Left, schema, out var leftOperand) &&
-            TryBindIntegerOperand(arithmetic.Right, schema, out var rightOperand))
+            TryBindNumericOperand(arithmetic.Left, schema, out var leftOperand) &&
+            TryBindNumericOperand(arithmetic.Right, schema, out var rightOperand))
         {
-            term = BatchProjectionTerm.CreateIntegerArithmetic(arithmetic.Op, leftOperand, rightOperand);
+            term = BatchProjectionTerm.CreateNumericArithmetic(arithmetic.Op, leftOperand, rightOperand);
             return true;
         }
 
         return false;
     }
 
-    private static bool TryBindIntegerOperand(Expression expression, TableSchema schema, out BatchIntegerOperand operand)
+    private static bool TryBindNumericOperand(Expression expression, TableSchema schema, out BatchNumericOperand operand)
     {
         operand = default;
 
         if (TryResolveColumnIndex(expression, schema, out int columnIndex))
         {
-            if (schema.Columns[columnIndex].Type != DbType.Integer)
+            if (!IsNumericType(schema.Columns[columnIndex].Type))
                 return false;
 
-            operand = BatchIntegerOperand.CreateColumn(columnIndex);
+            operand = BatchNumericOperand.CreateColumn(columnIndex);
             return true;
         }
 
         if (expression is LiteralExpression literal &&
             TryCreateLiteral(literal, out DbValue literalValue) &&
-            literalValue.Type == DbType.Integer)
+            IsNumericType(literalValue.Type))
         {
-            operand = BatchIntegerOperand.CreateConstant(literalValue.AsInteger);
+            operand = BatchNumericOperand.CreateConstant(literalValue);
             return true;
         }
 
         if (expression is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
-            TryBindIntegerOperand(unaryMinus.Operand, schema, out var innerOperand))
+            TryBindNumericOperand(unaryMinus.Operand, schema, out var innerOperand))
         {
             operand = innerOperand.Negated();
             return true;
@@ -332,6 +615,9 @@ internal static class BatchPlanCompiler
             case TokenType.IntegerLiteral:
                 value = DbValue.FromInteger((long)literal.Value);
                 return true;
+            case TokenType.RealLiteral:
+                value = DbValue.FromReal((double)literal.Value);
+                return true;
             case TokenType.StringLiteral:
                 value = DbValue.FromText((string)literal.Value);
                 return true;
@@ -346,6 +632,9 @@ internal static class BatchPlanCompiler
     private static bool IsArithmeticOp(BinaryOp op)
         => op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide;
 
+    private static bool IsNumericType(DbType type)
+        => type is DbType.Integer or DbType.Real;
+
     private static BinaryOp ReverseComparison(BinaryOp op)
         => op switch
         {
@@ -355,6 +644,18 @@ internal static class BatchPlanCompiler
             BinaryOp.GreaterOrEqual => BinaryOp.LessOrEqual,
             _ => op,
         };
+
+    private static BatchPushdownFilter[] CreatePushdownFilters(BatchPredicateTerm[] predicateTerms)
+    {
+        if (predicateTerms.Length == 0)
+            return Array.Empty<BatchPushdownFilter>();
+
+        var filters = new List<BatchPushdownFilter>(predicateTerms.Length * 2);
+        for (int i = 0; i < predicateTerms.Length; i++)
+            predicateTerms[i].AppendPushdownFilters(filters);
+
+        return filters.Count == 0 ? Array.Empty<BatchPushdownFilter>() : filters.ToArray();
+    }
 }
 
 internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBatchPlan
@@ -427,7 +728,17 @@ internal readonly struct BatchPredicateTerm
     private readonly int _columnIndex;
     private readonly BinaryOp _op;
     private readonly long _integerLiteral;
+    private readonly long _integerUpperLiteral;
+    private readonly double _numericLiteral;
+    private readonly double _numericUpperLiteral;
     private readonly string? _textLiteral;
+    private readonly string? _textUpperLiteral;
+    private readonly long[]? _integerSet;
+    private readonly double[]? _numericSet;
+    private readonly string[]? _textSet;
+    private readonly char _escapeChar;
+    private readonly bool _hasEscapeChar;
+    private readonly bool _hasNullSetValue;
     private readonly BatchPredicateKind _kind;
     private readonly bool _negated;
 
@@ -435,26 +746,105 @@ internal readonly struct BatchPredicateTerm
         int columnIndex,
         BinaryOp op,
         long integerLiteral,
+        long integerUpperLiteral,
+        double numericLiteral,
+        double numericUpperLiteral,
         string? textLiteral,
+        string? textUpperLiteral,
+        long[]? integerSet,
+        double[]? numericSet,
+        string[]? textSet,
+        char escapeChar,
+        bool hasEscapeChar,
+        bool hasNullSetValue,
         BatchPredicateKind kind,
         bool negated)
     {
         _columnIndex = columnIndex;
         _op = op;
         _integerLiteral = integerLiteral;
+        _integerUpperLiteral = integerUpperLiteral;
+        _numericLiteral = numericLiteral;
+        _numericUpperLiteral = numericUpperLiteral;
         _textLiteral = textLiteral;
+        _textUpperLiteral = textUpperLiteral;
+        _integerSet = integerSet;
+        _numericSet = numericSet;
+        _textSet = textSet;
+        _escapeChar = escapeChar;
+        _hasEscapeChar = hasEscapeChar;
+        _hasNullSetValue = hasNullSetValue;
         _kind = kind;
         _negated = negated;
     }
 
     public static BatchPredicateTerm CreateIntegerCompare(int columnIndex, BinaryOp op, long integerLiteral)
-        => new(columnIndex, op, integerLiteral, null, BatchPredicateKind.IntegerCompare, negated: false);
+        => new(columnIndex, op, integerLiteral, 0, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.IntegerCompare, negated: false);
+
+    public static BatchPredicateTerm CreateNumericCompare(int columnIndex, BinaryOp op, double numericLiteral)
+        => new(columnIndex, op, 0, 0, numericLiteral, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NumericCompare, negated: false);
 
     public static BatchPredicateTerm CreateTextCompare(int columnIndex, BinaryOp op, string textLiteral)
-        => new(columnIndex, op, 0, textLiteral, BatchPredicateKind.TextCompare, negated: false);
+        => new(columnIndex, op, 0, 0, 0, 0, textLiteral, null, null, null, null, '\0', false, false, BatchPredicateKind.TextCompare, negated: false);
+
+    public static BatchPredicateTerm CreateIntegerIn(int columnIndex, long[] values, bool negated, bool hasNullSetValue)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, values, null, null, '\0', false, hasNullSetValue, BatchPredicateKind.IntegerIn, negated);
+
+    public static BatchPredicateTerm CreateNumericIn(int columnIndex, double[] values, bool negated, bool hasNullSetValue)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, values, null, '\0', false, hasNullSetValue, BatchPredicateKind.NumericIn, negated);
+
+    public static BatchPredicateTerm CreateTextIn(int columnIndex, string[] values, bool negated, bool hasNullSetValue)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, values, '\0', false, hasNullSetValue, BatchPredicateKind.TextIn, negated);
+
+    public static BatchPredicateTerm CreateIntegerRange(int columnIndex, long lowerInclusive, long upperInclusive, bool negated)
+        => new(columnIndex, BinaryOp.Equals, lowerInclusive, upperInclusive, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.IntegerRange, negated);
+
+    public static BatchPredicateTerm CreateNumericRange(int columnIndex, double lowerInclusive, double upperInclusive, bool negated)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, lowerInclusive, upperInclusive, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NumericRange, negated);
+
+    public static BatchPredicateTerm CreateTextRange(int columnIndex, string lowerInclusive, string upperInclusive, bool negated)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, lowerInclusive, upperInclusive, null, null, null, '\0', false, false, BatchPredicateKind.TextRange, negated);
+
+    public static BatchPredicateTerm CreateLike(int columnIndex, string pattern, char? escapeChar, bool negated)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, pattern, null, null, null, null, escapeChar.GetValueOrDefault(), escapeChar.HasValue, false, BatchPredicateKind.LikeMatch, negated);
 
     public static BatchPredicateTerm CreateNullCheck(int columnIndex, bool negated)
-        => new(columnIndex, BinaryOp.Equals, 0, null, BatchPredicateKind.NullCheck, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NullCheck, negated);
+
+    public void AppendPushdownFilters(List<BatchPushdownFilter> filters)
+    {
+        ArgumentNullException.ThrowIfNull(filters);
+
+        switch (_kind)
+        {
+            case BatchPredicateKind.IntegerCompare:
+                filters.Add(new BatchPushdownFilter(_columnIndex, _op, DbValue.FromInteger(_integerLiteral)));
+                break;
+
+            case BatchPredicateKind.NumericCompare:
+                filters.Add(new BatchPushdownFilter(_columnIndex, _op, DbValue.FromReal(_numericLiteral)));
+                break;
+
+            case BatchPredicateKind.TextCompare when _textLiteral != null:
+                filters.Add(new BatchPushdownFilter(_columnIndex, _op, DbValue.FromText(_textLiteral)));
+                break;
+
+            case BatchPredicateKind.IntegerRange when !_negated:
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.GreaterOrEqual, DbValue.FromInteger(_integerLiteral)));
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.LessOrEqual, DbValue.FromInteger(_integerUpperLiteral)));
+                break;
+
+            case BatchPredicateKind.NumericRange when !_negated:
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.GreaterOrEqual, DbValue.FromReal(_numericLiteral)));
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.LessOrEqual, DbValue.FromReal(_numericUpperLiteral)));
+                break;
+
+            case BatchPredicateKind.TextRange when !_negated && _textLiteral != null && _textUpperLiteral != null:
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.GreaterOrEqual, DbValue.FromText(_textLiteral)));
+                filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.LessOrEqual, DbValue.FromText(_textUpperLiteral)));
+                break;
+        }
+    }
 
     public bool Evaluate(ReadOnlySpan<DbValue> row)
     {
@@ -463,7 +853,15 @@ internal readonly struct BatchPredicateTerm
         {
             BatchPredicateKind.NullCheck => _negated ? !value.IsNull : value.IsNull,
             BatchPredicateKind.IntegerCompare => EvaluateIntegerCompare(value),
+            BatchPredicateKind.NumericCompare => EvaluateNumericCompare(value),
             BatchPredicateKind.TextCompare => EvaluateTextCompare(value),
+            BatchPredicateKind.IntegerIn => EvaluateIntegerIn(value),
+            BatchPredicateKind.NumericIn => EvaluateNumericIn(value),
+            BatchPredicateKind.TextIn => EvaluateTextIn(value),
+            BatchPredicateKind.IntegerRange => EvaluateIntegerRange(value),
+            BatchPredicateKind.NumericRange => EvaluateNumericRange(value),
+            BatchPredicateKind.TextRange => EvaluateTextRange(value),
+            BatchPredicateKind.LikeMatch => EvaluateLike(value),
             _ => false,
         };
     }
@@ -486,18 +884,312 @@ internal readonly struct BatchPredicateTerm
         };
     }
 
+    private bool EvaluateNumericCompare(DbValue value)
+    {
+        if (value.IsNull || (value.Type is not DbType.Integer and not DbType.Real))
+            return false;
+
+        double actual = value.AsReal;
+        return _op switch
+        {
+            BinaryOp.Equals => actual == _numericLiteral,
+            BinaryOp.NotEquals => actual != _numericLiteral,
+            BinaryOp.LessThan => actual < _numericLiteral,
+            BinaryOp.GreaterThan => actual > _numericLiteral,
+            BinaryOp.LessOrEqual => actual <= _numericLiteral,
+            BinaryOp.GreaterOrEqual => actual >= _numericLiteral,
+            _ => false,
+        };
+    }
+
     private bool EvaluateTextCompare(DbValue value)
     {
         if (value.IsNull || value.Type != DbType.Text || _textLiteral == null)
             return false;
 
-        bool equal = string.Equals(value.AsText, _textLiteral, StringComparison.Ordinal);
+        int compare = string.Compare(value.AsText, _textLiteral, StringComparison.Ordinal);
         return _op switch
         {
-            BinaryOp.Equals => equal,
-            BinaryOp.NotEquals => !equal,
+            BinaryOp.Equals => compare == 0,
+            BinaryOp.NotEquals => compare != 0,
+            BinaryOp.LessThan => compare < 0,
+            BinaryOp.GreaterThan => compare > 0,
+            BinaryOp.LessOrEqual => compare <= 0,
+            BinaryOp.GreaterOrEqual => compare >= 0,
             _ => false,
         };
+    }
+
+    private bool EvaluateIntegerIn(DbValue value)
+    {
+        if (value.IsNull || value.Type != DbType.Integer || _integerSet == null)
+            return false;
+
+        long actual = value.AsInteger;
+        for (int i = 0; i < _integerSet.Length; i++)
+        {
+            if (actual == _integerSet[i])
+                return !_negated;
+        }
+
+        return _negated && !_hasNullSetValue;
+    }
+
+    private bool EvaluateNumericIn(DbValue value)
+    {
+        if (value.IsNull || (value.Type is not DbType.Integer and not DbType.Real) || _numericSet == null)
+            return false;
+
+        double actual = value.AsReal;
+        for (int i = 0; i < _numericSet.Length; i++)
+        {
+            if (actual == _numericSet[i])
+                return !_negated;
+        }
+
+        return _negated && !_hasNullSetValue;
+    }
+
+    private bool EvaluateTextIn(DbValue value)
+    {
+        if (value.IsNull || value.Type != DbType.Text || _textSet == null)
+            return false;
+
+        string actual = value.AsText;
+        for (int i = 0; i < _textSet.Length; i++)
+        {
+            if (string.Equals(actual, _textSet[i], StringComparison.Ordinal))
+                return !_negated;
+        }
+
+        return _negated && !_hasNullSetValue;
+    }
+
+    private bool EvaluateIntegerRange(DbValue value)
+    {
+        if (value.IsNull || value.Type != DbType.Integer)
+            return false;
+
+        bool inRange = value.AsInteger >= _integerLiteral && value.AsInteger <= _integerUpperLiteral;
+        return _negated ? !inRange : inRange;
+    }
+
+    private bool EvaluateNumericRange(DbValue value)
+    {
+        if (value.IsNull || (value.Type is not DbType.Integer and not DbType.Real))
+            return false;
+
+        double actual = value.AsReal;
+        bool inRange = actual >= _numericLiteral && actual <= _numericUpperLiteral;
+        return _negated ? !inRange : inRange;
+    }
+
+    private bool EvaluateTextRange(DbValue value)
+    {
+        if (value.IsNull || value.Type != DbType.Text || _textLiteral == null || _textUpperLiteral == null)
+            return false;
+
+        int compareLow = string.Compare(value.AsText, _textLiteral, StringComparison.Ordinal);
+        int compareHigh = string.Compare(value.AsText, _textUpperLiteral, StringComparison.Ordinal);
+        bool inRange = compareLow >= 0 && compareHigh <= 0;
+        return _negated ? !inRange : inRange;
+    }
+
+    private bool EvaluateLike(DbValue value)
+    {
+        if (value.IsNull || value.Type != DbType.Text || _textLiteral == null)
+            return false;
+
+        char? escape = _hasEscapeChar ? _escapeChar : null;
+        bool match = ExpressionEvaluator.SqlLikeMatch(value.AsText, _textLiteral, escape);
+        return _negated ? !match : match;
+    }
+}
+
+internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatchPlan
+{
+    private readonly BatchPredicateTerm[] _predicateTerms;
+    private readonly BatchPushdownFilter[] _pushdownFilters;
+    private readonly BatchScalarAggregateKind _kind;
+    private readonly int _columnIndex;
+    private readonly bool _isCountStar;
+    private readonly bool _isDistinct;
+
+    private long _count;
+    private double _sum;
+    private bool _hasReal;
+    private bool _hasAny;
+    private DbValue? _best;
+    private AggregateDistinctValueSet? _distinctValues;
+
+    public SpecializedScalarAggregateBatchPlan(
+        BatchPredicateTerm[] predicateTerms,
+        BatchPushdownFilter[] pushdownFilters,
+        BatchScalarAggregateKind kind,
+        int columnIndex,
+        bool isCountStar,
+        bool isDistinct)
+    {
+        _predicateTerms = predicateTerms ?? Array.Empty<BatchPredicateTerm>();
+        _pushdownFilters = pushdownFilters ?? Array.Empty<BatchPushdownFilter>();
+        _kind = kind;
+        _columnIndex = columnIndex;
+        _isCountStar = isCountStar;
+        _isDistinct = isDistinct;
+    }
+
+    public BatchPushdownFilter[] PushdownFilters => _pushdownFilters;
+
+    public void Reset()
+    {
+        _count = 0;
+        _sum = 0;
+        _hasReal = false;
+        _hasAny = false;
+        _best = null;
+        _distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+    }
+
+    public void Accumulate(RowBatch sourceBatch)
+    {
+        if (_isCountStar)
+        {
+            AccumulateCountStar(sourceBatch);
+            return;
+        }
+
+        switch (_kind)
+        {
+            case BatchScalarAggregateKind.Count:
+                AccumulateCount(sourceBatch);
+                break;
+            case BatchScalarAggregateKind.Sum:
+            case BatchScalarAggregateKind.Avg:
+                AccumulateNumeric(sourceBatch);
+                break;
+            case BatchScalarAggregateKind.Min:
+                AccumulateMin(sourceBatch);
+                break;
+            case BatchScalarAggregateKind.Max:
+                AccumulateMax(sourceBatch);
+                break;
+        }
+    }
+
+    public DbValue GetResult()
+        => _kind switch
+        {
+            BatchScalarAggregateKind.Count => DbValue.FromInteger(_count),
+            BatchScalarAggregateKind.Sum => !_hasAny ? DbValue.FromInteger(0)
+                : _hasReal ? DbValue.FromReal(_sum) : DbValue.FromInteger((long)_sum),
+            BatchScalarAggregateKind.Avg => !_hasAny ? DbValue.Null : DbValue.FromReal(_sum / _count),
+            BatchScalarAggregateKind.Min => _best ?? DbValue.Null,
+            BatchScalarAggregateKind.Max => _best ?? DbValue.Null,
+            _ => DbValue.Null,
+        };
+
+    private void AccumulateCountStar(RowBatch sourceBatch)
+    {
+        for (int rowIndex = 0; rowIndex < sourceBatch.Count; rowIndex++)
+        {
+            if (MatchesPredicates(sourceBatch.GetRowSpan(rowIndex)))
+                _count++;
+        }
+    }
+
+    private void AccumulateCount(RowBatch sourceBatch)
+    {
+        for (int rowIndex = 0; rowIndex < sourceBatch.Count; rowIndex++)
+        {
+            var row = sourceBatch.GetRowSpan(rowIndex);
+            if (!MatchesPredicates(row))
+                continue;
+
+            DbValue value = row[_columnIndex];
+            if (!value.IsNull && IsDistinctValue(value))
+                _count++;
+        }
+    }
+
+    private void AccumulateNumeric(RowBatch sourceBatch)
+    {
+        for (int rowIndex = 0; rowIndex < sourceBatch.Count; rowIndex++)
+        {
+            var row = sourceBatch.GetRowSpan(rowIndex);
+            if (!MatchesPredicates(row))
+                continue;
+
+            DbValue value = row[_columnIndex];
+            if (value.IsNull)
+                continue;
+            if (!IsDistinctValue(value))
+                continue;
+
+            _hasAny = true;
+            if (value.Type == DbType.Real)
+            {
+                _hasReal = true;
+                _sum += value.AsReal;
+            }
+            else
+            {
+                _sum += value.AsInteger;
+            }
+
+            _count++;
+        }
+    }
+
+    private void AccumulateMin(RowBatch sourceBatch)
+    {
+        for (int rowIndex = 0; rowIndex < sourceBatch.Count; rowIndex++)
+        {
+            var row = sourceBatch.GetRowSpan(rowIndex);
+            if (!MatchesPredicates(row))
+                continue;
+
+            DbValue value = row[_columnIndex];
+            if (value.IsNull)
+                continue;
+            if (!IsDistinctValue(value))
+                continue;
+
+            if (_best == null || DbValue.Compare(value, _best.Value) < 0)
+                _best = value;
+        }
+    }
+
+    private void AccumulateMax(RowBatch sourceBatch)
+    {
+        for (int rowIndex = 0; rowIndex < sourceBatch.Count; rowIndex++)
+        {
+            var row = sourceBatch.GetRowSpan(rowIndex);
+            if (!MatchesPredicates(row))
+                continue;
+
+            DbValue value = row[_columnIndex];
+            if (value.IsNull)
+                continue;
+            if (!IsDistinctValue(value))
+                continue;
+
+            if (_best == null || DbValue.Compare(value, _best.Value) > 0)
+                _best = value;
+        }
+    }
+
+    private bool IsDistinctValue(DbValue value)
+        => _distinctValues == null || _distinctValues.Add(value);
+
+    private bool MatchesPredicates(ReadOnlySpan<DbValue> row)
+    {
+        for (int i = 0; i < _predicateTerms.Length; i++)
+        {
+            if (!_predicateTerms[i].Evaluate(row))
+                return false;
+        }
+
+        return true;
     }
 }
 
@@ -506,16 +1198,16 @@ internal readonly struct BatchProjectionTerm
     private readonly int _columnIndex;
     private readonly DbValue _constant;
     private readonly BinaryOp _arithmeticOp;
-    private readonly BatchIntegerOperand _leftOperand;
-    private readonly BatchIntegerOperand _rightOperand;
+    private readonly BatchNumericOperand _leftOperand;
+    private readonly BatchNumericOperand _rightOperand;
     private readonly BatchProjectionKind _kind;
 
     private BatchProjectionTerm(
         int columnIndex,
         DbValue constant,
         BinaryOp arithmeticOp,
-        BatchIntegerOperand leftOperand,
-        BatchIntegerOperand rightOperand,
+        BatchNumericOperand leftOperand,
+        BatchNumericOperand rightOperand,
         BatchProjectionKind kind)
     {
         _columnIndex = columnIndex;
@@ -532,11 +1224,11 @@ internal readonly struct BatchProjectionTerm
     public static BatchProjectionTerm CreateConstant(DbValue constant)
         => new(0, constant, BinaryOp.Equals, default, default, BatchProjectionKind.Constant);
 
-    public static BatchProjectionTerm CreateIntegerArithmetic(BinaryOp op, BatchIntegerOperand left, BatchIntegerOperand right)
-        => new(0, DbValue.Null, op, left, right, BatchProjectionKind.IntegerArithmetic);
+    public static BatchProjectionTerm CreateNumericArithmetic(BinaryOp op, BatchNumericOperand left, BatchNumericOperand right)
+        => new(0, DbValue.Null, op, left, right, BatchProjectionKind.NumericArithmetic);
 
-    public static BatchProjectionTerm CreateNegatedInteger(BatchIntegerOperand operand)
-        => new(0, DbValue.Null, BinaryOp.Minus, BatchIntegerOperand.CreateConstant(0), operand, BatchProjectionKind.IntegerArithmetic);
+    public static BatchProjectionTerm CreateNegatedNumeric(BatchNumericOperand operand)
+        => new(0, DbValue.Null, BinaryOp.Minus, BatchNumericOperand.CreateConstant(DbValue.FromInteger(0)), operand, BatchProjectionKind.NumericArithmetic);
 
     public DbValue Evaluate(ReadOnlySpan<DbValue> row)
     {
@@ -544,99 +1236,144 @@ internal readonly struct BatchProjectionTerm
         {
             BatchProjectionKind.Column => row[_columnIndex],
             BatchProjectionKind.Constant => _constant,
-            BatchProjectionKind.IntegerArithmetic => EvaluateIntegerArithmetic(row),
+            BatchProjectionKind.NumericArithmetic => EvaluateNumericArithmetic(row),
             _ => DbValue.Null,
         };
     }
 
-    private DbValue EvaluateIntegerArithmetic(ReadOnlySpan<DbValue> row)
+    private DbValue EvaluateNumericArithmetic(ReadOnlySpan<DbValue> row)
     {
-        if (!_leftOperand.TryGetValue(row, out long left) ||
-            !_rightOperand.TryGetValue(row, out long right))
+        if (!_leftOperand.TryGetValue(row, out DbValue left) ||
+            !_rightOperand.TryGetValue(row, out DbValue right))
         {
             return DbValue.Null;
         }
 
+        if (left.Type == DbType.Real || right.Type == DbType.Real)
+        {
+            double leftReal = left.AsReal;
+            double rightReal = right.AsReal;
+            return _arithmeticOp switch
+            {
+                BinaryOp.Plus => DbValue.FromReal(leftReal + rightReal),
+                BinaryOp.Minus => DbValue.FromReal(leftReal - rightReal),
+                BinaryOp.Multiply => DbValue.FromReal(leftReal * rightReal),
+                BinaryOp.Divide => rightReal != 0
+                    ? DbValue.FromReal(leftReal / rightReal)
+                    : throw new CSharpDbException(ErrorCode.Unknown, "Division by zero."),
+                _ => DbValue.Null,
+            };
+        }
+
+        long leftInteger = left.AsInteger;
+        long rightInteger = right.AsInteger;
+
         return _arithmeticOp switch
         {
-            BinaryOp.Plus => DbValue.FromInteger(left + right),
-            BinaryOp.Minus => DbValue.FromInteger(left - right),
-            BinaryOp.Multiply => DbValue.FromInteger(left * right),
-            BinaryOp.Divide => right != 0
-                ? DbValue.FromInteger(left / right)
+            BinaryOp.Plus => DbValue.FromInteger(leftInteger + rightInteger),
+            BinaryOp.Minus => DbValue.FromInteger(leftInteger - rightInteger),
+            BinaryOp.Multiply => DbValue.FromInteger(leftInteger * rightInteger),
+            BinaryOp.Divide => rightInteger != 0
+                ? DbValue.FromInteger(leftInteger / rightInteger)
                 : throw new CSharpDbException(ErrorCode.Unknown, "Division by zero."),
             _ => DbValue.Null,
         };
     }
 }
 
-internal readonly struct BatchIntegerOperand
+internal readonly struct BatchNumericOperand
 {
     private readonly int _columnIndex;
-    private readonly long _constant;
-    private readonly BatchIntegerOperandKind _kind;
+    private readonly DbValue _constant;
+    private readonly BatchNumericOperandKind _kind;
 
-    private BatchIntegerOperand(int columnIndex, long constant, BatchIntegerOperandKind kind)
+    private BatchNumericOperand(int columnIndex, DbValue constant, BatchNumericOperandKind kind)
     {
         _columnIndex = columnIndex;
         _constant = constant;
         _kind = kind;
     }
 
-    public static BatchIntegerOperand CreateColumn(int columnIndex)
-        => new(columnIndex, 0, BatchIntegerOperandKind.Column);
+    public static BatchNumericOperand CreateColumn(int columnIndex)
+        => new(columnIndex, DbValue.Null, BatchNumericOperandKind.Column);
 
-    public static BatchIntegerOperand CreateConstant(long constant)
-        => new(0, constant, BatchIntegerOperandKind.Constant);
+    public static BatchNumericOperand CreateConstant(DbValue constant)
+        => new(0, constant, BatchNumericOperandKind.Constant);
 
-    public BatchIntegerOperand Negated()
+    public BatchNumericOperand Negated()
         => _kind switch
         {
-            BatchIntegerOperandKind.Constant => CreateConstant(-_constant),
-            BatchIntegerOperandKind.Column => new(_columnIndex, 0, BatchIntegerOperandKind.NegatedColumn),
-            BatchIntegerOperandKind.NegatedColumn => CreateColumn(_columnIndex),
+            BatchNumericOperandKind.Constant => CreateConstant(Negate(_constant)),
+            BatchNumericOperandKind.Column => new(_columnIndex, DbValue.Null, BatchNumericOperandKind.NegatedColumn),
+            BatchNumericOperandKind.NegatedColumn => CreateColumn(_columnIndex),
             _ => this,
         };
 
-    public bool TryGetValue(ReadOnlySpan<DbValue> row, out long value)
+    public bool TryGetValue(ReadOnlySpan<DbValue> row, out DbValue value)
     {
-        value = 0;
+        value = DbValue.Null;
         switch (_kind)
         {
-            case BatchIntegerOperandKind.Constant:
+            case BatchNumericOperandKind.Constant:
                 value = _constant;
                 return true;
-            case BatchIntegerOperandKind.Column:
-            case BatchIntegerOperandKind.NegatedColumn:
+            case BatchNumericOperandKind.Column:
+            case BatchNumericOperandKind.NegatedColumn:
                 DbValue cell = row[_columnIndex];
-                if (cell.IsNull || cell.Type != DbType.Integer)
+                if (cell.IsNull || (cell.Type is not DbType.Integer and not DbType.Real))
                     return false;
 
-                value = cell.AsInteger;
-                if (_kind == BatchIntegerOperandKind.NegatedColumn)
-                    value = -value;
+                value = _kind == BatchNumericOperandKind.NegatedColumn ? Negate(cell) : cell;
                 return true;
             default:
                 return false;
         }
+    }
+
+    private static DbValue Negate(DbValue value)
+    {
+        return value.Type switch
+        {
+            DbType.Integer => DbValue.FromInteger(-value.AsInteger),
+            DbType.Real => DbValue.FromReal(-value.AsReal),
+            _ => DbValue.Null,
+        };
     }
 }
 
 internal enum BatchPredicateKind
 {
     IntegerCompare,
+    NumericCompare,
     TextCompare,
+    IntegerIn,
+    NumericIn,
+    TextIn,
+    IntegerRange,
+    NumericRange,
+    TextRange,
+    LikeMatch,
     NullCheck,
+}
+
+internal enum BatchScalarAggregateKind
+{
+    None,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
 }
 
 internal enum BatchProjectionKind
 {
     Column,
     Constant,
-    IntegerArithmetic,
+    NumericArithmetic,
 }
 
-internal enum BatchIntegerOperandKind
+internal enum BatchNumericOperandKind
 {
     Constant,
     Column,

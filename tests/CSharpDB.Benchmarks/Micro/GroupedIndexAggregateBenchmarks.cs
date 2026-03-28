@@ -121,4 +121,24 @@ public class GroupedIndexAggregateBenchmarks
             $"SELECT group_id, COUNT(*) FROM bench WHERE group_id = 250 GROUP BY group_id HAVING COUNT(*) >= {expectedCount}");
         await result.ToListAsync();
     }
+
+    [Benchmark(Description = "GROUP BY group_id HAVING COUNT+SUM+AVG (no index)")]
+    public async Task GroupByCountSumAvg_Having_NoIndex()
+    {
+        int averageThreshold = RowCount / 2;
+        await using var result = await _noIndex.Db.ExecuteAsync(
+            $"SELECT group_id, COUNT(*), SUM(id), AVG(id) " +
+            $"FROM bench GROUP BY group_id HAVING AVG(id) >= {averageThreshold}");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "GROUP BY group_id HAVING COUNT+SUM+AVG (direct index aggregate)")]
+    public async Task GroupByCountSumAvg_Having_DirectIndexAggregate()
+    {
+        int averageThreshold = RowCount / 2;
+        await using var result = await _withIndex.Db.ExecuteAsync(
+            $"SELECT group_id, COUNT(*), SUM(id), AVG(id) " +
+            $"FROM bench GROUP BY group_id HAVING AVG(id) >= {averageThreshold}");
+        await result.ToListAsync();
+    }
 }

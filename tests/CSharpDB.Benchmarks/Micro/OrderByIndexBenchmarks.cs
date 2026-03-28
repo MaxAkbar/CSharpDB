@@ -4,8 +4,8 @@ using CSharpDB.Benchmarks.Infrastructure;
 namespace CSharpDB.Benchmarks.Micro;
 
 /// <summary>
-/// Compares ORDER BY on a non-indexed source vs an indexed source
-/// where planner can stream rows in index order.
+/// Compares ORDER BY on a non-indexed source vs an indexed source and captures
+/// range-scan projection shapes, including compact batch-plan variants.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(warmupCount: 2, iterationCount: 5)]
@@ -16,6 +16,7 @@ public class OrderByIndexBenchmarks
 
     private BenchmarkDatabase _benchNoIndex = null!;
     private BenchmarkDatabase _benchWithIndex = null!;
+    private BenchmarkDatabase _benchWithIndexNullableCategory = null!;
 
     [GlobalSetup]
     public void GlobalSetup()
@@ -28,6 +29,7 @@ public class OrderByIndexBenchmarks
     {
         _benchNoIndex.Dispose();
         _benchWithIndex.Dispose();
+        _benchWithIndexNullableCategory.Dispose();
     }
 
     [Benchmark(Baseline = true, Description = "ORDER BY value (no index)")]
@@ -102,7 +104,15 @@ public class OrderByIndexBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (compact expression projection)")]
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... AND category IS NOT NULL (compact residual batch plan)")]
+    public async Task RangeCompactResidualProjection_WithIndex()
+    {
+        await using var result = await _benchWithIndexNullableCategory.Db.ExecuteAsync(
+            "SELECT id, category FROM bench_idx WHERE value BETWEEN 250000 AND 750000 AND category IS NOT NULL");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "Range scan WHERE value BETWEEN ... (compact batch-plan expression projection)")]
     public async Task RangeCompactExpressionProjection_WithIndex()
     {
         await using var result = await _benchWithIndex.Db.ExecuteAsync(
@@ -117,10 +127,13 @@ public class OrderByIndexBenchmarks
 
         _benchNoIndex = await BenchmarkDatabase.CreateWithSchemaAsync(createSql);
         _benchWithIndex = await BenchmarkDatabase.CreateWithSchemaAsync(createSql);
+        _benchWithIndexNullableCategory = await BenchmarkDatabase.CreateWithSchemaAsync(createSql);
 
         await SeedBenchAsync(_benchNoIndex, RowCount);
         await SeedBenchAsync(_benchWithIndex, RowCount);
+        await SeedBenchWithNullableCategoriesAsync(_benchWithIndexNullableCategory, RowCount);
         await _benchWithIndex.Db.ExecuteAsync("CREATE INDEX idx_bench_idx_value ON bench_idx(value)");
+        await _benchWithIndexNullableCategory.Db.ExecuteAsync("CREATE INDEX idx_bench_idx_value ON bench_idx(value)");
     }
 
     private static async Task SeedBenchAsync(BenchmarkDatabase bench, int rowCount)
@@ -133,6 +146,21 @@ public class OrderByIndexBenchmarks
             var cat = categories[id % categories.Length];
             var text = DataGenerator.RandomString(rng, 50);
             return $"INSERT INTO bench_idx VALUES ({id}, {rng.Next(0, 1_000_000)}, '{text}', '{cat}')";
+        });
+    }
+
+    private static async Task SeedBenchWithNullableCategoriesAsync(BenchmarkDatabase bench, int rowCount)
+    {
+        var categories = new[] { "Alpha", "Beta", "Gamma", "Delta", "Epsilon" };
+        var rng = new Random(42);
+
+        await bench.SeedAsync("bench_idx", rowCount, id =>
+        {
+            string categoryLiteral = (id % 5) == 0
+                ? "NULL"
+                : $"'{categories[id % categories.Length]}'";
+            string text = DataGenerator.RandomString(rng, 50);
+            return $"INSERT INTO bench_idx VALUES ({id}, {rng.Next(0, 1_000_000)}, '{text}', {categoryLiteral})";
         });
     }
 }

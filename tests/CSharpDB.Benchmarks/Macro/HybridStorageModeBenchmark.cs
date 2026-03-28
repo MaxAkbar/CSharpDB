@@ -346,7 +346,7 @@ public static class HybridStorageModeBenchmark
             {
                 case StorageMode.FileBacked:
                     seededFilePath = await CreateSeededSqlDatabaseAsync();
-                    database = await Database.OpenAsync(seededFilePath);
+                    database = await Database.OpenAsync(seededFilePath, BenchmarkDurability.Apply());
                     break;
                 case StorageMode.InMemory:
                     seededFilePath = await CreateSeededSqlDatabaseAsync();
@@ -379,7 +379,7 @@ public static class HybridStorageModeBenchmark
             {
                 case StorageMode.FileBacked:
                     seededFilePath = await CreateSeededCollectionDatabaseAsync();
-                    database = await Database.OpenAsync(seededFilePath);
+                    database = await Database.OpenAsync(seededFilePath, BenchmarkDurability.Apply());
                     break;
                 case StorageMode.InMemory:
                     seededFilePath = await CreateSeededCollectionDatabaseAsync();
@@ -417,7 +417,7 @@ public static class HybridStorageModeBenchmark
         private static async Task<(Database Database, string FilePath)> OpenFileBackedAsync()
         {
             string filePath = NewTempDbPath("storage-file");
-            return (await Database.OpenAsync(filePath), filePath);
+            return (await Database.OpenAsync(filePath, BenchmarkDurability.Apply()), filePath);
         }
 
         private static async Task<(Database Database, string FilePath)> OpenHybridModeAsync()
@@ -430,7 +430,7 @@ public static class HybridStorageModeBenchmark
         {
             return await Database.OpenHybridAsync(
                 filePath,
-                new DatabaseOptions(),
+                BenchmarkDurability.Apply(),
                 new HybridDatabaseOptions
                 {
                     PersistenceMode = HybridPersistenceMode.IncrementalDurable,
@@ -440,7 +440,7 @@ public static class HybridStorageModeBenchmark
         private static async Task<string> CreateSeededSqlDatabaseAsync()
         {
             string filePath = Path.Combine(Path.GetTempPath(), $"storage-hybrid-sql_{Guid.NewGuid():N}.db");
-            await using var db = await Database.OpenAsync(filePath);
+            await using var db = await Database.OpenAsync(filePath, BenchmarkDurability.Apply());
             await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, category TEXT);");
 
             const int seedBatchSize = 500;
@@ -471,7 +471,7 @@ public static class HybridStorageModeBenchmark
         private static async Task<string> CreateSeededCollectionDatabaseAsync()
         {
             string filePath = Path.Combine(Path.GetTempPath(), $"storage-hybrid-col_{Guid.NewGuid():N}.db");
-            await using var db = await Database.OpenAsync(filePath);
+            await using var db = await Database.OpenAsync(filePath, BenchmarkDurability.Apply());
             var collection = await db.GetCollectionAsync<BenchDoc>("bench_docs");
 
             const int seedBatchSize = 500;

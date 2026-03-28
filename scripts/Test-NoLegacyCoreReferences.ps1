@@ -7,7 +7,9 @@ Set-Location $root
 $allowList = @(
     'docs/migrations/core-to-primitives.md',
     'RELEASE_NOTES.md',
-    'docs/releases/v2.0.0-pr-notes.md'
+    'docs/releases/v2.0.0-pr-notes.md',
+    'www/docs/migrations.html',
+    'www/docs/index.html'
 )
 
 $legacyPattern = 'CSharpDB' + '\.Core'
