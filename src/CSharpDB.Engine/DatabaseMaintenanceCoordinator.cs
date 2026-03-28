@@ -3,6 +3,7 @@ using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Storage.Diagnostics;
+using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
@@ -348,37 +349,75 @@ public static class DatabaseMaintenanceCoordinator
         CancellationToken ct)
     {
         string fieldPath = indexSchema.Columns[0];
+        string? textCollation = indexSchema.ColumnCollations.Count == 0
+            ? null
+            : CollationSupport.NormalizeMetadataName(indexSchema.ColumnCollations[0]);
         var payloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
         var tableTree = context.Catalog.GetTableTree(indexSchema.TableName);
         var indexStore = context.Catalog.GetIndexStore(indexSchema.IndexName);
         var cursor = tableTree.CreateCursor();
-        var indexKeys = new HashSet<long>();
+        var integerKeys = new HashSet<long>();
+        var textValues = new HashSet<string>(StringComparer.Ordinal);
+        var groupedRowIds = new SortedDictionary<long, List<long>>();
+        var groupedTextRowIds = new SortedDictionary<long, SortedDictionary<string, List<long>>>();
 
         while (await cursor.MoveNextAsync(ct))
         {
-            indexKeys.Clear();
-            if (!TryBuildCollectionIndexKeys(cursor.CurrentValue.Span, payloadAccessor, context.RecordSerializer, indexKeys))
+            integerKeys.Clear();
+            textValues.Clear();
+            if (!TryCollectCollectionIndexEntries(
+                    cursor.CurrentValue.Span,
+                    payloadAccessor,
+                    context.RecordSerializer,
+                    textCollation,
+                    integerKeys,
+                    textValues))
+            {
                 continue;
+            }
 
-            foreach (long indexKey in indexKeys)
-                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct: ct);
+            foreach (long indexKey in integerKeys)
+                AddGroupedRowId(groupedRowIds, indexKey, cursor.CurrentKey);
+
+            foreach (string textValue in textValues)
+                AddGroupedTextRowId(groupedTextRowIds, textValue, cursor.CurrentKey);
         }
+
+        foreach (var entry in groupedRowIds)
+            await indexStore.InsertAsync(entry.Key, RowIdPayloadCodec.CreateFromSorted(entry.Value), ct);
+
+        foreach (var entry in groupedTextRowIds)
+            await indexStore.InsertAsync(entry.Key, OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value), ct);
     }
 
-    private static bool TryBuildCollectionIndexKeys(
+    private static bool TryCollectCollectionIndexEntries(
         ReadOnlySpan<byte> payload,
         CollectionFieldAccessor payloadAccessor,
         IRecordSerializer recordSerializer,
-        HashSet<long> indexKeys)
+        string? textCollation,
+        HashSet<long> integerKeys,
+        HashSet<string> textValues)
     {
-        if (TryBuildCollectionIndexKeysFromDirectPayload(payload, payloadAccessor, indexKeys))
+        if (TryCollectCollectionIndexEntriesFromDirectPayload(
+                payload,
+                payloadAccessor,
+                textCollation,
+                integerKeys,
+                textValues))
+        {
             return true;
+        }
 
         try
         {
             string json = recordSerializer.DecodeColumn(payload, 1).AsText;
             using var document = JsonDocument.Parse(json);
-            return TryBuildCollectionIndexKeysFromJson(document.RootElement, payloadAccessor, indexKeys);
+            return TryCollectCollectionIndexEntriesFromJson(
+                document.RootElement,
+                payloadAccessor,
+                textCollation,
+                integerKeys,
+                textValues);
         }
         catch
         {
@@ -386,12 +425,14 @@ public static class DatabaseMaintenanceCoordinator
         }
     }
 
-    private static bool TryBuildCollectionIndexKeysFromDirectPayload(
+    private static bool TryCollectCollectionIndexEntriesFromDirectPayload(
         ReadOnlySpan<byte> payload,
         CollectionFieldAccessor payloadAccessor,
-        HashSet<long> indexKeys)
+        string? textCollation,
+        HashSet<long> integerKeys,
+        HashSet<string> textValues)
     {
-        int startCount = indexKeys.Count;
+        int startCount = integerKeys.Count + textValues.Count;
 
         if (payloadAccessor.TargetsArrayElements)
         {
@@ -401,28 +442,28 @@ public static class DatabaseMaintenanceCoordinator
 
             for (int i = 0; i < values.Count; i++)
             {
-                if (TryBuildCollectionIndexKeyFromValue(values[i], out long indexKey))
-                    indexKeys.Add(indexKey);
+                AddCollectionIndexEntry(values[i], textCollation, integerKeys, textValues);
             }
 
-            return indexKeys.Count != startCount;
+            return (integerKeys.Count + textValues.Count) != startCount;
         }
 
         if (!payloadAccessor.TryReadValue(payload, out var value))
             return false;
 
-        if (TryBuildCollectionIndexKeyFromValue(value, out long scalarIndexKey))
-            indexKeys.Add(scalarIndexKey);
+        AddCollectionIndexEntry(value, textCollation, integerKeys, textValues);
 
-        return indexKeys.Count != startCount;
+        return (integerKeys.Count + textValues.Count) != startCount;
     }
 
-    private static bool TryBuildCollectionIndexKeysFromJson(
+    private static bool TryCollectCollectionIndexEntriesFromJson(
         JsonElement document,
         CollectionFieldAccessor payloadAccessor,
-        HashSet<long> indexKeys)
+        string? textCollation,
+        HashSet<long> integerKeys,
+        HashSet<string> textValues)
     {
-        int startCount = indexKeys.Count;
+        int startCount = integerKeys.Count + textValues.Count;
         if (document.ValueKind != JsonValueKind.Object)
             return false;
 
@@ -437,41 +478,66 @@ public static class DatabaseMaintenanceCoordinator
             foreach (JsonElement element in property.EnumerateArray())
             {
                 if (element.ValueKind == JsonValueKind.String &&
-                    TryBuildCollectionIndexKeyFromValue(DbValue.FromText(element.GetString()!), out long textIndexKey))
+                    AddCollectionIndexEntry(
+                        DbValue.FromText(element.GetString()!),
+                        textCollation,
+                        integerKeys,
+                        textValues))
                 {
-                    indexKeys.Add(textIndexKey);
                     continue;
                 }
 
                 if (element.ValueKind == JsonValueKind.Number &&
                     element.TryGetInt64(out long integerValue) &&
-                    TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long integerIndexKey))
+                    AddCollectionIndexEntry(
+                        DbValue.FromInteger(integerValue),
+                        textCollation,
+                        integerKeys,
+                        textValues))
                 {
-                    indexKeys.Add(integerIndexKey);
+                    continue;
                 }
             }
 
-            return indexKeys.Count != startCount;
+            return (integerKeys.Count + textValues.Count) != startCount;
         }
 
         return property.ValueKind switch
         {
-            JsonValueKind.String when TryBuildCollectionIndexKeyFromValue(DbValue.FromText(property.GetString()!), out long textIndexKey) => indexKeys.Add(textIndexKey),
+            JsonValueKind.String => AddCollectionIndexEntry(
+                DbValue.FromText(property.GetString()!),
+                textCollation,
+                integerKeys,
+                textValues),
             JsonValueKind.Number when property.TryGetInt64(out long integerValue) &&
-                                      TryBuildCollectionIndexKeyFromValue(DbValue.FromInteger(integerValue), out long numericIndexKey) => indexKeys.Add(numericIndexKey),
+                                      AddCollectionIndexEntry(
+                                          DbValue.FromInteger(integerValue),
+                                          textCollation,
+                                          integerKeys,
+                                          textValues) => true,
             _ => false,
         };
     }
 
-    private static bool TryBuildCollectionIndexKeyFromValue(DbValue value, out long indexKey)
+    private static bool AddCollectionIndexEntry(
+        DbValue value,
+        string? textCollation,
+        HashSet<long> integerKeys,
+        HashSet<string> textValues)
     {
-        if (value.IsNull || value.Type is not (DbType.Integer or DbType.Text))
-        {
-            indexKey = 0;
+        if (value.IsNull)
             return false;
+
+        if (value.Type == DbType.Integer)
+        {
+            integerKeys.Add(value.AsInteger);
+            return true;
         }
 
-        indexKey = IndexMaintenanceHelper.ComputeIndexKey([value]);
+        if (value.Type != DbType.Text)
+            return false;
+
+        textValues.Add(CollationSupport.NormalizeText(value.AsText, textCollation));
         return true;
     }
 
@@ -513,6 +579,41 @@ public static class DatabaseMaintenanceCoordinator
 
         property = current;
         return true;
+    }
+
+    private static void AddGroupedRowId(
+        SortedDictionary<long, List<long>> groupedRowIds,
+        long indexKey,
+        long rowId)
+    {
+        if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
+        {
+            rowIds = new List<long>();
+            groupedRowIds[indexKey] = rowIds;
+        }
+
+        rowIds.Add(rowId);
+    }
+
+    private static void AddGroupedTextRowId(
+        SortedDictionary<long, SortedDictionary<string, List<long>>> groupedTextRowIds,
+        string text,
+        long rowId)
+    {
+        long indexKey = OrderedTextIndexKeyCodec.ComputeKey(text);
+        if (!groupedTextRowIds.TryGetValue(indexKey, out var textBuckets))
+        {
+            textBuckets = new SortedDictionary<string, List<long>>(StringComparer.Ordinal);
+            groupedTextRowIds[indexKey] = textBuckets;
+        }
+
+        if (!textBuckets.TryGetValue(text, out var rowIds))
+        {
+            rowIds = new List<long>();
+            textBuckets[text] = rowIds;
+        }
+
+        rowIds.Add(rowId);
     }
 
     private static bool IsCollectionIndexSchema(IndexSchema schema)
