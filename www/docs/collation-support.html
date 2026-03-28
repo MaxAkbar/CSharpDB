@@ -55,9 +55,6 @@
                     <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation across SQL schema definitions, query expressions, metadata surfaces, ordered SQL text indexes, and collection path indexes.
                 </div>
 
-                <div class="callout callout-info">
-                    <strong>Operational note:</strong> The main remaining collation work is performance-baseline refreshes, index-size tracking, and long-term globalization compatibility guidance for ICU-backed indexes.
-                </div>
 
                 <h2 id="overview">Overview</h2>
                 <p>CSharpDB already stores text as UTF-8, so data from any language can be stored and retrieved correctly. Collation is about something different: how text is compared, filtered, and sorted.</p>
@@ -120,7 +117,6 @@
                             <th>Name</th>
                             <th>Use When</th>
                             <th>Behavior</th>
-                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -128,25 +124,21 @@
                             <td><code>BINARY</code></td>
                             <td>You want exact ordinal behavior</td>
                             <td>Default byte/code-point comparison</td>
-                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>NOCASE</code></td>
                             <td>You want case-insensitive matching without locale-specific rules</td>
                             <td>Invariant lowercase normalization for indexed and runtime compare paths</td>
-                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>NOCASE_AI</code></td>
                             <td>You want case-insensitive and accent-insensitive behavior</td>
                             <td>Accent-stripped, invariant-case normalization for equality, ordering, and index semantics</td>
-                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>ICU:&lt;locale&gt;</code></td>
                             <td>You need locale-aware linguistic sorting rules</td>
                             <td>Built-in locale-aware comparison and ordering using .NET globalization sort keys for the specified culture</td>
-                            <td>Available</td>
                         </tr>
                     </tbody>
                 </table>
@@ -294,7 +286,7 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                         </tr>
                     </tbody>
                 </table>
-                <p>The benchmark suite now includes focused ordered-text collation coverage for equality lookups, range scans, top-N ordering, and indexed writes. The remaining gap on the performance side is checked-in index-size tracking rather than basic workload coverage.</p>
+                <p>The benchmark suite includes focused ordered-text collation coverage for equality lookups, range scans, top-N ordering, and indexed writes.</p>
 
                 <h2 id="limitations">Current Limitations</h2>
                 <ul>

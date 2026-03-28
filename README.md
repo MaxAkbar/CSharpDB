@@ -515,7 +515,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | [Service Daemon Design](docs/service-daemon/README.md) | Background service architecture and roadmap |
 | [Query Designer Plan](docs/query-designer/README.md) | Detailed Admin UI plan for a classic visual `SELECT` builder with SQL sync |
 | [Admin Startup Scripts](scripts/README.md) | Start, stop, and configure the admin site and daemon for local workflows |
-| [FFI Tutorials](docs/tutorials/native-ffi/) | Step-by-step JavaScript and Python interop guides |
+| [FFI Tutorials](samples/native-ffi/) | Step-by-step JavaScript and Python interop guides |
 | [FAQ](docs/faq.md) | Common setup, SQL, Admin UI, and troubleshooting questions |
 | [Roadmap](docs/roadmap.md) | Near-term, mid-term, and long-term project goals |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full benchmark results and comparison with 11 other databases |

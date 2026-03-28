@@ -92,13 +92,13 @@ public sealed class TimeSeriesAggregation
 ### Clone and Build
 
 ```bash
-dotnet build docs/tutorials/storage/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj
+dotnet build samples/storage-tutorials/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj
 ```
 
 ### Run the CLI REPL
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj
 ```
 
 You'll see an interactive shell:

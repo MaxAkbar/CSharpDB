@@ -22,10 +22,10 @@ These four apps are the official advanced examples for extending `CSharpDB.Stora
 
 | Example | Scenario | Storage pattern | Run | README | Key concepts |
 |---------|----------|-----------------|-----|--------|--------------|
-| **CSharpDB.GraphDB** | Graph database | Multi-tree graph adjacency with reverse-edge index | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj` | [GraphDB](./CSharpDB.GraphDB/README.md) | Multiple B+trees, composite edge keys, forward/reverse traversal |
-| **CSharpDB.SpatialIndex** | Spatial proximity search | Single-tree Hilbert-key locality index | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj` | [SpatialIndex](./CSharpDB.SpatialIndex/README.md) | Space-filling curves, range scans, post-filtered nearest queries |
-| **CSharpDB.TimeSeries** | Time-series engine | Monotonic-key append and range scan | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj` | [TimeSeries](./CSharpDB.TimeSeries/README.md) | Natural key ordering, right-edge inserts, cursor-based time windows |
-| **CSharpDB.VirtualFS** | Virtual file system | Multi-tree metadata/content/path/children layout | `dotnet run --project docs/tutorials/storage/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj` | [VirtualFS](./CSharpDB.VirtualFS/README.md) | Multiple B+trees, composite child keys, hashed path lookup, transactional file content |
+| **CSharpDB.GraphDB** | Graph database | Multi-tree graph adjacency with reverse-edge index | `dotnet run --project samples/storage-tutorials/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj` | [GraphDB](./CSharpDB.GraphDB/README.md) | Multiple B+trees, composite edge keys, forward/reverse traversal |
+| **CSharpDB.SpatialIndex** | Spatial proximity search | Single-tree Hilbert-key locality index | `dotnet run --project samples/storage-tutorials/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj` | [SpatialIndex](./CSharpDB.SpatialIndex/README.md) | Space-filling curves, range scans, post-filtered nearest queries |
+| **CSharpDB.TimeSeries** | Time-series engine | Monotonic-key append and range scan | `dotnet run --project samples/storage-tutorials/examples/CSharpDB.TimeSeries/CSharpDB.TimeSeries.csproj` | [TimeSeries](./CSharpDB.TimeSeries/README.md) | Natural key ordering, right-edge inserts, cursor-based time windows |
+| **CSharpDB.VirtualFS** | Virtual file system | Multi-tree metadata/content/path/children layout | `dotnet run --project samples/storage-tutorials/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj` | [VirtualFS](./CSharpDB.VirtualFS/README.md) | Multiple B+trees, composite child keys, hashed path lookup, transactional file content |
 
 ### What each advanced sample demonstrates
 
@@ -61,7 +61,7 @@ The examples follow SOLID principles with a multi-project structure:
 Start the interactive REPL:
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj
+dotnet run --project samples/storage-tutorials/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj
 ```
 
 ### REPL flow

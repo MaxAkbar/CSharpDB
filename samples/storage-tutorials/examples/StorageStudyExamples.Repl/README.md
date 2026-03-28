@@ -5,7 +5,7 @@ Interactive REPL host for all storage study examples.
 ## Run
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj
+dotnet run --project samples/storage-tutorials/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj
 ```
 
 ## Two-State Flow

@@ -82,13 +82,13 @@ public sealed class FsEntry
 ### Clone and Build
 
 ```bash
-dotnet build docs/tutorials/storage/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj
+dotnet build samples/storage-tutorials/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj
 ```
 
 ### Run the CLI REPL
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.VirtualFS/CSharpDB.VirtualFS.csproj
 ```
 
 You'll see an interactive shell:

@@ -250,10 +250,10 @@ catch
 
 ## Related docs
 
-- [Storage tutorial index](../../docs/tutorials/storage/README.md)
-- [Storage architecture](../../docs/tutorials/storage/architecture.md)
-- [Usage and extensibility guide](../../docs/tutorials/storage/extensibility.md)
-- [Runnable study examples](../../docs/tutorials/storage/examples/README.md)
+- [Storage tutorial index](../../samples/storage-tutorials/README.md)
+- [Storage architecture](../../samples/storage-tutorials/architecture.md)
+- [Usage and extensibility guide](../../samples/storage-tutorials/extensibility.md)
+- [Runnable study examples](../../samples/storage-tutorials/examples/README.md)
 
 ## Related packages
 

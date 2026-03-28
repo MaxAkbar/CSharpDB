@@ -21,7 +21,7 @@ Use CSharpDB from Node.js via [koffi](https://koffi.dev/), a zero-dependency FFI
 1. **Install dependencies**:
 
    ```bash
-   cd docs/tutorials/native-ffi/javascript
+   cd samples/native-ffi/javascript
    npm install
    ```
 

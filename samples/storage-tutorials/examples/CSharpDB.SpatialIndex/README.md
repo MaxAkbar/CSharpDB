@@ -222,7 +222,7 @@ Both strategies intentionally **over-scan** and **post-filter**. The `SpatialQue
 ### CLI Mode (Interactive REPL)
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj
 ```
 
 ```
@@ -243,7 +243,7 @@ spatialdb> exit                             # Quit
 ### Web Mode (REST API + Dashboard)
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj -- serve
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.SpatialIndex/CSharpDB.SpatialIndex.csproj -- serve
 ```
 
 Open **http://localhost:62488** for the interactive dashboard with:

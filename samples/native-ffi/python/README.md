@@ -30,7 +30,7 @@ Use CSharpDB from Python via the built-in `ctypes` module. No external packages 
 2. **Run the examples**:
 
    ```bash
-   cd docs/tutorials/native-ffi/python
+   cd samples/native-ffi/python
 
    python example_crud.py
    python example_transactions.py

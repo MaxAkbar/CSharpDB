@@ -40,7 +40,6 @@
                         <li><a href="#testing-strategy">Testing Strategy</a></li>
                         <li><a href="#concurrency-model">Concurrency Model</a></li>
                         <li><a href="#current-limitations">Current Limitations</a></li>
-                        <li><a href="#roadmap">Roadmap</a></li>
                         <li><a href="#see-also">See Also</a></li>
                     </ul>
                 </nav>
@@ -391,7 +390,7 @@ Checkpoint flow:  Acquire mutex &#x2192; copy WAL pages to DB &#x2192; reset WAL
                         <tr><th>Area</th><th>Limitation</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><strong>Functions</strong></td><td>Very limited built-in scalar function surface today; broader built-ins and user-defined functions remain planned</td></tr>
+                        <tr><td><strong>Functions</strong></td><td>Limited built-in scalar function surface; no user-defined function support</td></tr>
                         <tr><td><strong>Query</strong></td><td>Scalar/<code>IN</code>/<code>EXISTS</code> subqueries are supported, including correlated cases in <code>WHERE</code>, non-aggregate projection, and <code>UPDATE</code>/<code>DELETE</code>; correlated subqueries are still unsupported in <code>JOIN ON</code>, <code>GROUP BY</code>, <code>HAVING</code>, <code>ORDER BY</code>, and aggregate projections</td></tr>
                         <tr><td><strong>Query</strong></td><td><code>UNION</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are supported; <code>UNION ALL</code> is not implemented yet</td></tr>
                         <tr><td><strong>Query</strong></td><td>No window functions</td></tr>
@@ -402,15 +401,12 @@ Checkpoint flow:  Acquire mutex &#x2192; copy WAL pages to DB &#x2192; reset WAL
                         <tr><td><strong>RowId</strong></td><td>Legacy table schemas without persisted high-water metadata may still pay a one-time key scan on first insert</td></tr>
                         <tr><td><strong>Collections</strong></td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindAsync</code> remains a full scan</td></tr>
                         <tr><td><strong>Collections</strong></td><td>No JSON-path querying or expression/path-based document indexes yet</td></tr>
-                        <tr><td><strong>Networking</strong></td><td>The shipping model still splits remote access between <code>CSharpDB.Api</code> for HTTP and <code>CSharpDB.Daemon</code> for gRPC; host consolidation plus named pipes remain planned</td></tr>
-                        <tr><td><strong>Security</strong></td><td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in auth, authorization, and TLS/mTLS support remain planned</td></tr>
+                        <tr><td><strong>Networking</strong></td><td>Remote access is split between <code>CSharpDB.Api</code> for HTTP and <code>CSharpDB.Daemon</code> for gRPC; no named-pipe transport</td></tr>
+                        <tr><td><strong>Security</strong></td><td>Remote HTTP and gRPC deployment rely on external network controls or front-end TLS termination; no built-in auth, authorization, or TLS/mTLS</td></tr>
                         <tr><td><strong>Concurrency</strong></td><td>Single writer only (no multi-writer)</td></tr>
                         <tr><td><strong>Indexes</strong></td><td>Composite indexes are supported, but ordered range-scan pushdown is still limited to narrower index shapes</td></tr>
                     </tbody>
                 </table>
-
-                <h2 id="roadmap">Roadmap</h2>
-                <p>See <a href="../roadmap.html">docs/roadmap.md</a> for the full roadmap with near-term, mid-term, and long-term goals.</p>
 
                 <h2 id="see-also">See Also</h2>
                 <ul>

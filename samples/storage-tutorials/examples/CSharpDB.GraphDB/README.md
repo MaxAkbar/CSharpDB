@@ -240,7 +240,7 @@ Returns the exact path (nodes + edges) and statistics about cursor operations.
 ### CLI Mode (Interactive REPL)
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj
 ```
 
 ```
@@ -267,7 +267,7 @@ graphdb> exit                                # Quit
 ### Web Mode (REST API + Dashboard)
 
 ```bash
-dotnet run --project docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj -- serve
+dotnet run --project samples/storage-tutorials/examples/CSharpDB.GraphDB/CSharpDB.GraphDB.csproj -- serve
 ```
 
 Open **http://localhost:62501** for the interactive dashboard with:
