@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+    window.pageConfig = {
+        title: 'Storage Examples',
+        description: 'Runnable example index for CSharpDB.Storage tutorials: advanced standalone examples and interactive REPL study examples.',
+        keywords: 'CSharpDB examples, GraphDB, SpatialIndex, TimeSeries, VirtualFS, storage extensibility, REPL',
+        canonicalPath: 'docs/tutorials/storage-examples.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Storage Examples</h1>
+
+                <p>This page is the runnable example index for the <code>CSharpDB.Storage</code> tutorial track.</p>
+
+                <p>There are two distinct example tracks:</p>
+                <ol>
+                    <li><strong>Study examples</strong> -- the shared <code>StorageStudyExamples.*</code> REPL-based walkthroughs for guided exploration</li>
+                    <li><strong>Advanced standalone examples</strong> -- larger sample applications that extend <code>CSharpDB.Storage</code> into domain-specific engines</li>
+                </ol>
+
+                <h2 id="choose-a-track">Choose a track</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Track</th>
+                            <th>Best for</th>
+                            <th>Shape</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Study examples</strong></td>
+                            <td>Learning the storage surface in guided slices</td>
+                            <td>Shared REPL host with multiple small examples</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Advanced standalone examples</strong></td>
+                            <td>Seeing how to build a full storage-backed engine</td>
+                            <td>Separate app per domain with its own CLI/API/UI</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>Start with the study examples if you are learning <code>Pager</code>, WAL, B+tree, and configurability. Start with the advanced standalone examples if you want bigger, self-contained applications that demonstrate how to extend <code>CSharpDB.Storage</code> directly.</p>
+
+                <h2 id="advanced-standalone-examples">Advanced standalone examples</h2>
+
+                <p>These four apps are the official advanced examples for extending <code>CSharpDB.Storage</code> into domain-specific engines. Each sample keeps its own README as the authoritative deep dive.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Example</th>
+                            <th>Scenario</th>
+                            <th>Storage pattern</th>
+                            <th>Key concepts</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>CSharpDB.GraphDB</strong></td>
+                            <td>Graph database</td>
+                            <td>Multi-tree graph adjacency with reverse-edge index</td>
+                            <td>Multiple B+trees, composite edge keys, forward/reverse traversal</td>
+                        </tr>
+                        <tr>
+                            <td><strong>CSharpDB.SpatialIndex</strong></td>
+                            <td>Spatial proximity search</td>
+                            <td>Single-tree Hilbert-key locality index</td>
+                            <td>Space-filling curves, range scans, post-filtered nearest queries</td>
+                        </tr>
+                        <tr>
+                            <td><strong>CSharpDB.TimeSeries</strong></td>
+                            <td>Time-series engine</td>
+                            <td>Monotonic-key append and range scan</td>
+                            <td>Natural key ordering, right-edge inserts, cursor-based time windows</td>
+                        </tr>
+                        <tr>
+                            <td><strong>CSharpDB.VirtualFS</strong></td>
+                            <td>Virtual file system</td>
+                            <td>Multi-tree metadata/content/path/children layout</td>
+                            <td>Multiple B+trees, composite child keys, hashed path lookup, transactional file content</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3 id="what-each-advanced-sample-demonstrates">What each advanced sample demonstrates</h3>
+
+                <ul>
+                    <li><strong>GraphDB</strong>: a graph database built on multiple B+trees, with separate outgoing and incoming edge indexes for efficient directed traversal</li>
+                    <li><strong>SpatialIndex</strong>: a geographic index that maps 2D points onto a Hilbert curve so a single B+tree can support nearby and bounding-box queries</li>
+                    <li><strong>TimeSeries</strong>: a minimal time-series design where <code>DateTime.UtcNow.Ticks</code> becomes the natural B+tree key for append-heavy writes and range scans</li>
+                    <li><strong>VirtualFS</strong>: a virtual file system split across metadata, content, path, and child trees to support directory listings, file content, and path-based lookup</li>
+                </ul>
+
+                <h2 id="study-examples">Study examples</h2>
+
+                <p>The study examples are an interactive REPL with two categories of examples:</p>
+                <ol>
+                    <li><strong>Application patterns</strong> -- real-world use cases built entirely on the <code>Database</code> API, proving the storage engine can back much more than traditional SQL tables. Each example provides domain-specific commands for natural interaction (file system commands for virtual-drive, graph queries for graph-store, etc.).</li>
+                    <li><strong>Storage extensibility</strong> -- custom caches, checkpoint policies, interceptors, checksum providers, and more. These demonstrate how to plug into the storage engine internals.</li>
+                </ol>
+
+                <h2 id="architecture">Architecture</h2>
+
+                <p>The examples follow SOLID principles with a multi-project structure:</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Project</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>StorageStudyExamples.Core</strong></td><td>Shared interfaces (<code>IExample</code>, <code>IInteractiveExample</code>), abstract <code>DataStoreBase</code>, <code>CommandInfo</code> record</td></tr>
+                        <tr><td><strong>StorageStudyExamples.Repl</strong></td><td>Interactive REPL host -- two-state flow (main menu / example mode)</td></tr>
+                        <tr><td><strong>StorageStudyExamples.VirtualDrive</strong></td><td>Virtual file system with folders, files, and shortcuts</td></tr>
+                        <tr><td><strong>StorageStudyExamples.ConfigStore</strong></td><td>Hierarchical config store with versioning and change history</td></tr>
+                        <tr><td><strong>StorageStudyExamples.EventLog</strong></td><td>Append-only event log with batch inserts and analytics</td></tr>
+                        <tr><td><strong>StorageStudyExamples.TaskQueue</strong></td><td>Persistent job queue with state machine and retry logic</td></tr>
+                        <tr><td><strong>StorageStudyExamples.GraphStore</strong></td><td>Social network graph with traversal queries</td></tr>
+                        <tr><td><strong>StorageStudyExamples.StorageInternals</strong></td><td>Storage engine configuration examples (9 demos)</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="run">Run</h2>
+
+                <p>Start the interactive REPL:</p>
+
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project docs/tutorials/storage/examples/StorageStudyExamples.Repl/StorageStudyExamples.Repl.csproj</code></pre></div>
+
+                <h3 id="repl-flow">REPL flow</h3>
+
+                <p>The REPL has two states:</p>
+
+                <p><strong>Main menu</strong> -- lists all available examples grouped by type. Type <code>load &lt;name&gt;</code> to enter an example.</p>
+
+                <div class="code-block" data-title="Text"><pre><code>  Main menu:
+    list                    List all available examples
+    load &lt;name&gt;             Load an example
+    help                    Show help
+    clear                   Clear the screen
+    quit                    Exit the REPL</code></pre></div>
+
+                <p><strong>Example mode</strong> -- once loaded, only the example's domain-specific commands are shown. Type <code>back</code> to return to the main menu.</p>
+
+                <div class="code-block" data-title="Text"><pre><code>  Common commands (available in all examples):
+    demo                    Run the scripted demo
+    sql &lt;query&gt;             Execute raw SQL
+    back                    Return to main menu
+    help                    Show commands for this example
+    clear                   Clear the screen
+    quit                    Exit the REPL</code></pre></div>
+
+                <p>The REPL creates a temp working directory for each loaded example so no <code>.cdb</code> or <code>.wal</code> files are left in the repository.</p>
+
+                <h2 id="interface-design">Interface design</h2>
+
+                <p>All application-pattern examples implement <code>IInteractiveExample</code>, which extends <code>IExample</code>:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>public interface IExample : IAsyncDisposable
+{
+    string Name { get; }
+    string CommandName { get; }
+    string Description { get; }
+    Task InitializeAsync(string workingDirectory);
+    Task RunDemoAsync(TextWriter output);
+}
+
+public sealed record CommandInfo(string Name, string Usage, string Description);
+
+public interface IInteractiveExample : IExample
+{
+    IReadOnlyList&lt;CommandInfo&gt; GetCommands();
+    Task&lt;bool&gt; ExecuteCommandAsync(string commandName, string args, TextWriter output);
+}</code></pre></div>
+
+                <p>Each example defines its own domain-specific commands via <code>GetCommands()</code> and handles them in <code>ExecuteCommandAsync()</code>. The abstract <code>DataStoreBase</code> class provides database lifecycle management (<code>InitializeAsync</code>, <code>DisposeAsync</code>), schema/seed hooks, and a raw SQL helper. Storage internals examples implement only <code>IExample</code> (Interface Segregation Principle).</p>
+
+                <h2 id="storage-extensibility-examples">Storage extensibility examples</h2>
+
+                <p>These show how to customize the storage engine internals via <code>PagerOptions</code> and <code>StorageEngineOptionsBuilder</code>.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>What it demonstrates</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>default-config</code></td><td>Open a database with all default settings</td></tr>
+                        <tr><td><code>production-config</code></td><td>Bounded LRU cache, CRC32 checksums, caching indexes</td></tr>
+                        <tr><td><code>debug-config</code></td><td>Verbose interceptor logging on every page operation</td></tr>
+                        <tr><td><code>batch-import</code></td><td>Disable auto-checkpoint for high-throughput bulk writes</td></tr>
+                        <tr><td><code>metrics-cache</code></td><td>Instrument the page cache with hit/miss/eviction stats</td></tr>
+                        <tr><td><code>multiple-interceptors</code></td><td>Combine a logger and latency tracker in one pipeline</td></tr>
+                        <tr><td><code>crash-recovery-test</code></td><td>Fault-inject a write failure and verify WAL recovery</td></tr>
+                        <tr><td><code>checkpoint-policy-test</code></td><td>Deterministic test of <code>TimeIntervalCheckpointPolicy</code> with a fake clock</td></tr>
+                        <tr><td><code>wal-size-policy-test</code></td><td>Deterministic test of <code>WalSizeCheckpointPolicy</code> thresholds</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>Suggested starting points:</strong> <code>default-config</code>, <code>debug-config</code>, <code>metrics-cache</code></p>
+
+                <h2 id="application-pattern-examples">Application pattern examples</h2>
+
+                <p>These show the storage engine used as a general-purpose embedded data store for non-traditional workloads. Each is self-contained: it creates a schema, populates sample data, and provides domain-specific commands for interactive exploration. A scripted <code>demo</code> is also available in each example.</p>
+
+                <h3 id="virtual-drive">virtual-drive -- Virtual file system</h3>
+
+                <p>Stores folders, files, and shortcuts in a single <code>.cdb</code> file. Supports path-based navigation with a current directory, recursive tree walking, and shortcut (symlink) following.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Usage</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>tree</code></td><td><code>tree</code></td><td>Show the full directory tree</td></tr>
+                        <tr><td><code>ls</code></td><td><code>ls [path]</code></td><td>List contents of a directory</td></tr>
+                        <tr><td><code>cd</code></td><td><code>cd &lt;path&gt;</code></td><td>Change current directory</td></tr>
+                        <tr><td><code>pwd</code></td><td><code>pwd</code></td><td>Print current directory path</td></tr>
+                        <tr><td><code>cat</code></td><td><code>cat &lt;filename&gt;</code></td><td>Print file contents</td></tr>
+                        <tr><td><code>mkdir</code></td><td><code>mkdir &lt;name&gt;</code></td><td>Create a folder</td></tr>
+                        <tr><td><code>touch</code></td><td><code>touch &lt;name&gt; [content...]</code></td><td>Create a file</td></tr>
+                        <tr><td><code>ln</code></td><td><code>ln &lt;name&gt; &lt;target-path&gt;</code></td><td>Create a shortcut</td></tr>
+                        <tr><td><code>rm</code></td><td><code>rm &lt;name&gt;</code></td><td>Remove a file or folder (recursive)</td></tr>
+                        <tr><td><code>mv</code></td><td><code>mv &lt;name&gt; &lt;new-name&gt;</code></td><td>Rename an entry</td></tr>
+                        <tr><td><code>info</code></td><td><code>info &lt;name&gt;</code></td><td>Show entry details (type, size, created)</td></tr>
+                        <tr><td><code>stats</code></td><td><code>stats</code></td><td>Drive statistics (counts by type, total size)</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>CSharpDB features used:</strong> <code>CREATE INDEX</code>, <code>INSERT</code> with <code>PrepareInsertBatch</code> (for BLOB content), <code>SELECT WHERE parent_id = ?</code>, <code>GROUP BY</code>, <code>SUM</code>, <code>UPDATE</code> (rename via <code>SET name</code>, move via <code>SET parent_id</code>, retarget via <code>SET target_path</code>), <code>DELETE</code> (single row and recursive cascade), transactional read-modify-write for BLOB updates.</p>
+
+                <h3 id="config-store">config-store -- Key-value configuration store</h3>
+
+                <p>A persistent hierarchical config system similar to etcd or Windows Registry. Supports namespaced keys, typed values, versioning (auto-incremented on update), and a full change history log.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Usage</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>list</code></td><td><code>list [namespace]</code></td><td>List config entries (all or filtered)</td></tr>
+                        <tr><td><code>get</code></td><td><code>get &lt;namespace&gt; &lt;key&gt;</code></td><td>Get a config value</td></tr>
+                        <tr><td><code>set</code></td><td><code>set &lt;namespace&gt; &lt;key&gt; &lt;value&gt; [type]</code></td><td>Set a config value (default type: string)</td></tr>
+                        <tr><td><code>delete</code></td><td><code>delete &lt;namespace&gt; &lt;key&gt;</code></td><td>Delete a config entry</td></tr>
+                        <tr><td><code>history</code></td><td><code>history [namespace]</code></td><td>Show change history</td></tr>
+                        <tr><td><code>namespaces</code></td><td><code>namespaces</code></td><td>List all namespaces with counts</td></tr>
+                        <tr><td><code>rename-ns</code></td><td><code>rename-ns &lt;old&gt; &lt;new&gt;</code></td><td>Rename a namespace</td></tr>
+                        <tr><td><code>drop-ns</code></td><td><code>drop-ns &lt;namespace&gt;</code></td><td>Delete all entries in a namespace</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>CSharpDB features used:</strong> Transactions (<code>BEGIN</code>/<code>COMMIT</code>/<code>ROLLBACK</code>) for atomic read-then-write, two-table design (entries + history), <code>CREATE INDEX</code>, <code>GROUP BY</code>, <code>ORDER BY</code>, batch <code>UPDATE</code> (rename namespace across multiple rows), bulk <code>DELETE</code> with history logging.</p>
+
+                <h3 id="event-log">event-log -- Append-only event log</h3>
+
+                <p>An audit trail / event store with 34 events from five services (AuthService, PaymentGateway, Scheduler, Monitor, ApiGateway). Queries by time range, severity threshold, and source.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Usage</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>tail</code></td><td><code>tail [count]</code></td><td>Show most recent events (default: 20)</td></tr>
+                        <tr><td><code>log</code></td><td><code>log &lt;source&gt; &lt;severity&gt; &lt;message&gt;</code></td><td>Append a new event</td></tr>
+                        <tr><td><code>filter</code></td><td><code>filter &lt;source|severity|category&gt; &lt;value&gt;</code></td><td>Filter events by field</td></tr>
+                        <tr><td><code>stats</code></td><td><code>stats</code></td><td>Severity histogram and error rates by source</td></tr>
+                        <tr><td><code>reclassify</code></td><td><code>reclassify &lt;id&gt; &lt;new-severity&gt;</code></td><td>Change event severity</td></tr>
+                        <tr><td><code>purge</code></td><td><code>purge &lt;count&gt;</code></td><td>Delete the oldest N events</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>CSharpDB features used:</strong> <code>PrepareInsertBatch</code> for bulk writes, <code>CREATE INDEX</code> on timestamp and severity, <code>GROUP BY</code> with <code>COUNT(*)</code>, multiple aggregate queries, <code>UPDATE</code> (reclassify severity on indexed column), <code>DELETE</code> (range-based log rotation).</p>
+
+                <h3 id="task-queue">task-queue -- Persistent job queue</h3>
+
+                <p>A job scheduler with state machine transitions (pending -&gt; running -&gt; completed/failed), priority-based dequeue, and retry logic.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Usage</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>list</code></td><td><code>list [queue]</code></td><td>List jobs (all or by queue)</td></tr>
+                        <tr><td><code>enqueue</code></td><td><code>enqueue &lt;queue&gt; &lt;priority&gt; &lt;payload...&gt;</code></td><td>Add a job</td></tr>
+                        <tr><td><code>claim</code></td><td><code>claim &lt;queue&gt;</code></td><td>Claim highest-priority pending job</td></tr>
+                        <tr><td><code>complete</code></td><td><code>complete &lt;id&gt;</code></td><td>Mark job as completed</td></tr>
+                        <tr><td><code>fail</code></td><td><code>fail &lt;id&gt; &lt;error...&gt;</code></td><td>Mark job as failed</td></tr>
+                        <tr><td><code>retry</code></td><td><code>retry &lt;id&gt;</code></td><td>Re-queue a failed job</td></tr>
+                        <tr><td><code>cancel</code></td><td><code>cancel &lt;id&gt;</code></td><td>Cancel a pending job</td></tr>
+                        <tr><td><code>dashboard</code></td><td><code>dashboard</code></td><td>Status summary per queue</td></tr>
+                        <tr><td><code>reprioritize</code></td><td><code>reprioritize &lt;id&gt; &lt;priority&gt;</code></td><td>Change job priority</td></tr>
+                        <tr><td><code>move</code></td><td><code>move &lt;id&gt; &lt;queue&gt;</code></td><td>Move job to different queue</td></tr>
+                        <tr><td><code>purge</code></td><td><code>purge</code></td><td>Delete all completed jobs</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>CSharpDB features used:</strong> Transactions for atomic state transitions, <code>ORDER BY priority DESC LIMIT 1</code> for priority dequeue, <code>GROUP BY queue, status</code> for dashboard, <code>UPDATE</code> with computed values, <code>UPDATE</code> (reprioritize, move between queues via <code>SET queue</code>), conditional <code>DELETE</code> (cancel pending), bulk <code>DELETE</code> (purge completed).</p>
+
+                <h3 id="graph-store">graph-store -- Social network graph</h3>
+
+                <p>Nodes and edges stored relationally, with traversal queries over a 10-person social network. All commands accept person names instead of IDs.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Usage</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>nodes</code></td><td><code>nodes</code></td><td>List all people</td></tr>
+                        <tr><td><code>graph</code></td><td><code>graph</code></td><td>Full adjacency list</td></tr>
+                        <tr><td><code>follows</code></td><td><code>follows &lt;name&gt;</code></td><td>Who this person follows</td></tr>
+                        <tr><td><code>followers</code></td><td><code>followers &lt;name&gt;</code></td><td>Who follows this person</td></tr>
+                        <tr><td><code>fof</code></td><td><code>fof &lt;name&gt;</code></td><td>Friends-of-friends (2-hop)</td></tr>
+                        <tr><td><code>mutual</code></td><td><code>mutual &lt;name1&gt; &lt;name2&gt;</code></td><td>People both follow</td></tr>
+                        <tr><td><code>reciprocal</code></td><td><code>reciprocal</code></td><td>All mutual follow-back pairs</td></tr>
+                        <tr><td><code>follow</code></td><td><code>follow &lt;source&gt; &lt;target&gt;</code></td><td>Add a follow edge</td></tr>
+                        <tr><td><code>unfollow</code></td><td><code>unfollow &lt;source&gt; &lt;target&gt;</code></td><td>Remove a follow edge</td></tr>
+                        <tr><td><code>add-person</code></td><td><code>add-person &lt;name&gt;</code></td><td>Add a new person</td></tr>
+                        <tr><td><code>rename</code></td><td><code>rename &lt;old-name&gt; &lt;new-name&gt;</code></td><td>Rename a person</td></tr>
+                        <tr><td><code>remove</code></td><td><code>remove &lt;name&gt;</code></td><td>Remove person and all edges</td></tr>
+                        <tr><td><code>stats</code></td><td><code>stats</code></td><td>Connection counts per person</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>CSharpDB features used:</strong> <code>PrepareInsertBatch</code>, <code>CREATE INDEX</code> on <code>source_id</code> and <code>target_id</code>, <code>JOIN</code> (including 3-table JOINs and self-JOINs), <code>GROUP BY</code> with <code>COUNT(*)</code>, <code>DISTINCT</code>, post-query filtering in C# for set operations, <code>UPDATE</code> (rename node label), <code>DELETE</code> (unfollow edge, cascading user removal across tables in a transaction).</p>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Cross-Platform Deployment & Installation',
+        description: 'CSharpDB cross-platform deployment plan — dotnet tool, self-contained binaries, Docker, install scripts, Homebrew, and winget.',
+        keywords: 'CSharpDB deployment, installation, dotnet tool, Docker, Homebrew, winget, cross-platform, CI/CD',
+        canonicalPath: 'docs/deployment.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#design-decisions">Design Decisions</a></li>
+                        <li><a href="#install-experience">Install Experience by Platform</a></li>
+                        <li><a href="#phase-1">Phase 1: Packaging Foundation</a></li>
+                        <li><a href="#phase-2">Phase 2: Unified CLI with serve</a></li>
+                        <li><a href="#phase-3">Phase 3: Docker + Install Scripts</a></li>
+                        <li><a href="#phase-4">Phase 4: Package Managers</a></li>
+                        <li><a href="#files-to-create">Files to Create/Modify</a></li>
+                        <li><a href="#verification">Verification Checklist</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>CSharpDB Cross-Platform Deployment &amp; Installation Plan</h1>
+                <p>A phased plan to distribute CSharpDB across Windows, macOS, and Linux via multiple installation channels &mdash; from <code>dotnet tool install</code> to self-contained binaries, Docker, Homebrew, and winget.</p>
+
+                <h2 id="design-decisions">Design Decisions</h2>
+                <ul>
+                    <li><strong>Unified CLI + separate tools</strong> &mdash; A single <code>csharpdb</code> binary with subcommands (<code>serve</code>, <code>inspect</code>, <code>version</code>) is the primary distribution. The MCP server is also available as a separate <code>csharpdb-mcp</code> dotnet tool.</li>
+                    <li><strong>Both audiences from day one</strong> &mdash; Phase 1 ships both <code>dotnet tool install</code> (for .NET developers) and self-contained binaries (for anyone, no .NET required).</li>
+                    <li><strong>No mobile</strong> &mdash; Focus on Windows, macOS, Linux, and Docker. A database server/CLI does not translate to mobile.</li>
+                </ul>
+
+                <h2 id="install-experience">Install Experience by Platform</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Platform</th>
+                            <th>dotnet tool</th>
+                            <th>Self-contained</th>
+                            <th>Package manager</th>
+                            <th>Docker</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Windows</strong></td>
+                            <td><code>dotnet tool install -g CSharpDB.Cli</code></td>
+                            <td><code>irm .../install.ps1 | iex</code></td>
+                            <td><code>winget install CSharpDB</code></td>
+                            <td><code>docker run csharpdb/server</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>macOS</strong></td>
+                            <td><code>dotnet tool install -g CSharpDB.Cli</code></td>
+                            <td><code>curl .../install.sh | sh</code></td>
+                            <td><code>brew install csharpdb</code></td>
+                            <td><code>docker run csharpdb/server</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Linux</strong></td>
+                            <td><code>dotnet tool install -g CSharpDB.Cli</code></td>
+                            <td><code>curl .../install.sh | sh</code></td>
+                            <td><code>brew install csharpdb</code></td>
+                            <td><code>docker run csharpdb/server</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>NuGet</strong></td>
+                            <td><code>dotnet add package CSharpDB</code></td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="phase-1">Phase 1: Packaging Foundation</h2>
+                <p>Ships both dotnet tool and self-contained binaries via GitHub Actions CI/CD.</p>
+
+                <h3>1A. Make CLI a dotnet global tool</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Cli/CSharpDB.Cli.csproj</code></p>
+                <p>Change <code>IsPackable</code> from <code>false</code> to <code>true</code> and add tool properties:</p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;IsPackable&gt;true&lt;/IsPackable&gt;
+&lt;PackAsTool&gt;true&lt;/PackAsTool&gt;
+&lt;ToolCommandName&gt;csharpdb&lt;/ToolCommandName&gt;
+&lt;PackageId&gt;CSharpDB.Cli&lt;/PackageId&gt;
+&lt;Description&gt;Interactive SQL shell and diagnostics CLI for CSharpDB.&lt;/Description&gt;</code></pre>
+                </div>
+                <p>Users install with:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet tool install -g CSharpDB.Cli
+csharpdb mydata.db</code></pre>
+                </div>
+
+                <h3>1B. Make MCP server a dotnet tool</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Mcp/CSharpDB.Mcp.csproj</code></p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;IsPackable&gt;true&lt;/IsPackable&gt;
+&lt;PackAsTool&gt;true&lt;/PackAsTool&gt;
+&lt;ToolCommandName&gt;csharpdb-mcp&lt;/ToolCommandName&gt;
+&lt;PackageId&gt;CSharpDB.Mcp&lt;/PackageId&gt;
+&lt;Description&gt;MCP server for CSharpDB. Connect AI assistants to your database.&lt;/Description&gt;</code></pre>
+                </div>
+                <p>Users install with:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet tool install -g CSharpDB.Mcp
+csharpdb-mcp --database mydata.db</code></pre>
+                </div>
+
+                <h3>1C. Fix NuGet package metadata</h3>
+                <p><strong>File:</strong> <code>src/Directory.Build.props</code></p>
+                <p>Add <code>PackageReadmeFile</code> so all library packages include the repo README:</p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;PackageReadmeFile&gt;README.md&lt;/PackageReadmeFile&gt;</code></pre>
+                </div>
+                <p>Add ItemGroup to include the README in packages:</p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;ItemGroup&gt;
+  &lt;None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="/" /&gt;
+&lt;/ItemGroup&gt;</code></pre>
+                </div>
+
+                <h3>1D. Add <code>version</code> subcommand to CLI</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Cli/Program.cs</code></p>
+                <p>Handle <code>version</code>, <code>--version</code>, <code>-v</code> args that print the assembly version (derived from <code>Directory.Build.props</code> <code>&lt;Version&gt;</code>).</p>
+
+                <h3>1E. GitHub Actions CI workflow</h3>
+                <p><strong>File:</strong> <code>.github/workflows/ci.yml</code> (CREATE)</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Trigger</th>
+                            <th>Job</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Push to <code>main</code>, PRs to <code>main</code></td>
+                            <td><code>build-and-test</code></td>
+                            <td>Matrix: ubuntu, windows, macos; restore, build Release, test</td>
+                        </tr>
+                        <tr>
+                            <td>Push to <code>main</code> only</td>
+                            <td><code>pack</code></td>
+                            <td><code>dotnet pack -c Release</code>, upload <code>.nupkg</code> artifacts</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>1F. GitHub Actions Release workflow</h3>
+                <p><strong>File:</strong> <code>.github/workflows/release.yml</code> (CREATE)</p>
+                <p>Triggered on tag push (<code>v*</code>).</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Job</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>build-and-test</code></td>
+                            <td>Gate: matrix across 3 OS runners</td>
+                        </tr>
+                        <tr>
+                            <td><code>publish-nuget</code></td>
+                            <td><code>dotnet pack</code> then <code>dotnet nuget push</code> to NuGet.org</td>
+                        </tr>
+                        <tr>
+                            <td><code>publish-binaries</code></td>
+                            <td>Matrix of 7 RIDs, publish CLI + API + MCP as self-contained single-file trimmed binaries</td>
+                        </tr>
+                        <tr>
+                            <td><code>create-release</code></td>
+                            <td>Download all artifacts, create GitHub Release with generated notes</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p><strong>Target Runtime Identifiers:</strong></p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>RID</th>
+                            <th>Runner</th>
+                            <th>Binary</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>win-x64</code></td><td>windows-latest</td><td><code>.zip</code></td></tr>
+                        <tr><td><code>win-arm64</code></td><td>windows-latest</td><td><code>.zip</code></td></tr>
+                        <tr><td><code>linux-x64</code></td><td>ubuntu-latest</td><td><code>.tar.gz</code></td></tr>
+                        <tr><td><code>linux-arm64</code></td><td>ubuntu-latest</td><td><code>.tar.gz</code></td></tr>
+                        <tr><td><code>linux-musl-x64</code></td><td>ubuntu-latest</td><td><code>.tar.gz</code></td></tr>
+                        <tr><td><code>osx-x64</code></td><td>macos-latest</td><td><code>.tar.gz</code></td></tr>
+                        <tr><td><code>osx-arm64</code></td><td>macos-latest</td><td><code>.tar.gz</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Publish command per binary:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet publish -c Release -r &lt;RID&gt; \
+  --self-contained true \
+  -p:PublishSingleFile=true \
+  -p:PublishTrimmed=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true</code></pre>
+                </div>
+
+                <h3>1G. .dockerignore</h3>
+                <p><strong>File:</strong> <code>.dockerignore</code> (CREATE)</p>
+                <p>Exclude build artifacts, tests, docs, database files.</p>
+
+                <h2 id="phase-2">Phase 2: Unified CLI with <code>serve</code> Subcommand</h2>
+                <p>Extends the CLI to host the API server + Admin dashboard as a subcommand, making <code>csharpdb</code> the single entry point for everything.</p>
+
+                <h3>2A. New CLI command structure</h3>
+                <div class="code-block" data-title="Text">
+                    <pre><code>csharpdb [database.db]                          # REPL mode (existing)
+csharpdb serve [--database] [--port] [--host]   # API server + Admin
+csharpdb inspect &lt;dbfile&gt;                       # Existing inspector
+csharpdb inspect-page &lt;dbfile&gt; &lt;pageId&gt;         # Existing inspector
+csharpdb check-wal &lt;dbfile&gt;                     # Existing inspector
+csharpdb check-indexes &lt;dbfile&gt;                 # Existing inspector
+csharpdb version                                # Version info</code></pre>
+                </div>
+
+                <h3>2B. Project changes</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Cli/CSharpDB.Cli.csproj</code></p>
+                <p>Add ASP.NET Core framework reference and Service project reference:</p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;FrameworkReference Include="Microsoft.AspNetCore.App" /&gt;
+&lt;ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" /&gt;</code></pre>
+                </div>
+
+                <h3>2C. Extract API endpoint registration</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Api/EndpointRegistration.cs</code> (CREATE)</p>
+                <p>Extract endpoint mapping from <code>Program.cs</code> into a static extension method <code>app.MapCSharpDbEndpoints()</code> that both the standalone API project and the CLI <code>serve</code> command can call.</p>
+
+                <h3>2D. Serve command implementation</h3>
+                <p><strong>File:</strong> <code>src/CSharpDB.Cli/Commands/ServeCommand.cs</code> (CREATE)</p>
+                <p>Builds a <code>WebApplication</code>, registers CSharpDB service, maps API endpoints via <code>MapCSharpDbEndpoints()</code>, starts Kestrel. Accepts <code>--database</code>, <code>--port</code>, <code>--host</code> arguments.</p>
+
+                <h2 id="phase-3">Phase 3: Docker + Install Scripts</h2>
+
+                <h3>3A. Dockerfile</h3>
+                <p><strong>File:</strong> <code>Dockerfile</code> (CREATE)</p>
+                <p>Multi-stage build:</p>
+                <div class="code-block" data-title="Text">
+                    <pre><code>Build stage:  mcr.microsoft.com/dotnet/sdk:10.0-preview
+              Copy csproj files first (layer caching), restore, build, publish API
+
+Runtime stage: mcr.microsoft.com/dotnet/aspnet:10.0-preview
+               Copy published output, expose 61818, volume /data</code></pre>
+                </div>
+                <p>Usage:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>docker build -t csharpdb/server .
+docker run -p 61818:61818 -v ./data:/data csharpdb/server</code></pre>
+                </div>
+
+                <h3>3B. Docker Hub publishing</h3>
+                <p>Add Docker build/push job to <code>.github/workflows/release.yml</code>:</p>
+                <ul>
+                    <li>Multi-arch: <code>linux/amd64</code> + <code>linux/arm64</code></li>
+                    <li>Tags: <code>latest</code> + version tag</li>
+                    <li>Requires <code>DOCKERHUB_USERNAME</code> and <code>DOCKERHUB_TOKEN</code> secrets</li>
+                </ul>
+
+                <h3>3C. Install script (Unix)</h3>
+                <p><strong>File:</strong> <code>install.sh</code> (CREATE)</p>
+                <p>POSIX shell script:</p>
+                <ol>
+                    <li>Detect OS (<code>uname -s</code>) and architecture (<code>uname -m</code>)</li>
+                    <li>Map to RID: <code>linux-x64</code>, <code>linux-arm64</code>, <code>linux-musl-x64</code>, <code>osx-x64</code>, <code>osx-arm64</code></li>
+                    <li>Fetch latest release tag from GitHub API (or honor <code>CSHARPDB_VERSION</code> env var)</li>
+                    <li>Download <code>cli-&lt;rid&gt;-&lt;version&gt;.tar.gz</code> from GitHub Releases</li>
+                    <li>Extract to <code>~/.csharpdb/bin/</code> (or <code>CSHARPDB_INSTALL_DIR</code>)</li>
+                    <li>Print PATH instructions</li>
+                </ol>
+                <p>Usage:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>curl -sSL https://raw.githubusercontent.com/MaxAkbar/CSharpDB/main/install.sh | sh</code></pre>
+                </div>
+
+                <h3>3D. Install script (Windows)</h3>
+                <p><strong>File:</strong> <code>install.ps1</code> (CREATE)</p>
+                <p>PowerShell script:</p>
+                <ol>
+                    <li>Detect architecture (x64 vs ARM64)</li>
+                    <li>Download <code>cli-win-&lt;arch&gt;-&lt;version&gt;.zip</code> from GitHub Releases</li>
+                    <li>Extract to <code>%USERPROFILE%\.csharpdb\bin\</code></li>
+                    <li>Add to user PATH</li>
+                </ol>
+                <p>Usage:</p>
+                <div class="code-block" data-title="PowerShell">
+                    <pre><code>irm https://raw.githubusercontent.com/MaxAkbar/CSharpDB/main/install.ps1 | iex</code></pre>
+                </div>
+
+                <h2 id="phase-4">Phase 4: Platform Package Managers</h2>
+
+                <h3>4A. Homebrew tap</h3>
+                <p><strong>Separate repo:</strong> <code>MaxAkbar/homebrew-csharpdb</code></p>
+                <p><strong>File:</strong> <code>Formula/csharpdb.rb</code></p>
+                <p>Ruby formula with platform-specific blocks (<code>on_macos</code>/<code>on_linux</code>, <code>on_arm</code>/<code>on_intel</code>). Downloads self-contained binary from GitHub Releases.</p>
+                <p>Usage:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>brew tap MaxAkbar/csharpdb
+brew install csharpdb</code></pre>
+                </div>
+                <p>The release workflow computes SHA256 hashes and opens a PR against the tap repo to update the formula automatically.</p>
+
+                <h3>4B. winget manifest</h3>
+                <p>Submit to <code>microsoft/winget-pkgs</code>:</p>
+                <div class="code-block" data-title="Text">
+                    <pre><code>manifests/m/MaxAkbar/CSharpDB/&lt;version&gt;/
+  MaxAkbar.CSharpDB.yaml               # Version
+  MaxAkbar.CSharpDB.locale.en-US.yaml  # Metadata
+  MaxAkbar.CSharpDB.installer.yaml     # x64 + arm64 portable zip</code></pre>
+                </div>
+                <p>Usage:</p>
+                <div class="code-block" data-title="Text">
+                    <pre><code>winget install MaxAkbar.CSharpDB</code></pre>
+                </div>
+
+                <h2 id="files-to-create">Files to Create/Modify</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Action</th>
+                            <th>Phase</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>src/CSharpDB.Cli/CSharpDB.Cli.csproj</code></td><td>EDIT</td><td>1, 2</td></tr>
+                        <tr><td><code>src/CSharpDB.Mcp/CSharpDB.Mcp.csproj</code></td><td>EDIT</td><td>1</td></tr>
+                        <tr><td><code>src/Directory.Build.props</code></td><td>EDIT</td><td>1</td></tr>
+                        <tr><td><code>src/CSharpDB.Cli/Program.cs</code></td><td>EDIT</td><td>1, 2</td></tr>
+                        <tr><td><code>src/CSharpDB.Cli/Commands/ServeCommand.cs</code></td><td>CREATE</td><td>2</td></tr>
+                        <tr><td><code>src/CSharpDB.Api/EndpointRegistration.cs</code></td><td>CREATE</td><td>2</td></tr>
+                        <tr><td><code>src/CSharpDB.Api/Program.cs</code></td><td>EDIT</td><td>2</td></tr>
+                        <tr><td><code>.github/workflows/ci.yml</code></td><td>CREATE</td><td>1</td></tr>
+                        <tr><td><code>.github/workflows/release.yml</code></td><td>CREATE</td><td>1, 3</td></tr>
+                        <tr><td><code>.dockerignore</code></td><td>CREATE</td><td>1</td></tr>
+                        <tr><td><code>Dockerfile</code></td><td>CREATE</td><td>3</td></tr>
+                        <tr><td><code>install.sh</code></td><td>CREATE</td><td>3</td></tr>
+                        <tr><td><code>install.ps1</code></td><td>CREATE</td><td>3</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="verification">Verification Checklist</h2>
+                <h3>Phase 1</h3>
+                <ul>
+                    <li><code>dotnet pack src/CSharpDB.Cli -c Release</code> produces <code>.nupkg</code> with tool metadata</li>
+                    <li><code>dotnet tool install -g --add-source ./artifacts CSharpDB.Cli</code> installs <code>csharpdb</code> command</li>
+                    <li><code>csharpdb version</code> prints version</li>
+                    <li><code>dotnet tool install -g --add-source ./artifacts CSharpDB.Mcp</code> installs <code>csharpdb-mcp</code> command</li>
+                    <li><code>dotnet publish src/CSharpDB.Cli -r win-x64 --self-contained -p:PublishSingleFile=true</code> produces single EXE</li>
+                    <li>CI workflow passes on all 3 OS runners</li>
+                </ul>
+                <h3>Phase 2</h3>
+                <ul>
+                    <li><code>csharpdb serve --database test.db --port 61818</code> starts API server</li>
+                    <li><code>curl http://localhost:61818/api/info</code> returns database info</li>
+                    <li>Standalone <code>CSharpDB.Api</code> project still works independently</li>
+                </ul>
+                <h3>Phase 3</h3>
+                <ul>
+                    <li><code>docker build -t csharpdb/server .</code> succeeds</li>
+                    <li><code>docker run -p 61818:61818 csharpdb/server</code> serves API</li>
+                    <li><code>install.sh</code> downloads and installs correct binary on Linux/macOS</li>
+                    <li><code>install.ps1</code> downloads and installs correct binary on Windows</li>
+                </ul>
+                <h3>Phase 4</h3>
+                <ul>
+                    <li><code>brew tap MaxAkbar/csharpdb &amp;&amp; brew install csharpdb</code> installs on macOS</li>
+                    <li><code>winget install MaxAkbar.CSharpDB</code> installs on Windows</li>
+                </ul>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../roadmap.html">Roadmap</a> &mdash; Project-wide feature roadmap</li>
+                    <li><a href="ecosystem.html">CLI Reference</a> &mdash; CLI meta-commands and usage</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

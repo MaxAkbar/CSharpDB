@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Storage Engine Reference',
+        description: 'CSharpDB.Storage engine reference \u2014 FileStorageDevice, Pager, B+tree, WAL, SlottedPage, Indexing, RecordEncoder, SchemaCatalog, and Folder/File storage.',
+        keywords: 'CSharpDB storage, FileStorageDevice, Pager, B+tree, WAL, write-ahead log, SlottedPage, IndexStore, RecordEncoder, SchemaCatalog',
+        canonicalPath: 'docs/storage-engine.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#architecture-overview">Architecture Overview</a></li>
+                        <li><a href="#filestoragedevice">FileStorageDevice</a></li>
+                        <li><a href="#istoragedevice">IStorageDevice Interface</a></li>
+                        <li><a href="#device-scenarios">Device Scenarios</a></li>
+                        <li><a href="#pager">Pager</a></li>
+                        <li><a href="#btree">B+Tree</a></li>
+                        <li><a href="#wal">Write-Ahead Log (WAL)</a></li>
+                        <li><a href="#slotted-page">Slotted Page Layout</a></li>
+                        <li><a href="#indexing">Indexing</a></li>
+                        <li><a href="#record-serialization">Record Serialization</a></li>
+                        <li><a href="#schema-catalog">Schema Catalog</a></li>
+                        <li><a href="#folder-file-storage">Folder &amp; File Storage</a></li>
+                        <li><a href="#key-design-notes">Key Design Notes</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>CSharpDB.Storage</h1>
+                <p>A low-level, high-performance storage engine for .NET 10 built on top of <code>RandomAccess</code> and <code>SafeFileHandle</code>. It provides random-access async I/O, page caching, write-ahead logging (WAL), crash recovery, and the B+tree/index primitives that power the SQL engine and collection API.</p>
+
+                <h2 id="architecture-overview">Architecture Overview</h2>
+                <div class="code-block" data-title="Text">
+                    <pre><code>+------------------------------------------------------+
+|                   Application                        |
+|          (SQL Engine / Collection API)               |
++------------------------------------------------------+
+|                 SchemaCatalog                         |
+|    Tables - Indexes - Views - Triggers               |
++--------------+---------------+-----------------------+
+|    BTree     |  IndexStore   |  RecordEncoder        |
+|  (data)      |  (secondary)  |  (row format)         |
++--------------+---------------+-----------------------+
+|                    Pager                              |
+|   PageCache - DirtyTracking - PageAllocator          |
++----------------------+-------------------------------+
+|   WriteAheadLog      |   CheckpointCoordinator       |
+|   (WAL + WalIndex)   |   (policy-driven)             |
++----------------------+-------------------------------+
+|              IStorageDevice                           |
+|         (FileStorageDevice / memory)                  |
++------------------------------------------------------+</code></pre>
+                </div>
+                <p>Current storage builds can also enable:</p>
+                <ul>
+                    <li><strong>Memory-mapped reads</strong> for clean main-file pages when the storage device supports it</li>
+                    <li><strong>Speculative B+tree leaf read-ahead</strong> during sequential forward scans</li>
+                    <li><strong>Checkpoint residency preservation</strong> so already-owned main-file pages stay hot across checkpoint</li>
+                </ul>
+
+                <h3>Page Layout</h3>
+                <div class="code-block" data-title="Text">
+                    <pre><code>Page 0 (File Header):
+  [Magic: 4 bytes "CSDB"]
+  [FormatVersion: 4 bytes]
+  [PageSize: 4 bytes = 4096]
+  [PageCount: 4 bytes]
+  [SchemaRootPage: 4 bytes]
+  [FreelistHead: 4 bytes]
+  [ChangeCounter: 4 bytes]
+  [... reserved to 100 bytes ...]
+  [Slotted page content: 3996 bytes]
+
+Pages 1+:
+  [SlottedPage: 4096 bytes]
+    [Header: 9 bytes]
+      PageType (1) - CellCount (2) - CellContentStart (2) - RightChild/NextLeaf (4)
+    [CellPointers: 2 bytes each]
+    [Free space]
+    [Cells: growing backward from page end]</code></pre>
+                </div>
+
+                <h2 id="filestoragedevice">FileStorageDevice</h2>
+                <p><code>FileStorageDevice</code> wraps a <code>SafeFileHandle</code> opened with <code>FileOptions.Asynchronous | FileOptions.RandomAccess</code>, giving you:</p>
+                <ul>
+                    <li><strong>True async I/O</strong> via <code>RandomAccess.ReadAsync</code> / <code>RandomAccess.WriteAsync</code></li>
+                    <li><strong>Position-independent reads and writes</strong> &mdash; no seek, no shared file pointer</li>
+                    <li><strong>Concurrent reads</strong> from other processes (<code>FileShare.Read</code>)</li>
+                    <li><strong>Direct fsync</strong> to durable storage via <code>RandomAccess.FlushToDisk</code></li>
+                </ul>
+                <div class="code-block" data-title="C#">
+                    <pre><code>public FileStorageDevice(string filePath, bool createNew = false)</code></pre>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Parameter</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>filePath</code></td><td>Path to the database file.</td></tr>
+                        <tr><td><code>createNew</code></td><td><code>true</code> &rarr; <code>FileMode.CreateNew</code> (fails if file exists). <code>false</code> &rarr; <code>OpenOrCreate</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="istoragedevice">IStorageDevice Interface</h2>
+                <p>All storage operations go through <code>IStorageDevice</code>, making it easy to swap implementations (e.g., for in-memory testing).</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>public interface IStorageDevice : IAsyncDisposable, IDisposable
+{
+    long Length { get; }
+    ValueTask&lt;int&gt; ReadAsync(long offset, Memory&lt;byte&gt; buffer, CancellationToken ct = default);
+    ValueTask WriteAsync(long offset, ReadOnlyMemory&lt;byte&gt; buffer, CancellationToken ct = default);
+    ValueTask FlushAsync(CancellationToken ct = default);
+    ValueTask SetLengthAsync(long length, CancellationToken ct = default);
+}</code></pre>
+                </div>
+
+                <h2 id="device-scenarios">Device Scenarios</h2>
+
+                <h3>Create a New File</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using var device = new FileStorageDevice("mydb.cdb", createNew: true);
+Console.WriteLine($"File created. Length: {device.Length}"); // 0</code></pre>
+                </div>
+
+                <h3>Write and Read Raw Bytes</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using var device = new FileStorageDevice("mydb.cdb");
+byte[] payload = "Hello, CSharpDB!"u8.ToArray();
+await device.WriteAsync(offset: 0, payload);
+
+var buffer = new byte[16];
+int bytesRead = await device.ReadAsync(offset: 0, buffer);
+Console.WriteLine(System.Text.Encoding.UTF8.GetString(buffer, 0, bytesRead));</code></pre>
+                </div>
+
+                <h3>Pre-allocate / Extend File Length</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using var device = new FileStorageDevice("mydb.cdb", createNew: true);
+const int PageSize = 4096;
+await device.SetLengthAsync(PageSize * 8);
+Console.WriteLine($"Pre-allocated: {device.Length} bytes"); // 32768</code></pre>
+                </div>
+
+                <h3>Flush to Disk (fsync)</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await device.WriteAsync(offset: 0, data);
+await device.FlushAsync(); // durable on disk after this returns</code></pre>
+                </div>
+
+                <h3>Injecting via IStorageDevice (Testability)</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// Production wiring
+IStorageDevice device = new FileStorageDevice("mydb.cdb");
+var pager = await Pager.CreateAsync(device, wal, walIndex);
+
+// In a unit test -- swap in your own IStorageDevice implementation</code></pre>
+                </div>
+
+                <h2 id="pager">Pager</h2>
+                <p>The <code>Pager</code> sits between the B+tree layer and the storage device. It owns the page cache, tracks dirty pages, coordinates transactions, manages WAL integration, and drives checkpointing.</p>
+
+                <h3>Create a New Database</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using var device = new FileStorageDevice("mydb.cdb", createNew: true);
+var walIndex = new WalIndex();
+await using var wal = new WriteAheadLog("mydb.cdb", walIndex);
+await wal.OpenAsync(currentDbPageCount: 0);
+
+var pager = await Pager.CreateAsync(device, wal, walIndex);
+await pager.InitializeNewDatabaseAsync(); // writes file header (page 0)</code></pre>
+                </div>
+
+                <h3>Open and Recover an Existing Database</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var pager = await Pager.CreateAsync(device, wal, walIndex);
+await pager.RecoverAsync(); // replays committed WAL frames</code></pre>
+                </div>
+
+                <h3>Read and Write Pages</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>byte[] page = await pager.GetPageAsync(pageId: 1);
+page[0] = 0xFF;
+await pager.MarkDirtyAsync(pageId: 1); // tracked for WAL write on commit</code></pre>
+                </div>
+
+                <h3>Transaction Lifecycle</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await pager.BeginTransactionAsync();
+try
+{
+    // ... modify pages via B+tree ...
+    await pager.CommitAsync(); // writes dirty pages to WAL, fsync
+}
+catch
+{
+    await pager.RollbackAsync(); // discards uncommitted WAL frames
+    throw;
+}</code></pre>
+                </div>
+
+                <h3>Snapshot Isolation (Concurrent Readers)</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>WalSnapshot snapshot = pager.AcquireReaderSnapshot();
+Pager snapshotPager = pager.CreateSnapshotReader(snapshot);
+byte[] page = await snapshotPager.GetPageAsync(pageId: 1);
+pager.ReleaseReaderSnapshot();</code></pre>
+                </div>
+
+                <h3>Configure Checkpoint Policy</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var options = new PagerOptions
+{
+    CheckpointPolicy = new AnyCheckpointPolicy(
+        new FrameCountCheckpointPolicy(threshold: 500),
+        new TimeIntervalCheckpointPolicy(TimeSpan.FromMinutes(5))
+    ),
+    AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+    AutoCheckpointMaxPagesPerStep = 64
+};</code></pre>
+                </div>
+                <p>Built-in policies:</p>
+                <table>
+                    <thead>
+                        <tr><th>Policy</th><th>Triggers When</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>FrameCountCheckpointPolicy(n)</code></td><td>Committed frame count exceeds <code>n</code></td></tr>
+                        <tr><td><code>WalSizeCheckpointPolicy(bytes)</code></td><td>Estimated WAL size exceeds <code>bytes</code></td></tr>
+                        <tr><td><code>TimeIntervalCheckpointPolicy(span)</code></td><td>Elapsed time since last checkpoint exceeds <code>span</code></td></tr>
+                        <tr><td><code>AnyCheckpointPolicy(...)</code></td><td>Any sub-policy triggers</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="btree">B+Tree</h2>
+                <p>B+tree keyed by signed 64-bit <code>long</code> keys. Leaf pages store <code>(key, payload)</code> pairs; interior pages store routing keys and child pointers. Supports forward-only cursor iteration, cache-only fast paths, and page-level rebalance/merge on delete.</p>
+
+                <h3>Create and Use a B+Tree</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>uint rootPageId = await BTree.CreateNewAsync(pager);
+var tree = new BTree(pager, rootPageId);
+
+// Insert
+byte[] payload = System.Text.Encoding.UTF8.GetBytes("Hello, B+tree!");
+await tree.InsertAsync(key: 42, payload);
+
+// Point lookup
+byte[]? result = await tree.FindAsync(key: 42);
+
+// Cache-only fast path
+if (tree.TryFindCached(key: 42, out byte[]? cached))
+    Console.WriteLine($"Cache hit: {cached is not null}");
+
+// Delete
+bool deleted = await tree.DeleteAsync(key: 42);
+
+// Forward cursor scan
+var cursor = tree.CreateCursor();
+while (await cursor.MoveNextAsync())
+    Console.WriteLine($"Key={cursor.CurrentKey}");
+
+// Seek to a specific key
+if (await cursor.SeekAsync(targetKey: 100))
+    do { Console.WriteLine(cursor.CurrentKey); }
+    while (await cursor.MoveNextAsync());
+
+// Count entries
+long count = await tree.CountEntriesAsync();</code></pre>
+                </div>
+
+                <h2 id="wal">Write-Ahead Log (WAL)</h2>
+                <p>Redo-style WAL for crash recovery and concurrent snapshot-isolated readers. Each commit writes dirty pages as frames to the WAL file. On checkpoint, committed frames are copied to the main database file.</p>
+                <div class="code-block" data-title="Text">
+                    <pre><code>WAL File Format:
+  [WAL Header: 32 bytes]
+    Magic - Version - PageSize - Checksum salt
+  [Frame 0: 4120 bytes]
+    [FrameHeader: 24 bytes] - PageId - DbPageCount - Checksum
+    [PageData: 4096 bytes]
+  [Frame 1: 4120 bytes]
+    ...</code></pre>
+                </div>
+
+                <h3>Open, Write, and Checkpoint</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var walIndex = new WalIndex();
+await using var wal = new WriteAheadLog("mydb.cdb", walIndex);
+await wal.OpenAsync(currentDbPageCount: pager.PageCount);
+
+// Write transaction
+wal.BeginTransaction();
+await wal.AppendFrameAsync(pageId: 1, pageData);
+await wal.CommitAsync(newDbPageCount: pager.PageCount);
+
+// Checkpoint to main file
+await wal.CheckpointAsync(device, pageCount: pager.PageCount);
+walIndex.Reset();</code></pre>
+                </div>
+
+                <h2 id="slotted-page">Slotted Page Layout</h2>
+                <p><code>SlottedPage</code> is a struct that overlays a <code>byte[4096]</code> buffer, providing structured access to variable-size cells within a fixed-size page.</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>byte[] buffer = new byte[4096];
+var sp = new SlottedPage(buffer, pageId: 1);
+sp.Initialize(PageConstants.PageTypeLeaf);
+
+byte[] cellData = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+bool inserted = sp.InsertCell(index: 0, cellData);
+Span&lt;byte&gt; cell = sp.GetCell(index: 0);
+
+sp.DeleteCell(index: 0);
+sp.Defragment(); // rewrites cells contiguously</code></pre>
+                </div>
+
+                <h2 id="indexing">Indexing</h2>
+                <p>Secondary B+tree-backed indexes with optional caching and ordered range scan support.</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>uint indexRootPage = await BTree.CreateNewAsync(pager);
+var indexTree = new BTree(pager, indexRootPage);
+IIndexStore index = new BTreeIndexStore(indexTree);
+
+// Insert and lookup
+byte[] rowIdPayload = BitConverter.GetBytes(42L);
+await index.InsertAsync(key: hashOfColumnValue, rowIdPayload);
+byte[]? result = await index.FindAsync(key: hashOfColumnValue);
+
+// Range scan
+var range = new IndexScanRange(
+    LowerBound: 100, LowerInclusive: true,
+    UpperBound: 200, UpperInclusive: false);
+var cursor = index.CreateCursor(range);
+while (await cursor.MoveNextAsync())
+    Console.WriteLine($"IndexKey={cursor.CurrentKey}");
+
+// Add caching
+IIndexStore cached = new CachingIndexStore(
+    inner: new BTreeIndexStore(indexTree),
+    capacity: 2048);</code></pre>
+                </div>
+
+                <h2 id="record-serialization">Record Serialization</h2>
+                <p>Compact binary encoding for database rows. Supports selective column projection and fast filter evaluation without materializing managed strings.</p>
+                <div class="code-block" data-title="Text">
+                    <pre><code>Binary Format:
+  [columnCount: varint]
+  [col0_typeTag: 1 byte] [col0_data: ...]
+  [col1_typeTag: 1 byte] [col1_data: ...]
+
+Type Tags:
+  Null (0x00)    -&gt; no data
+  Integer (0x01) -&gt; 8 bytes, little-endian long
+  Text (0x02)    -&gt; [length: varint] [UTF-8 bytes]
+  Real (0x03)    -&gt; 8 bytes, little-endian double (IEEE 754)
+  Blob (0x04)    -&gt; [length: varint] [raw bytes]</code></pre>
+                </div>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// Encode and decode
+var values = new DbValue[]
+{
+    DbValue.FromInteger(1),
+    DbValue.FromText("Alice"),
+    DbValue.FromInteger(30)
+};
+byte[] encoded = RecordEncoder.Encode(values);
+DbValue[] decoded = RecordEncoder.Decode(encoded);
+
+// Selective column projection
+DbValue[] partial = RecordEncoder.DecodeUpTo(encoded, maxColumnIndexInclusive: 1);
+DbValue age = RecordEncoder.DecodeColumn(encoded, columnIndex: 2);
+
+// Fast filter without materialization
+byte[] expectedUtf8 = "Alice"u8.ToArray();
+if (RecordEncoder.TryColumnTextEquals(encoded, columnIndex: 1, expectedUtf8, out bool equals))
+    Console.WriteLine($"Column 1 is Alice: {equals}");</code></pre>
+                </div>
+
+                <h2 id="schema-catalog">Schema Catalog</h2>
+                <p>B+tree-backed metadata store for tables, indexes, views, and triggers. Provides in-memory caching with a schema version counter for cache invalidation.</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var catalog = await SchemaCatalog.CreateAsync(pager);
+
+// Create a table
+var schema = new TableSchema
+{
+    TableName = "users",
+    Columns = new[]
+    {
+        new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true },
+        new ColumnDefinition { Name = "name", Type = DbType.Text },
+        new ColumnDefinition { Name = "age", Type = DbType.Integer },
+    }
+};
+await catalog.CreateTableAsync(schema);
+
+// Query table metadata
+TableSchema? users = catalog.GetTable("users");
+uint rootPage = catalog.GetTableRootPage("users");
+BTree tableTree = catalog.GetTableTree("users");
+
+// Create and query indexes
+var indexSchema = new IndexSchema
+{
+    IndexName = "idx_users_name",
+    TableName = "users",
+    Columns = new[] { "name" },
+    IsUnique = false,
+};
+await catalog.CreateIndexAsync(indexSchema);
+IIndexStore indexStore = catalog.GetIndexStore("idx_users_name");
+
+// Views and triggers
+await catalog.CreateViewAsync("active_users", "SELECT * FROM users WHERE age &gt; 18");
+string? viewSql = catalog.GetViewSql("active_users");</code></pre>
+                </div>
+
+                <h2 id="folder-file-storage">Folder &amp; File Storage</h2>
+                <p>To build a folder/file storage system, use the higher-level <code>Database</code> + <code>Collection&lt;T&gt;</code> API from <code>CSharpDB.Engine</code>. A single <code>.cdb</code> file holds all folders and files as typed collection documents in B+tree-backed collections.</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using var db = await Database.OpenAsync("storage.cdb");
+var folders = await db.GetCollectionAsync&lt;FolderEntry&gt;("folders");
+var files   = await db.GetCollectionAsync&lt;FileEntry&gt;("files");
+
+// Create a folder
+await folders.PutAsync("/documents", new FolderEntry(
+    Name: "documents", Path: "/documents",
+    CreatedAt: DateTime.UtcNow));
+
+// Create a file
+await files.PutAsync("/documents/readme.txt", new FileEntry(
+    Name: "readme.txt", FolderPath: "/documents",
+    Content: "Hello world", ContentType: "text/plain",
+    SizeBytes: 11, CreatedAt: DateTime.UtcNow, UpdatedAt: DateTime.UtcNow));
+
+// Read a file
+FileEntry? file = await files.GetAsync("/documents/readme.txt");
+
+// List files in a folder
+await foreach (var kvp in files.FindAsync(f =&gt; f.FolderPath == "/documents"))
+    Console.WriteLine(kvp.Value.Name);</code></pre>
+                </div>
+
+                <h2 id="key-design-notes">Key Design Notes</h2>
+                <table>
+                    <thead>
+                        <tr><th>Concern</th><th>Detail</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>No shared file pointer</strong></td><td><code>RandomAccess</code> APIs are stateless w.r.t. position, so concurrent reads at different offsets are safe without locking.</td></tr>
+                        <tr><td><strong>Async-first</strong></td><td>All I/O is issued via <code>RandomAccess.ReadAsync</code> / <code>WriteAsync</code>.</td></tr>
+                        <tr><td><strong>Zero-fill on short reads</strong></td><td><code>ReadAsync</code> always fills the entire buffer. Pages beyond EOF are returned as zeros.</td></tr>
+                        <tr><td><strong>fsync on flush</strong></td><td><code>FlushAsync</code> calls <code>RandomAccess.FlushToDisk</code> which maps to <code>FlushFileBuffers</code> (Windows) or <code>fsync</code> (Linux/macOS).</td></tr>
+                        <tr><td><strong>4 KB page size</strong></td><td>All pages are <code>PageConstants.PageSize</code> (4096 bytes). Page 0 reserves 100 bytes for the file header.</td></tr>
+                        <tr><td><strong>Single writer, multiple readers</strong></td><td>The <code>TransactionCoordinator</code> enforces a single writer via <code>SemaphoreSlim</code>. Readers use WAL snapshots for isolation.</td></tr>
+                        <tr><td><strong>Optional memory-mapped reads</strong></td><td>The pager can use memory-mapped reads for clean main-file pages when <code>PagerOptions.UseMemoryMappedReads</code> is enabled.</td></tr>
+                        <tr><td><strong>Sequential scan read-ahead</strong></td><td>The pager can speculatively pull the next B+tree leaf page during forward scans.</td></tr>
+                        <tr><td><strong>Checkpoint residency preservation</strong></td><td>With <code>PreserveOwnedPagesOnCheckpoint</code>, already-owned main-file pages can stay resident across checkpoint.</td></tr>
+                        <tr><td><strong>Pluggable checkpoint policies</strong></td><td><code>ICheckpointPolicy</code> allows frame-count, WAL-size, time-interval, or custom composite triggers.</td></tr>
+                        <tr><td><strong>Schema versioning</strong></td><td><code>SchemaCatalog.SchemaVersion</code> increments on every DDL operation, enabling cache invalidation.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="architecture.html">Architecture Guide</a></li>
+                    <li><a href="../roadmap.html">Roadmap</a></li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

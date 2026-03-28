@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'CSharpDB.Core to CSharpDB.Primitives Migration',
+        description: 'Migration guide for renaming CSharpDB.Core to CSharpDB.Primitives in v2.0 \u2014 namespace, project reference, and binary impact.',
+        keywords: 'CSharpDB migration, CSharpDB.Core, CSharpDB.Primitives, v2.0, namespace rename',
+        canonicalPath: 'docs/migrations.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1><code>CSharpDB.Core</code> to <code>CSharpDB.Primitives</code></h1>
+                <p><code>v2.0</code> makes the primitives rename permanent. The old <code>CSharpDB.Core</code> project, assembly, and namespace identities are removed from the active repo surface. There is no compatibility shim, no forwarding assembly, and no dual-namespace support.</p>
+
+                <h2 id="source-migration">Source Migration</h2>
+                <p>Update namespace imports:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// Before
+using CSharpDB.Core;
+
+// After
+using CSharpDB.Primitives;</code></pre>
+                </div>
+                <p>Update fully-qualified symbols:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// Before
+CSharpDB.Core.DbType.Integer
+CSharpDB.Core.CSharpDbException
+
+// After
+CSharpDB.Primitives.DbType.Integer
+CSharpDB.Primitives.CSharpDbException</code></pre>
+                </div>
+
+                <h2 id="project-migration">Project Migration</h2>
+                <p>Update project references:</p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;!-- Before --&gt;
+&lt;ProjectReference Include="..\..\src\CSharpDB.Core\CSharpDB.Core.csproj" /&gt;
+
+&lt;!-- After --&gt;
+&lt;ProjectReference Include="..\..\src\CSharpDB.Primitives\CSharpDB.Primitives.csproj" /&gt;</code></pre>
+                </div>
+                <p>Update package usage:</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code># Before
+dotnet add package CSharpDB.Core
+
+# After
+dotnet add package CSharpDB.Primitives</code></pre>
+                </div>
+
+                <h2 id="binary-impact">Binary Impact</h2>
+                <ul>
+                    <li>The assembly name is now <code>CSharpDB.Primitives.dll</code>.</li>
+                    <li>Any code compiled against <code>CSharpDB.Core.dll</code> must be rebuilt against <code>CSharpDB.Primitives.dll</code>.</li>
+                    <li>Reflection, <code>typeof(...)</code> comparisons, and serialized type names must be updated if they referenced the old namespace or assembly name.</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

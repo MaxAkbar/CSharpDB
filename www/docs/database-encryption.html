@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Database Encryption \u2014 Roadmap & Design',
+        description: 'CSharpDB database encryption roadmap and design — at-rest encryption for database and WAL files with AES-GCM, passphrase-derived keys, and explicit migration.',
+        keywords: 'CSharpDB encryption, at-rest encryption, AES-GCM, WAL encryption, database security, passphrase',
+        canonicalPath: 'docs/database-encryption.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#problem">Problem</a></li>
+                        <li><a href="#goal">Goal</a></li>
+                        <li><a href="#recommended-design">Recommended Design</a>
+                            <ul>
+                                <li><a href="#encrypted-storage-format">Encrypted Storage Format</a></li>
+                                <li><a href="#encrypt-payloads">Encrypt Payloads</a></li>
+                                <li><a href="#crypto-and-key-hierarchy">Crypto &amp; Key Hierarchy</a></li>
+                                <li><a href="#authentication">Authentication</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#public-surface-changes">Public Surface Changes</a></li>
+                        <li><a href="#compatibility-and-migration">Compatibility &amp; Migration</a></li>
+                        <li><a href="#rollout-phases">Rollout Phases</a></li>
+                        <li><a href="#validation-and-testing">Validation &amp; Testing</a></li>
+                        <li><a href="#non-goals">Non-Goals</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>CSharpDB Database Encryption &mdash; Roadmap &amp; Design</h1>
+
+                <div class="callout callout-info">
+                    <strong>Status (March 2026):</strong> Research. This document captures the recommended direction for at-rest encryption in CSharpDB. The first implementation milestone should cover managed local surfaces only; Native/FFI support is a follow-up phase.
+                </div>
+
+                <p>CSharpDB currently stores database and WAL bytes in plaintext on disk. This document outlines how to add full at-rest encryption without weakening crash recovery, snapshot readers, checkpointing, or export flows.</p>
+
+                <h2 id="problem">Problem</h2>
+                <p>Today:</p>
+                <ul>
+                    <li>the main <code>.db</code> file is plaintext</li>
+                    <li>the companion <code>.wal</code> file is plaintext</li>
+                    <li><code>SaveToFileAsync</code> and <code>LoadIntoMemoryAsync</code> operate on plaintext bytes</li>
+                    <li>storage diagnostics read raw bytes assuming the current plaintext format</li>
+                </ul>
+                <p>A simple <code>IStorageDevice</code> wrapper is not enough for first-class encryption because:</p>
+                <ul>
+                    <li>WAL I/O is implemented separately and does not flow through <code>IStorageDevice</code></li>
+                    <li>page and WAL frame sizes are hard-coded around plaintext layouts</li>
+                    <li>diagnostics and inspection tools read file bytes directly</li>
+                    <li>recovery and checkpoint logic assume the current on-disk header/frame structure</li>
+                </ul>
+                <p>If encryption is added as an ad hoc wrapper in only one layer, the feature will be incomplete and the format will be brittle.</p>
+
+                <h2 id="goal">Goal</h2>
+                <p>Add <strong>full at-rest encryption</strong> for managed local surfaces:</p>
+                <ol>
+                    <li>Encrypt the main database file</li>
+                    <li>Encrypt the WAL file</li>
+                    <li>Preserve crash recovery and checkpoint correctness</li>
+                    <li>Support both plaintext and encrypted files</li>
+                    <li>Require explicit migration/export instead of silently rewriting plaintext files on open</li>
+                    <li>Expose configuration through code options and ADO.NET connection strings</li>
+                </ol>
+                <p>For v1, the scope is:</p>
+                <ul>
+                    <li><code>CSharpDB.Engine</code></li>
+                    <li><code>CSharpDB.Storage</code></li>
+                    <li><code>CSharpDB.Data</code></li>
+                    <li>direct <code>CSharpDB.Client</code> usage</li>
+                    <li>API/MCP local configuration</li>
+                    <li>CLI local/direct usage</li>
+                    <li>storage diagnostics behavior for encrypted files</li>
+                </ul>
+                <p>Out of scope for v1:</p>
+                <ul>
+                    <li>TLS or remote transport security</li>
+                    <li>OS secret-store integration</li>
+                    <li>Native/FFI and downstream language wrapper changes</li>
+                </ul>
+
+                <h2 id="recommended-design">Recommended Design</h2>
+
+                <h3 id="encrypted-storage-format">1. Use a new encrypted storage format</h3>
+                <p>Encryption should be implemented as a <strong>new encrypted storage format version</strong>, not as a raw byte wrapper around the existing plaintext file format.</p>
+                <p>That format layer should own:</p>
+                <ul>
+                    <li>file header layout</li>
+                    <li>logical page to physical page encoding</li>
+                    <li>WAL header and frame encoding</li>
+                    <li>authenticated metadata handling</li>
+                    <li>format detection at open time</li>
+                </ul>
+                <p>The storage stack should support at least:</p>
+                <ul>
+                    <li>plaintext format v1: current format, unchanged</li>
+                    <li>encrypted format v2: new format with encrypted pages and WAL frames</li>
+                </ul>
+
+                <h3 id="encrypt-payloads">2. Encrypt page and WAL payloads, not the entire bootstrap header</h3>
+                <p>The encrypted format should keep a small clear bootstrap header so the engine can:</p>
+                <ul>
+                    <li>detect encrypted vs plaintext format</li>
+                    <li>identify page size / physical layout</li>
+                    <li>read KDF parameters</li>
+                    <li>read the wrapped database master key</li>
+                </ul>
+                <p>Recommended approach:</p>
+                <ul>
+                    <li>clear file header for bootstrap metadata</li>
+                    <li>encrypted logical page payloads</li>
+                    <li>clear WAL header for bootstrap metadata</li>
+                    <li>encrypted WAL frame payloads</li>
+                </ul>
+
+                <h3 id="crypto-and-key-hierarchy">3. Crypto and key hierarchy</h3>
+                <p>Recommended baseline:</p>
+                <ul>
+                    <li><code>AesGcm</code> from <code>System.Security.Cryptography</code></li>
+                    <li>random database master key generated at database creation time</li>
+                    <li>passphrase-derived KEK using PBKDF2-HMAC-SHA256</li>
+                    <li>wrapped/encrypted master key stored in the bootstrap header</li>
+                    <li>separate derived subkeys for DB pages and WAL frames</li>
+                </ul>
+                <p>This keeps passphrase handling simple while allowing future extension to stronger key-management sources.</p>
+
+                <h3 id="authentication">4. Authentication replaces plaintext-style integrity checks</h3>
+                <p>Encrypted files should rely on AEAD authentication tags for integrity of encrypted payloads.</p>
+                <p>Implication:</p>
+                <ul>
+                    <li>plaintext WAL checksum behavior remains for plaintext format</li>
+                    <li>encrypted format uses authenticated encryption instead of additive-style checksum validation for encrypted frames/pages</li>
+                </ul>
+
+                <h2 id="public-surface-changes">Public Surface Changes</h2>
+                <h3>Engine and storage options</h3>
+                <p>Add a small public configuration surface for encryption:</p>
+                <ul>
+                    <li><code>DatabaseEncryptionOptions</code></li>
+                    <li><code>StorageEngineOptions.Encryption</code></li>
+                    <li><code>StorageEngineOptionsBuilder.UseEncryption(...)</code></li>
+                </ul>
+                <p>Recommended fields:</p>
+                <ul>
+                    <li><code>RequireEncrypted</code></li>
+                    <li><code>Passphrase</code></li>
+                    <li><code>KdfIterations</code></li>
+                </ul>
+
+                <h3>Export and migration</h3>
+                <p>Keep the current <code>SaveToFileAsync(string path)</code> behavior as the default preserve-current-format path. Add explicit save/export options for format transitions:</p>
+                <ul>
+                    <li><code>DatabaseSaveOptions</code></li>
+                    <li><code>Database.SaveToFileAsync(string path, DatabaseSaveOptions options, ...)</code></li>
+                    <li><code>CSharpDbConnection.SaveToFileAsync(string path, DatabaseSaveOptions options, ...)</code></li>
+                </ul>
+                <p>That API becomes the migration path for:</p>
+                <ul>
+                    <li>plaintext &rarr; encrypted</li>
+                    <li>encrypted &rarr; plaintext</li>
+                    <li>encrypted &rarr; encrypted with a new passphrase</li>
+                </ul>
+
+                <h3>ADO.NET connection strings</h3>
+                <p>Extend <code>CSharpDbConnectionStringBuilder</code> with:</p>
+                <ul>
+                    <li><code>Encrypt=true|false</code></li>
+                    <li><code>Password=&lt;passphrase&gt;</code></li>
+                    <li><code>Kdf Iterations=&lt;int&gt;</code> optional</li>
+                </ul>
+                <p>Recommended semantics:</p>
+                <ul>
+                    <li><code>Encrypt=true</code> + new file creates encrypted storage</li>
+                    <li><code>Encrypt=true</code> + encrypted file opens encrypted storage</li>
+                    <li><code>Encrypt=true</code> + plaintext file fails with migration-required behavior</li>
+                    <li><code>Encrypt=false</code> or unset opens plaintext only</li>
+                    <li><code>Password</code> without <code>Encrypt=true</code> is invalid configuration</li>
+                </ul>
+
+                <h3>CLI local/direct usage</h3>
+                <p>Recommended additions:</p>
+                <ul>
+                    <li><code>--connection-string</code></li>
+                    <li><code>--password-env &lt;NAME&gt;</code></li>
+                </ul>
+                <p>Interactive prompting is not required for v1.</p>
+
+                <h3>Connection pooling and direct client behavior</h3>
+                <p>Pooled <code>Database</code> instances must not be shared across different encryption settings for the same file path. Pool identity should include:</p>
+                <ul>
+                    <li>normalized file path</li>
+                    <li>encryption enabled/disabled</li>
+                    <li>non-secret fingerprint of the effective encryption configuration</li>
+                </ul>
+
+                <h2 id="compatibility-and-migration">Compatibility and Migration Policy</h2>
+                <h3>Supported coexistence</h3>
+                <p>The engine should support both existing plaintext databases and new encrypted databases.</p>
+                <h3>Required behaviors</h3>
+                <ul>
+                    <li>plaintext v1 opens unchanged when encryption is not requested</li>
+                    <li>encrypted v2 requires a passphrase and fails fast when the passphrase is missing or wrong</li>
+                    <li><code>Encrypt=true</code> against an existing plaintext database does <strong>not</strong> auto-upgrade the file</li>
+                    <li>the user must explicitly export/migrate the database into encrypted storage</li>
+                </ul>
+                <h3>Why explicit migration</h3>
+                <p>Automatic rewrite-on-open is too risky because it combines format conversion, secret handling, WAL/recovery interaction, and file replacement into a single open path. Export/migration keeps the risky transformation explicit and testable.</p>
+
+                <h2 id="rollout-phases">Managed Local Rollout Phases</h2>
+                <h3>Phase 1: Storage format and crypto plumbing</h3>
+                <ul>
+                    <li>introduce format detection and runtime format descriptors</li>
+                    <li>add encrypted file/WAL header and payload encoding</li>
+                    <li>integrate authenticated page/frame reads and writes into pager and WAL paths</li>
+                    <li>keep plaintext v1 behavior untouched</li>
+                </ul>
+                <h3>Phase 2: Managed local public surfaces</h3>
+                <ul>
+                    <li>add engine/storage encryption options</li>
+                    <li>add ADO.NET connection string support</li>
+                    <li>update direct client resolution/open behavior</li>
+                    <li>update API/MCP local configuration</li>
+                    <li>update CLI local/direct configuration</li>
+                </ul>
+                <h3>Phase 3: Migration and diagnostics</h3>
+                <ul>
+                    <li>add explicit save/export migration options</li>
+                    <li>support plaintext&harr;encrypted and rekey export flows</li>
+                    <li>update storage inspectors to recognize encrypted files</li>
+                    <li>return "encrypted database, key required" instead of false corruption reports when appropriate</li>
+                </ul>
+                <h3>Phase 4: Native/FFI follow-up</h3>
+                <ul>
+                    <li>extend native open APIs with encryption settings</li>
+                    <li>update language wrappers after the managed format is stable</li>
+                </ul>
+
+                <h2 id="validation-and-testing">Validation and Testing</h2>
+                <p>Minimum validation matrix:</p>
+                <ul>
+                    <li>create encrypted DB, write data, reopen, and verify reads</li>
+                    <li>verify encrypted collections round-trip the same way as SQL tables</li>
+                    <li>verify encrypted WAL recovery after crash-style reopen</li>
+                    <li>verify checkpointing from encrypted WAL to encrypted DB file</li>
+                    <li>verify wrong password and missing password failures</li>
+                    <li>verify plaintext v1 files still open and behave unchanged</li>
+                    <li>verify plaintext &rarr; encrypted export</li>
+                    <li>verify encrypted &rarr; plaintext export</li>
+                    <li>verify encrypted &rarr; encrypted export with a new passphrase</li>
+                    <li>verify <code>LoadIntoMemoryAsync</code> from encrypted files with correct settings</li>
+                    <li>verify connection pooling separation by encryption settings</li>
+                    <li>verify diagnostics behavior with and without key material</li>
+                </ul>
+                <p>Performance regression checks should cover:</p>
+                <ul>
+                    <li>encrypted point reads</li>
+                    <li>encrypted commit path</li>
+                    <li>encrypted checkpoint path</li>
+                    <li>encrypted reopen/recovery</li>
+                </ul>
+
+                <h2 id="non-goals">Non-Goals</h2>
+                <p>This roadmap item does not cover:</p>
+                <ul>
+                    <li>network encryption</li>
+                    <li>authentication/authorization</li>
+                    <li>multi-tenant secret management</li>
+                    <li>platform-specific secret vault integration</li>
+                    <li>Native/FFI support in the first milestone</li>
+                </ul>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../roadmap.html">Roadmap</a></li>
+                    <li><a href="storage-engine.html">Storage Engine Guide</a></li>
+                    <li><a href="architecture.html">Storage Architecture</a></li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
