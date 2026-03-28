@@ -361,7 +361,7 @@ public static class DatabaseMaintenanceCoordinator
                 continue;
 
             foreach (long indexKey in indexKeys)
-                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct);
+                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, cursor.CurrentKey, null, ct: ct);
         }
     }
 

@@ -8427,6 +8427,8 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private readonly JoinType _joinType;
     private readonly int[] _outerKeyIndices;
     private readonly int[] _rightKeyColumnIndices;
+    private readonly string?[] _rightKeyCollations;
+    private readonly bool _usesOrderedTextPayload;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly int _rightPrimaryKeyColumnIndex;
@@ -8466,11 +8468,13 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         JoinType joinType,
         ReadOnlySpan<int> outerKeyIndices,
         ReadOnlySpan<int> rightKeyColumnIndices,
+        ReadOnlySpan<string?> rightKeyCollations,
         int leftColCount,
         int rightColCount,
         int rightPrimaryKeyColumnIndex,
         Expression? residualCondition,
         TableSchema compositeSchema,
+        bool usesOrderedTextPayload = false,
         IRecordSerializer? recordSerializer = null,
         int? estimatedOutputRowCount = null)
     {
@@ -8480,6 +8484,8 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _joinType = joinType;
         _outerKeyIndices = outerKeyIndices.ToArray();
         _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
+        _rightKeyCollations = rightKeyCollations.ToArray();
+        _usesOrderedTextPayload = usesOrderedTextPayload;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _rightPrimaryKeyColumnIndex = rightPrimaryKeyColumnIndex;
@@ -8823,7 +8829,17 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             if (value.IsNull || value.Type is not (DbType.Integer or DbType.Text))
                 return false;
 
-            keyComponents[i] = value;
+            string? collation = i < _rightKeyCollations.Length ? _rightKeyCollations[i] : null;
+            keyComponents[i] = CollationSupport.NormalizeIndexValue(value, collation);
+        }
+
+        if (_usesOrderedTextPayload)
+        {
+            if (keyComponents is not [var textComponent] || textComponent.Type != DbType.Text)
+                return false;
+
+            lookupKey = OrderedTextIndexKeyCodec.ComputeKey(textComponent.AsText);
+            return true;
         }
 
         lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
@@ -8834,6 +8850,30 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     {
         _pendingRowIdOffset = 0;
         _rowIdsVerifiedByIndexPayload = false;
+
+        if (_usesOrderedTextPayload && payload is { Length: > 0 })
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            if (_currentKeyComponents is [var expectedText] &&
+                expectedText.Type == DbType.Text &&
+                OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    expectedText.AsText,
+                    out var orderedMatchingRowIds))
+            {
+                _pendingRowIdPayload = orderedMatchingRowIds;
+                _rowIdsVerifiedByIndexPayload = true;
+                return;
+            }
+
+            _pendingRowIdPayload = ReadOnlyMemory<byte>.Empty;
+            return;
+        }
 
         if (_currentKeyComponents is { Length: > 0 } &&
             payload is { Length: > 0 } &&
@@ -10152,6 +10192,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     private readonly string?[]? _expectedKeyCollations;
     private readonly RecordColumnAccessor?[]? _expectedKeyAccessors;
     private readonly byte[][]? _expectedKeyTextBytes;
+    private readonly bool _usesOrderedTextPayload;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
     private bool _rowIdsVerifiedByIndexPayload;
@@ -10182,6 +10223,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     internal long SeekValue => _seekValue;
     internal int[]? ExpectedKeyColumnIndices => _expectedKeyColumnIndices;
     internal DbValue[]? ExpectedKeyComponents => _expectedKeyComponents;
+    internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
 
     public IndexScanOperator(
         IIndexStore indexStore,
@@ -10191,7 +10233,8 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         IRecordSerializer? recordSerializer = null,
         int[]? expectedKeyColumnIndices = null,
         DbValue[]? expectedKeyComponents = null,
-        string?[]? expectedKeyCollations = null)
+        string?[]? expectedKeyCollations = null,
+        bool usesOrderedTextPayload = false)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
@@ -10201,6 +10244,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _expectedKeyColumnIndices = expectedKeyColumnIndices;
         _expectedKeyComponents = expectedKeyComponents;
         _expectedKeyCollations = expectedKeyCollations;
+        _usesOrderedTextPayload = usesOrderedTextPayload;
         if (expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 })
         {
             _expectedKeyAccessors = BoundColumnAccessHelper.CreateAccessors(_recordSerializer, expectedKeyColumnIndices);
@@ -10492,6 +10536,32 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _rowIdPayloadOffset = 0;
         _rowIdsVerifiedByIndexPayload = false;
 
+        if (_usesOrderedTextPayload && payload is { Length: > 0 })
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            if (_expectedKeyComponents is [var expectedText] &&
+                expectedText.Type == DbType.Text &&
+                OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    expectedText.AsText,
+                    out var orderedMatchingRowIds))
+            {
+                _rowIdPayload = orderedMatchingRowIds;
+                _estimatedRowCount = _rowIdPayload.Length / sizeof(long);
+                _rowIdsVerifiedByIndexPayload = true;
+                return;
+            }
+
+            _rowIdPayload = ReadOnlyMemory<byte>.Empty;
+            _estimatedRowCount = 0;
+            return;
+        }
+
         if (_expectedKeyComponents is { Length: > 0 } &&
             payload is { Length: > 0 } &&
             HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, _expectedKeyComponents, _expectedKeyTextBytes, out var matchingRowIds))
@@ -10748,9 +10818,16 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
     private readonly int _keyColumnIndex;
     private readonly IndexScanRange _scanRange;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly bool _usesOrderedTextPayload;
+    private readonly string? _orderedTextLowerBound;
+    private readonly bool _orderedTextLowerInclusive;
+    private readonly string? _orderedTextUpperBound;
+    private readonly bool _orderedTextUpperInclusive;
     private IIndexCursor? _cursor;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
+    private List<long>? _orderedTextRowIds;
+    private int _orderedTextRowIdOffset;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private bool _reuseCurrentBatch = true;
@@ -10776,6 +10853,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
     internal BTree TableTree => _tableTree;
     internal int KeyColumnIndex => _keyColumnIndex;
     internal IndexScanRange ScanRange => _scanRange;
+    internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
 
     public IndexOrderedScanOperator(
         IIndexStore indexStore,
@@ -10783,6 +10861,11 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         TableSchema schema,
         int keyColumnIndex,
         IndexScanRange scanRange,
+        bool usesOrderedTextPayload = false,
+        string? orderedTextLowerBound = null,
+        bool orderedTextLowerInclusive = true,
+        string? orderedTextUpperBound = null,
+        bool orderedTextUpperInclusive = true,
         IRecordSerializer? recordSerializer = null)
     {
         _indexStore = indexStore;
@@ -10790,6 +10873,11 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         _schema = schema;
         _keyColumnIndex = keyColumnIndex;
         _scanRange = scanRange;
+        _usesOrderedTextPayload = usesOrderedTextPayload;
+        _orderedTextLowerBound = orderedTextLowerBound;
+        _orderedTextLowerInclusive = orderedTextLowerInclusive;
+        _orderedTextUpperBound = orderedTextUpperBound;
+        _orderedTextUpperInclusive = orderedTextUpperInclusive;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
         _currentBatch = CreateBatch(GetTargetColumnCount());
@@ -10837,6 +10925,8 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         _cursor = _indexStore.CreateCursor(_scanRange);
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
+        _orderedTextRowIdOffset = 0;
+        _orderedTextRowIds?.Clear();
         _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
         _currentBatch = CreateBatch(GetTargetColumnCount());
@@ -10908,7 +10998,34 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
 
         while (true)
         {
-            if (_rowIdPayloadOffset + 8 <= _rowIdPayload.Length)
+            if (_usesOrderedTextPayload)
+            {
+                if (_orderedTextRowIds is { Count: > 0 } &&
+                    _orderedTextRowIdOffset < _orderedTextRowIds.Count)
+                {
+                    long rowId = _orderedTextRowIds[_orderedTextRowIdOffset++];
+                    ReadOnlyMemory<byte>? orderedPayload;
+                    if (_tableTree.TryFindCachedMemory(rowId, out var cachedOrderedPayload))
+                    {
+                        orderedPayload = cachedOrderedPayload;
+                    }
+                    else
+                    {
+                        orderedPayload = await _tableTree.FindMemoryAsync(rowId, ct);
+                    }
+
+                    if (orderedPayload is not { } orderedPayloadMemory)
+                        continue;
+
+                    if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(orderedPayloadMemory.Span))
+                        continue;
+
+                    CurrentRowId = rowId;
+                    _currentPayload = orderedPayloadMemory;
+                    return true;
+                }
+            }
+            else if (_rowIdPayloadOffset + 8 <= _rowIdPayload.Length)
             {
                 long rowId = BinaryPrimitives.ReadInt64LittleEndian(
                     _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
@@ -10939,6 +11056,32 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
             {
                 _currentPayload = ReadOnlyMemory<byte>.Empty;
                 return false;
+            }
+
+            if (_usesOrderedTextPayload)
+            {
+                if (!OrderedTextIndexPayloadCodec.IsEncoded(_cursor.CurrentValue.Span))
+                {
+                    throw new InvalidOperationException(
+                        "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+                }
+
+                _orderedTextRowIds ??= [];
+                _orderedTextRowIds.Clear();
+                if (!OrderedTextIndexPayloadCodec.TryCollectMatchingRowIdsInRange(
+                        _cursor.CurrentValue.Span,
+                        _orderedTextLowerBound,
+                        _orderedTextLowerInclusive,
+                        _orderedTextUpperBound,
+                        _orderedTextUpperInclusive,
+                        _orderedTextRowIds))
+                {
+                    throw new InvalidOperationException(
+                        "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+                }
+
+                _orderedTextRowIdOffset = 0;
+                continue;
             }
 
             _rowIdPayload = _cursor.CurrentValue;

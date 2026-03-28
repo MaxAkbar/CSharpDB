@@ -52,11 +52,11 @@
                 <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, or <code>ICU:&lt;locale&gt;</code>, and how to apply collation in SQL and collection indexes.</p>
 
                 <div class="callout callout-success">
-                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
+                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation across SQL schema definitions, query expressions, metadata surfaces, ordered SQL text indexes, and collection path indexes.
                 </div>
 
-                <div class="callout callout-warning">
-                    <strong>Still planned:</strong> Dedicated ordered SQL text index optimization is not implemented yet. SQL text ordering is collation-correct today, but it is not yet backed by a dedicated ordered SQL index path.
+                <div class="callout callout-info">
+                    <strong>Operational note:</strong> The main remaining collation work is performance-baseline refreshes, index-size tracking, and long-term globalization compatibility guidance for ICU-backed indexes.
                 </div>
 
                 <h2 id="overview">Overview</h2>
@@ -294,13 +294,13 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                         </tr>
                     </tbody>
                 </table>
-                <p>One current caveat remains on the SQL side: collated text ordering is semantically correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.</p>
+                <p>The benchmark suite now includes focused ordered-text collation coverage for equality lookups, range scans, top-N ordering, and indexed writes. The remaining gap on the performance side is checked-in index-size tracking rather than basic workload coverage.</p>
 
                 <h2 id="limitations">Current Limitations</h2>
                 <ul>
                     <li><strong>Default behavior is still ordinal.</strong> If you never declare collation, text comparisons and ordering stay case-sensitive and byte-order based.</li>
-                    <li><strong>SQL text ordering is not fully index-optimized.</strong> The semantics are correct, but a dedicated ordered SQL text index strategy is still future work.</li>
                     <li><strong>ICU behavior follows runtime globalization data.</strong> If you move a database across environments or upgrade globalization data, rebuild ICU-backed indexes with <code>REINDEX</code> if you need deterministic persisted ordering.</li>
+                    <li><strong>Index-size growth is workload-dependent.</strong> Collated keys, especially ICU sort keys, can be materially larger than raw ordinal text keys, and the public docs do not yet publish a stable size-growth table.</li>
                     <li><strong>Changing collation means rebuilding index state.</strong> Existing index bytes were written with a specific interpretation and should not be silently reused under different rules.</li>
                 </ul>
 

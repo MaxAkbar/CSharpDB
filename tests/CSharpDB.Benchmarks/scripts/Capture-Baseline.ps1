@@ -17,6 +17,7 @@ param(
         "*BTreeCursorBenchmarks*",
         "*ColdLookupBenchmarks*",
         "*CollectionIndexBenchmarks*",
+        "*CollationIndexBenchmarks*",
         "*StorageTuningBenchmarks*",
         "*InsertBenchmarks*",
         "*JoinBenchmarks*",

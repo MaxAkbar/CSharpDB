@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using CSharpDB.Client;
 using ClientModels = CSharpDB.Client.Models;
 using CSharpDB.Primitives;
@@ -181,6 +182,92 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
         await using var reopened = await Database.OpenAsync(_dbPath, Ct);
         var reopenedUsers = await reopened.GetCollectionAsync<UserDoc>("users", Ct);
         var matches = await CollectAsync(reopenedUsers.FindByIndexAsync(x => x.Age, 30, Ct), Ct);
+
+        Assert.Equal(1, result.RebuiltIndexCount);
+        Assert.Equal(["u:1", "u:2"], matches.Select(item => item.Key).OrderBy(key => key).ToArray());
+    }
+
+    [Fact]
+    public async Task ReindexAsync_RebuildsCollatedSqlIndexes()
+    {
+        const string icuCollation = "ICU:en-US";
+
+        await _client.ExecuteSqlAsync("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO people VALUES (1, 'résumé');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO people VALUES (2, 'Resume');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO people VALUES (3, 'résumé');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO people VALUES (4, 'zebra');", Ct);
+        await _client.ExecuteSqlAsync("CREATE INDEX idx_people_name_ai ON people (name COLLATE NOCASE_AI);", Ct);
+        await _client.ExecuteSqlAsync($"CREATE INDEX idx_people_name_icu ON people (name COLLATE {icuCollation});", Ct);
+
+        var beforeAi = await _client.ExecuteSqlAsync(
+            "SELECT id FROM people WHERE name COLLATE NOCASE_AI = 'RESUME' ORDER BY id;",
+            Ct);
+        var beforeIcu = await _client.ExecuteSqlAsync(
+            $"SELECT id FROM people WHERE name COLLATE {icuCollation} = 'résumé' ORDER BY id;",
+            Ct);
+
+        var result = await _client.ReindexAsync(new ClientModels.ReindexRequest
+        {
+            Scope = ClientModels.ReindexScope.Table,
+            Name = "people",
+        }, Ct);
+
+        var afterAi = await _client.ExecuteSqlAsync(
+            "SELECT id FROM people WHERE name COLLATE NOCASE_AI = 'RESUME' ORDER BY id;",
+            Ct);
+        var afterIcu = await _client.ExecuteSqlAsync(
+            $"SELECT id FROM people WHERE name COLLATE {icuCollation} = 'résumé' ORDER BY id;",
+            Ct);
+        var indexReport = await _client.CheckIndexesAsync(ct: Ct);
+
+        Assert.Equal(2, result.RebuiltIndexCount);
+        Assert.DoesNotContain(indexReport.Issues, issue => issue.Severity == CSharpDB.Storage.Diagnostics.InspectSeverity.Error);
+        Assert.Null(beforeAi.Error);
+        Assert.Null(beforeIcu.Error);
+        Assert.Null(afterAi.Error);
+        Assert.Null(afterIcu.Error);
+        Assert.NotNull(beforeAi.Rows);
+        Assert.NotNull(beforeIcu.Rows);
+        Assert.NotNull(afterAi.Rows);
+        Assert.NotNull(afterIcu.Rows);
+        Assert.Equal([1L, 2L, 3L], beforeAi.Rows.Select(static row => Convert.ToInt64(row[0], CultureInfo.InvariantCulture)).ToArray());
+        Assert.Equal([1L, 3L], beforeIcu.Rows.Select(static row => Convert.ToInt64(row[0], CultureInfo.InvariantCulture)).ToArray());
+        Assert.Equal([1L, 2L, 3L], afterAi.Rows.Select(static row => Convert.ToInt64(row[0], CultureInfo.InvariantCulture)).ToArray());
+        Assert.Equal([1L, 3L], afterIcu.Rows.Select(static row => Convert.ToInt64(row[0], CultureInfo.InvariantCulture)).ToArray());
+    }
+
+    [Fact]
+    public async Task ReindexAsync_RebuildsCollatedCollectionIndexes()
+    {
+        await _client.DisposeAsync();
+
+        const string icuCollation = "ICU:en-US";
+        string collectionIndexName;
+
+        await using (var db = await Database.OpenAsync(_dbPath, Ct))
+        {
+            var users = await db.GetCollectionAsync<UserDoc>("users_icu_collation", Ct);
+            await users.PutAsync("u:1", new UserDoc("résumé", 30), Ct);
+            await users.PutAsync("u:2", new UserDoc("résumé", 31), Ct);
+            await users.PutAsync("u:3", new UserDoc("Resume", 32), Ct);
+            await users.EnsureIndexAsync(x => x.Name, icuCollation, Ct);
+            collectionIndexName = db.GetIndexes()
+                .Single(index => string.Equals(index.TableName, "_col_users_icu_collation", StringComparison.OrdinalIgnoreCase))
+                .IndexName;
+        }
+
+        _client = CreateClient();
+
+        var result = await _client.ReindexAsync(new ClientModels.ReindexRequest
+        {
+            Scope = ClientModels.ReindexScope.Index,
+            Name = collectionIndexName,
+        }, Ct);
+
+        await using var reopened = await Database.OpenAsync(_dbPath, Ct);
+        var reopenedUsers = await reopened.GetCollectionAsync<UserDoc>("users_icu_collation", Ct);
+        var matches = await CollectAsync(reopenedUsers.FindByIndexAsync(x => x.Name, "résumé", Ct), Ct);
 
         Assert.Equal(1, result.RebuiltIndexCount);
         Assert.Equal(["u:1", "u:2"], matches.Select(item => item.Key).OrderBy(key => key).ToArray());

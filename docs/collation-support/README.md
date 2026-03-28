@@ -1,6 +1,6 @@
 # Multilingual Text Support
 
-> **Status (March 2026):** Implemented for `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` collations across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly dedicated ordered SQL text index optimization plus benchmark and compatibility hardening.
+> **Status (March 2026):** Implemented for `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` collations across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, SQL ordered text indexes, and collection path indexes. Remaining work is mainly broader performance baseline refreshes, index-size benchmarking, and long-term globalization compatibility hardening.
 
 CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting remain ordinal unless users opt into collation explicitly, but `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
 
@@ -8,11 +8,11 @@ CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning a
 
 ## Remaining Gaps
 
-The core multilingual-text feature set is now in place, but three important limitations still remain:
+The core multilingual-text feature set is now in place, but a few operational limitations still remain:
 
 1. Default text semantics are still ordinal. Users must opt into `COLLATE NOCASE` on columns, indexes, collection indexes, or query expressions.
-2. SQL text `ORDER BY` and range semantics are collation-correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.
-3. ICU-based sort semantics depend on the active .NET globalization data for the runtime environment. If those rules change across upgrades, collated indexes should be rebuilt with `REINDEX`.
+2. ICU-based sort semantics depend on the active .NET globalization data for the runtime environment. If those rules change across upgrades, collated indexes should be rebuilt with `REINDEX`.
+3. The benchmark suite now covers collated write, equality, range, and top-N order workloads, but index-size growth is not yet tracked as a checked-in guardrail.
 
 The current implementation centers collation in these paths:
 
@@ -185,10 +185,10 @@ This section maps the feature to the concrete engine objects that will change. T
 
 ### Phase 5: Ordered SQL text index path
 
-Current SQL text indexes are hash-based, which is enough for equality but not for true locale-aware ordering. Collection ordered text indexes already have a separate ordered-key path.
+SQL text indexes now support a dedicated ordered-text storage mode for single-column `TEXT` indexes so collation-aware range and `ORDER BY` plans can use ordered index scans instead of falling back to generic evaluation.
 
 - [x] Initial strategy: keep collated SQL text `ORDER BY` and range semantics correct even without a dedicated ordered SQL text index path.
-- [ ] If ordered SQL text indexes are introduced, add the new path alongside current hashed SQL indexes rather than mutating the existing hash format in place.
+- [x] Add ordered SQL text indexes alongside current hashed SQL indexes rather than mutating the existing hash format in place.
 - [x] Update planner selection rules in `src/CSharpDB.Execution/QueryPlanner.cs` so collated text range/order plans only use compatible index structures.
 
 ### Phase 6: Collection path indexes
@@ -221,13 +221,15 @@ Several engine paths rebuild AST objects. Any new collation fields must be prese
 - [x] Schema serialization compatibility tests for collated and legacy non-collated schemas.
 - [x] SQL behavior tests for equality, `LIKE`, `ORDER BY`, query-level overrides, and unique index enforcement under `NOCASE`.
 - [x] Collection tests for collated `EnsureIndexAsync`, `FindByPathAsync`, and `FindByPathRangeAsync`.
-- [ ] Benchmark non-collated workloads to verify default `BINARY` paths retain current performance.
-- [ ] Benchmark collated write cost, lookup cost, range-scan cost, and index size growth.
+- [x] Benchmark non-collated workloads to verify default `BINARY` paths retain current performance.
+- [x] Benchmark collated write cost, lookup cost, range-scan cost, and top-N `ORDER BY` cost with focused `CollationIndexBenchmarks`.
+- [x] Add `REINDEX` regression coverage for collated SQL and collection indexes.
+- [ ] Track index-size growth from the collation benchmark suite in checked-in guardrails or release tables.
 
 ### Suggested remaining delivery order
 
-1. SQL ordered text collation/index strategy
-2. Benchmark and compatibility hardening
+1. Index-size benchmark capture and release-facing perf tables
+2. ICU/globalization compatibility hardening and `REINDEX` guidance
 
 ---
 

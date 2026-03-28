@@ -28,6 +28,7 @@ The current snapshot in this README mixes the March 25-28, 2026 durable and buff
 - `Targeted JoinBenchmarks refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
 - `Targeted WAL core refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalCoreBenchmarks-report.csv`
 - `Targeted in-memory persistence refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryPersistenceBenchmarks-report.csv`
+- `Targeted collation index refresh on March 28, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -87,6 +88,7 @@ dotnet run -c Release -- --micro --filter *CompositeIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *CollectionFieldExtractionBenchmarks*
 dotnet run -c Release -- --micro --filter *IndexProjectionBenchmarks*
 dotnet run -c Release -- --micro --filter *OrderByIndexBenchmarks*
+dotnet run -c Release -- --micro --filter *CollationIndexBenchmarks*
 dotnet run -c Release -- --micro --filter *IndexAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *PrimaryKeyAggregateBenchmarks*
 dotnet run -c Release -- --micro --filter *DistinctAggregateBenchmarks*
@@ -183,6 +185,7 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `CoveringIndexBenchmarks`: isolates unique-index lookup shapes that could become index-only from shapes that still need the wide base-row payload
 - `IndexProjectionBenchmarks`: isolates non-unique secondary-index lookups where `SELECT id` or `SELECT indexed_col` can now avoid base-row fetches
 - `OrderByIndexBenchmarks`: isolates indexed `ORDER BY`, covered integer range scans, and compact non-covered range projection shapes, including residual-filter batch-plan variants where indexed filtering still avoids full row materialization
+- `CollationIndexBenchmarks`: isolates ordered SQL text-index equality lookup, range scan, top-N `ORDER BY`, and indexed write-maintenance cost under `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>`
 - `ScanProjectionBenchmarks`: isolates compact table scans and LIMIT-forced generic scans where scan-heavy filter/projection shapes now stay on the internal row-batch transport path
 - `IndexAggregateBenchmarks`: isolates scalar `SUM` / `COUNT` / `MIN` / `MAX` queries and range aggregates that can now execute directly from integer index keys
 - `PrimaryKeyAggregateBenchmarks`: isolates scalar and ranged aggregates that can now execute directly from the `INTEGER PRIMARY KEY` table B-tree key stream
@@ -211,6 +214,7 @@ Defaults:
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
 - The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
+- That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
 - Set `CSHARPDB_PERF_RUNNER_ID` on the canonical perf runner before capturing a baseline if you want strict regression failures to be limited to that designated machine.
 - The focused durability checks compare `Mean` against the stable median-of-3 durable rows only. Allocation comparison is intentionally skipped for those checks because the diagnostics CSVs emit raw millisecond values, not BenchmarkDotNet `Allocated` columns.
