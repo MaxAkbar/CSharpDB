@@ -46,6 +46,10 @@
                         case TabKind.Storage:
                             <StorageTab @key="TabManager.ActiveTab.Id" />
                             break;
+                        case TabKind.TableDesigner:
+                            <TableDesignerTab @key="TabManager.ActiveTab.Id"
+                                              Tab="TabManager.ActiveTab" />
+                            break;
                     }
                 }
             </div>

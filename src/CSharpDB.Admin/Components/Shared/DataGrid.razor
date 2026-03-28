@@ -72,7 +72,9 @@
                         var row = _rows[rowIdx];
                         var rowClass = GetRowClass(row);
                         var isSelected = _selectedRows.Contains(row);
-                        <tr class="@rowClass @(isSelected ? "selected" : "")">
+                        <tr class="@rowClass @(isSelected ? "selected" : "")"
+                            @oncontextmenu="e => ShowRowContextMenu(e, row)"
+                            @oncontextmenu:preventDefault>
                             <td class="row-num" @onclick="() => ToggleRowSelect(row)">
                                 @((_page - 1) * _pageSize + rowIdx + 1)
                             </td>
@@ -151,6 +153,8 @@
     </div>
 }
 
+<ContextMenu @ref="_contextMenu" Items="_contextMenuItems" />
+
 @code {
     [Parameter] public string? TableName { get; set; }
     [Parameter] public string? ViewName { get; set; }
@@ -173,6 +177,8 @@
     private readonly Dictionary<int, string> _filters = new();
     private readonly HashSet<DataGridRow> _selectedRows = new();
     private EditingCell? _editingCell;
+    private ContextMenu? _contextMenu;
+    private List<ContextMenuItem> _contextMenuItems = new();
     private bool _loadedAllRows;
     private string? _lastTableName;
     private string? _lastViewName;
@@ -301,6 +307,42 @@
             _selectedRows.Add(row);
 
         await NotifySelectionChangedAsync();
+    }
+
+    // ─── Row Context Menu ───────────
+    private void ShowRowContextMenu(MouseEventArgs e, DataGridRow row)
+    {
+        if (IsReadOnly)
+            return;
+
+        if (!_selectedRows.Contains(row))
+        {
+            _selectedRows.Clear();
+            _selectedRows.Add(row);
+            _ = NotifySelectionChangedAsync();
+        }
+
+        var items = new List<ContextMenuItem>
+        {
+            new() { Label = "Add Row", Icon = "bi-plus-lg", OnClick = () => { AddNewRow(); StateHasChanged(); } },
+        };
+
+        if (_selectedRows.Count > 0)
+        {
+            var count = _selectedRows.Count;
+            var label = count == 1 ? "Delete Row" : $"Delete {count} Rows";
+            items.Add(new() { Label = label, Icon = "bi-trash", IsDanger = true, OnClick = async () => { await DeleteSelectedRowsAsync(); StateHasChanged(); } });
+        }
+
+        if (HasPendingChanges)
+        {
+            items.Add(ContextMenuItem.Separator());
+            items.Add(new() { Label = "Save Changes", Icon = "bi-check-lg", OnClick = async () => { await SaveChangesAsync(); StateHasChanged(); } });
+            items.Add(new() { Label = "Discard Changes", Icon = "bi-x-lg", OnClick = async () => { await DiscardChangesAsync(); StateHasChanged(); } });
+        }
+
+        _contextMenuItems = items;
+        _contextMenu?.Show(e.ClientX, e.ClientY);
     }
 
     // ─── Inline Editing ─────────────
@@ -447,6 +489,8 @@
 
     public async Task DiscardChangesAsync()
     {
+        _allRows.Clear();
+        _loadedAllRows = false;
         await LoadDataAsync();
     }
 

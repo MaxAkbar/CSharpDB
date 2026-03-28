@@ -1343,7 +1343,9 @@
     {
         try
         {
-            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(static name => name).ToArray();
+            _tableNames = (await DbClient.GetTableNamesAsync())
+                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .OrderBy(static name => name).ToArray();
             _tableLoadError = null;
         }
         catch (Exception ex)

@@ -859,7 +859,7 @@
 
     private async Task RefreshTableNamesAsync()
     {
-        try { _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList(); }
+        try { _tableNames = (await DbClient.GetTableNamesAsync()).Where(n => !n.StartsWith("_", StringComparison.Ordinal)).OrderBy(n => n).ToList(); }
         catch { _tableNames = []; }
     }
 

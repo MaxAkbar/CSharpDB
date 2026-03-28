@@ -1,6 +1,8 @@
 @inject ICSharpDbClient DbClient
 @inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
+@inject ToastService Toast
+@inject ModalService Modal
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -20,7 +22,10 @@
     <div class="tree-container">
         @* User Tables *@
         <div class="tree-group">
-            <div class="tree-group-header" @onclick='() => ToggleGroup("tables")'>
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("tables")'
+                 @oncontextmenu="e => ShowTablesGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
                 <i class="bi @(_expandedGroups.Contains("tables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-table icon-table"></i>
                 <span>User Tables</span>
@@ -31,10 +36,13 @@
                 <div class="tree-items">
                     @foreach (var name in FilterItems(_userTableNames))
                     {
-                        <div class="tree-item @(IsActive("table", name) ? "active" : "")"
-                             @onclick="() => TabManager.OpenTableTab(name)">
+                        var tableName = name;
+                        <div class="tree-item @(IsActive("table", tableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableTab(tableName)"
+                             @oncontextmenu="e => ShowTableItemMenu(e, tableName)"
+                             @oncontextmenu:preventDefault>
                             <i class="bi bi-table icon-table"></i>
-                            <span class="item-label">@name</span>
+                            <span class="item-label">@tableName</span>
                         </div>
                     }
                 </div>
@@ -89,7 +97,10 @@
 
         @* Views *@
         <div class="tree-group">
-            <div class="tree-group-header" @onclick='() => ToggleGroup("views")'>
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("views")'
+                 @oncontextmenu="e => ShowViewsGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
                 <i class="bi @(_expandedGroups.Contains("views") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-eye icon-view"></i>
                 <span>Views</span>
@@ -100,10 +111,13 @@
                 <div class="tree-items">
                     @foreach (var name in FilterItems(_viewNames))
                     {
-                        <div class="tree-item @(IsActive("view", name) ? "active" : "")"
-                             @onclick="() => TabManager.OpenViewTab(name)">
+                        var viewName = name;
+                        <div class="tree-item @(IsActive("view", viewName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenViewTab(viewName)"
+                             @oncontextmenu="e => ShowViewItemMenu(e, viewName)"
+                             @oncontextmenu:preventDefault>
                             <i class="bi bi-eye icon-view"></i>
-                            <span class="item-label">@name</span>
+                            <span class="item-label">@viewName</span>
                         </div>
                     }
                 </div>
@@ -123,11 +137,14 @@
                 <div class="tree-items">
                     @foreach (var idx in FilterIndexes())
                     {
-                        <div class="tree-item @(IsActiveSchema("table", idx.TableName) ? "active" : "")"
-                             @onclick="() => TabManager.OpenTableSchemaTab(idx.TableName)">
+                        var index = idx;
+                        <div class="tree-item @(IsActiveSchema("table", index.TableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableSchemaTab(index.TableName)"
+                             @oncontextmenu="e => ShowIndexItemMenu(e, index)"
+                             @oncontextmenu:preventDefault>
                             <i class="bi bi-lightning icon-index"></i>
-                            <span class="item-label">@idx.IndexName</span>
-                            <span class="item-hint">@idx.TableName</span>
+                            <span class="item-label">@index.IndexName</span>
+                            <span class="item-hint">@index.TableName</span>
                         </div>
                     }
                 </div>
@@ -147,11 +164,14 @@
                 <div class="tree-items">
                     @foreach (var trig in FilterTriggers())
                     {
-                        <div class="tree-item @(IsActiveSchema("table", trig.TableName) ? "active" : "")"
-                             @onclick="() => TabManager.OpenTableSchemaTab(trig.TableName)">
+                        var trigger = trig;
+                        <div class="tree-item @(IsActiveSchema("table", trigger.TableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableSchemaTab(trigger.TableName)"
+                             @oncontextmenu="e => ShowTriggerItemMenu(e, trigger)"
+                             @oncontextmenu:preventDefault>
                             <i class="bi bi-lightning-charge icon-trigger"></i>
-                            <span class="item-label">@trig.TriggerName</span>
-                            <span class="item-hint">@trig.TableName</span>
+                            <span class="item-label">@trigger.TriggerName</span>
+                            <span class="item-hint">@trigger.TableName</span>
                         </div>
                     }
                 </div>
@@ -160,7 +180,10 @@
 
         @* Procedures *@
         <div class="tree-group">
-            <div class="tree-group-header" @onclick='() => ToggleGroup("procedures")'>
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("procedures")'
+                 @oncontextmenu="e => ShowProceduresGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
                 <i class="bi @(_expandedGroups.Contains("procedures") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-gear-wide-connected icon-trigger"></i>
                 <span>Procedures</span>
@@ -171,10 +194,13 @@
                 <div class="tree-items">
                     @foreach (var procedure in FilterProcedures())
                     {
-                        <div class="tree-item @(IsActive("procedure", procedure.Name) ? "active" : "")"
-                             @onclick="() => TabManager.OpenProcedureTab(procedure.Name)">
+                        var proc = procedure;
+                        <div class="tree-item @(IsActive("procedure", proc.Name) ? "active" : "")"
+                             @onclick="() => TabManager.OpenProcedureTab(proc.Name)"
+                             @oncontextmenu="e => ShowProcedureItemMenu(e, proc.Name)"
+                             @oncontextmenu:preventDefault>
                             <i class="bi bi-gear-wide-connected icon-trigger"></i>
-                            <span class="item-label">@procedure.Name</span>
+                            <span class="item-label">@proc.Name</span>
                         </div>
                     }
                 </div>
@@ -185,6 +211,9 @@
     <div class="sidebar-footer">
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query">
             <i class="bi bi-plus"></i> New Query
+        </button>
+        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenTableDesignerTab()" title="New Table">
+            <i class="bi bi-table"></i> New Table
         </button>
         <button class="sidebar-action-btn" @onclick="() => TabManager.OpenNewProcedureTab()" title="New Procedure">
             <i class="bi bi-gear-wide-connected"></i> New Procedure
@@ -200,7 +229,12 @@
     <div class="sidebar-resize" @onmousedown="StartResize" @onmousedown:preventDefault></div>
 </aside>
 
+<ContextMenu @ref="_contextMenu" Items="_contextMenuItems" />
+
 @code {
+    private ContextMenu? _contextMenu;
+    private List<ContextMenuItem> _contextMenuItems = new();
+
     private sealed record SystemCatalogItem(string Name, string Description, string Sql);
 
     private static readonly IReadOnlyList<SystemCatalogItem> s_systemCatalogItems = new[]
@@ -337,6 +371,172 @@
                 new { clientX = e.ClientX });
         }
         catch { }
+    }
+
+    // ═══════════════════════════════════════
+    // CONTEXT MENUS
+    // ═══════════════════════════════════════
+
+    private void ShowContextMenu(MouseEventArgs e, List<ContextMenuItem> items)
+    {
+        _contextMenuItems = items;
+        _contextMenu?.Show(e.ClientX, e.ClientY);
+    }
+
+    private void ShowTablesGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Table...", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenTableDesignerTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "New Query", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab() },
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowTableItemMenu(MouseEventArgs e, string tableName)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
+            new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
+            new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop Table", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropTableAsync(tableName) },
+        });
+    }
+
+    private void ShowViewsGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New View...", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenQueryTab("CREATE VIEW view_name AS\nSELECT ...;") },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowViewItemMenu(MouseEventArgs e, string viewName)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-eye", OnClick = () => TabManager.OpenViewTab(viewName) },
+            new() { Label = "Edit Definition", Icon = "bi-pencil", OnClick = () => { var tab = TabManager.OpenViewTab(viewName); tab.State["ShowSchema"] = true; } },
+            ContextMenuItem.Separator(),
+            new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {viewName} LIMIT 50;") },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop View", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropViewAsync(viewName) },
+        });
+    }
+
+    private void ShowIndexItemMenu(MouseEventArgs e, IndexSchema index)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open Parent Table", Icon = "bi-table", OnClick = () => TabManager.OpenTableSchemaTab(index.TableName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop Index", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropIndexAsync(index.IndexName) },
+        });
+    }
+
+    private void ShowTriggerItemMenu(MouseEventArgs e, TriggerSchema trigger)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open Parent Table", Icon = "bi-table", OnClick = () => TabManager.OpenTableSchemaTab(trigger.TableName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop Trigger", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropTriggerAsync(trigger.TriggerName) },
+        });
+    }
+
+    private void ShowProceduresGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Procedure...", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenNewProcedureTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowProcedureItemMenu(MouseEventArgs e, string procName)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-gear-wide-connected", OnClick = () => TabManager.OpenProcedureTab(procName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Delete Procedure", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDeleteProcedureAsync(procName) },
+        });
+    }
+
+    private async Task ConfirmDropTableAsync(string tableName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop Table", $"Are you sure you want to drop table '{tableName}'? This action cannot be undone.", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropTableAsync(tableName);
+            Toast.Success($"Dropped table '{tableName}'.");
+            TabManager.CloseTabsForObject(tableName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropViewAsync(string viewName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop View", $"Are you sure you want to drop view '{viewName}'? This action cannot be undone.", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropViewAsync(viewName);
+            Toast.Success($"Dropped view '{viewName}'.");
+            TabManager.CloseTabsForObject(viewName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropIndexAsync(string indexName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop Index", $"Are you sure you want to drop index '{indexName}'?", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropIndexAsync(indexName);
+            Toast.Success($"Dropped index '{indexName}'.");
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropTriggerAsync(string triggerName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop Trigger", $"Are you sure you want to drop trigger '{triggerName}'?", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropTriggerAsync(triggerName);
+            Toast.Success($"Dropped trigger '{triggerName}'.");
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDeleteProcedureAsync(string procName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Delete Procedure", $"Are you sure you want to delete procedure '{procName}'?", "Delete", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DeleteProcedureAsync(procName);
+            Toast.Success($"Deleted procedure '{procName}'.");
+            TabManager.CloseTabsForObject(procName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
     }
 
     public void Dispose()

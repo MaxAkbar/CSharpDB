@@ -1,0 +1,57 @@
+@implements IDisposable
+
+@if (_visible)
+{
+    <div class="context-menu-backdrop" @onclick="Hide" @oncontextmenu="Hide" @oncontextmenu:preventDefault></div>
+    <div class="context-menu" style="left: @(_x)px; top: @(_y)px;">
+        @foreach (var item in Items)
+        {
+            if (item.IsSeparator)
+            {
+                <div class="context-menu-separator"></div>
+            }
+            else
+            {
+                <div class="context-menu-item @(item.IsDanger ? "danger" : "")"
+                     @onclick="() => OnItemClick(item)">
+                    @if (!string.IsNullOrEmpty(item.Icon))
+                    {
+                        <i class="bi @item.Icon"></i>
+                    }
+                    <span>@item.Label</span>
+                </div>
+            }
+        }
+    </div>
+}
+
+@code {
+    private bool _visible;
+    private double _x;
+    private double _y;
+
+    [Parameter] public List<ContextMenuItem> Items { get; set; } = new();
+
+    public void Show(double x, double y)
+    {
+        _x = x;
+        _y = y;
+        _visible = true;
+        StateHasChanged();
+    }
+
+    public void Hide()
+    {
+        if (!_visible) return;
+        _visible = false;
+        StateHasChanged();
+    }
+
+    private void OnItemClick(ContextMenuItem item)
+    {
+        _visible = false;
+        item.OnClick?.Invoke();
+    }
+
+    public void Dispose() { }
+}

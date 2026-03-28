@@ -70,7 +70,9 @@
     {
         try
         {
-            _tableNames = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
+            _tableNames = (await DbClient.GetTableNamesAsync())
+                .Where(n => !n.StartsWith("_", StringComparison.Ordinal))
+                .OrderBy(n => n).ToList();
             _rowCounts.Clear();
             foreach (var name in _tableNames)
             {

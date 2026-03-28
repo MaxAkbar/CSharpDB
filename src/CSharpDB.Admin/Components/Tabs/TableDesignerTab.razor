@@ -1,0 +1,256 @@
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
+@inject TabManagerService TabManager
+@inject ToastService Toast
+
+<div class="data-tab">
+    <div class="toolbar">
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn primary" @onclick="CreateTableAsync" disabled="@(_submitting || _columns.Count == 0)">
+            @if (_submitting) { <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> }
+            <i class="bi bi-check-lg"></i> Create Table
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">
+            <span class="text-secondary">@(_columns.Count) column(s)</span>
+        </div>
+    </div>
+
+    <div class="table-designer-content">
+        <div class="table-designer-name-row">
+            <label>Table Name</label>
+            <input class="schema-input mono" placeholder="Enter table name..." @bind="_tableName" @bind:event="oninput" />
+        </div>
+
+        <div class="table-designer-grid-wrapper">
+            <table class="table-designer-grid">
+                <thead>
+                    <tr>
+                        <th style="width:40px;"></th>
+                        <th>Column Name</th>
+                        <th style="width:160px;">Data Type</th>
+                        <th style="width:90px;">Primary Key</th>
+                        <th style="width:90px;">Identity</th>
+                        <th style="width:90px;">Allow Nulls</th>
+                        <th style="width:50px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int i = 0; i < _columns.Count; i++)
+                    {
+                        var col = _columns[i];
+                        var idx = i;
+                        <tr class="@(_selectedIndex == idx ? "selected" : "")">
+                            <td class="row-indicator" @onclick="() => _selectedIndex = idx">
+                                @if (col.IsPrimaryKey)
+                                {
+                                    <i class="bi bi-key-fill pk-icon"></i>
+                                }
+                                else
+                                {
+                                    <span class="row-num">@(idx + 1)</span>
+                                }
+                            </td>
+                            <td>
+                                <input class="designer-cell-input mono"
+                                       value="@col.Name"
+                                       placeholder="column_name"
+                                       @onchange="e => col.Name = e.Value?.ToString() ?? string.Empty"
+                                       @onfocus="() => _selectedIndex = idx" />
+                            </td>
+                            <td>
+                                <select class="designer-cell-select"
+                                        value="@col.DataType"
+                                        @onchange="e => col.DataType = e.Value?.ToString() ?? string.Empty"
+                                        @onfocus="() => _selectedIndex = idx">
+                                    <option value="INTEGER">INTEGER</option>
+                                    <option value="REAL">REAL</option>
+                                    <option value="TEXT">TEXT</option>
+                                    <option value="BLOB">BLOB</option>
+                                </select>
+                            </td>
+                            <td class="center-cell">
+                                <input type="checkbox" checked="@col.IsPrimaryKey"
+                                       @onchange="e => OnPrimaryKeyChanged(idx, (bool)(e.Value ?? false))" />
+                            </td>
+                            <td class="center-cell">
+                                <input type="checkbox" checked="@col.IsIdentity"
+                                       disabled="@(!col.IsPrimaryKey || col.DataType != "INTEGER")"
+                                       @onchange="e => col.IsIdentity = (bool)(e.Value ?? false)" />
+                            </td>
+                            <td class="center-cell">
+                                <input type="checkbox" checked="@col.AllowNulls"
+                                       disabled="@col.IsPrimaryKey"
+                                       @onchange="e => col.AllowNulls = (bool)(e.Value ?? false)" />
+                            </td>
+                            <td class="center-cell">
+                                <button class="schema-icon-btn danger" title="Remove column"
+                                        @onclick="() => RemoveColumn(idx)">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                    <tr class="add-row" @onclick="AddColumn">
+                        <td colspan="7" class="add-row-cell">
+                            <i class="bi bi-plus-lg"></i> Click to add column
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        @if (_selectedIndex >= 0 && _selectedIndex < _columns.Count)
+        {
+            <div class="table-designer-properties">
+                <h3>Column Properties</h3>
+                <div class="properties-grid">
+                    <div class="property-row">
+                        <span class="property-label">Name</span>
+                        <span class="property-value mono">@_columns[_selectedIndex].Name</span>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Data Type</span>
+                        <span class="property-value">@_columns[_selectedIndex].DataType</span>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Primary Key</span>
+                        <span class="property-value">@(_columns[_selectedIndex].IsPrimaryKey ? "Yes" : "No")</span>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Identity</span>
+                        <span class="property-value">@(_columns[_selectedIndex].IsIdentity ? "Yes" : "No")</span>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Allow Nulls</span>
+                        <span class="property-value">@(_columns[_selectedIndex].AllowNulls ? "Yes" : "No")</span>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_previewSql))
+        {
+            <div class="table-designer-preview">
+                <h3>SQL Preview</h3>
+                <pre class="sql-definition">@_previewSql</pre>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor Tab { get; set; } = default!;
+
+    private string _tableName = string.Empty;
+    private readonly List<DesignerColumn> _columns = new();
+    private int _selectedIndex = -1;
+    private bool _submitting;
+
+    private string? _previewSql => BuildCreateTableSql();
+
+    protected override void OnInitialized()
+    {
+        // Start with one empty column for convenience
+        _columns.Add(new DesignerColumn { Name = "Id", DataType = "INTEGER", IsPrimaryKey = true, IsIdentity = true });
+    }
+
+    private void AddColumn()
+    {
+        _columns.Add(new DesignerColumn { Name = string.Empty, DataType = "TEXT", AllowNulls = true });
+        _selectedIndex = _columns.Count - 1;
+    }
+
+    private void RemoveColumn(int index)
+    {
+        _columns.RemoveAt(index);
+        if (_selectedIndex >= _columns.Count)
+            _selectedIndex = _columns.Count - 1;
+    }
+
+    private void OnPrimaryKeyChanged(int index, bool isPk)
+    {
+        var col = _columns[index];
+        col.IsPrimaryKey = isPk;
+        if (isPk)
+            col.AllowNulls = false;
+        else
+            col.IsIdentity = false;
+    }
+
+    private string? BuildCreateTableSql()
+    {
+        if (string.IsNullOrWhiteSpace(_tableName) || _columns.Count == 0)
+            return null;
+
+        var validCols = _columns.Where(c => !string.IsNullOrWhiteSpace(c.Name)).ToList();
+        if (validCols.Count == 0)
+            return null;
+
+        var lines = new List<string>();
+        foreach (var col in validCols)
+        {
+            var parts = new List<string> { $"    {col.Name}", col.DataType };
+            if (col.IsPrimaryKey)
+                parts.Add("PRIMARY KEY");
+            if (col.IsIdentity && col.IsPrimaryKey && col.DataType == "INTEGER")
+                parts.Add("IDENTITY");
+            if (!col.AllowNulls && !col.IsPrimaryKey)
+                parts.Add("NOT NULL");
+            lines.Add(string.Join(" ", parts));
+        }
+
+        return $"CREATE TABLE {_tableName} (\n{string.Join(",\n", lines)}\n);";
+    }
+
+    private async Task CreateTableAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_tableName))
+        {
+            Toast.Error("Please enter a table name.");
+            return;
+        }
+
+        var validCols = _columns.Where(c => !string.IsNullOrWhiteSpace(c.Name)).ToList();
+        if (validCols.Count == 0)
+        {
+            Toast.Error("Please add at least one column with a name.");
+            return;
+        }
+
+        var sql = BuildCreateTableSql();
+        if (sql is null) return;
+
+        _submitting = true;
+        try
+        {
+            await DbClient.ExecuteSqlAsync(sql);
+            Toast.Success($"Table '{_tableName}' created successfully.");
+            Changes.NotifyChanged();
+
+            // Update the tab title
+            Tab.Title = _tableName;
+
+            // Close designer and open the new table
+            TabManager.CloseTab(Tab.Id);
+            TabManager.OpenTableTab(_tableName);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to create table: {ex.Message}");
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private sealed class DesignerColumn
+    {
+        public string Name { get; set; } = string.Empty;
+        public string DataType { get; set; } = "TEXT";
+        public bool IsPrimaryKey { get; set; }
+        public bool IsIdentity { get; set; }
+        public bool AllowNulls { get; set; }
+    }
+}

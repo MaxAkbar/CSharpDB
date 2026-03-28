@@ -500,7 +500,7 @@
     private async Task Refresh()
     {
         if (_grid is not null)
-            await _grid.LoadDataAsync();
+            await _grid.DiscardChangesAsync();
         await LoadSchemaAsync();
     }
 

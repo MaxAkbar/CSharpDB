@@ -8,7 +8,8 @@ public enum TabKind
     ViewData,
     Procedure,
     Pipeline,
-    Storage
+    Storage,
+    TableDesigner
 }
 
 public sealed class TabDescriptor

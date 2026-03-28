@@ -144,6 +144,14 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenTableDesignerTab()
+    {
+        int num = Interlocked.Increment(ref _queryCounter);
+        var tab = new TabDescriptor($"designer:{num}", "New Table", "bi-table", TabKind.TableDesigner);
+        OpenTab(tab);
+        return tab;
+    }
+
     /// <summary>Open a table tab and switch it to Schema view.</summary>
     public TabDescriptor OpenTableSchemaTab(string tableName)
     {
