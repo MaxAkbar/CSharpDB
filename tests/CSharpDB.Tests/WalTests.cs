@@ -1538,8 +1538,8 @@ public class WalTests : IAsyncLifetime
         await wal.AppendFrameAsync(0, CreateFilledPage(0xD7), ct);
         await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
 
-        Assert.Equal(1, wal.Index.FrameCount);
-        Assert.True(wal.Index.TryGetLatest(0, out long pageOffset));
+        Assert.Equal(1, walIndex.FrameCount);
+        Assert.True(walIndex.TryGetLatest(0, out long pageOffset));
         byte[] page = await wal.ReadPageAsync(pageOffset, ct);
         Assert.All(page, static b => Assert.Equal((byte)0xD7, b));
     }
