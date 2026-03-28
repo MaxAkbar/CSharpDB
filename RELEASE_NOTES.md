@@ -1,22 +1,21 @@
 # What's New
 
-## v2.4.0
+## v2.5.0
 
-### ADO.NET Metadata and Provider Ergonomics
+### Durable WAL Recovery, Concurrency, and Tuning
 
-- Implemented `DbConnection.GetSchema()` metadata collections for the `CSharpDB.Data` provider, including `MetaDataCollections`, `Tables`, `Columns`, `Indexes`, and `Views`.
-- Added a typed `CSharpDbConnection.CreateCommand()` helper so concrete-provider callers get `CSharpDbCommand` directly and can use provider conveniences such as `Parameters.AddWithValue(...)` without casting.
-- Added connection-level coverage around schema metadata discovery and typed command behavior.
+- Refactored the file-backed WAL commit path to batch staged frame appends at commit time, reduce unnecessary writer-lock hold time, and harden recovery and repair behavior around checkpoint and WAL edge cases.
+- Exposed durable-write tuning through `DatabaseOptions.ConfigureStorageEngine(...)`, including `UseWriteOptimizedPreset()`, `UseDurableCommitBatchWindow(...)`, and `UseWalPreallocationChunkBytes(...)` for advanced file-backed write workloads.
+- Added process-crash durability coverage, concurrent durable-write diagnostics and benchmarks, and machine-aware performance guardrails with checked-in focused baselines to make release validation more reproducible.
+- Fixed a collection write-gate leak on cached collection opens that could stall later collection count and browse requests through the HTTP API and gRPC daemon after earlier collection writes.
 
-### Pipelines Packaging and NuGet Readiness
+### Phase-1 Cost-Based Join Planning
 
-- Added a full `CSharpDB.Pipelines` README with a simple end-to-end CSV-to-JSON example, package validation flow, execution modes, and current built-in runtime boundaries.
-- Wired `CSharpDB.Pipelines` into the CI and release packaging workflows so it is packed and published alongside the rest of the NuGet package set.
-- Updated package metadata to point package project links at `https://csharpdb.com/`.
+- Added the first stats-driven cardinality estimation phase for the SQL planner, using `ANALYZE` data to improve non-unique lookup selection, join method choice, and hash build-side choice.
+- Added limited greedy inner-join reordering so selective predicates can move earlier in supported inner-join chains when statistics are available.
+- Expanded selectivity heuristics and planner coverage for range predicates, `IN` lists, nullable disjunctions, and mixed `UNION` join cases, plus new join microbenchmarks for those shapes.
 
-### Documentation and Website Accuracy
+### Documentation and Release Guidance
 
-- Refreshed package READMEs and the top-level `CSharpDB` README with fuller examples and clearer current-surface guidance.
-- Expanded the engine README examples for hybrid open/save flows, collection open/create behavior, and concurrent snapshot readers.
-- Added a dedicated full-text-search docs page on the static site and refreshed the website examples/API reference so the snippets match the current public APIs across collections, storage, pipelines, database modes, client SDK, and ADO.NET.
-- Centralized website page metadata and shared code-block headers so the static docs stay more consistent to maintain going forward.
+- Refreshed the root, engine, execution, and storage READMEs with updated performance snapshots, thread-safety guidance, current write-tuning recommendations, and documentation of the current cost-based optimizer phase.
+- Updated benchmark docs and scripts so durability diagnostics, guardrail capture, and machine compatibility handling are documented and easier to run on a fresh clone.
