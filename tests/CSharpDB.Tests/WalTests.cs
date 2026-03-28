@@ -1486,6 +1486,65 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FileWriteAheadLog_AppendFrameAsync_CanceledBeforeFirstBufferedFrame_DoesNotStageFrame()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_stage_cancel_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+
+        try
+        {
+            var walIndex = new WalIndex();
+            await using var wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 1, ct);
+
+            wal.BeginTransaction();
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => wal.AppendFrameAsync(0, CreateFilledPage(0xD4), canceled.Token).AsTask());
+
+            await wal.AppendFrameAsync(0, CreateFilledPage(0xD5), ct);
+            await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
+
+            Assert.Equal(1, wal.Index.FrameCount);
+            Assert.True(wal.Index.TryGetLatest(0, out long pageOffset));
+            byte[] page = await wal.ReadPageAsync(pageOffset, ct);
+            Assert.All(page, static b => Assert.Equal((byte)0xD5, b));
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task MemoryWriteAheadLog_AppendFrameAsync_CanceledBeforeFirstBufferedFrame_DoesNotStageFrame()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var walIndex = new WalIndex();
+        await using var wal = new MemoryWriteAheadLog(walIndex);
+        await wal.OpenAsync(currentDbPageCount: 1, ct);
+
+        wal.BeginTransaction();
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => wal.AppendFrameAsync(0, CreateFilledPage(0xD6), canceled.Token).AsTask());
+
+        await wal.AppendFrameAsync(0, CreateFilledPage(0xD7), ct);
+        await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
+
+        Assert.Equal(1, wal.Index.FrameCount);
+        Assert.True(wal.Index.TryGetLatest(0, out long pageOffset));
+        byte[] page = await wal.ReadPageAsync(pageOffset, ct);
+        Assert.All(page, static b => Assert.Equal((byte)0xD7, b));
+    }
+
+    [Fact]
     public async Task FileWriteAheadLog_AppendFrameAsync_CanMixWithAppendFramesAsyncInSameTransaction()
     {
         var ct = TestContext.Current.CancellationToken;

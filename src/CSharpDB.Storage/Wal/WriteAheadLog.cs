@@ -289,6 +289,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _bufferedUncommittedFrames.Add(CreateBufferedUncommittedFrame(pageId, pageData));
             return ValueTask.CompletedTask;
         }

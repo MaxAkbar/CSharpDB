@@ -1,5 +1,10 @@
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
+using CSharpDB.Storage.Catalog;
+using CSharpDB.Storage.Device;
+using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
+using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Tests;
 
@@ -575,6 +580,106 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         {
             if (File.Exists(dbPath)) File.Delete(dbPath);
             if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task AutoCommitSchemaFailure_ReloadsCatalogBeforeFurtherReads()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(
+            _dbPath,
+            new DatabaseOptions
+            {
+                StorageEngineFactory = new FailFirstCommitStorageEngineFactory(new FailFirstCommitWalFlushPolicy()),
+            },
+            ct);
+
+        var error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync("CREATE TABLE failed_create (id INTEGER PRIMARY KEY)", ct).AsTask());
+        Assert.Equal(ErrorCode.WalError, error.Code);
+        Assert.DoesNotContain("failed_create", _db.GetTableNames());
+    }
+
+    private sealed class FailFirstCommitStorageEngineFactory : IStorageEngineFactory
+    {
+        private readonly IWalFlushPolicy _flushPolicy;
+
+        public FailFirstCommitStorageEngineFactory(IWalFlushPolicy flushPolicy)
+        {
+            _flushPolicy = flushPolicy ?? throw new ArgumentNullException(nameof(flushPolicy));
+        }
+
+        public async ValueTask<StorageEngineContext> OpenAsync(
+            string filePath,
+            StorageEngineOptions options,
+            CancellationToken ct = default)
+        {
+            bool isNew = !File.Exists(filePath);
+            var device = new FileStorageDevice(filePath);
+            var walIndex = new WalIndex();
+            var wal = new WriteAheadLog(
+                filePath,
+                walIndex,
+                options.ChecksumProvider,
+                _flushPolicy,
+                options.DurableCommitBatchWindow,
+                options.WalPreallocationChunkBytes);
+            var pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+
+            if (isNew)
+            {
+                await pager.InitializeNewDatabaseAsync(ct);
+                await wal.OpenAsync(pager.PageCount, ct);
+            }
+            else
+            {
+                await pager.RecoverAsync(ct);
+            }
+
+            var schemaSerializer = options.SerializerProvider.SchemaSerializer;
+            var catalog = await SchemaCatalog.CreateAsync(
+                pager,
+                schemaSerializer,
+                options.IndexProvider,
+                options.CatalogStore,
+                options.AdvisoryStatisticsPersistenceMode,
+                ct);
+
+            return new StorageEngineContext
+            {
+                Pager = pager,
+                Catalog = catalog,
+                RecordSerializer = options.SerializerProvider.RecordSerializer,
+                SchemaSerializer = schemaSerializer,
+                IndexProvider = options.IndexProvider,
+                ChecksumProvider = options.ChecksumProvider,
+                AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
+            };
+        }
+    }
+
+    private sealed class FailFirstCommitWalFlushPolicy : IWalFlushPolicy
+    {
+        private int _flushCount;
+
+        public bool AllowsWriteConcurrencyDuringCommitFlush => true;
+
+        public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Increment(ref _flushCount) == 1)
+                return ValueTask.FromException(new IOException("Injected first commit flush failure."));
+
+            return ValueTask.CompletedTask;
         }
     }
 }

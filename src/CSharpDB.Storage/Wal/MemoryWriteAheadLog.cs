@@ -108,6 +108,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _bufferedUncommittedFrames.Add(CreateBufferedUncommittedFrame(pageId, pageData));
             return ValueTask.CompletedTask;
         }

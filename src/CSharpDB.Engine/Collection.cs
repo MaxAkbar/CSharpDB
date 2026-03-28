@@ -71,9 +71,36 @@ public sealed class Collection<
     /// </summary>
     void ICollectionTreeRefresh.RefreshTreeFromCatalog()
     {
+        RefreshTreeFromCatalogCore();
+    }
+
+    private void RefreshTreeFromCatalogCore()
+    {
         _tree = _catalog.GetTableTree(_catalogTableName);
         _observedSchemaVersion = _catalog.SchemaVersion;
         ReloadCollectionIndexes();
+    }
+
+    private async ValueTask RecoverCatalogStateAfterFailedCommitAsync()
+    {
+        try
+        {
+            await _pager.RollbackAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
+
+        try
+        {
+            await _catalog.ReloadAsync(CancellationToken.None);
+            RefreshTreeFromCatalogCore();
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
     }
 
     // ===== Tier 1 API =====
@@ -812,7 +839,7 @@ public sealed class Collection<
             await BackfillIndexAsync(binding, ct);
 
             PagerCommitResult commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
-            await commit.WaitAsync(ct);
+            await commit.WaitAsync();
             _observedSchemaVersion = _catalog.SchemaVersion;
         }
         catch
@@ -833,7 +860,7 @@ public sealed class Collection<
 
             try
             {
-                await _pager.RollbackAsync(ct);
+                await RecoverCatalogStateAfterFailedCommitAsync();
             }
             catch
             {
@@ -1158,8 +1185,7 @@ public sealed class Collection<
         }
         catch
         {
-            await _pager.RollbackAsync(ct);
-            await _catalog.ReloadAsync(ct);
+            await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
@@ -1167,7 +1193,16 @@ public sealed class Collection<
             writeScope?.Dispose();
         }
 
-        await commit.WaitAsync(ct);
+        try
+        {
+            await commit.WaitAsync();
+        }
+        catch
+        {
+            await RecoverCatalogStateAfterFailedCommitAsync();
+            throw;
+        }
+
         await _afterImplicitCommitAsync(ct);
     }
 }

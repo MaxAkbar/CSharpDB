@@ -338,10 +338,7 @@ public sealed class Database : IAsyncDisposable
         catch
         {
             if (!_inTransaction)
-            {
-                await _pager.RollbackAsync(ct);
-                await _catalog.ReloadAsync(ct);
-            }
+                await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
@@ -379,10 +376,7 @@ public sealed class Database : IAsyncDisposable
         catch
         {
             if (!_inTransaction)
-            {
-                await _pager.RollbackAsync(ct);
-                await _catalog.ReloadAsync(ct);
-            }
+                await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
@@ -426,10 +420,22 @@ public sealed class Database : IAsyncDisposable
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
 
-        PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+        PagerCommitResult commit;
+        try
+        {
+            commit = await BeginCommitWithCatalogSyncAsync(ct);
+        }
+        catch
+        {
+            await RecoverCatalogStateAfterFailedCommitAsync();
+            _inTransaction = false;
+            ReleaseExplicitTransactionWriteGate();
+            throw;
+        }
+
         _inTransaction = false;
         ReleaseExplicitTransactionWriteGate();
-        await commit.WaitAsync(ct);
+        await WaitForCommitOrRecoverAsync(commit);
         await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
@@ -755,6 +761,8 @@ public sealed class Database : IAsyncDisposable
             // Create the backing table if it doesn't exist
             if (_catalog.GetTable(catalogName) == null)
             {
+                PagerCommitResult commit = PagerCommitResult.Completed;
+                bool completeCommit = false;
                 bool needsTx = !_inTransaction;
                 if (needsTx) await _pager.BeginTransactionAsync(ct);
                 try
@@ -776,17 +784,23 @@ public sealed class Database : IAsyncDisposable
 
                     if (needsTx)
                     {
-                        PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+                        commit = await BeginCommitWithCatalogSyncAsync(ct);
+                        completeCommit = true;
                         writeScope?.Dispose();
                         writeScope = WriteOperationScope.NoOp;
-                        await commit.WaitAsync(ct);
-                        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
                     }
                 }
                 catch
                 {
-                    if (needsTx) await _pager.RollbackAsync(ct);
+                    if (needsTx)
+                        await RecoverCatalogStateAfterFailedCommitAsync();
                     throw;
+                }
+
+                if (completeCommit)
+                {
+                    await WaitForCommitOrRecoverAsync(commit);
+                    await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
                 }
             }
 
@@ -946,6 +960,51 @@ public sealed class Database : IAsyncDisposable
         _writeOperationGate.Release();
     }
 
+    private void RefreshCachedCollectionsFromCatalog()
+    {
+        foreach (var cached in _collectionCache.Values)
+        {
+            if (cached is ICollectionTreeRefresh refreshable)
+                refreshable.RefreshTreeFromCatalog();
+        }
+    }
+
+    private async ValueTask RecoverCatalogStateAfterFailedCommitAsync()
+    {
+        try
+        {
+            await _pager.RollbackAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
+
+        try
+        {
+            await _catalog.ReloadAsync(CancellationToken.None);
+            RefreshCachedCollectionsFromCatalog();
+            _statementCache.Clear();
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
+    }
+
+    private async ValueTask WaitForCommitOrRecoverAsync(PagerCommitResult commit)
+    {
+        try
+        {
+            await commit.WaitAsync();
+        }
+        catch
+        {
+            await RecoverCatalogStateAfterFailedCommitAsync();
+            throw;
+        }
+    }
+
     private void InvalidateCachesIfSchemaChanged()
     {
         long currentVersion = _catalog.SchemaVersion;
@@ -960,7 +1019,7 @@ public sealed class Database : IAsyncDisposable
     private async ValueTask CommitWithCatalogSyncAsync(CancellationToken ct, bool persistHybridState = true)
     {
         PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
-        await commit.WaitAsync(ct);
+        await WaitForCommitOrRecoverAsync(commit);
         if (persistHybridState)
             await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
@@ -989,7 +1048,7 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask CompleteImplicitCommitAsync(PagerCommitResult commit, CancellationToken ct)
     {
-        await commit.WaitAsync(ct);
+        await WaitForCommitOrRecoverAsync(commit);
         await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
@@ -1049,22 +1108,7 @@ public sealed class Database : IAsyncDisposable
         }
         catch
         {
-            try
-            {
-                await _pager.RollbackAsync(ct);
-                await _catalog.ReloadAsync(ct);
-                foreach (var cached in _collectionCache.Values)
-                {
-                    if (cached is ICollectionTreeRefresh refreshable)
-                        refreshable.RefreshTreeFromCatalog();
-                }
-
-                _statementCache.Clear();
-            }
-            catch
-            {
-                // Preserve the original failure.
-            }
+            await RecoverCatalogStateAfterFailedCommitAsync();
 
             throw;
         }
