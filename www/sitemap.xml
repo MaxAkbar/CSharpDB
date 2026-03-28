@@ -85,19 +85,7 @@
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/docs/database-encryption.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
     <loc>https://csharpdb.com/docs/database-modes.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/docs/deployment.html</loc>
     <lastmod>2026-03-27</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -127,12 +115,6 @@
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/docs/low-latency-writes.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
     <loc>https://csharpdb.com/docs/mcp-server.html</loc>
     <lastmod>2026-03-27</lastmod>
     <changefreq>monthly</changefreq>
@@ -151,12 +133,6 @@
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/docs/pub-sub-events.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
     <loc>https://csharpdb.com/docs/rest-api.html</loc>
     <lastmod>2026-03-27</lastmod>
     <changefreq>monthly</changefreq>
@@ -164,12 +140,6 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/samples.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/docs/sql-batched-transport.html</loc>
     <lastmod>2026-03-27</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -194,12 +164,6 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/storage.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/docs/user-defined-functions.html</loc>
     <lastmod>2026-03-27</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
