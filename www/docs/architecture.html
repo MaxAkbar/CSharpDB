@@ -82,19 +82,19 @@
 
                 <div class="code-block" data-title="Runtime Stack">
                     <pre><code>┌──────────────────────────────────────────────────────────┐
-│  <span class="tp">Engine / Planner</span>                                       │
+│  <span class="tp">Engine / Planner</span>                                        │
 │  Decides what logical records to read/write              │
 ├──────────────────────────────────────────────────────────┤
 │  <span class="tp">SchemaCatalog + BTree</span>                                   │
 │  Resolves table/index trees, performs key-level ops      │
 ├──────────────────────────────────────────────────────────┤
-│  <span class="tp">Pager</span>                                                  │
+│  <span class="tp">Pager</span>                                                   │
 │  Page access, cache, dirty bookkeeping, transactions     │
 ├──────────────────────────────────────────────────────────┤
 │  <span class="tp">WriteAheadLog + WalIndex</span>                                │
 │  Durability, commit visibility, recovery, checkpointing  │
 ├──────────────────────────────────────────────────────────┤
-│  <span class="tp">IStorageDevice</span>                                         │
+│  <span class="tp">IStorageDevice</span>                                          │
 │  Physical file reads/writes/flushes                      │
 └──────────────────────────────────────────────────────────┘</code></pre>
                 </div>

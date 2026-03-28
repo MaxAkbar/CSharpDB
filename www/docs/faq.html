@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>FAQ — CSharpDB</title>
+    <meta name="description" content="CSharpDB frequently asked questions — general usage, SQL and schema, admin/CLI/API, and development.">
+    <link rel="canonical" href="https://csharpdb.com/docs/faq.html">
+    <meta property="og:title" content="FAQ — CSharpDB">
+    <meta property="og:description" content="CSharpDB frequently asked questions — general usage, SQL and schema, admin/CLI/API, and development.">
+    <meta property="og:url" content="https://csharpdb.com/docs/faq.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'FAQ',
+        description: 'CSharpDB frequently asked questions — general usage, SQL and schema, admin/CLI/API, and development.',
+        keywords: 'CSharpDB FAQ, frequently asked questions, troubleshooting, setup, SQL, CLI, API',
+        canonicalPath: 'docs/faq.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>CSharpDB FAQ</h1>
+
+                <h2 id="general">General</h2>
+
+                <h3>What is CSharpDB?</h3>
+                <p>CSharpDB is an embedded database engine written in C# for .NET. It runs in-process, stores data in a single <code>.db</code> file, and uses a WAL file for durability and crash recovery.</p>
+
+                <h3>Does CSharpDB require a server process?</h3>
+                <p>No. You open the database file directly from your application using the Engine API or ADO.NET provider.</p>
+
+                <h3>Which .NET version is supported?</h3>
+                <p>Current projects target <code>.NET 10</code> (<code>net10.0</code>).</p>
+
+                <h2 id="sql-and-schema">SQL and Schema</h2>
+
+                <h3>Do SQL scripts need <code>GO</code> separators?</h3>
+                <p>No. Use semicolon-terminated SQL statements (<code>;</code>). <code>GO</code> is not required.</p>
+
+                <h3>Can I query system metadata using SQL?</h3>
+                <p>Yes. Query virtual catalog sources:</p>
+                <ul>
+                    <li><code>sys.tables</code></li>
+                    <li><code>sys.columns</code></li>
+                    <li><code>sys.indexes</code></li>
+                    <li><code>sys.views</code></li>
+                    <li><code>sys.triggers</code></li>
+                    <li><code>sys.objects</code></li>
+                </ul>
+                <p>Underscored aliases are also supported (<code>sys_tables</code>, <code>sys_columns</code>, etc.).</p>
+
+                <h3>Do <code>sys.*</code> objects appear as normal tables in the Admin sidebar?</h3>
+                <p>No. They are virtual system catalog sources, so use the Query tab to query them.</p>
+
+                <h3>Why does index creation fail on some column types?</h3>
+                <p>Current index support is limited to <code>INTEGER</code> columns.</p>
+
+                <h3>Are foreign keys enforced?</h3>
+                <p>Not currently. Define relationship columns in schema and enforce integrity in application logic for now.</p>
+
+                <h2 id="admin-cli-and-api">Admin, CLI, and API</h2>
+
+                <h3>How do I run a sample SQL file quickly?</h3>
+                <p>Use the CLI:</p>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- mydata.db</code></pre></div>
+                <p>Then:</p>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .read samples/ecommerce-store/schema.sql</code></pre></div>
+
+                <h3>Can the Admin Query tab run multi-statement SQL?</h3>
+                <p>Yes. Multiple semicolon-delimited statements are supported.</p>
+
+                <h3>How do I report bugs or request features?</h3>
+                <p>Use GitHub issue templates:</p>
+                <ul>
+                    <li>Bug report</li>
+                    <li>Feature request</li>
+                    <li>Documentation</li>
+                    <li>Question</li>
+                </ul>
+                <p>Security issues should be reported privately through GitHub Security Advisories.</p>
+
+                <h2 id="development">Development</h2>
+
+                <h3>How do I build the repo?</h3>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet build CSharpDB.slnx</code></pre></div>
+
+                <h3>How do I run tests?</h3>
+                <p>This repository uses executable xUnit projects. Run tests with:</p>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj --
+dotnet run --project tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj --
+dotnet run --project tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --</code></pre></div>
+
+                <h3>Why do I see a <code>.wal</code> file next to my database?</h3>
+                <p>That is expected. The WAL file stores recent committed changes before checkpointing into the main <code>.db</code> file.</p>
+                <p>Lifecycle details:</p>
+                <ul>
+                    <li>While the database is open, the <code>.wal</code> file exists.</li>
+                    <li>A checkpoint copies committed pages back into the <code>.db</code> file and resets/truncates the WAL, but does not delete it while the DB is still open.</li>
+                    <li>On a clean close/dispose, CSharpDB performs a final checkpoint (when needed) and deletes the <code>.wal</code> file.</li>
+                    <li>If the process crashes or is terminated, the <code>.wal</code> file can remain on disk. On next open, CSharpDB recovers from it and continues normally.</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

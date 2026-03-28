@@ -18,7 +18,7 @@
     'use strict';
 
     const prefix = window.pagePathPrefix || '';
-    const BASE_URL = 'https://maxakbar.github.io/csharpdb/';
+    const BASE_URL = 'https://csharpdb.com/';
 
     // ── SVG icons ───────────────────────────────────────────
 

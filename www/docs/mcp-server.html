@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>MCP Server Reference — CSharpDB</title>
+    <meta name="description" content="CSharpDB MCP Server reference — Model Context Protocol integration for Claude Desktop, Cursor, VS Code, LM Studio, and other AI assistants.">
+    <link rel="canonical" href="https://csharpdb.com/docs/mcp-server.html">
+    <meta property="og:title" content="MCP Server Reference — CSharpDB">
+    <meta property="og:description" content="CSharpDB MCP Server reference — Model Context Protocol integration for Claude Desktop, Cursor, VS Code, LM Studio, and other AI assistants.">
+    <meta property="og:url" content="https://csharpdb.com/docs/mcp-server.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'MCP Server Reference',
+        description: 'CSharpDB MCP Server reference — Model Context Protocol integration for Claude Desktop, Cursor, VS Code, LM Studio, and other AI assistants.',
+        keywords: 'CSharpDB MCP, Model Context Protocol, AI assistant, Claude Desktop, Cursor, VS Code, LM Studio, tools',
+        canonicalPath: 'docs/mcp-server.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#running-the-server">Running the Server</a></li>
+                        <li><a href="#client-configuration">Client Configuration</a>
+                            <ul>
+                                <li><a href="#claude-desktop">Claude Desktop</a></li>
+                                <li><a href="#claude-code">Claude Code</a></li>
+                                <li><a href="#cursor-vs-code">Cursor / VS Code</a></li>
+                                <li><a href="#openai-codex-cli">OpenAI Codex CLI</a></li>
+                                <li><a href="#chatgpt-desktop">ChatGPT Desktop</a></li>
+                                <li><a href="#lm-studio">LM Studio</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#available-tools">Available Tools</a></li>
+                        <li><a href="#example-conversations">Example Conversations</a></li>
+                        <li><a href="#architecture">Architecture</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>MCP Server Reference</h1>
+                <p>CSharpDB includes a <a href="https://modelcontextprotocol.io/">Model Context Protocol</a> (MCP) server that lets AI assistants — Claude Desktop, OpenAI Desktop, Cursor, VS Code Copilot, and others — interact with a CSharpDB database through a standardized tool interface.</p>
+                <p>The server exposes 14 tools for schema inspection, data browsing, row mutations, and arbitrary SQL execution.</p>
+
+                <h2 id="running-the-server">Running the Server</h2>
+                <div class="code-block" data-title="Bash"><pre><code># Default direct client target (ConnectionStrings:CSharpDB or csharpdb.db)
+dotnet run --project src/CSharpDB.Mcp
+
+# Direct client target via database path
+dotnet run --project src/CSharpDB.Mcp -- --database mydata.db
+
+# Explicit endpoint selection
+dotnet run --project src/CSharpDB.Mcp -- --endpoint http://localhost:61818 --transport http</code></pre></div>
+
+                <h3>Client Target Configuration</h3>
+                <p>The MCP server resolves <code>CSharpDbClientOptions</code> in this order:</p>
+                <table>
+                    <thead>
+                        <tr><th>Setting</th><th>Priority</th><th>Example</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>Endpoint</code></td><td><code>--endpoint</code> / <code>-e</code>, then <code>CSHARPDB_ENDPOINT</code></td><td><code>--endpoint http://localhost:61818</code></td></tr>
+                        <tr><td><code>Transport</code></td><td><code>--transport</code> / <code>-t</code>, then <code>CSHARPDB_TRANSPORT</code></td><td><code>--transport http</code></td></tr>
+                        <tr><td>Direct database path</td><td><code>--database</code> / <code>-d</code>, then <code>CSHARPDB_DATABASE</code></td><td><code>--database mydata.db</code></td></tr>
+                        <tr><td>Connection string</td><td><code>ConnectionStrings:CSharpDB</code> from <code>appsettings.json</code></td><td><code>Data Source=csharpdb.db</code></td></tr>
+                        <tr><td>Default</td><td><code>csharpdb.db</code> when no other target is supplied</td><td><code>Data Source=csharpdb.db</code></td></tr>
+                    </tbody>
+                </table>
+                <p><code>Direct</code> remains the default transport. If you pass an HTTP endpoint without <code>--transport</code>, the client infers <code>Http</code>. <code>Http</code> and <code>Grpc</code> are implemented; named pipes remain the only additional transport option and are not implemented yet.</p>
+
+                <h2 id="client-configuration">Client Configuration</h2>
+
+                <h3 id="claude-desktop">Claude Desktop</h3>
+                <p>Add to <code>claude_desktop_config.json</code>:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "mcpServers": {
+    "csharpdb": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]
+    }
+  }
+}</code></pre></div>
+
+                <h3 id="claude-code">Claude Code</h3>
+                <p>Add to <code>.mcp.json</code> in your project root:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "mcpServers": {
+    "csharpdb": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]
+    }
+  }
+}</code></pre></div>
+
+                <h3 id="cursor-vs-code">Cursor / VS Code</h3>
+                <p>Add to your MCP settings (typically <code>.cursor/mcp.json</code> or VS Code settings):</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "mcpServers": {
+    "csharpdb": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]
+    }
+  }
+}</code></pre></div>
+
+                <h3 id="openai-codex-cli">OpenAI Codex CLI</h3>
+                <p>Add to your <a href="https://developers.openai.com/codex/mcp/">Codex config</a> (<code>~/.codex/config.toml</code> globally, or <code>.codex/config.toml</code> per-project):</p>
+                <div class="code-block" data-title="TOML"><pre><code>[mcp_servers.csharpdb]
+command = "dotnet"
+args = ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]</code></pre></div>
+
+                <h3 id="chatgpt-desktop">ChatGPT Desktop</h3>
+                <p>ChatGPT Desktop currently only supports <a href="https://developers.openai.com/apps-sdk/deploy/connect-chatgpt/">remote MCP servers over HTTPS</a> — it cannot spawn local stdio processes. To connect CSharpDB:</p>
+                <ol>
+                    <li>Run the MCP server with an HTTP-to-stdio bridge such as <a href="https://github.com/nicholasgasior/supergateway">supergateway</a> or <a href="https://github.com/nicholasgasior/mcp-proxy">mcp-proxy</a>:
+                        <div class="code-block" data-title="Bash"><pre><code>npx supergateway --port 8080 -- dotnet run --project /path/to/src/CSharpDB.Mcp -- --database /path/to/mydata.db</code></pre></div>
+                    </li>
+                    <li>Expose the local port via <a href="https://ngrok.com/">ngrok</a> or similar:
+                        <div class="code-block" data-title="Bash"><pre><code>ngrok http 8080</code></pre></div>
+                    </li>
+                    <li>In ChatGPT, go to <strong>Settings &gt; Connectors &gt; Create</strong> and paste the public HTTPS URL.</li>
+                </ol>
+                <div class="callout callout-info">
+                    <strong>Tip:</strong> If you only need SQL access from ChatGPT, the <a href="rest-api.html">REST API</a> at <code>http://localhost:61818</code> may be simpler — no bridge required.
+                </div>
+
+                <h3 id="lm-studio">LM Studio</h3>
+                <p>LM Studio supports MCP servers starting from <a href="https://lmstudio.ai/blog/lmstudio-v0.3.17">v0.3.17</a>. Open the <strong>Program</strong> tab in the right-hand sidebar, click <strong>Install &gt; Edit mcp.json</strong>, and add CSharpDB:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "mcpServers": {
+    "csharpdb": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/path/to/mydata.db"]
+    }
+  }
+}</code></pre></div>
+                <p>The <code>mcp.json</code> file lives at:</p>
+                <table>
+                    <thead>
+                        <tr><th>OS</th><th>Path</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Windows</td><td><code>%USERPROFILE%\.lmstudio\mcp.json</code></td></tr>
+                        <tr><td>macOS / Linux</td><td><code>~/.lmstudio/mcp.json</code></td></tr>
+                    </tbody>
+                </table>
+                <div class="callout callout-info">
+                    <strong>Note:</strong> For all stdio-based clients (Claude, Codex, Cursor, LM Studio), make sure <code>dotnet</code> is available on your system PATH.
+                </div>
+
+                <h2 id="available-tools">Available Tools</h2>
+
+                <h3>Schema Tools</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>GetDatabaseInfo</code></td><td>Get the database file path</td><td>—</td></tr>
+                        <tr><td><code>ListTables</code></td><td>List all table names</td><td>—</td></tr>
+                        <tr><td><code>DescribeTable</code></td><td>Get column names, types, and constraints</td><td><code>tableName</code></td></tr>
+                        <tr><td><code>ListIndexes</code></td><td>List all indexes with table, columns, uniqueness</td><td>—</td></tr>
+                        <tr><td><code>ListViews</code></td><td>List all views with their SQL definitions</td><td>—</td></tr>
+                        <tr><td><code>ListTriggers</code></td><td>List all triggers with timing, event, and body</td><td>—</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Data Tools</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>BrowseTable</code></td><td>Paginated row browsing with schema</td><td><code>tableName</code>, <code>page?</code> (default 1), <code>pageSize?</code> (default 50)</td></tr>
+                        <tr><td><code>BrowseView</code></td><td>Paginated view result browsing</td><td><code>viewName</code>, <code>page?</code> (default 1), <code>pageSize?</code> (default 50)</td></tr>
+                        <tr><td><code>GetRowByPk</code></td><td>Fetch a single row by primary key</td><td><code>tableName</code>, <code>pkColumn</code>, <code>pkValue</code></td></tr>
+                        <tr><td><code>GetRowCount</code></td><td>Get total row count for a table</td><td><code>tableName</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Mutation Tools</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>InsertRow</code></td><td>Insert a row into a table</td><td><code>tableName</code>, <code>valuesJson</code></td></tr>
+                        <tr><td><code>UpdateRow</code></td><td>Update a row by primary key</td><td><code>tableName</code>, <code>pkColumn</code>, <code>pkValue</code>, <code>valuesJson</code></td></tr>
+                        <tr><td><code>DeleteRow</code></td><td>Delete a row by primary key</td><td><code>tableName</code>, <code>pkColumn</code>, <code>pkValue</code></td></tr>
+                    </tbody>
+                </table>
+                <p>The <code>valuesJson</code> parameter accepts a JSON object string with column names as keys:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{"name": "Alice", "age": 30, "email": "alice@example.com"}</code></pre></div>
+                <p>Values are automatically coerced to CSharpDB types: integers become <code>INTEGER</code>, decimals become <code>REAL</code>, strings become <code>TEXT</code>, null stays <code>NULL</code>.</p>
+                <p><code>DescribeTable</code> and <code>BrowseTable</code> include <code>isIdentity</code> metadata for identity columns.</p>
+
+                <h3>SQL Tool</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>ExecuteSql</code></td><td>Execute any SQL statement</td><td><code>sql</code></td></tr>
+                    </tbody>
+                </table>
+                <p>This is the general-purpose tool for anything not covered by the specialized tools — DDL (<code>CREATE TABLE</code>, <code>ALTER TABLE</code>, <code>DROP</code>), complex queries with JOINs and aggregates, <code>CREATE INDEX</code>, <code>CREATE VIEW</code>, <code>CREATE TRIGGER</code>, and so on.</p>
+
+                <h2 id="example-conversations">Example Conversations</h2>
+                <p>Once connected, an AI assistant can interact with CSharpDB naturally:</p>
+                <blockquote>
+                    <p><strong>User:</strong> What tables are in the database?</p>
+                    <p><strong>Assistant:</strong> <em>(calls ListTables)</em> The database has 7 tables: customers, categories, products, orders, order_items, reviews, and shipping_addresses.</p>
+                </blockquote>
+                <blockquote>
+                    <p><strong>User:</strong> Show me the top 5 customers by order total.</p>
+                    <p><strong>Assistant:</strong> <em>(calls ExecuteSql with a JOIN + GROUP BY query)</em> Here are the top 5 customers...</p>
+                </blockquote>
+                <blockquote>
+                    <p><strong>User:</strong> Add a new product called "Widget Pro" priced at $29.99 in category 2.</p>
+                    <p><strong>Assistant:</strong> <em>(calls InsertRow)</em> Done — inserted 1 row into the products table.</p>
+                </blockquote>
+
+                <h2 id="architecture">Architecture</h2>
+                <p>The MCP server is a .NET console app using stdio transport:</p>
+                <div class="code-block" data-title="Text"><pre><code>AI Client (Claude, Cursor, etc.)
+    |
+    |  stdio (JSON-RPC)
+    |
+CSharpDB.Mcp (Generic Host)
+    |
+ICSharpDbClient
+    |
+CSharpDB.Client (transport-selecting SDK)
+    |
+CSharpDB Engine (B+tree, WAL, Pager)
+    |
+mydata.db</code></pre></div>
+                <p>All 14 tools are thin wrappers around <code>ICSharpDbClient</code>. In the current repo, MCP uses the direct engine-backed client by default, but the host can also be pointed at an HTTP endpoint through the same client options. The MCP SDK (<code>ModelContextProtocol</code> NuGet package) handles protocol framing, tool discovery, and stdio transport.</p>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../getting-started.html">Getting Started Tutorial</a> — Learn the CSharpDB API step by step</li>
+                    <li><a href="rest-api.html">REST API Reference</a> — HTTP endpoints for the same operations</li>
+                    <li><a href="cli.html">CLI Reference</a> — Interactive REPL for manual exploration</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

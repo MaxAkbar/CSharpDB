@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Internals & Contributing — CSharpDB</title>
+    <meta name="description" content="CSharpDB internals and contributing guide — project structure, query flow, adding SQL statements and operators, testing, concurrency model, and limitations.">
+    <link rel="canonical" href="https://csharpdb.com/docs/internals.html">
+    <meta property="og:title" content="Internals & Contributing — CSharpDB">
+    <meta property="og:description" content="CSharpDB internals and contributing guide — project structure, query flow, adding SQL statements and operators, testing, concurrency model, and limitations.">
+    <meta property="og:url" content="https://csharpdb.com/docs/internals.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Internals & Contributing',
+        description: 'CSharpDB internals and contributing guide — project structure, query flow, adding SQL statements and operators, testing, concurrency model, and limitations.',
+        keywords: 'CSharpDB internals, contributing, project structure, query flow, testing, concurrency, architecture',
+        canonicalPath: 'docs/internals.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#project-structure">Project Structure</a></li>
+                        <li><a href="#how-a-select-query-flows">How a SELECT Query Flows</a></li>
+                        <li><a href="#how-to-add-a-new-sql-statement">How to Add a New SQL Statement</a></li>
+                        <li><a href="#how-to-add-a-new-operator">How to Add a New Operator</a></li>
+                        <li><a href="#testing-strategy">Testing Strategy</a></li>
+                        <li><a href="#concurrency-model">Concurrency Model</a></li>
+                        <li><a href="#current-limitations">Current Limitations</a></li>
+                        <li><a href="#roadmap">Roadmap</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>CSharpDB Internals &amp; Contributing</h1>
+                <p>This guide is for developers who want to understand, extend, or contribute to CSharpDB.</p>
+
+                <h2 id="project-structure">Project Structure</h2>
+                <div class="code-block" data-title="Text"><pre><code>CSharpDB.slnx
+&#x251C;&#x2500;&#x2500; src/
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Primitives/               Shared types (no dependencies)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; DbType.cs                  Data type enum
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; DbValue.cs                 Discriminated union value type
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Schema.cs                  ColumnDefinition, TableSchema, IndexSchema, TriggerSchema
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; CSharpDbException.cs       Typed exception with ErrorCode
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Storage/            On-disk storage (depends on Primitives)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; PageConstants.cs            Page size, header offsets, page types, WAL constants
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Varint.cs                   LEB128 variable-length integer codec
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; IStorageDevice.cs           Abstract async file I/O interface
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; FileStorageDevice.cs        Concrete implementation via RandomAccess
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Pager.cs                    Page cache, dirty tracking, allocation, transactions, WAL, snapshots
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; WriteAheadLog.cs            WAL file I/O: frames, commit, rollback, checkpoint, recovery
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; WalIndex.cs                 In-memory WAL index + immutable snapshots for concurrent reads
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; SlottedPage.cs              Structured access to slotted page layout
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; BTree.cs                    B+tree: insert, delete, find, split
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; BTreeCursor.cs             Forward-only cursor for scans and seeks
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; RecordEncoder.cs            Encode/decode DbValue[] &#x2194; byte[]
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; SchemaSerializer.cs         Encode/decode TableSchema &#x2194; byte[]
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; SchemaCatalog.cs            In-memory schema cache (tables, indexes, views, triggers) backed by B+trees
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Storage.Diagnostics/  Read-only diagnostics (depends on Storage, Primitives)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; DatabaseInspector.cs        Database file validation and page inspection
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; WalInspector.cs             WAL validation and frame inspection
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; IndexInspector.cs           Index integrity verification
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; README.md                   Package guide and usage examples
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Sql/                SQL frontend (depends on Primitives)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; TokenType.cs                Token type enum
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Token.cs                    Token struct
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Tokenizer.cs               Hand-rolled lexical scanner
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Ast.cs                      Statement and Expression AST nodes
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Parser.cs                   Recursive descent parser
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; SqlScriptSplitter.cs        Multi-statement script splitting (tracks BEGIN/END depth for triggers)
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; SqlStatementClassifier.cs   Classifies statements as read-only or mutating
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Execution/          Query execution (depends on Primitives, Sql, Storage)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; IOperator.cs                Iterator interface
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Operators.cs                TableScan, IndexScan, Filter, Projection, Sort, Limit, Aggregate, Join
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ExpressionEvaluator.cs      Evaluates Expression AST against a row
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; QueryPlanner.cs             AST &#x2192; operator tree or direct DML/DDL execution
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Engine/             Public API (depends on all above)
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; Database.cs                 Open, Execute, Transactions, Checkpoint, ReaderSession
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Client/             Unified client SDK (depends on Engine, Sql, Storage.Diagnostics)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ICSharpDbClient.cs          Public client contract (all database operations)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbClient.cs           Factory: Create() &#x2192; transport-specific implementation
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbClientOptions.cs    Configuration (DataSource, Endpoint, Transport, ConnectionString)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbTransport.cs        Transport enum (Direct, Http, Grpc, NamedPipes)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ServiceCollectionExtensions.cs  DI registration (AddCSharpDbClient)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Internal/                   Transport resolver and direct/HTTP/gRPC implementations
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; Models/                     Schema, data, procedure, transaction, and collection models
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Data/               ADO.NET provider (depends on Engine)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbConnection.cs       DbConnection implementation
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbCommand.cs          DbCommand with parameterized queries
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbDataReader.cs       DbDataReader with typed accessors
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbParameter.cs        DbParameter / DbParameterCollection
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbTransaction.cs      DbTransaction implementation
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CSharpDbFactory.cs          DbProviderFactory registration
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; SqlParameterBinder.cs       @param placeholder binding
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; TypeMapper.cs               CSharpDB &#x2194; CLR type mapping
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Native/             NativeAOT C FFI library (depends on Engine, Execution, Primitives)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; NativeExports.cs            20 exported C functions (open, close, execute, result iteration, transactions, errors)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; HandleTable.cs              GCHandle-based opaque pointer management
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; StringCache.cs              Unmanaged UTF-8 string lifetime management
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; BlobCache.cs                Pinned byte[] lifetime management
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ErrorState.cs               Thread-local errno-style error reporting
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; csharpdb.h                  C header file for consumers
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Cli/                Interactive REPL (depends on Client)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Program.cs                  Entry point with CLI argument parsing
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CliShellOptions.cs          Parses --endpoint, --server, --transport flags
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Repl.cs                     Read-eval-print loop
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; TableFormatter.cs           ASCII table output with alignment
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; MetaCommands.cs             .tables, .schema, .quit, etc.
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; MetaCommandContext.cs       Session state (client, transactions, snapshots)
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Admin/              Blazor Server admin dashboard (depends on Client)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Program.cs                  Blazor Server entry point
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Services/                   Theme, toast, modal, tab manager, DatabaseChangeService
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; Components/                 Razor components for UI
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Api/                REST API (depends on Client)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Program.cs                  ASP.NET Core Minimal API entry point
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Endpoints/                  TableEndpoints, RowEndpoints, IndexEndpoints, ViewEndpoints, etc.
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Dtos/                       Request/response record types
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Helpers/                    JSON coercion helpers
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; Middleware/                 Exception handling middleware
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Daemon/             gRPC host (depends on Client)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Program.cs                  ASP.NET Core gRPC entry point
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Grpc/                       Generated-contract host implementation
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; Configuration/              Daemon config binding helpers
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; README.md                   Host model, deployment, and client usage
+&#x2502;   &#x2502;
+&#x2502;   &#x2514;&#x2500;&#x2500; CSharpDB.Mcp/                MCP server for AI assistants (depends on Client)
+&#x2502;       &#x251C;&#x2500;&#x2500; Program.cs                  Generic Host with stdio transport
+&#x2502;       &#x251C;&#x2500;&#x2500; Tools/                      SchemaTools, DataTools, MutationTools, SqlTools (15 tools)
+&#x2502;       &#x2514;&#x2500;&#x2500; Helpers/                    JSON serialization and value coercion
+&#x2502;
+&#x251C;&#x2500;&#x2500; clients/
+&#x2502;   &#x2514;&#x2500;&#x2500; node/                         Node.js/TypeScript client (wraps CSharpDB.Native via koffi)
+&#x2502;       &#x251C;&#x2500;&#x2500; src/index.ts                Database class, query/execute/transaction API
+&#x2502;       &#x251C;&#x2500;&#x2500; src/native.ts               koffi FFI bindings to CSharpDB.Native
+&#x2502;       &#x251C;&#x2500;&#x2500; examples/                   Basic usage example
+&#x2502;       &#x2514;&#x2500;&#x2500; tests/                      Integration tests
+&#x2502;
+&#x251C;&#x2500;&#x2500; tests/
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Tests/              Engine unit + integration tests
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; VarintTests.cs              Varint round-trip encoding
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; RecordEncoderTests.cs       Row encoding/decoding
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; TokenizerTests.cs           SQL tokenization
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ParserTests.cs              SQL parsing to AST
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; IntegrationTests.cs         Full SQL round-trips (end-to-end)
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; WalTests.cs                 WAL mode: commit, rollback, crash recovery, snapshots
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ClientSqlExecutionTests.cs  Client SDK SQL execution tests
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; SqlScriptSplitterTests.cs   Script splitting edge cases
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Data.Tests/         ADO.NET provider tests
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ConnectionTests.cs          Connection open/close/state
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; CommandTests.cs             Parameterized queries, ExecuteScalar, ExecuteNonQuery
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; DataReaderTests.cs          Typed getters, schema table, null handling
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; TransactionTests.cs         ADO.NET transaction commit/rollback
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Cli.Tests/          CLI smoke + integration tests
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Api.Tests/          REST API transport and endpoint tests
+&#x2502;   &#x2502;
+&#x2502;   &#x251C;&#x2500;&#x2500; CSharpDB.Daemon.Tests/       gRPC daemon transport tests
+&#x2502;   &#x2502;
+&#x2502;   &#x2514;&#x2500;&#x2500; CSharpDB.Benchmarks/         Performance benchmarks
+&#x2502;
+&#x251C;&#x2500;&#x2500; docs/
+&#x2502;   &#x251C;&#x2500;&#x2500; tutorials/native-ffi/         FFI tutorials (JavaScript via koffi, Python via ctypes)
+&#x2502;   &#x251C;&#x2500;&#x2500; tutorials/storage/            Storage tutorial track, study examples, and advanced standalone examples
+&#x2502;   &#x251C;&#x2500;&#x2500; roadmap.md                    Product roadmap and status
+&#x2502;   &#x2514;&#x2500;&#x2500; rest-api.md                   REST host reference
+&#x2502;
+&#x2514;&#x2500;&#x2500; samples/                          Sample datasets + import helpers
+    &#x251C;&#x2500;&#x2500; ecommerce-store/
+    &#x2502;   &#x251C;&#x2500;&#x2500; schema.sql                  Northwind Electronics
+    &#x2502;   &#x2514;&#x2500;&#x2500; procedures.json
+    &#x251C;&#x2500;&#x2500; medical-clinic/
+    &#x2502;   &#x251C;&#x2500;&#x2500; schema.sql                  Riverside Health Center
+    &#x2502;   &#x2514;&#x2500;&#x2500; procedures.json
+    &#x251C;&#x2500;&#x2500; school-district/
+    &#x2502;   &#x251C;&#x2500;&#x2500; schema.sql                  Maplewood School District
+    &#x2502;   &#x2514;&#x2500;&#x2500; procedures.json
+    &#x251C;&#x2500;&#x2500; feature-tour/
+    &#x2502;   &#x251C;&#x2500;&#x2500; schema.sql                  Northstar Field Services
+    &#x2502;   &#x251C;&#x2500;&#x2500; procedures.json
+    &#x2502;   &#x2514;&#x2500;&#x2500; queries.sql
+    &#x2514;&#x2500;&#x2500; run-sample.csx</code></pre></div>
+
+                <h2 id="how-a-select-query-flows">How a SELECT Query Flows Through the System</h2>
+                <p>Tracing <code>db.ExecuteAsync("SELECT name FROM users WHERE age &gt; 25")</code>:</p>
+
+                <h3>Step 1: Database.ExecuteAsync (Engine)</h3>
+                <ul>
+                    <li><code>Database.ExecuteAsync</code> calls <code>Parser.Parse(sql)</code> to get an AST</li>
+                    <li>Since it's a SELECT (not DML), no auto-transaction is started</li>
+                    <li>Calls <code>QueryPlanner.ExecuteAsync(stmt)</code></li>
+                </ul>
+
+                <h3>Step 2: Parser.Parse (Sql)</h3>
+                <ul>
+                    <li><code>Tokenizer.Tokenize()</code> scans the string into tokens: <code>SELECT</code>, <code>name</code>, <code>FROM</code>, <code>users</code>, <code>WHERE</code>, <code>age</code>, <code>&gt;</code>, <code>25</code></li>
+                    <li><code>Parser.ParseStatement()</code> recognizes SELECT and delegates to <code>ParseSelect()</code></li>
+                    <li>Produces a <code>SelectStatement</code> with:
+                        <ul>
+                            <li>Columns: <code>[ColumnRefExpression("name")]</code></li>
+                            <li>TableName: <code>"users"</code></li>
+                            <li>Where: <code>BinaryExpression(GreaterThan, ColumnRef("age"), Literal(25))</code></li>
+                        </ul>
+                    </li>
+                </ul>
+
+                <h3>Step 3: QueryPlanner.ExecuteSelect (Execution)</h3>
+                <ul>
+                    <li>Resolves <code>"users"</code> against <code>SchemaCatalog</code> to get <code>TableSchema</code> and root page</li>
+                    <li>Creates a <code>BTree</code> using the planner's own <code>Pager</code> (important for snapshot readers)</li>
+                    <li>Checks for usable indexes (equality predicates on indexed columns)</li>
+                    <li>Builds operator pipeline:
+                        <ol>
+                            <li><code>TableScanOperator(tree, schema)</code> — or <code>IndexScanOperator</code> if an index applies</li>
+                            <li><code>FilterOperator(scan, whereExpr, schema)</code> — applies <code>age &gt; 25</code></li>
+                            <li><code>ProjectionOperator(filter, [name], schema)</code> — extracts the <code>name</code> column</li>
+                        </ol>
+                    </li>
+                    <li>Returns <code>QueryResult(projectionOp)</code></li>
+                </ul>
+
+                <h3>Step 4: User iterates rows (Execution to Storage)</h3>
+                <ul>
+                    <li>Calling <code>result.GetRowsAsync()</code> opens the operator chain</li>
+                    <li><code>ProjectionOperator.MoveNextAsync()</code> calls <code>FilterOperator.MoveNextAsync()</code></li>
+                    <li><code>FilterOperator</code> calls <code>TableScanOperator.MoveNextAsync()</code> in a loop</li>
+                    <li><code>TableScanOperator</code> uses <code>BTreeCursor.MoveNextAsync()</code> to walk leaf pages</li>
+                    <li><code>BTreeCursor</code> calls <code>Pager.GetPageAsync()</code> which checks: cache, WAL index, then disk</li>
+                    <li>For each row, <code>FilterOperator</code> evaluates <code>ExpressionEvaluator.Evaluate(whereExpr, row, schema)</code></li>
+                    <li>If the expression returns truthy, the row passes through to <code>ProjectionOperator</code></li>
+                    <li><code>ProjectionOperator</code> extracts the <code>name</code> column and yields it</li>
+                </ul>
+
+                <h2 id="how-to-add-a-new-sql-statement">How to Add a New SQL Statement</h2>
+                <p>Example: adding <code>TRUNCATE TABLE name</code>.</p>
+
+                <h3>1. Add AST node (<code>Ast.cs</code>)</h3>
+                <div class="code-block" data-title="C#"><pre><code>public sealed class TruncateTableStatement : Statement
+{
+    public required string TableName { get; init; }
+}</code></pre></div>
+
+                <h3>2. Add parsing (<code>Parser.cs</code>)</h3>
+                <p>Add <code>"TRUNCATE"</code> to the keyword list in <code>Tokenizer.cs</code>, then in <code>Parser.ParseStatement()</code>:</p>
+                <div class="code-block" data-title="C#"><pre><code>TokenType.Truncate =&gt; ParseTruncate(),</code></pre></div>
+                <p>Implement <code>ParseTruncate()</code> to consume <code>TRUNCATE TABLE &lt;identifier&gt;</code>.</p>
+
+                <h3>3. Add execution (<code>QueryPlanner.cs</code>)</h3>
+                <div class="code-block" data-title="C#"><pre><code>TruncateTableStatement truncate =&gt; await ExecuteTruncateAsync(truncate, ct),</code></pre></div>
+                <p>Implement <code>ExecuteTruncateAsync</code> — delete all rows from the B+tree, return <code>new QueryResult(deletedCount)</code>.</p>
+
+                <h3>4. Add tests (<code>IntegrationTests.cs</code>)</h3>
+                <p>Write a test that creates a table, inserts rows, truncates, and verifies the table is empty.</p>
+
+                <h2 id="how-to-add-a-new-operator">How to Add a New Operator</h2>
+                <p>Example: adding a <code>DistinctOperator</code> that deduplicates rows.</p>
+
+                <h3>1. Create the operator class (<code>Operators.cs</code>)</h3>
+                <div class="code-block" data-title="C#"><pre><code>public sealed class DistinctOperator : IOperator
+{
+    private readonly IOperator _source;
+    private readonly HashSet&lt;string&gt; _seen = new();
+
+    public ColumnDefinition[] OutputSchema =&gt; _source.OutputSchema;
+    public DbValue[] Current =&gt; _source.Current;
+
+    public DistinctOperator(IOperator source) =&gt; _source = source;
+
+    public ValueTask OpenAsync(CancellationToken ct) =&gt; _source.OpenAsync(ct);
+
+    public async ValueTask&lt;bool&gt; MoveNextAsync(CancellationToken ct)
+    {
+        while (await _source.MoveNextAsync(ct))
+        {
+            var key = string.Join("|", _source.Current.Select(v =&gt; v.ToString()));
+            if (_seen.Add(key)) return true;
+        }
+        return false;
+    }
+
+    public ValueTask DisposeAsync() =&gt; _source.DisposeAsync();
+}</code></pre></div>
+
+                <h3>2. Wire it into the planner (<code>QueryPlanner.cs</code>)</h3>
+                <p>Insert <code>DistinctOperator</code> into the operator tree in <code>ExecuteSelect()</code> when the AST indicates DISTINCT.</p>
+
+                <h3>3. Update the parser</h3>
+                <p>Recognize <code>SELECT DISTINCT</code> in <code>ParseSelect()</code> and set a flag on <code>SelectStatement</code>.</p>
+
+                <h2 id="testing-strategy">Testing Strategy</h2>
+
+                <h3>Unit Tests (per layer)</h3>
+                <table>
+                    <thead>
+                        <tr><th>Test file</th><th>Layer</th><th>What it tests</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>VarintTests.cs</code></td><td>Storage</td><td>Varint encoding round-trips for unsigned/signed values</td></tr>
+                        <tr><td><code>RecordEncoderTests.cs</code></td><td>Storage</td><td>Row encoding/decoding for all DbValue types</td></tr>
+                        <tr><td><code>TokenizerTests.cs</code></td><td>Sql</td><td>Keyword recognition, string escaping, operators, numbers, comments</td></tr>
+                        <tr><td><code>ParserTests.cs</code></td><td>Sql</td><td>AST generation for each statement type, complex expressions</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Integration Tests (end-to-end)</h3>
+                <table>
+                    <thead>
+                        <tr><th>Category</th><th>Examples</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Basic CRUD</strong></td><td>CREATE TABLE + INSERT + SELECT, UPDATE, DELETE, DROP TABLE</td></tr>
+                        <tr><td><strong>Filtering</strong></td><td>WHERE with AND/OR/NOT, LIKE, IN, BETWEEN, IS NULL</td></tr>
+                        <tr><td><strong>Aggregates</strong></td><td>COUNT, SUM, AVG, MIN, MAX, GROUP BY, HAVING</td></tr>
+                        <tr><td><strong>JOINs</strong></td><td>INNER JOIN, LEFT JOIN, RIGHT JOIN, CROSS JOIN, multi-table</td></tr>
+                        <tr><td><strong>Schema</strong></td><td>ALTER TABLE (ADD/DROP/RENAME COLUMN, RENAME TABLE)</td></tr>
+                        <tr><td><strong>Indexes</strong></td><td>CREATE INDEX, UNIQUE index, index-based lookups</td></tr>
+                        <tr><td><strong>Views</strong></td><td>CREATE VIEW, SELECT from view, DROP VIEW</td></tr>
+                        <tr><td><strong>CTEs</strong></td><td>WITH clause, multiple CTEs, CTE referencing CTE</td></tr>
+                        <tr><td><strong>Triggers</strong></td><td>BEFORE/AFTER INSERT/UPDATE/DELETE, trigger with multiple statements</td></tr>
+                        <tr><td><strong>Transactions</strong></td><td>BEGIN/COMMIT/ROLLBACK, persistence across reopen</td></tr>
+                        <tr><td><strong>WAL</strong></td><td>Commit through WAL, rollback, crash recovery, concurrent readers, checkpointing</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>ADO.NET Tests</h3>
+                <table>
+                    <thead>
+                        <tr><th>Test file</th><th>What it tests</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>ConnectionTests.cs</code></td><td>Open/close, connection state, connection string parsing, GetTableNames/GetTableSchema</td></tr>
+                        <tr><td><code>CommandTests.cs</code></td><td>ExecuteNonQuery, ExecuteScalar, ExecuteReader, parameterized queries</td></tr>
+                        <tr><td><code>DataReaderTests.cs</code></td><td>Typed getters (GetInt64, GetString, GetDouble, GetBoolean), IsDBNull, GetSchemaTable, HasRows</td></tr>
+                        <tr><td><code>TransactionTests.cs</code></td><td>ADO.NET transaction commit/rollback</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Running Tests</h3>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~IntegrationTests"
+dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~WalTests"
+dotnet test tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
+dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+dotnet test tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj
+dotnet test tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj</code></pre></div>
+
+                <h2 id="concurrency-model">Concurrency Model</h2>
+                <p>CSharpDB supports <strong>single writer + concurrent readers</strong> via WAL mode:</p>
+                <ul>
+                    <li><strong>Writer</strong>: A <code>SemaphoreSlim(1,1)</code> ensures only one write transaction is active at a time. The writer appends modified pages to the WAL file and commits by flushing the WAL.</li>
+                    <li><strong>Readers</strong>: Each reader acquires a <code>WalSnapshot</code> — a frozen copy of the WAL index. The snapshot routes page reads through the WAL, so the reader sees a consistent point-in-time view even while the writer modifies data.</li>
+                    <li><strong>Checkpoint</strong>: Periodically (after 1000+ WAL frames by default, or manually via <code>CheckpointAsync</code>), committed WAL pages are copied to the main DB file and the WAL is reset. Checkpoint is skipped if any readers are active.</li>
+                    <li><strong>Crash Recovery</strong>: On open, the WAL is scanned for committed transactions. Valid committed frames are checkpointed to bring the DB file up to date.</li>
+                </ul>
+                <div class="code-block" data-title="Text"><pre><code>Writer flow:      BeginTransaction &#x2192; modify pages &#x2192; CommitAsync (append to WAL) &#x2192; release lock
+Reader flow:      AcquireSnapshot &#x2192; create snapshot pager &#x2192; read pages (WAL or DB file) &#x2192; release
+Checkpoint flow:  Acquire mutex &#x2192; copy WAL pages to DB &#x2192; reset WAL &#x2192; release mutex</code></pre></div>
+
+                <h2 id="current-limitations">Current Limitations</h2>
+                <p>These are known simplifications:</p>
+                <table>
+                    <thead>
+                        <tr><th>Area</th><th>Limitation</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Functions</strong></td><td>Very limited built-in scalar function surface today; broader built-ins and user-defined functions remain planned</td></tr>
+                        <tr><td><strong>Query</strong></td><td>Scalar/<code>IN</code>/<code>EXISTS</code> subqueries are supported, including correlated cases in <code>WHERE</code>, non-aggregate projection, and <code>UPDATE</code>/<code>DELETE</code>; correlated subqueries are still unsupported in <code>JOIN ON</code>, <code>GROUP BY</code>, <code>HAVING</code>, <code>ORDER BY</code>, and aggregate projections</td></tr>
+                        <tr><td><strong>Query</strong></td><td><code>UNION</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are supported; <code>UNION ALL</code> is not implemented yet</td></tr>
+                        <tr><td><strong>Query</strong></td><td>No window functions</td></tr>
+                        <tr><td><strong>Schema</strong></td><td>No SQL <code>DEFAULT</code> column values, <code>CHECK</code> constraints, or foreign keys</td></tr>
+                        <tr><td><strong>Storage</strong></td><td>No page-level compression</td></tr>
+                        <tr><td><strong>Storage</strong></td><td>No at-rest encryption for database/WAL files</td></tr>
+                        <tr><td><strong>Storage</strong></td><td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td></tr>
+                        <tr><td><strong>RowId</strong></td><td>Legacy table schemas without persisted high-water metadata may still pay a one-time key scan on first insert</td></tr>
+                        <tr><td><strong>Collections</strong></td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindAsync</code> remains a full scan</td></tr>
+                        <tr><td><strong>Collections</strong></td><td>No JSON-path querying or expression/path-based document indexes yet</td></tr>
+                        <tr><td><strong>Networking</strong></td><td>The shipping model still splits remote access between <code>CSharpDB.Api</code> for HTTP and <code>CSharpDB.Daemon</code> for gRPC; host consolidation plus named pipes remain planned</td></tr>
+                        <tr><td><strong>Security</strong></td><td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in auth, authorization, and TLS/mTLS support remain planned</td></tr>
+                        <tr><td><strong>Concurrency</strong></td><td>Single writer only (no multi-writer)</td></tr>
+                        <tr><td><strong>Indexes</strong></td><td>Composite indexes are supported, but ordered range-scan pushdown is still limited to narrower index shapes</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="roadmap">Roadmap</h2>
+                <p>See <a href="../roadmap.html">docs/roadmap.md</a> for the full roadmap with near-term, mid-term, and long-term goals.</p>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="architecture.html">Architecture Guide</a> — Layer-by-layer design deep dive</li>
+                    <li><a href="../getting-started.html">Getting Started Tutorial</a> — Step-by-step walkthrough with code examples</li>
+                    <li><a href="rest-api.html">REST API Reference</a> — All 34 API endpoints with examples</li>
+                    <li><a href="mcp-server.html">MCP Server Reference</a> — AI assistant integration via Model Context Protocol</li>
+                    <li><a href="cli.html">CLI Reference</a> — Interactive REPL commands and meta-commands</li>
+                    <li><a href="storage-inspector.html">Storage Inspector</a> — Physical diagnostics toolkit</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

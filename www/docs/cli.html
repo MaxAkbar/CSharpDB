@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>CLI Reference — CSharpDB</title>
+    <meta name="description" content="CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.">
+    <link rel="canonical" href="https://csharpdb.com/docs/cli.html">
+    <meta property="og:title" content="CLI Reference — CSharpDB">
+    <meta property="og:description" content="CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.">
+    <meta property="og:url" content="https://csharpdb.com/docs/cli.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'CLI Reference',
+        description: 'CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.',
+        keywords: 'CSharpDB CLI, REPL, meta-commands, SQL introspection, storage inspector, command line',
+        canonicalPath: 'docs/cli.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#running-the-cli">Running the CLI</a></li>
+                        <li><a href="#interactive-usage">Interactive Usage</a></li>
+                        <li><a href="#meta-commands">Meta-Commands</a>
+                            <ul>
+                                <li><a href="#database-introspection">Database Introspection</a></li>
+                                <li><a href="#transaction-management">Transaction Management</a></li>
+                                <li><a href="#mode-toggles">Mode Toggles</a></li>
+                                <li><a href="#file-execution">File Execution</a></li>
+                                <li><a href="#general">General</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#sql-introspection">SQL Introspection (sys.*)</a></li>
+                        <li><a href="#storage-inspector-commands">Storage Inspector Commands</a></li>
+                        <li><a href="#examples">Examples</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>CSharpDB CLI Reference</h1>
+                <p>The CSharpDB CLI (<code>CSharpDB.Cli</code>) is an interactive REPL for working with CSharpDB databases from the terminal. It supports SQL execution, meta-commands for introspection, transaction management, and batch file execution.</p>
+
+                <h2 id="running-the-cli">Running the CLI</h2>
+                <div class="code-block" data-title="Bash"><pre><code># Open or create a database
+dotnet run --project src/CSharpDB.Cli -- mydata.db
+
+# Without arguments, uses csharpdb.db in the current directory
+dotnet run --project src/CSharpDB.Cli</code></pre></div>
+
+                <p>The CLI also supports command mode (non-REPL) for storage diagnostics:</p>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- inspect mydata.db
+dotnet run --project src/CSharpDB.Cli -- inspect-page mydata.db 5 --hex
+dotnet run --project src/CSharpDB.Cli -- check-wal mydata.db
+dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json</code></pre></div>
+
+                <p>If the first argument is one of <code>inspect</code>, <code>inspect-page</code>, <code>check-wal</code>, or <code>check-indexes</code>, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.</p>
+
+                <h2 id="interactive-usage">Interactive Usage</h2>
+                <p>The REPL displays a <code>csdb&gt;</code> prompt. Enter SQL statements followed by a semicolon, or use dot-prefixed meta-commands:</p>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER);
+OK (0 ms)
+
+csdb&gt; INSERT INTO users VALUES (1, 'Alice', 30);
+1 row(s) affected (1 ms)
+
+csdb&gt; SELECT * FROM users;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; id &#x2502; name  &#x2502; age &#x2502;
+&#x251C;&#x2500;&#x2500;&#x2500;&#x2500;&#x253C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x253C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2524;
+&#x2502;  1 &#x2502; Alice &#x2502;  30 &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2534;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2534;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+1 row(s) returned (0 ms)
+
+csdb&gt; .quit</code></pre></div>
+
+                <p>Multi-line SQL is supported — the REPL waits for a semicolon before executing. Trigger bodies (<code>BEGIN ... END;</code>) are handled correctly.</p>
+
+                <h2 id="meta-commands">Meta-Commands</h2>
+                <p>All meta-commands start with a dot (<code>.</code>). They are case-insensitive.</p>
+
+                <h3 id="database-introspection">Database Introspection</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>.info</code></td><td>Show database status: table, index, view, trigger, and collection counts</td></tr>
+                        <tr><td><code>.tables [PATTERN|--all]</code></td><td>List tables. By default, collection backing tables are hidden. Use a pattern to filter or <code>--all</code> to include internal tables.</td></tr>
+                        <tr><td><code>.schema [TABLE|--all]</code></td><td>Show the CREATE TABLE schema for one or all tables</td></tr>
+                        <tr><td><code>.indexes [TABLE]</code></td><td>List indexes, optionally filtered by table name</td></tr>
+                        <tr><td><code>.views</code></td><td>List all views</td></tr>
+                        <tr><td><code>.view &lt;NAME&gt;</code></td><td>Show the CREATE VIEW SQL for a specific view</td></tr>
+                        <tr><td><code>.triggers [TABLE]</code></td><td>List triggers, optionally filtered by table name</td></tr>
+                        <tr><td><code>.trigger &lt;NAME&gt;</code></td><td>Show the CREATE TRIGGER SQL for a specific trigger</td></tr>
+                        <tr><td><code>.collections</code></td><td>List document collections (NoSQL API)</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="transaction-management">Transaction Management</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>.begin</code></td><td>Begin an explicit transaction</td></tr>
+                        <tr><td><code>.commit</code></td><td>Commit the current transaction</td></tr>
+                        <tr><td><code>.rollback</code></td><td>Rollback the current transaction</td></tr>
+                        <tr><td><code>.checkpoint</code></td><td>Flush WAL pages to the main database file</td></tr>
+                        <tr><td><code>.backup &lt;FILE&gt; [--with-manifest]</code></td><td>Write a committed snapshot backup to a file, optionally with a JSON manifest</td></tr>
+                        <tr><td><code>.restore &lt;FILE&gt; [--validate-only]</code></td><td>Validate a source snapshot or restore it into the current database file; for remote transports the path is resolved on the target host</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="mode-toggles">Mode Toggles</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>.timing [on|off|status]</code></td><td>Toggle query timing output (shows execution time in milliseconds)</td></tr>
+                        <tr><td><code>.snapshot [on|off|status]</code></td><td>Toggle snapshot (read-only) mode for SELECT queries. When enabled, queries use a frozen point-in-time view that is unaffected by concurrent writes.</td></tr>
+                        <tr><td><code>.syncpoint [on|off|status]</code></td><td>Toggle the sync fast path for primary key lookups. When enabled, cached PK lookups bypass the async pipeline for lower latency.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="file-execution">File Execution</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>.read &lt;FILE&gt;</code></td><td>Execute all SQL statements from a file. Statements are separated by semicolons. Results and errors are printed as they execute.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="general">General</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>.help</code></td><td>Show a list of all available commands</td></tr>
+                        <tr><td><code>.quit</code> / <code>.exit</code></td><td>Exit the REPL</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="sql-introspection">SQL Introspection (<code>sys.*</code>)</h2>
+                <p>You can query metadata with SQL in addition to dot-commands:</p>
+                <div class="code-block" data-title="SQL"><pre><code>SELECT * FROM sys.tables ORDER BY table_name;
+SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
+SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.views;
+SELECT * FROM sys.triggers;
+SELECT * FROM sys.objects ORDER BY object_type, object_name;
+SELECT * FROM sys.saved_queries ORDER BY name;</code></pre></div>
+
+                <p>Underscored aliases are supported: <code>sys_tables</code>, <code>sys_columns</code>, <code>sys_indexes</code>, <code>sys_views</code>, <code>sys_triggers</code>, <code>sys_objects</code>, <code>sys_saved_queries</code>.</p>
+                <p><code>sys.columns</code> includes <code>is_identity</code> (0/1) in addition to <code>is_primary_key</code>.</p>
+
+                <h2 id="storage-inspector-commands">Storage Inspector Commands</h2>
+                <p>These commands are read-only and return deterministic exit codes for automation:</p>
+                <ul>
+                    <li><code>0</code>: no warnings/errors</li>
+                    <li><code>1</code>: warnings present, no errors</li>
+                    <li><code>2</code>: errors present</li>
+                    <li><code>64</code>: invalid CLI usage</li>
+                </ul>
+
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>inspect &lt;dbfile&gt; [--json] [--out &lt;file&gt;] [--include-pages]</code></td><td>Full DB file/header/page integrity scan</td></tr>
+                        <tr><td><code>inspect-page &lt;dbfile&gt; &lt;pageId&gt; [--json] [--hex]</code></td><td>Inspect one page and optionally include hex dump</td></tr>
+                        <tr><td><code>check-wal &lt;dbfile&gt; [--json]</code></td><td>Validate WAL header/frames/salts/checksums</td></tr>
+                        <tr><td><code>check-indexes &lt;dbfile&gt; [--index &lt;name&gt;] [--sample &lt;n&gt;] [--json]</code></td><td>Validate index catalog/root/table/column consistency</td></tr>
+                    </tbody>
+                </table>
+
+                <p>See <a href="storage-inspector.html">Storage Inspector</a> for full rule IDs and JSON contract details.</p>
+
+                <h2 id="examples">Examples</h2>
+
+                <h3>Introspection</h3>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .tables
+  users
+  orders
+  products
+
+csdb&gt; .schema users
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY IDENTITY,
+  name TEXT NOT NULL,
+  age INTEGER
+)
+
+csdb&gt; .indexes users
+  idx_users_name  ON users(name)  UNIQUE
+
+csdb&gt; .info
+  Tables:      3
+  Indexes:     2
+  Views:       1
+  Triggers:    1
+  Collections: 0
+  Mode: WAL enabled, timing off, snapshot off</code></pre></div>
+
+                <h3>Transactions</h3>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .begin
+Transaction started.
+
+csdb&gt; INSERT INTO users VALUES (10, 'Test', 99);
+1 row(s) affected
+
+csdb&gt; .rollback
+Transaction rolled back.
+
+csdb&gt; SELECT * FROM users WHERE id = 10;
+0 row(s) returned</code></pre></div>
+
+                <h3>File Execution</h3>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .read samples/ecommerce-store/schema.sql
+Executing 84 statements...
+84 succeeded, 0 failed.</code></pre></div>
+
+                <h3>Snapshot Mode</h3>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .snapshot on
+Snapshot mode enabled.
+
+csdb&gt; SELECT COUNT(*) FROM users;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; COUNT(*) &#x2502;
+&#x251C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2524;
+&#x2502;       42 &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+
+csdb&gt; .snapshot off
+Snapshot mode disabled.</code></pre></div>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../getting-started.html">Getting Started Tutorial</a> — C# API walkthrough with code examples</li>
+                    <li><a href="rest-api.html">REST API Reference</a> — HTTP endpoint documentation</li>
+                    <li><a href="faq.html">FAQ</a> — Common setup and troubleshooting answers</li>
+                    <li><a href="samples.html">Sample Datasets</a> — SQL scripts to load test data</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
