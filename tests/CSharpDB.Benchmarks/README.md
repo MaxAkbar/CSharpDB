@@ -70,6 +70,9 @@ The current snapshot in this README mixes the March 25-28, 2026 durable and buff
 ## Running Benchmarks
 
 ```bash
+# Focused release/guardrail pass (recommended for normal validation)
+dotnet run -c Release -- --release
+
 # Micro-benchmarks (BenchmarkDotNet)
 dotnet run -c Release -- --micro
 
@@ -138,6 +141,9 @@ dotnet run -c Release -- --macro-batch-memory
 # Stress and scaling suites
 dotnet run -c Release -- --stress
 dotnet run -c Release -- --scaling
+
+# Exhaustive full sweep (includes every micro suite; very slow)
+dotnet run -c Release -- --all
 ```
 
 Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `BenchmarkDotNet.Artifacts/results/`.
@@ -213,6 +219,7 @@ Defaults:
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
 - The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
+- `--release` reads `perf-thresholds.json` and runs just the tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
 - That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
