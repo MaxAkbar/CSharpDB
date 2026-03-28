@@ -35,7 +35,7 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity)).ToList());
+                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.Collation)).ToList());
 
         return Results.Ok(response);
     }
@@ -63,7 +63,7 @@ public static class TableEndpoints
         if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType))
             return Results.BadRequest(new { error = $"Invalid column type '{req.Type}'. Valid types: Integer, Real, Text, Blob." });
 
-        await db.AddColumnAsync(name, req.ColumnName, dbType, req.NotNull);
+        await db.AddColumnAsync(name, req.ColumnName, dbType, req.NotNull, req.Collation);
         return Results.NoContent();
     }
 

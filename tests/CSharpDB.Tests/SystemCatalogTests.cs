@@ -35,8 +35,8 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     public async Task SystemCatalog_ExposesTablesColumnsAndIndexes()
     {
         var ct = TestContext.Current.CancellationToken;
-        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)", ct);
-        await _db.ExecuteAsync("CREATE INDEX idx_users_age ON users(age)", ct);
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE NOT NULL, age INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_name_binary ON users(name COLLATE BINARY)", ct);
 
         await using var tables = await _db.ExecuteAsync(
             "SELECT table_name, column_count, primary_key_column FROM sys.tables WHERE table_name = 'users'", ct);
@@ -47,7 +47,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("id", tableRow[2].AsText);
 
         await using var columns = await _db.ExecuteAsync(
-            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity " +
+            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity, collation " +
             "FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position", ct);
         var columnRows = await columns.ToListAsync(ct);
         Assert.Equal(3, columnRows.Count);
@@ -56,22 +56,40 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("INTEGER", columnRows[0][2].AsText);
         Assert.Equal(1L, columnRows[0][4].AsInteger);
         Assert.Equal(1L, columnRows[0][5].AsInteger);
+        Assert.True(columnRows[0][6].IsNull);
         Assert.Equal("name", columnRows[1][0].AsText);
         Assert.Equal("TEXT", columnRows[1][2].AsText);
         Assert.Equal(0L, columnRows[1][3].AsInteger);
         Assert.Equal(0L, columnRows[1][4].AsInteger);
         Assert.Equal(0L, columnRows[1][5].AsInteger);
+        Assert.Equal("NOCASE", columnRows[1][6].AsText);
 
         await using var indexes = await _db.ExecuteAsync(
-            "SELECT index_name, table_name, column_name, ordinal_position, is_unique " +
-            "FROM sys.indexes WHERE index_name = 'idx_users_age'", ct);
+            "SELECT index_name, table_name, column_name, ordinal_position, is_unique, collation " +
+            "FROM sys.indexes WHERE index_name = 'idx_users_name_binary'", ct);
         var indexRows = await indexes.ToListAsync(ct);
         var indexRow = Assert.Single(indexRows);
-        Assert.Equal("idx_users_age", indexRow[0].AsText);
+        Assert.Equal("idx_users_name_binary", indexRow[0].AsText);
         Assert.Equal("users", indexRow[1].AsText);
-        Assert.Equal("age", indexRow[2].AsText);
+        Assert.Equal("name", indexRow[2].AsText);
         Assert.Equal(1L, indexRow[3].AsInteger);
         Assert.Equal(0L, indexRow[4].AsInteger);
+        Assert.Equal("BINARY", indexRow[5].AsText);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_IndexCollation_UsesEffectiveColumnCollationWhenInherited()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_name ON users(name)", ct);
+
+        await using var indexes = await _db.ExecuteAsync(
+            "SELECT collation FROM sys.indexes WHERE index_name = 'idx_users_name'",
+            ct);
+        var indexRow = Assert.Single(await indexes.ToListAsync(ct));
+
+        Assert.Equal("NOCASE", indexRow[0].AsText);
     }
 
     [Fact]

@@ -11,9 +11,9 @@
     <script>
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
-        title: 'Collation Support Plan',
-        description: 'CSharpDB collation support plan — case-insensitive comparisons, locale-aware sorting, and COLLATE clause design for queries and index definitions.',
-        keywords: 'CSharpDB collation, COLLATE, case-insensitive, NOCASE, ICU, locale-aware sorting, Unicode',
+        title: 'Collation Guide',
+        description: 'How to use text collation in CSharpDB - BINARY, NOCASE, SQL examples, collection indexes, performance, and current limitations.',
+        keywords: 'CSharpDB collation, multilingual text, COLLATE, NOCASE, BINARY, case-insensitive search, SQL sorting, collection indexes',
         canonicalPath: 'docs/collation-support.html',
         ogType: 'article',
     };
@@ -22,158 +22,140 @@
 
     <main class="page">
         <div class="container doc-container">
-            <!-- Sidebar TOC -->
             <aside class="doc-sidebar">
                 <nav class="doc-toc">
                     <h4>On This Page</h4>
                     <ul>
-                        <li><a href="#problem">Problem</a></li>
-                        <li><a href="#design-principles">Design Principles</a></li>
-                        <li><a href="#performance-analysis">Performance Analysis</a></li>
-                        <li><a href="#proposed-collation-model">Proposed Collation Model</a>
+                        <li><a href="#overview">Overview</a></li>
+                        <li><a href="#what-collation-solves">What Collation Solves</a></li>
+                        <li><a href="#current-support">Current Support</a></li>
+                        <li><a href="#supported-collations">Supported Collations</a></li>
+                        <li><a href="#sql-usage">SQL Usage</a>
                             <ul>
-                                <li><a href="#built-in-collations">Built-In Collations</a></li>
-                                <li><a href="#sql-syntax">SQL Syntax</a></li>
+                                <li><a href="#column-level-default">Column-Level Default</a></li>
+                                <li><a href="#index-level-collation">Index-Level Collation</a></li>
+                                <li><a href="#query-level-override">Query-Level Override</a></li>
                             </ul>
                         </li>
-                        <li><a href="#implementation-plan">Implementation Plan</a>
-                            <ul>
-                                <li><a href="#phase-1-nocase-collation">Phase 1: NOCASE</a></li>
-                                <li><a href="#phase-2-icu-locale-aware">Phase 2: ICU Locale-Aware</a></li>
-                                <li><a href="#phase-3-nocase-ai">Phase 3: NOCASE_AI</a></li>
-                            </ul>
-                        </li>
-                        <li><a href="#non-goals">Non-Goals</a></li>
-                        <li><a href="#risks">Risks</a></li>
-                        <li><a href="#test-plan">Test Plan</a></li>
+                        <li><a href="#collection-usage">Collection Usage</a></li>
+                        <li><a href="#choosing-a-collation">Choosing a Collation</a></li>
+                        <li><a href="#performance">Performance</a></li>
+                        <li><a href="#limitations">Current Limitations</a></li>
+                        <li><a href="#faq">FAQ</a></li>
                         <li><a href="#see-also">See Also</a></li>
                     </ul>
                 </nav>
             </aside>
 
-            <!-- Main content -->
             <div class="doc-content">
-                <h1>Collation Support Plan</h1>
+                <h1>Collation Guide</h1>
+                <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code> vs <code>NOCASE</code>, and how to apply collation in SQL and collection indexes.</p>
 
-                <div class="callout callout-info">
-                    <strong>Status (March 2026):</strong> Planned. This document captures the design direction for adding collation support to CSharpDB &mdash; enabling case-insensitive comparisons, locale-aware sorting, and a <code>COLLATE</code> clause for queries and index definitions.
+                <div class="callout callout-success">
+                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code> and <code>NOCASE</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
                 </div>
 
-                <p>CSharpDB currently stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. However, all text comparison and sorting uses <code>StringComparison.Ordinal</code> (raw byte/code-point order), which means there is no case-insensitive matching, no locale-aware sort ordering, and no <code>COLLATE</code> clause.</p>
+                <div class="callout callout-warning">
+                    <strong>Still planned:</strong> Accent-insensitive collation (<code>NOCASE_AI</code>), locale-aware collation (<code>ICU:&lt;locale&gt;</code>), and dedicated ordered SQL text index optimization are not implemented yet.
+                </div>
 
-                <h2 id="problem">Problem</h2>
-                <p>Today, the text handling has three constraints:</p>
-                <ol>
-                    <li><code>WHERE name = 'Alice'</code> does not match <code>'alice'</code> or <code>'ALICE'</code> &mdash; there is no case-insensitive equality.</li>
-                    <li><code>ORDER BY name</code> sorts by Unicode code point, not by linguistic rules &mdash; German <code>&auml;</code> sorts after <code>z</code> instead of near <code>a</code>, and uppercase letters sort before all lowercase letters.</li>
-                    <li><code>LIKE 'a%'</code> is case-sensitive &mdash; there is no <code>COLLATE NOCASE</code> modifier.</li>
-                </ol>
-                <p>These are the specific code paths where ordinal comparison is hardcoded:</p>
+                <h2 id="overview">Overview</h2>
+                <p>CSharpDB already stores text as UTF-8, so data from any language can be stored and retrieved correctly. Collation is about something different: how text is compared, filtered, and sorted.</p>
+                <p>If you only need multilingual storage, you do not need to do anything special. If you need case-insensitive matching, case-insensitive ordering, or stable text lookup semantics across SQL and collection indexes, declare a collation explicitly.</p>
+
+                <h2 id="what-collation-solves">What Collation Solves</h2>
+                <p>Collation helps with text comparison behavior, not translation or UI localization.</p>
                 <ul>
-                    <li><code>DbValue.CompareTo</code> &mdash; <code>string.Compare(a.AsText, b.AsText, StringComparison.Ordinal)</code></li>
-                    <li><code>DbValue.Equals</code> &mdash; <code>AsText == other.AsText</code> (ordinal equality)</li>
-                    <li><code>ExpressionEvaluator</code> LIKE evaluation &mdash; ordinal character matching</li>
-                    <li>B+tree index key encoding &mdash; raw UTF-8 bytes determine key order</li>
-                    <li>Collection ordered text indexes &mdash; UTF-8 prefix keys with ordinal ordering</li>
+                    <li><strong>Case-insensitive equality:</strong> make <code>'Alice'</code>, <code>'alice'</code>, and <code>'ALICE'</code> compare as equal when you want that behavior.</li>
+                    <li><strong>Case-insensitive ordering:</strong> sort names or tags without uppercase values grouping separately from lowercase values.</li>
+                    <li><strong>Consistent index semantics:</strong> make indexed lookups and unique enforcement follow the same text rules as query execution.</li>
+                    <li><strong>Collection path behavior:</strong> let collection indexes on text fields or array elements use the same matching semantics as SQL.</li>
                 </ul>
+                <p>Collation does <strong>not</strong> provide translation, localized UI text, or language-specific full-text tokenization.</p>
 
-                <h2 id="design-principles">Design Principles</h2>
-                <ol>
-                    <li><strong>Ordinal stays the default.</strong> No performance regression for users who do not need collation.</li>
-                    <li><strong>Opt-in per column or per index.</strong> Collation is declared explicitly, not applied globally.</li>
-                    <li><strong>Pre-compute collation keys at write time.</strong> Store normalized sort keys in indexes so reads stay fast &mdash; pay the cost once on write, not on every comparison.</li>
-                    <li><strong>Case-insensitive as a fast path.</strong> Simple invariant-case normalization covers the majority of real-world needs and is much cheaper than full ICU locale-aware collation.</li>
-                </ol>
-
-                <h2 id="performance-analysis">Performance Analysis</h2>
+                <h2 id="current-support">Current Support</h2>
                 <table>
                     <thead>
                         <tr>
-                            <th>Area</th>
-                            <th>Ordinal (current)</th>
-                            <th>With collation (opt-in)</th>
-                            <th>Strategy</th>
+                            <th>Surface</th>
+                            <th>Support</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td>Text comparison in WHERE/JOIN</td>
-                            <td>Raw byte compare</td>
-                            <td><code>CompareInfo.Compare</code> or normalized key compare</td>
-                            <td>Pre-normalized keys avoid per-comparison cost</td>
+                            <td>Text storage</td>
+                            <td>UTF-8 / full Unicode storage is supported by default</td>
                         </tr>
                         <tr>
-                            <td>ORDER BY sorting</td>
-                            <td>Code-point order</td>
-                            <td>Culture-aware sort key comparison</td>
-                            <td>Pre-computed sort keys stored alongside data</td>
+                            <td>Default text behavior</td>
+                            <td>Ordinal / byte-order semantics unless a collation is declared</td>
                         </tr>
                         <tr>
-                            <td>Index equality lookup</td>
-                            <td>UTF-8 byte match</td>
-                            <td>Normalized key match</td>
-                            <td>Normalize at write time, lookup stays O(1)</td>
+                            <td>SQL DDL</td>
+                            <td><code>TEXT COLLATE ...</code> in table definitions and <code>COLLATE</code> in index definitions</td>
                         </tr>
                         <tr>
-                            <td>Index range scan</td>
-                            <td>UTF-8 byte order</td>
-                            <td>Collation sort-key order</td>
-                            <td>Store collation sort keys as B+tree keys</td>
+                            <td>SQL queries</td>
+                            <td>Query-level <code>COLLATE</code> overrides for comparisons and ordering</td>
                         </tr>
                         <tr>
-                            <td>INSERT/UPDATE</td>
-                            <td>Raw bytes</td>
-                            <td>Generate collation key on write</td>
-                            <td>One-time cost per write</td>
+                            <td>SQL indexes</td>
+                            <td>Collation-aware equality and uniqueness behavior for text indexes</td>
                         </tr>
                         <tr>
-                            <td>Users not using collation</td>
-                            <td>Zero overhead</td>
-                            <td>Zero overhead</td>
-                            <td>Opt-in only</td>
+                            <td>Collections API</td>
+                            <td>Optional collation on <code>EnsureIndexAsync</code> for text path indexes, including array-element paths</td>
+                        </tr>
+                        <tr>
+                            <td>Metadata</td>
+                            <td>Visible through system catalogs, client models, REST, gRPC, Admin, and ADO.NET <code>GetSchema()</code></td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h2 id="proposed-collation-model">Proposed Collation Model</h2>
-
-                <h3 id="built-in-collations">Built-In Collations</h3>
+                <h2 id="supported-collations">Supported Collations</h2>
                 <table>
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Use When</th>
                             <th>Behavior</th>
-                            <th>Implementation</th>
+                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
                             <td><code>BINARY</code></td>
-                            <td>Current ordinal behavior (default)</td>
-                            <td><code>StringComparison.Ordinal</code> &mdash; no change</td>
+                            <td>You want exact ordinal behavior</td>
+                            <td>Default byte/code-point comparison</td>
+                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>NOCASE</code></td>
-                            <td>Case-insensitive, locale-independent</td>
-                            <td><code>TextInfo.ToLowerInvariant()</code> normalization on write; ordinal compare on normalized keys</td>
+                            <td>You want case-insensitive matching without locale-specific rules</td>
+                            <td>Invariant lowercase normalization for indexed and runtime compare paths</td>
+                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>NOCASE_AI</code></td>
-                            <td>Case-insensitive, accent-insensitive</td>
-                            <td><code>string.Compare(..., CompareOptions.IgnoreCase | IgnoreNonSpace)</code> or Unicode normalization + folding</td>
+                            <td>You want case-insensitive and accent-insensitive behavior</td>
+                            <td>Not implemented yet</td>
+                            <td>Planned</td>
                         </tr>
                         <tr>
                             <td><code>ICU:&lt;locale&gt;</code></td>
-                            <td>Full locale-aware collation</td>
-                            <td><code>CompareInfo.GetSortKey()</code> from <code>System.Globalization</code> for the specified culture</td>
+                            <td>You need locale-aware linguistic sorting rules</td>
+                            <td>Not implemented yet</td>
+                            <td>Planned</td>
                         </tr>
                     </tbody>
                 </table>
-                <p><code>NOCASE</code> should ship first &mdash; it covers the vast majority of use cases (case-insensitive lookups and sorts) with minimal cost.</p>
 
-                <h3 id="sql-syntax">SQL Syntax</h3>
+                <h2 id="sql-usage">SQL Usage</h2>
+                <p>You can apply collation in three places: at the column definition, on an index expression, or directly inside a query.</p>
 
-                <h4>Column-level collation</h4>
+                <h3 id="column-level-default">Column-Level Default</h3>
+                <p>Use this when a text column should normally behave case-insensitively.</p>
                 <div class="code-block" data-title="SQL">
                     <pre><code>CREATE TABLE users (
     id INTEGER PRIMARY KEY,
@@ -181,103 +163,142 @@
     email TEXT COLLATE NOCASE
 );</code></pre>
                 </div>
+                <p>With this schema, comparisons and ordering against <code>name</code> and <code>email</code> use <code>NOCASE</code> unless a query overrides them.</p>
 
-                <h4>Index-level collation</h4>
+                <h3 id="index-level-collation">Index-Level Collation</h3>
+                <p>Use this when only a specific index needs case-insensitive behavior.</p>
                 <div class="code-block" data-title="SQL">
-                    <pre><code>CREATE INDEX idx_users_name ON users (name COLLATE NOCASE);</code></pre>
+                    <pre><code>CREATE INDEX idx_users_email_nocase
+ON users (email COLLATE NOCASE);</code></pre>
+                </div>
+                <p>This is useful when you want fast case-insensitive lookups but do not want to change the default semantics of every query that touches the column.</p>
+
+                <h3 id="query-level-override">Query-Level Override</h3>
+                <p>Use this when you want an explicit override in a single query.</p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT *
+FROM users
+WHERE name = 'alice' COLLATE NOCASE;
+
+SELECT *
+FROM users
+ORDER BY name COLLATE NOCASE;</code></pre>
+                </div>
+                <p>Query-level collation is the right choice when the table defaults to <code>BINARY</code> but one report, search, or sort needs case-insensitive behavior.</p>
+
+                <h2 id="collection-usage">Collection Usage</h2>
+                <p>The collection API supports the same idea for text path indexes. Declare the collation when you create the index; lookups and range scans then use that index's rules.</p>
+
+                <h3>Case-Insensitive Text Index</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var users = await db.GetCollectionAsync&lt;User&gt;("users", ct);
+
+await users.EnsureIndexAsync(x =&gt; x.Email, "NOCASE", ct);
+
+await foreach (var match in users.FindByPathAsync("Email", "ALPHA@EXAMPLE.COM", ct))
+{
+    Console.WriteLine(match.Value.Email);
+}</code></pre>
                 </div>
 
-                <h4>Query-level collation override</h4>
-                <div class="code-block" data-title="SQL">
-                    <pre><code>SELECT * FROM users WHERE name = 'alice' COLLATE NOCASE;
-SELECT * FROM users ORDER BY name COLLATE NOCASE;</code></pre>
+                <h3>Case-Insensitive Array Element Index</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var users = await db.GetCollectionAsync&lt;UserWithTags&gt;("users", ct);
+
+await users.EnsureIndexAsync("$.tags[]", "NOCASE", ct);
+
+await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
+{
+    Console.WriteLine(match.Key);
+}</code></pre>
                 </div>
 
-                <h2 id="implementation-plan">Implementation Plan</h2>
+                <p>If you create a collection index with one collation and later request the same path with a different collation, CSharpDB treats that as a mismatch. Recreate the index instead of expecting the engine to silently reinterpret existing index data.</p>
 
-                <h3 id="phase-1-nocase-collation">Phase 1: NOCASE Collation</h3>
-                <p><strong>Goal:</strong> Ship <code>COLLATE NOCASE</code> for column definitions, indexes, and query expressions.</p>
-                <p><strong>Parser changes:</strong></p>
+                <h2 id="choosing-a-collation">Choosing a Collation</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>If you need...</th>
+                            <th>Use</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Exact case-sensitive matching or exact ordinal ordering</td>
+                            <td><code>BINARY</code></td>
+                        </tr>
+                        <tr>
+                            <td>Case-insensitive matching for names, emails, usernames, tags, or search fields</td>
+                            <td><code>NOCASE</code></td>
+                        </tr>
+                        <tr>
+                            <td>Accent-insensitive behavior</td>
+                            <td>Not available yet; planned as <code>NOCASE_AI</code></td>
+                        </tr>
+                        <tr>
+                            <td>Locale-aware linguistic ordering for a specific language or region</td>
+                            <td>Not available yet; planned as <code>ICU:&lt;locale&gt;</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="performance">Performance</h2>
+                <p>Collation is opt-in. If you do not use it, the default ordinal path keeps its current behavior and performance profile.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Area</th>
+                            <th>Default / <code>BINARY</code></th>
+                            <th><code>NOCASE</code></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Reads without collation</td>
+                            <td>No extra overhead</td>
+                            <td>Not applicable</td>
+                        </tr>
+                        <tr>
+                            <td>Indexed equality lookup</td>
+                            <td>Ordinal key match</td>
+                            <td>Normalized key match</td>
+                        </tr>
+                        <tr>
+                            <td>INSERT / UPDATE on collated index</td>
+                            <td>Raw text path</td>
+                            <td>Extra normalization work on write</td>
+                        </tr>
+                        <tr>
+                            <td>Collection text index</td>
+                            <td>Ordinal text key</td>
+                            <td>Normalized text key</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>One current caveat remains on the SQL side: collated text ordering is semantically correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.</p>
+
+                <h2 id="limitations">Current Limitations</h2>
                 <ul>
-                    <li>Add <code>COLLATE</code> as a recognized token and keyword</li>
-                    <li>Support <code>COLLATE &lt;name&gt;</code> after column type in <code>CREATE TABLE</code></li>
-                    <li>Support <code>COLLATE &lt;name&gt;</code> after column reference in <code>CREATE INDEX</code></li>
-                    <li>Support <code>COLLATE &lt;name&gt;</code> as a postfix expression modifier in WHERE, ORDER BY, and HAVING</li>
-                </ul>
-                <p><strong>Schema changes:</strong></p>
-                <ul>
-                    <li>Add optional <code>Collation</code> property to <code>ColumnDefinition</code></li>
-                    <li>Add optional <code>Collation</code> property to <code>IndexSchema</code> column entries</li>
-                    <li>Persist collation metadata in the schema catalog</li>
-                </ul>
-                <p><strong>Storage changes:</strong></p>
-                <ul>
-                    <li>When a column or index declares <code>COLLATE NOCASE</code>, index keys are stored as <code>ToLowerInvariant()</code> normalized UTF-8 bytes</li>
-                    <li>The B+tree key order reflects the normalized form</li>
-                    <li>Equality comparisons on collated columns use normalized form</li>
-                    <li>Non-collated columns continue to use raw ordinal bytes (zero overhead)</li>
-                </ul>
-                <p><strong>Execution changes:</strong></p>
-                <ul>
-                    <li><code>ExpressionEvaluator</code> checks column collation metadata for comparison and LIKE operations</li>
-                    <li><code>QueryPlanner</code> propagates collation from column/index schema to operator construction</li>
-                    <li><code>FilterOperator</code> and <code>ProjectionOperator</code> apply collation when evaluating text expressions</li>
-                    <li>LIKE on <code>NOCASE</code> columns normalizes both pattern and value before matching</li>
-                </ul>
-                <p><strong>Collection changes:</strong></p>
-                <ul>
-                    <li><code>EnsureIndexAsync</code> gains an optional collation parameter for ordered text indexes</li>
-                    <li><code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> respect index collation</li>
+                    <li><strong>Default behavior is still ordinal.</strong> If you never declare collation, text comparisons and ordering stay case-sensitive and byte-order based.</li>
+                    <li><strong>Only <code>BINARY</code> and <code>NOCASE</code> are implemented.</strong> There is no accent-insensitive or locale-specific collation yet.</li>
+                    <li><strong>SQL text ordering is not fully index-optimized.</strong> The semantics are correct, but a dedicated ordered SQL text index strategy is still future work.</li>
+                    <li><strong>Changing collation means rebuilding index state.</strong> Existing index bytes were written with a specific interpretation and should not be silently reused under different rules.</li>
                 </ul>
 
-                <h3 id="phase-2-icu-locale-aware">Phase 2: ICU Locale-Aware Collation</h3>
-                <p><strong>Goal:</strong> Support <code>COLLATE ICU:&lt;locale&gt;</code> for full linguistic sorting.</p>
-                <ul>
-                    <li>Use <code>CultureInfo.GetCultureInfo(locale).CompareInfo.GetSortKey(text)</code> to generate binary sort keys</li>
-                    <li>Store sort keys as the B+tree index key bytes</li>
-                    <li>Sort keys are larger than raw UTF-8 (typically 2&ndash;3x) &mdash; this is the main storage cost</li>
-                    <li>Equality uses sort-key comparison, not original text comparison</li>
-                    <li>Original text is still stored in the table row; sort keys are index-only</li>
-                </ul>
+                <h2 id="faq">FAQ</h2>
 
-                <h3 id="phase-3-nocase-ai">Phase 3: NOCASE_AI (Accent-Insensitive)</h3>
-                <p><strong>Goal:</strong> Support accent-insensitive matching for European languages.</p>
-                <ul>
-                    <li>Use Unicode canonical decomposition (NFD) + accent stripping, or <code>CompareOptions.IgnoreNonSpace</code></li>
-                    <li>Pre-compute normalized keys at write time</li>
-                    <li>Useful for French, German, Spanish, Portuguese, and other languages with diacritics</li>
-                </ul>
+                <h3>Does this give me multilingual support?</h3>
+                <p>Partly. CSharpDB already stores multilingual text because it uses UTF-8. Collation adds better multilingual comparison and sorting behavior, especially for case-insensitive scenarios. It does not provide translation, localized UI strings, or language-aware full-text tokenization.</p>
 
-                <h2 id="non-goals">Non-Goals</h2>
-                <p>For the first implementation:</p>
-                <ul>
-                    <li>Per-database default collation (keep <code>BINARY</code> as the global default)</li>
-                    <li>Runtime-registered custom collation functions</li>
-                    <li>Collation changes on existing data without rebuild (require <code>REINDEX</code> after collation change)</li>
-                    <li>Automatic migration of existing non-collated indexes</li>
-                </ul>
+                <h3>If I do not use <code>COLLATE</code>, is there a performance penalty?</h3>
+                <p>No meaningful one is expected. Collation is opt-in, and the default ordinal path stays in place when you do not declare it.</p>
 
-                <h2 id="risks">Risks</h2>
-                <ul>
-                    <li><strong>Index size increase:</strong> Locale-aware sort keys are larger than raw UTF-8. For <code>NOCASE</code> the overhead is minimal (same byte length, different case). For ICU collations, sort keys can be 2&ndash;3x larger.</li>
-                    <li><strong>Write overhead:</strong> Generating collation keys on every INSERT/UPDATE adds CPU cost. Pre-computation means this is per-write, not per-read.</li>
-                    <li><strong>REINDEX requirement:</strong> Changing a column's collation requires rebuilding all indexes that reference it. This should be enforced, not silent.</li>
-                    <li><strong>NativeAOT compatibility:</strong> <code>System.Globalization</code> and ICU are available in NativeAOT but require ICU data files to be bundled. <code>NOCASE</code> using <code>ToLowerInvariant()</code> has no ICU dependency.</li>
-                </ul>
+                <h3>Will <code>NOCASE</code> change the stored text?</h3>
+                <p>No. Your original text is still stored and returned as written. The collation only affects how values are compared, sorted, and indexed.</p>
 
-                <h2 id="test-plan">Test Plan</h2>
-                <ul>
-                    <li><code>COLLATE NOCASE</code> column: case-insensitive equality, LIKE, and ORDER BY</li>
-                    <li><code>COLLATE NOCASE</code> index: index-backed lookup matches regardless of case</li>
-                    <li>Mixed collation: collated and non-collated columns in the same table</li>
-                    <li>Query-level <code>COLLATE</code> override on a <code>BINARY</code> column</li>
-                    <li>Round-trip: store mixed-case text, retrieve original casing, sort case-insensitively</li>
-                    <li>Multi-language text: Chinese, Arabic, Japanese, Emoji with <code>BINARY</code> and <code>NOCASE</code></li>
-                    <li>ICU collation: German <code>&auml;</code> sorts near <code>a</code>, not after <code>z</code></li>
-                    <li>Performance: benchmark collated vs non-collated index writes, lookups, and range scans</li>
-                    <li>REINDEX after collation change</li>
-                    <li>Collection path index with <code>NOCASE</code> collation</li>
-                </ul>
+                <h3>Should I use column-level or query-level collation?</h3>
+                <p>Use column-level collation when a field should usually behave case-insensitively. Use query-level collation when most queries should stay ordinal but one report or lookup needs an override.</p>
 
                 <h2 id="see-also">See Also</h2>
                 <ul>

@@ -59,7 +59,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
 | **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Done |
-| **Collation support** | Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and `COLLATE` clause in queries and index definitions | Planned |
+| **Multilingual text support** | In progress: `BINARY` / `NOCASE` collation now works across SQL schema/query semantics, metadata surfaces, and collection path indexes; locale-aware ICU-style collation and ordered SQL text index optimization remain planned | In Progress |
 
 ---
 
@@ -102,7 +102,7 @@ These are known simplifications in the current implementation:
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
-| **Text / Collation** | Text is stored as UTF-8 and supports all Unicode languages, but comparisons and sorting use ordinal (byte-order) semantics only; no collation, case-insensitive matching, or locale-aware ordering |
+| **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY` / `NOCASE` collation is now implemented for SQL and collection indexes. Locale-aware ICU-style collation and accent-insensitive matching remain planned |
 | **Concurrency** | Single writer only (no multi-writer) |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
@@ -170,7 +170,7 @@ Major features already implemented:
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
 - [Low-Latency Durable Writes Plan](low-latency-durable-writes/README.md) — Exact-durability auto-commit write optimization plan, advisory stats deferral, and benchmark gates
-- [Collation Support Plan](collation-support/README.md) — Case-insensitive matching, locale-aware sorting, and COLLATE clause for queries and index definitions
+- [Multilingual Text Support Plan](collation-support/README.md) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library

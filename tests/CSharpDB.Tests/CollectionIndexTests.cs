@@ -80,6 +80,31 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForStringField_WithNoCaseCollation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_email_nocase", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "Alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 31, "alpha@example.com"), ct);
+        await users.PutAsync("u:3", new User("Cara", 32, "beta@example.com"), ct);
+
+        await users.EnsureIndexAsync(x => x.Email, "NOCASE", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Email, "ALPHA@example.com", ct), ct);
+
+        Assert.Equal(["u:1", "u:2"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+
+        var binding = GetBinding(users, nameof(User.Email));
+        Assert.Equal("NOCASE", binding.Collation);
+
+        var catalog = GetCollectionCatalog(users);
+        var index = Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(users)));
+        Assert.Single(index.ColumnCollations);
+        Assert.Equal("NOCASE", index.ColumnCollations[0]);
+    }
+
+    [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_WithManyDuplicateIntegerKeys()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -350,6 +375,31 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FindByPathRange_TextPath_UsesNoCaseOrderedTextIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_name_range_nocase", ct);
+
+        await users.PutAsync("u:1", new User("Alpha", 20, "alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("BRAVO", 30, "bravo@example.com"), ct);
+        await users.PutAsync("u:3", new User("charlie", 40, "charlie@example.com"), ct);
+        await users.PutAsync("u:4", new User("delta", 50, "delta@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Name, "NOCASE", ct);
+
+        var binding = GetBinding(users, nameof(User.Name));
+        Assert.True(binding.TryBuildKeyFromValue("BRAVO", out long bravoIndexKey));
+        byte[] bucketPayload = await binding.IndexStore.FindAsync(bravoIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected ordered text index payload.");
+        Assert.True(OrderedTextIndexPayloadCodec.IsEncoded(bucketPayload));
+
+        var matches = await CollectAsync(
+            users.FindByPathRangeAsync("Name", "bravo", "charlie", ct: ct),
+            ct);
+
+        Assert.Equal(["u:2", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task FindByPathRange_DateOnlyPath_UsesOrderedTextIndex()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -477,6 +527,22 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FindByPath_ArrayPath_UsesNoCaseContainsSemantics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithTags>("users_tags_path_query_nocase", ct);
+
+        await users.PutAsync("u:1", new UserWithTags("Alice", ["Red", "Green"], [10, 20]), ct);
+        await users.PutAsync("u:2", new UserWithTags("Bob", ["blue"], [30]), ct);
+        await users.PutAsync("u:3", new UserWithTags("Cara", ["green", "yellow"], [40]), ct);
+        await users.EnsureIndexAsync("$.tags[]", "NOCASE", ct);
+
+        var matches = await CollectAsync(users.FindByPathAsync("$.tags[]", "GREEN", ct), ct);
+
+        Assert.Equal(["u:1", "u:3"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task FindByPath_ArrayPath_FallsBackToDirectPayloadScan_WhenIndexDoesNotExist()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -597,6 +663,30 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CollectionIndexes_WithNoCaseCollation_SurviveReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_nocase_reopen", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "Alpha@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 30, "alpha@example.com"), ct);
+        await users.EnsureIndexAsync(x => x.Email, "NOCASE", ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        var reopened = await _db.GetCollectionAsync<User>("users_nocase_reopen", ct);
+        var matches = await CollectAsync(reopened.FindByPathAsync("Email", "ALPHA@example.com", ct), ct);
+
+        Assert.Equal(["u:1", "u:2"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+
+        var catalog = GetCollectionCatalog(reopened);
+        var index = Assert.Single(catalog.GetIndexesForTable(GetCollectionCatalogTableName(reopened)));
+        Assert.Single(index.ColumnCollations);
+        Assert.Equal("NOCASE", index.ColumnCollations[0]);
+    }
+
+    [Fact]
     public async Task Put_UpdateExistingDocument_PersistsIndexedWritesAcrossReopen()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -679,6 +769,33 @@ public sealed class CollectionIndexTests : IAsyncLifetime
         {
             await _db.RollbackAsync(ct);
         }
+    }
+
+    [Fact]
+    public async Task EnsureIndex_RejectsCollationForNonTextPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_age_collation", ct);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await users.EnsureIndexAsync(x => x.Age, "NOCASE", ct));
+
+        Assert.Contains("text", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EnsureIndex_RejectsCollectionCollationMismatch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_collation_mismatch", ct);
+
+        await users.EnsureIndexAsync(x => x.Email, "NOCASE", ct);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await users.EnsureIndexAsync("Email", "BINARY", ct));
+
+        Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("NOCASE", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

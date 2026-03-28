@@ -148,6 +148,60 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         Assert.True(idColumn.IsIdentity);
     }
 
+    [Fact]
+    public async Task TableSchemaEndpoint_ExposesColumnCollation()
+    {
+        var createResp = await _client.PostAsJsonAsync(
+            "/api/sql/execute",
+            new ExecuteSqlRequest("CREATE TABLE api_collation (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)"),
+            Ct);
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+
+        var schema = await _client.GetFromJsonAsync<TableSchemaResponse>("/api/tables/api_collation/schema", Ct);
+        Assert.NotNull(schema);
+
+        var nameColumn = Assert.Single(schema.Columns, c => c.Name.Equals("name", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("NOCASE", nameColumn.Collation);
+    }
+
+    [Fact]
+    public async Task MutatingSchemaEndpoints_AcceptAndReturnCollationMetadata()
+    {
+        var createResp = await _client.PostAsJsonAsync(
+            "/api/sql/execute",
+            new ExecuteSqlRequest("CREATE TABLE api_mutation_collation (id INTEGER PRIMARY KEY)"),
+            Ct);
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+
+        var addColumnResp = await _client.PostAsJsonAsync(
+            "/api/tables/api_mutation_collation/columns",
+            new AddColumnRequest("name", "TEXT", Collation: "NOCASE"),
+            Ct);
+        Assert.Equal(HttpStatusCode.NoContent, addColumnResp.StatusCode);
+
+        var createIndexResp = await _client.PostAsJsonAsync(
+            "/api/indexes",
+            new CreateIndexRequest("idx_api_mutation_collation_name_binary", "api_mutation_collation", "name", Collation: "BINARY"),
+            Ct);
+        Assert.Equal(HttpStatusCode.Created, createIndexResp.StatusCode);
+        var createdIndex = await createIndexResp.Content.ReadFromJsonAsync<IndexResponse>(Ct);
+        Assert.NotNull(createdIndex);
+        Assert.Equal(["BINARY"], createdIndex!.ColumnCollations);
+
+        var updateIndexResp = await _client.PutAsJsonAsync(
+            "/api/indexes/idx_api_mutation_collation_name_binary",
+            new UpdateIndexRequest("idx_api_mutation_collation_name_nocase", "api_mutation_collation", "name", Collation: "NOCASE"),
+            Ct);
+        Assert.Equal(HttpStatusCode.OK, updateIndexResp.StatusCode);
+        var updatedIndex = await updateIndexResp.Content.ReadFromJsonAsync<IndexResponse>(Ct);
+        Assert.NotNull(updatedIndex);
+        Assert.Equal(["NOCASE"], updatedIndex!.ColumnCollations);
+
+        var schema = await _client.GetFromJsonAsync<TableSchemaResponse>("/api/tables/api_mutation_collation/schema", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("NOCASE", Assert.Single(schema!.Columns, column => column.Name == "name").Collation);
+    }
+
     private sealed class TestApiFactory(string dbPath) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)

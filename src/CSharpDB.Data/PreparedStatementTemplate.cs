@@ -346,6 +346,22 @@ internal sealed class PreparedStatementTemplate
                     Operand = operand,
                 };
             }
+            case CollateExpression collate:
+            {
+                var operand = BindExpression(collate.Operand, parameters, out bool operandChanged);
+                if (!operandChanged)
+                {
+                    changed = false;
+                    return collate;
+                }
+
+                changed = true;
+                return new CollateExpression
+                {
+                    Operand = operand,
+                    Collation = collate.Collation,
+                };
+            }
             case LikeExpression like:
             {
                 var operand = BindExpression(like.Operand, parameters, out bool operandChanged);
@@ -890,6 +906,9 @@ internal sealed class PreparedStatementTemplate
                 return;
             case UnaryExpression unary:
                 CollectParameterNames(unary.Operand, names, seen);
+                return;
+            case CollateExpression collate:
+                CollectParameterNames(collate.Operand, names, seen);
                 return;
             case LikeExpression like:
                 CollectParameterNames(like.Operand, names, seen);

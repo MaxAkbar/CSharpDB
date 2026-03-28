@@ -49,6 +49,17 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateTable_WithColumnCollation()
+    {
+        var stmt = Parser.Parse("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE nocase NOT NULL)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.Null(create.Columns[0].Collation);
+        Assert.Equal("NOCASE", create.Columns[1].Collation);
+        Assert.False(create.Columns[1].IsNullable);
+    }
+
+    [Fact]
     public void Parse_Insert()
     {
         var stmt = Parser.Parse("INSERT INTO users (name, age) VALUES ('Alice', 30)");
@@ -98,6 +109,30 @@ public class ParserTests
         Assert.Equal(2, select.OrderBy!.Count);
         Assert.True(select.OrderBy[0].Descending);
         Assert.False(select.OrderBy[1].Descending);
+    }
+
+    [Fact]
+    public void Parse_Select_WithExplicitComparisonCollation()
+    {
+        var stmt = Parser.Parse("SELECT * FROM users WHERE name COLLATE nocase = 'alice'");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var where = Assert.IsType<BinaryExpression>(select.Where);
+        var collate = Assert.IsType<CollateExpression>(where.Left);
+
+        Assert.Equal("NOCASE", collate.Collation);
+        Assert.IsType<ColumnRefExpression>(collate.Operand);
+    }
+
+    [Fact]
+    public void Parse_Select_WithExplicitOrderByCollation()
+    {
+        var stmt = Parser.Parse("SELECT name FROM users ORDER BY name COLLATE nocase DESC");
+        var select = Assert.IsType<SelectStatement>(stmt);
+        var collate = Assert.IsType<CollateExpression>(select.OrderBy![0].Expression);
+
+        Assert.Equal("NOCASE", collate.Collation);
+        Assert.True(select.OrderBy[0].Descending);
+        Assert.IsType<ColumnRefExpression>(collate.Operand);
     }
 
     [Fact]
@@ -696,6 +731,18 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_AlterTable_AddColumn_WithCollation()
+    {
+        var stmt = Parser.Parse("ALTER TABLE users ADD COLUMN email TEXT COLLATE nocase");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        var add = Assert.IsType<AddColumnAction>(alter.Action);
+
+        Assert.Equal("email", add.Column.Name);
+        Assert.Equal(TokenType.Text, add.Column.TypeToken);
+        Assert.Equal("NOCASE", add.Column.Collation);
+    }
+
+    [Fact]
     public void Parse_AlterTable_DropColumn()
     {
         var stmt = Parser.Parse("ALTER TABLE users DROP COLUMN age");
@@ -771,6 +818,18 @@ public class ParserTests
         Assert.Equal("users", create.TableName);
         Assert.Equal(["a", "b"], create.Columns);
         Assert.False(create.IsUnique);
+    }
+
+    [Fact]
+    public void Parse_CreateIndex_WithColumnCollations()
+    {
+        var stmt = Parser.Parse("CREATE INDEX idx_name_age ON users (name COLLATE nocase, age)");
+        var create = Assert.IsType<CreateIndexStatement>(stmt);
+
+        Assert.Equal(["name", "age"], create.Columns);
+        Assert.Equal(2, create.ColumnCollations.Count);
+        Assert.Equal("NOCASE", create.ColumnCollations[0]);
+        Assert.Null(create.ColumnCollations[1]);
     }
 
     [Fact]

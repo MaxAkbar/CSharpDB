@@ -2,7 +2,7 @@ namespace CSharpDB.Api.Dtos;
 
 // ─── Column / Schema ────────────────────────────────────────
 
-public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity);
+public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
 
 public sealed record TableSchemaResponse(
     string TableName,
@@ -26,7 +26,7 @@ public sealed record CollectionCountResponse(string CollectionName, int Count);
 
 // ─── Indexes ────────────────────────────────────────────────
 
-public sealed record IndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique);
+public sealed record IndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique, IReadOnlyList<string?> ColumnCollations);
 
 // ─── Views ──────────────────────────────────────────────────
 

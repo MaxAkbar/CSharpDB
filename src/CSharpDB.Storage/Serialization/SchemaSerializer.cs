@@ -13,6 +13,8 @@ public static class SchemaSerializer
     private const byte NullableFlag = 0x01;
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
+    private const ulong TableMetadataVersion = 1;
+    private const ulong IndexMetadataVersion = 1;
 
     public static byte[] Serialize(TableSchema schema)
     {
@@ -39,6 +41,10 @@ public static class SchemaSerializer
         // 0 means unknown/uninitialized (legacy compatibility path).
         ulong nextRowId = schema.NextRowId > 0 ? (ulong)schema.NextRowId : 0UL;
         WriteVarint(ms, nextRowId);
+        WriteVarint(ms, TableMetadataVersion);
+        WriteVarint(ms, (ulong)schema.Columns.Count);
+        foreach (var col in schema.Columns)
+            WriteNullableString(ms, col.Collation);
 
         return ms.ToArray();
     }
@@ -54,35 +60,64 @@ public static class SchemaSerializer
         int colCount = (int)Varint.Read(data[pos..], out int cb);
         pos += cb;
 
-        var columns = new ColumnDefinition[colCount];
+        var columnNames = new string[colCount];
+        var columnTypes = new DbType[colCount];
+        var columnFlags = new byte[colCount];
         for (int i = 0; i < colCount; i++)
         {
             int colNameLen = (int)Varint.Read(data[pos..], out int cnb);
             pos += cnb;
-            string colName = Encoding.UTF8.GetString(data.Slice(pos, colNameLen));
+            columnNames[i] = Encoding.UTF8.GetString(data.Slice(pos, colNameLen));
             pos += colNameLen;
-            var type = (DbType)data[pos++];
-            byte flags = data[pos++];
+            columnTypes[i] = (DbType)data[pos++];
+            columnFlags[i] = data[pos++];
+        }
+
+        long nextRowId = 0;
+        var columnCollations = new string?[colCount];
+        if (pos < data.Length)
+        {
+            ulong storedNextRowId = Varint.Read(data[pos..], out int nextRowIdBytesRead);
+            pos += nextRowIdBytesRead;
+            if (storedNextRowId <= long.MaxValue)
+                nextRowId = (long)storedNextRowId;
+        }
+
+        if (pos < data.Length)
+        {
+            ulong metadataVersion = Varint.Read(data[pos..], out int metadataBytesRead);
+            pos += metadataBytesRead;
+
+            if (metadataVersion != TableMetadataVersion)
+                throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
+
+            int metadataColumnCount = (int)Varint.Read(data[pos..], out int metadataCountBytesRead);
+            pos += metadataCountBytesRead;
+            if (metadataColumnCount != colCount)
+                throw new InvalidDataException($"Table schema metadata column count '{metadataColumnCount}' does not match schema column count '{colCount}'.");
+
+            for (int i = 0; i < metadataColumnCount; i++)
+                columnCollations[i] = ReadNullableString(data, ref pos);
+        }
+
+        var columns = new ColumnDefinition[colCount];
+        for (int i = 0; i < colCount; i++)
+        {
+            byte flags = columnFlags[i];
+            DbType type = columnTypes[i];
             bool isPrimaryKey = (flags & PrimaryKeyFlag) != 0;
             bool hasIdentityFlag = (flags & IdentityFlag) != 0;
             columns[i] = new ColumnDefinition
             {
-                Name = colName,
+                Name = columnNames[i],
                 Type = type,
                 Nullable = (flags & NullableFlag) != 0,
                 IsPrimaryKey = isPrimaryKey,
                 // Backward compatibility: historical INTEGER PRIMARY KEY behavior auto-generated rowid.
                 // Legacy payloads lack the identity bit, so infer identity for INTEGER PK columns.
                 IsIdentity = hasIdentityFlag || (isPrimaryKey && type == DbType.Integer),
+                Collation = columnCollations[i],
             };
-        }
-
-        long nextRowId = 0;
-        if (pos < data.Length)
-        {
-            ulong storedNextRowId = Varint.Read(data[pos..], out _);
-            if (storedNextRowId <= long.MaxValue)
-                nextRowId = (long)storedNextRowId;
         }
 
         return new TableSchema
@@ -96,6 +131,7 @@ public static class SchemaSerializer
     public static byte[] SerializeIndex(IndexSchema index)
     {
         var ms = new MemoryStream();
+        string?[] columnCollations = NormalizeColumnCollations(index.Columns.Count, index.ColumnCollations);
         var nameBytes = Encoding.UTF8.GetBytes(index.IndexName);
         WriteVarint(ms, (ulong)nameBytes.Length);
         ms.Write(nameBytes);
@@ -117,6 +153,10 @@ public static class SchemaSerializer
         ms.WriteByte((byte)index.State);
         WriteNullableString(ms, index.OwnerIndexName);
         WriteNullableString(ms, index.OptionsJson);
+        WriteVarint(ms, IndexMetadataVersion);
+        WriteVarint(ms, (ulong)columnCollations.Length);
+        foreach (string? columnCollation in columnCollations)
+            WriteNullableString(ms, columnCollation);
         return ms.ToArray();
     }
 
@@ -152,6 +192,7 @@ public static class SchemaSerializer
         IndexState state = IndexState.Ready;
         string? ownerIndexName = null;
         string? optionsJson = null;
+        string?[] columnCollations = Array.Empty<string?>();
 
         if (pos < data.Length)
             kind = (IndexKind)data[pos++];
@@ -165,11 +206,30 @@ public static class SchemaSerializer
         if (pos < data.Length)
             optionsJson = ReadNullableString(data, ref pos);
 
+        if (pos < data.Length)
+        {
+            ulong metadataVersion = Varint.Read(data[pos..], out int metadataBytesRead);
+            pos += metadataBytesRead;
+
+            if (metadataVersion != IndexMetadataVersion)
+                throw new InvalidDataException($"Unsupported index schema metadata version '{metadataVersion}'.");
+
+            int metadataColumnCount = (int)Varint.Read(data[pos..], out int metadataCountBytesRead);
+            pos += metadataCountBytesRead;
+            if (metadataColumnCount != columns.Length)
+                throw new InvalidDataException($"Index schema metadata column count '{metadataColumnCount}' does not match index column count '{columns.Length}'.");
+
+            columnCollations = new string?[metadataColumnCount];
+            for (int i = 0; i < metadataColumnCount; i++)
+                columnCollations[i] = ReadNullableString(data, ref pos);
+        }
+
         return new IndexSchema
         {
             IndexName = indexName,
             TableName = tableName,
             Columns = columns,
+            ColumnCollations = columnCollations,
             IsUnique = isUnique,
             Kind = kind,
             State = state,
@@ -283,6 +343,24 @@ public static class SchemaSerializer
         Span<byte> buf = stackalloc byte[10];
         int len = Varint.Write(buf, value);
         ms.Write(buf[..len]);
+    }
+
+    private static string?[] NormalizeColumnCollations(int columnCount, IReadOnlyList<string?> columnCollations)
+    {
+        if (columnCount == 0)
+            return Array.Empty<string?>();
+
+        if (columnCollations.Count == 0)
+            return new string?[columnCount];
+
+        if (columnCollations.Count > columnCount)
+            throw new InvalidDataException($"Index collation metadata count '{columnCollations.Count}' exceeds index column count '{columnCount}'.");
+
+        var normalized = new string?[columnCount];
+        for (int i = 0; i < columnCollations.Count; i++)
+            normalized[i] = columnCollations[i];
+
+        return normalized;
     }
 
     private static void WriteNullableString(MemoryStream ms, string? value)

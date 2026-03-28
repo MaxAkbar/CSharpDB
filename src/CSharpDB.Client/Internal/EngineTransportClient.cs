@@ -154,12 +154,12 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     public async Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default)
         => await ExecuteStatementAsync(await GetDatabaseAsync(ct), $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} RENAME TO {RequireIdentifier(newTableName, nameof(newTableName))}", ct);
 
-    public async Task AddColumnAsync(string tableName, string columnName, Models.DbType type, bool notNull, CancellationToken ct = default)
-    {
-        string sql = $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} ADD COLUMN {RequireIdentifier(columnName, nameof(columnName))} {MapDbType(type)}";
-        if (notNull)
-            sql += " NOT NULL";
+    public Task AddColumnAsync(string tableName, string columnName, Models.DbType type, bool notNull, CancellationToken ct = default)
+        => AddColumnAsync(tableName, columnName, type, notNull, collation: null, ct);
 
+    public async Task AddColumnAsync(string tableName, string columnName, Models.DbType type, bool notNull, string? collation, CancellationToken ct = default)
+    {
+        string sql = $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} ADD COLUMN {BuildColumnDefinitionSql(columnName, type, notNull, collation)}";
         await ExecuteStatementAsync(await GetDatabaseAsync(ct), sql, ct);
     }
 
@@ -178,19 +178,21 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             .ToArray();
     }
 
-    public async Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
-    {
-        string unique = isUnique ? "UNIQUE " : string.Empty;
-        string sql = $"CREATE {unique}INDEX {RequireIdentifier(indexName, nameof(indexName))} ON {RequireIdentifier(tableName, nameof(tableName))} ({RequireIdentifier(columnName, nameof(columnName))})";
-        await ExecuteStatementAsync(await GetDatabaseAsync(ct), sql, ct);
-    }
+    public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => CreateIndexAsync(indexName, tableName, columnName, isUnique, collation: null, ct);
 
-    public async Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+    public async Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
+        => await ExecuteStatementAsync(await GetDatabaseAsync(ct), BuildCreateIndexSql(indexName, tableName, columnName, isUnique, collation), ct);
+
+    public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation: null, ct);
+
+    public async Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
     {
         var db = await GetDatabaseAsync(ct);
         await ExecuteInSingleTransactionAsync(db, ct,
             $"DROP INDEX {RequireIdentifier(existingIndexName, nameof(existingIndexName))}",
-            BuildCreateIndexSql(newIndexName, tableName, columnName, isUnique));
+            BuildCreateIndexSql(newIndexName, tableName, columnName, isUnique, collation));
     }
 
     public async Task DropIndexAsync(string indexName, CancellationToken ct = default)
@@ -651,6 +653,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
+            Collation = column.Collation,
         };
 
     private static IndexSchema MapIndexSchema(CoreIndexSchema index)
@@ -659,6 +662,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             IndexName = index.IndexName,
             TableName = index.TableName,
             Columns = index.Columns.ToArray(),
+            ColumnCollations = index.ColumnCollations.ToArray(),
             IsUnique = index.IsUnique,
         };
 
@@ -943,10 +947,23 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return Math.Min(pageSize, 1000);
     }
 
-    private static string BuildCreateIndexSql(string indexName, string tableName, string columnName, bool isUnique)
+    private static string BuildColumnDefinitionSql(string columnName, Models.DbType type, bool notNull, string? collation)
+    {
+        var builder = new StringBuilder()
+            .Append(RequireIdentifier(columnName, nameof(columnName)))
+            .Append(' ')
+            .Append(MapDbType(type))
+            .Append(BuildCollationClause(collation));
+        if (notNull)
+            builder.Append(" NOT NULL");
+
+        return builder.ToString();
+    }
+
+    private static string BuildCreateIndexSql(string indexName, string tableName, string columnName, bool isUnique, string? collation)
     {
         string unique = isUnique ? "UNIQUE " : string.Empty;
-        return $"CREATE {unique}INDEX {RequireIdentifier(indexName, nameof(indexName))} ON {RequireIdentifier(tableName, nameof(tableName))} ({RequireIdentifier(columnName, nameof(columnName))})";
+        return $"CREATE {unique}INDEX {RequireIdentifier(indexName, nameof(indexName))} ON {RequireIdentifier(tableName, nameof(tableName))} ({RequireIdentifier(columnName, nameof(columnName))}{BuildCollationClause(collation)})";
     }
 
     private static string BuildCreateTriggerSql(string triggerName, string tableName, TriggerTiming timing, TriggerEvent triggerEvent, string bodySql)
@@ -960,6 +977,11 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
         return sql.Trim().TrimEnd(';');
     }
+
+    private static string BuildCollationClause(string? collation)
+        => string.IsNullOrWhiteSpace(collation)
+            ? string.Empty
+            : $" COLLATE {RequireIdentifier(collation, nameof(collation))}";
 
     private static string MapDbType(Models.DbType type) => type switch
     {

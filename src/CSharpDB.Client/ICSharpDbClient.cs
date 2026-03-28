@@ -22,12 +22,15 @@ public interface ICSharpDbClient : IAsyncDisposable
     Task DropTableAsync(string tableName, CancellationToken ct = default);
     Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default);
     Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default);
+    Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, string? collation, CancellationToken ct = default);
     Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default);
     Task RenameColumnAsync(string tableName, string oldColumnName, string newColumnName, CancellationToken ct = default);
 
     Task<IReadOnlyList<IndexSchema>> GetIndexesAsync(CancellationToken ct = default);
     Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default);
+    Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default);
     Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default);
+    Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default);
     Task DropIndexAsync(string indexName, CancellationToken ct = default);
 
     Task<IReadOnlyList<string>> GetViewNamesAsync(CancellationToken ct = default);

@@ -15,6 +15,7 @@ public sealed class ColumnDefinition
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public string? Collation { get; init; }
 }
 
 public sealed class TableSchema
@@ -28,6 +29,7 @@ public sealed class IndexSchema
     public required string IndexName { get; init; }
     public required string TableName { get; init; }
     public required IReadOnlyList<string> Columns { get; init; }
+    public IReadOnlyList<string?> ColumnCollations { get; init; } = Array.Empty<string?>();
     public bool IsUnique { get; init; }
 }
 

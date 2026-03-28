@@ -284,8 +284,7 @@ internal static class BatchPlanCompiler
     {
         if (!TryResolveColumnIndex(likeExpression.Operand, schema, out int columnIndex) ||
             schema.Columns[columnIndex].Type != DbType.Text ||
-            likeExpression.Pattern is not LiteralExpression patternLiteral ||
-            !TryCreateLiteral(patternLiteral, out DbValue patternValue) ||
+            !TryCreateLiteral(likeExpression.Pattern, out DbValue patternValue) ||
             patternValue.IsNull ||
             patternValue.Type != DbType.Text ||
             !TryCreateEscapeChar(likeExpression.EscapeChar, out char? escapeChar))
@@ -312,8 +311,7 @@ internal static class BatchPlanCompiler
             bool hasNull = false;
             for (int i = 0; i < inExpression.Values.Count; i++)
             {
-                if (inExpression.Values[i] is not LiteralExpression literal ||
-                    !TryCreateLiteral(literal, out DbValue value))
+                if (!TryCreateLiteral(inExpression.Values[i], out DbValue value))
                 {
                     return false;
                 }
@@ -340,8 +338,7 @@ internal static class BatchPlanCompiler
             bool hasNull = false;
             for (int i = 0; i < inExpression.Values.Count; i++)
             {
-                if (inExpression.Values[i] is not LiteralExpression literal ||
-                    !TryCreateLiteral(literal, out DbValue value))
+                if (!TryCreateLiteral(inExpression.Values[i], out DbValue value))
                 {
                     return false;
                 }
@@ -364,12 +361,13 @@ internal static class BatchPlanCompiler
 
         if (columnType == DbType.Text)
         {
+            bool useNoCase = CollationSupport.IsNoCase(
+                CollationSupport.ResolveComparisonCollation(inExpression.Operand, inExpression.Values[0], schema));
             var values = new List<string>(inExpression.Values.Count);
             bool hasNull = false;
             for (int i = 0; i < inExpression.Values.Count; i++)
             {
-                if (inExpression.Values[i] is not LiteralExpression literal ||
-                    !TryCreateLiteral(literal, out DbValue value))
+                if (!TryCreateLiteral(inExpression.Values[i], out DbValue value))
                 {
                     return false;
                 }
@@ -386,7 +384,7 @@ internal static class BatchPlanCompiler
                 values.Add(value.AsText);
             }
 
-            terms.Add(BatchPredicateTerm.CreateTextIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull));
+            terms.Add(BatchPredicateTerm.CreateTextIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull, useNoCase));
             return true;
         }
 
@@ -396,10 +394,8 @@ internal static class BatchPlanCompiler
     private static bool TryBindBetweenPredicate(BetweenExpression between, TableSchema schema, List<BatchPredicateTerm> terms)
     {
         if (!TryResolveColumnIndex(between.Operand, schema, out int columnIndex) ||
-            between.Low is not LiteralExpression lowLiteral ||
-            !TryCreateLiteral(lowLiteral, out DbValue lowValue) ||
-            between.High is not LiteralExpression highLiteral ||
-            !TryCreateLiteral(highLiteral, out DbValue highValue) ||
+            !TryCreateLiteral(between.Low, out DbValue lowValue) ||
+            !TryCreateLiteral(between.High, out DbValue highValue) ||
             lowValue.IsNull ||
             highValue.IsNull)
         {
@@ -435,11 +431,14 @@ internal static class BatchPlanCompiler
             lowValue.Type == DbType.Text &&
             highValue.Type == DbType.Text)
         {
+            bool useNoCase = CollationSupport.IsNoCase(
+                CollationSupport.ResolveComparisonCollation(between.Operand, between.Low, schema));
             terms.Add(BatchPredicateTerm.CreateTextRange(
                 columnIndex,
                 lowValue.AsText,
                 highValue.AsText,
-                between.Negated));
+                between.Negated,
+                useNoCase));
             return true;
         }
 
@@ -455,8 +454,7 @@ internal static class BatchPlanCompiler
     {
         predicate = default;
         if (!TryResolveColumnIndex(left, schema, out int columnIndex) ||
-            right is not LiteralExpression literal ||
-            !TryCreateLiteral(literal, out DbValue literalValue))
+            !TryCreateLiteral(right, out DbValue literalValue))
         {
             return false;
         }
@@ -480,7 +478,11 @@ internal static class BatchPlanCompiler
         if (columnType == DbType.Text &&
             literalValue.Type == DbType.Text)
         {
-            predicate = BatchPredicateTerm.CreateTextCompare(columnIndex, op, literalValue.AsText);
+            predicate = BatchPredicateTerm.CreateTextCompare(
+                columnIndex,
+                op,
+                literalValue.AsText,
+                CollationSupport.IsNoCase(CollationSupport.ResolveComparisonCollation(left, right, schema)));
             return true;
         }
 
@@ -493,8 +495,7 @@ internal static class BatchPlanCompiler
         if (escapeExpression == null)
             return true;
 
-        if (escapeExpression is not LiteralExpression literal ||
-            !TryCreateLiteral(literal, out DbValue escapeValue))
+        if (!TryCreateLiteral(escapeExpression, out DbValue escapeValue))
         {
             return false;
         }
@@ -595,6 +596,7 @@ internal static class BatchPlanCompiler
     private static bool TryResolveColumnIndex(Expression expression, TableSchema schema, out int columnIndex)
     {
         columnIndex = -1;
+        expression = CollationSupport.StripCollation(expression);
         if (expression is not ColumnRefExpression columnRef)
             return false;
 
@@ -602,6 +604,18 @@ internal static class BatchPlanCompiler
             ? schema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
             : schema.GetColumnIndex(columnRef.ColumnName);
         return columnIndex >= 0;
+    }
+
+    private static bool TryCreateLiteral(Expression expression, out DbValue value)
+    {
+        expression = CollationSupport.StripCollation(expression);
+        if (expression is not LiteralExpression literal)
+        {
+            value = DbValue.Null;
+            return false;
+        }
+
+        return TryCreateLiteral(literal, out value);
     }
 
     private static bool TryCreateLiteral(LiteralExpression literal, out DbValue value)
@@ -739,6 +753,7 @@ internal readonly struct BatchPredicateTerm
     private readonly char _escapeChar;
     private readonly bool _hasEscapeChar;
     private readonly bool _hasNullSetValue;
+    private readonly bool _useNoCase;
     private readonly BatchPredicateKind _kind;
     private readonly bool _negated;
 
@@ -757,6 +772,7 @@ internal readonly struct BatchPredicateTerm
         char escapeChar,
         bool hasEscapeChar,
         bool hasNullSetValue,
+        bool useNoCase,
         BatchPredicateKind kind,
         bool negated)
     {
@@ -774,42 +790,43 @@ internal readonly struct BatchPredicateTerm
         _escapeChar = escapeChar;
         _hasEscapeChar = hasEscapeChar;
         _hasNullSetValue = hasNullSetValue;
+        _useNoCase = useNoCase;
         _kind = kind;
         _negated = negated;
     }
 
     public static BatchPredicateTerm CreateIntegerCompare(int columnIndex, BinaryOp op, long integerLiteral)
-        => new(columnIndex, op, integerLiteral, 0, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.IntegerCompare, negated: false);
+        => new(columnIndex, op, integerLiteral, 0, 0, 0, null, null, null, null, null, '\0', false, false, false, BatchPredicateKind.IntegerCompare, negated: false);
 
     public static BatchPredicateTerm CreateNumericCompare(int columnIndex, BinaryOp op, double numericLiteral)
-        => new(columnIndex, op, 0, 0, numericLiteral, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NumericCompare, negated: false);
+        => new(columnIndex, op, 0, 0, numericLiteral, 0, null, null, null, null, null, '\0', false, false, false, BatchPredicateKind.NumericCompare, negated: false);
 
-    public static BatchPredicateTerm CreateTextCompare(int columnIndex, BinaryOp op, string textLiteral)
-        => new(columnIndex, op, 0, 0, 0, 0, textLiteral, null, null, null, null, '\0', false, false, BatchPredicateKind.TextCompare, negated: false);
+    public static BatchPredicateTerm CreateTextCompare(int columnIndex, BinaryOp op, string textLiteral, bool useNoCase)
+        => new(columnIndex, op, 0, 0, 0, 0, NormalizeTextLiteral(textLiteral, useNoCase), null, null, null, null, '\0', false, false, useNoCase, BatchPredicateKind.TextCompare, negated: false);
 
     public static BatchPredicateTerm CreateIntegerIn(int columnIndex, long[] values, bool negated, bool hasNullSetValue)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, values, null, null, '\0', false, hasNullSetValue, BatchPredicateKind.IntegerIn, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, values, null, null, '\0', false, hasNullSetValue, false, BatchPredicateKind.IntegerIn, negated);
 
     public static BatchPredicateTerm CreateNumericIn(int columnIndex, double[] values, bool negated, bool hasNullSetValue)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, values, null, '\0', false, hasNullSetValue, BatchPredicateKind.NumericIn, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, values, null, '\0', false, hasNullSetValue, false, BatchPredicateKind.NumericIn, negated);
 
-    public static BatchPredicateTerm CreateTextIn(int columnIndex, string[] values, bool negated, bool hasNullSetValue)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, values, '\0', false, hasNullSetValue, BatchPredicateKind.TextIn, negated);
+    public static BatchPredicateTerm CreateTextIn(int columnIndex, string[] values, bool negated, bool hasNullSetValue, bool useNoCase)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, NormalizeTextLiterals(values, useNoCase), '\0', false, hasNullSetValue, useNoCase, BatchPredicateKind.TextIn, negated);
 
     public static BatchPredicateTerm CreateIntegerRange(int columnIndex, long lowerInclusive, long upperInclusive, bool negated)
-        => new(columnIndex, BinaryOp.Equals, lowerInclusive, upperInclusive, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.IntegerRange, negated);
+        => new(columnIndex, BinaryOp.Equals, lowerInclusive, upperInclusive, 0, 0, null, null, null, null, null, '\0', false, false, false, BatchPredicateKind.IntegerRange, negated);
 
     public static BatchPredicateTerm CreateNumericRange(int columnIndex, double lowerInclusive, double upperInclusive, bool negated)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, lowerInclusive, upperInclusive, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NumericRange, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, lowerInclusive, upperInclusive, null, null, null, null, null, '\0', false, false, false, BatchPredicateKind.NumericRange, negated);
 
-    public static BatchPredicateTerm CreateTextRange(int columnIndex, string lowerInclusive, string upperInclusive, bool negated)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, lowerInclusive, upperInclusive, null, null, null, '\0', false, false, BatchPredicateKind.TextRange, negated);
+    public static BatchPredicateTerm CreateTextRange(int columnIndex, string lowerInclusive, string upperInclusive, bool negated, bool useNoCase)
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, NormalizeTextLiteral(lowerInclusive, useNoCase), NormalizeTextLiteral(upperInclusive, useNoCase), null, null, null, '\0', false, false, useNoCase, BatchPredicateKind.TextRange, negated);
 
     public static BatchPredicateTerm CreateLike(int columnIndex, string pattern, char? escapeChar, bool negated)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, pattern, null, null, null, null, escapeChar.GetValueOrDefault(), escapeChar.HasValue, false, BatchPredicateKind.LikeMatch, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, pattern, null, null, null, null, escapeChar.GetValueOrDefault(), escapeChar.HasValue, false, false, BatchPredicateKind.LikeMatch, negated);
 
     public static BatchPredicateTerm CreateNullCheck(int columnIndex, bool negated)
-        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, null, '\0', false, false, BatchPredicateKind.NullCheck, negated);
+        => new(columnIndex, BinaryOp.Equals, 0, 0, 0, 0, null, null, null, null, null, '\0', false, false, false, BatchPredicateKind.NullCheck, negated);
 
     public void AppendPushdownFilters(List<BatchPushdownFilter> filters)
     {
@@ -825,7 +842,7 @@ internal readonly struct BatchPredicateTerm
                 filters.Add(new BatchPushdownFilter(_columnIndex, _op, DbValue.FromReal(_numericLiteral)));
                 break;
 
-            case BatchPredicateKind.TextCompare when _textLiteral != null:
+            case BatchPredicateKind.TextCompare when _textLiteral != null && !_useNoCase:
                 filters.Add(new BatchPushdownFilter(_columnIndex, _op, DbValue.FromText(_textLiteral)));
                 break;
 
@@ -839,7 +856,7 @@ internal readonly struct BatchPredicateTerm
                 filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.LessOrEqual, DbValue.FromReal(_numericUpperLiteral)));
                 break;
 
-            case BatchPredicateKind.TextRange when !_negated && _textLiteral != null && _textUpperLiteral != null:
+            case BatchPredicateKind.TextRange when !_negated && !_useNoCase && _textLiteral != null && _textUpperLiteral != null:
                 filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.GreaterOrEqual, DbValue.FromText(_textLiteral)));
                 filters.Add(new BatchPushdownFilter(_columnIndex, BinaryOp.LessOrEqual, DbValue.FromText(_textUpperLiteral)));
                 break;
@@ -907,7 +924,8 @@ internal readonly struct BatchPredicateTerm
         if (value.IsNull || value.Type != DbType.Text || _textLiteral == null)
             return false;
 
-        int compare = string.Compare(value.AsText, _textLiteral, StringComparison.Ordinal);
+        string actual = NormalizeTextLiteral(value.AsText, _useNoCase);
+        int compare = string.Compare(actual, _textLiteral, StringComparison.Ordinal);
         return _op switch
         {
             BinaryOp.Equals => compare == 0,
@@ -955,7 +973,7 @@ internal readonly struct BatchPredicateTerm
         if (value.IsNull || value.Type != DbType.Text || _textSet == null)
             return false;
 
-        string actual = value.AsText;
+        string actual = NormalizeTextLiteral(value.AsText, _useNoCase);
         for (int i = 0; i < _textSet.Length; i++)
         {
             if (string.Equals(actual, _textSet[i], StringComparison.Ordinal))
@@ -989,8 +1007,9 @@ internal readonly struct BatchPredicateTerm
         if (value.IsNull || value.Type != DbType.Text || _textLiteral == null || _textUpperLiteral == null)
             return false;
 
-        int compareLow = string.Compare(value.AsText, _textLiteral, StringComparison.Ordinal);
-        int compareHigh = string.Compare(value.AsText, _textUpperLiteral, StringComparison.Ordinal);
+        string actual = NormalizeTextLiteral(value.AsText, _useNoCase);
+        int compareLow = string.Compare(actual, _textLiteral, StringComparison.Ordinal);
+        int compareHigh = string.Compare(actual, _textUpperLiteral, StringComparison.Ordinal);
         bool inRange = compareLow >= 0 && compareHigh <= 0;
         return _negated ? !inRange : inRange;
     }
@@ -1003,6 +1022,21 @@ internal readonly struct BatchPredicateTerm
         char? escape = _hasEscapeChar ? _escapeChar : null;
         bool match = ExpressionEvaluator.SqlLikeMatch(value.AsText, _textLiteral, escape);
         return _negated ? !match : match;
+    }
+
+    private static string NormalizeTextLiteral(string value, bool useNoCase) =>
+        useNoCase ? CollationSupport.NormalizeText(value, CollationSupport.NoCaseCollation) : value;
+
+    private static string[] NormalizeTextLiterals(string[] values, bool useNoCase)
+    {
+        if (!useNoCase)
+            return values;
+
+        var normalized = new string[values.Length];
+        for (int i = 0; i < values.Length; i++)
+            normalized[i] = NormalizeTextLiteral(values[i], useNoCase);
+
+        return normalized;
     }
 }
 

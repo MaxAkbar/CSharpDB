@@ -1,26 +1,25 @@
-# Collation Support Plan
+# Multilingual Text Support Plan
 
-> **Status (March 2026):** Planned. This document captures the design direction for adding collation support to CSharpDB — enabling case-insensitive comparisons, locale-aware sorting, and a `COLLATE` clause for queries and index definitions.
+> **Status (March 2026):** In progress. The `BINARY` / `NOCASE` MVP is now implemented across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly locale-aware collations (`ICU:<locale>` / `NOCASE_AI`), ordered SQL text index optimization, and benchmark hardening.
 
-CSharpDB currently stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. However, all text comparison and sorting uses `StringComparison.Ordinal` (raw byte/code-point order), which means there is no case-insensitive matching, no locale-aware sort ordering, and no `COLLATE` clause.
+CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting still remain ordinal unless users opt into collation explicitly, but `BINARY` and `NOCASE` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
 
 ---
 
-## Problem
+## Remaining Gaps
 
-Today, the text handling has three constraints:
+The first multilingual-text slice is in place, but three important limitations still remain:
 
-1. `WHERE name = 'Alice'` does not match `'alice'` or `'ALICE'` — there is no case-insensitive equality.
-2. `ORDER BY name` sorts by Unicode code point, not by linguistic rules — German `ä` sorts after `z` instead of near `a`, and uppercase letters sort before all lowercase letters.
-3. `LIKE 'a%'` is case-sensitive — there is no `COLLATE NOCASE` modifier.
+1. Default text semantics are still ordinal. Users must opt into `COLLATE NOCASE` on columns, indexes, collection indexes, or query expressions.
+2. Only `BINARY` and `NOCASE` are implemented today. `NOCASE_AI` and `ICU:<locale>` remain future work.
+3. SQL text `ORDER BY` and range semantics are now collation-correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.
 
-These are the specific code paths where ordinal comparison is hardcoded:
+The current implementation centers collation in these paths:
 
-- `DbValue.CompareTo` — `string.Compare(a.AsText, b.AsText, StringComparison.Ordinal)`
-- `DbValue.Equals` — `AsText == other.AsText` (ordinal equality)
-- `ExpressionEvaluator` LIKE evaluation — ordinal character matching
-- B+tree index key encoding — raw UTF-8 bytes determine key order
-- Collection ordered text indexes — UTF-8 prefix keys with ordinal ordering
+- `CollationSupport` for metadata normalization, text normalization, and runtime comparison semantics
+- `ExpressionEvaluator`, `ExpressionCompiler`, and sort operators for SQL execution behavior
+- `IndexMaintenanceHelper` and `QueryPlanner` for SQL index writes, validation, and lookup planning
+- `Collection` and `CollectionIndexBinding` for collection index key generation and path query behavior
 
 ---
 
@@ -136,6 +135,101 @@ Collection changes:
 - Use Unicode canonical decomposition (NFD) + accent stripping, or `CompareOptions.IgnoreNonSpace`
 - Pre-compute normalized keys at write time
 - Useful for French, German, Spanish, Portuguese, and other languages with diacritics
+
+---
+
+## Affected Objects and Rollout Checklist
+
+This section maps the feature to the concrete engine objects that will change. The goal is to keep implementation scope explicit and avoid accidental regressions in unrelated text paths.
+
+### Architectural guardrails
+
+- **Default stays fast.** `BINARY` / ordinal comparison remains the default path for users who do not opt into collation.
+- **Do not make `DbValue.Compare()` globally locale-aware.** Keep collation as an explicit comparison context so existing non-collated code paths retain current semantics and performance.
+- **Prefer pre-computed keys over runtime compare cost.** Locale-aware and case-insensitive behavior should be expressed through normalized or sort-key bytes stored in indexes when possible.
+- **Keep pager / WAL / B+tree generic.** The low-level storage engine should not need collation-specific branches if higher layers provide already-normalized key bytes.
+
+### Phase 0: Shared metadata and serialization
+
+- [x] Add collation metadata to `src/CSharpDB.Primitives/Schema.cs`.
+- [x] Persist and reload that metadata in `src/CSharpDB.Storage/Serialization/SchemaSerializer.cs`.
+- [x] Maintain backward compatibility for existing schema payloads that do not contain collation data.
+- [x] Keep SQL index metadata in the current `Columns` + `ColumnCollations` representation for the initial rollout.
+
+### Phase 1: SQL tokenizer, AST, and parser
+
+- [x] Add `COLLATE` to the SQL tokenizer/parser surface.
+- [x] Extend AST objects in `src/CSharpDB.Sql/Ast.cs` so column, index, order-by, and expression nodes can carry collation metadata.
+- [x] Update `src/CSharpDB.Sql/Parser.cs` to parse `COLLATE` in `CREATE TABLE`, `CREATE INDEX`, and postfix expression contexts such as `WHERE`, `ORDER BY`, and `HAVING`.
+
+### Phase 2: Expression and sort semantics
+
+- [x] Introduce explicit collation helpers in `src/CSharpDB.Execution/CollationSupport.cs` rather than making `DbValue.Compare` globally locale-aware.
+- [x] Keep ordinal behavior as the default path while routing collated equality and ordering through explicit helpers.
+- [x] Update `src/CSharpDB.Execution/ExpressionEvaluator.cs` and `src/CSharpDB.Execution/ExpressionCompiler.cs` for `=`, `<>`, range comparisons, `IN`, `BETWEEN`, and `LIKE`.
+- [x] Update sort operators in `src/CSharpDB.Execution/Operators.cs` so collated ordering does not fall back to ordinal compare semantics.
+
+### Phase 3: SQL schema and planner integration
+
+- [x] Update `src/CSharpDB.Execution/QueryPlanner.cs` DDL paths to persist column and index collation metadata.
+- [x] Propagate collation metadata from schema into filter, projection, and sort execution.
+- [x] Extend `sys.columns` and `sys.indexes` to expose collation metadata.
+- [x] Update `src/CSharpDB.Data/CSharpDbSchemaProvider.cs` so ADO.NET `GetSchema()` surfaces collation metadata.
+
+### Phase 4: SQL index maintenance and lookup behavior
+
+- [x] Update `src/CSharpDB.Execution/IndexMaintenanceHelper.cs` so collated text index components normalize through the active collation while integer fast paths remain intact.
+- [x] Ensure unique SQL index enforcement uses collation-aware equality for collated text keys.
+- [x] Update `src/CSharpDB.Execution/QueryPlanner.cs` fast lookup logic with collation-aware validation and conservative guardrails for incompatible lookup plans.
+- [x] Preserve non-collated SQL index behavior unchanged for existing databases and workloads.
+
+### Phase 5: Ordered SQL text index path
+
+Current SQL text indexes are hash-based, which is enough for equality but not for true locale-aware ordering. Collection ordered text indexes already have a separate ordered-key path.
+
+- [x] Initial strategy: keep collated SQL text `ORDER BY` and range semantics correct even without a dedicated ordered SQL text index path.
+- [ ] If ordered SQL text indexes are introduced, add the new path alongside current hashed SQL indexes rather than mutating the existing hash format in place.
+- [x] Update planner selection rules in `src/CSharpDB.Execution/QueryPlanner.cs` so collated text range/order plans only use compatible index structures.
+
+### Phase 6: Collection path indexes
+
+- [x] Add optional collation parameters to collection index creation in `src/CSharpDB.Engine/Collection.cs`.
+- [x] Make `FindByPathAsync(...)` and `FindByPathRangeAsync(...)` respect collection index collation metadata.
+- [x] Extend `src/CSharpDB.Engine/CollectionIndexBinding.cs` to store collation metadata, build normalized text keys, and use collation-aware equality/range comparisons.
+- [x] Reuse the existing ordered text codec format with normalized text payloads for the `NOCASE` rollout.
+- [x] Preserve existing integer and non-collated text collection index behavior.
+
+### Phase 7: Public contracts and tooling
+
+- [x] Update client-facing schema models in `src/CSharpDB.Client/Models/SchemaModels.cs`.
+- [x] Update gRPC contracts in `src/CSharpDB.Client/Protos/csharpdb_rpc.proto`.
+- [x] Update gRPC mapping in `src/CSharpDB.Client/Grpc/GrpcModelMapper.cs`.
+- [x] Update REST DTOs and endpoints so column/index collation metadata round-trips through HTTP.
+- [x] Update Admin SQL editor helpers so `COLLATE` is recognized and rendered correctly.
+
+### Phase 8: AST rewriting, binding, and cloning safety
+
+Several engine paths rebuild AST objects. Any new collation fields must be preserved in those clone/rewrite paths or the feature will behave inconsistently.
+
+- [x] Update parameter binding in `src/CSharpDB.Data/PreparedStatementTemplate.cs`.
+- [x] Update planner rewrite/binding paths in `src/CSharpDB.Execution/QueryPlanner.cs` so explicit `COLLATE` metadata is preserved.
+- [x] Carry collation metadata through the known AST clone and rewrite paths touched by the NOCASE rollout.
+
+### Phase 9: Testing and benchmark gates
+
+- [x] Parser tests for `COLLATE` in table definitions, index definitions, and query expressions.
+- [x] Schema serialization compatibility tests for collated and legacy non-collated schemas.
+- [x] SQL behavior tests for equality, `LIKE`, `ORDER BY`, query-level overrides, and unique index enforcement under `NOCASE`.
+- [x] Collection tests for collated `EnsureIndexAsync`, `FindByPathAsync`, and `FindByPathRangeAsync`.
+- [ ] Benchmark non-collated workloads to verify default `BINARY` paths retain current performance.
+- [ ] Benchmark collated write cost, lookup cost, range-scan cost, and index size growth.
+
+### Suggested remaining delivery order
+
+1. SQL ordered text collation/index strategy
+2. ICU locale-aware collation
+3. `NOCASE_AI` accent-insensitive collation
+4. Benchmark and compatibility hardening
 
 ---
 

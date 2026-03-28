@@ -18,6 +18,11 @@ internal static class IndexMaintenanceHelper
                 $"Index '{indexSchema.IndexName}' references unsupported columns for table '{tableSchema.TableName}'.");
         }
 
+        string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(
+            indexSchema,
+            tableSchema,
+            indexColumnIndices);
+
         var tableTree = catalog.GetTableTree(indexSchema.TableName);
         var indexStore = catalog.GetIndexStore(indexSchema.IndexName);
         var scan = new TableScanOperator(tableTree, tableSchema, readSerializer);
@@ -31,7 +36,7 @@ internal static class IndexMaintenanceHelper
 
                 while (await scan.MoveNextAsync(ct))
                 {
-                    if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                    if (!TryBuildIndexKey(scan.Current, indexColumnIndices, indexColumnCollations, usesDirectIntegerKey, out long indexKey, out _))
                         continue;
 
                     if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
@@ -53,7 +58,7 @@ internal static class IndexMaintenanceHelper
 
             while (await scan.MoveNextAsync(ct))
             {
-                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, indexColumnCollations, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                     continue;
 
                 if (!groupedPayloads.TryGetValue(indexKey, out var payload))
@@ -77,7 +82,7 @@ internal static class IndexMaintenanceHelper
 
         while (await scan.MoveNextAsync(ct))
         {
-            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, indexColumnCollations, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
                 continue;
 
             if (indexSchema.IsUnique)
@@ -104,6 +109,7 @@ internal static class IndexMaintenanceHelper
                         tableSchema,
                         readSerializer,
                         indexColumnIndices,
+                        indexColumnCollations,
                         keyComponents!,
                         indexKey,
                         indexSchema.IndexName,
@@ -212,6 +218,7 @@ internal static class IndexMaintenanceHelper
     public static bool TryBuildIndexKey(
         DbValue[] row,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         bool usesDirectIntegerKey,
         out long indexKey,
         out DbValue[]? keyComponents)
@@ -249,7 +256,8 @@ internal static class IndexMaintenanceHelper
             if (value.Type is not (DbType.Integer or DbType.Text))
                 return false;
 
-            components[i] = value;
+            string? collation = i < indexColumnCollations.Length ? indexColumnCollations[i] : null;
+            components[i] = CollationSupport.NormalizeIndexValue(value, collation);
         }
 
         indexKey = ComputeIndexKey(components);
@@ -294,6 +302,7 @@ internal static class IndexMaintenanceHelper
         TableSchema schema,
         IRecordSerializer readSerializer,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         DbValue[] keyComponents,
         long indexKey,
         string indexName,
@@ -326,7 +335,7 @@ internal static class IndexMaintenanceHelper
                 continue;
 
             var existingRow = readSerializer.DecodeUpTo(existingRowPayloadMemory.Span, maxIndexedColumn);
-            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
+            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, indexColumnCollations, keyComponents))
             {
                 throw new CSharpDbException(
                     ErrorCode.ConstraintViolation,
@@ -338,6 +347,7 @@ internal static class IndexMaintenanceHelper
     private static bool IndexRowMatchesKeyComponents(
         DbValue[] row,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         DbValue[] keyComponents)
     {
         if (indexColumnIndices.Length != keyComponents.Length)
@@ -350,7 +360,8 @@ internal static class IndexMaintenanceHelper
                 return false;
 
             var value = row[colIdx];
-            if (value.IsNull || DbValue.Compare(value, keyComponents[i]) != 0)
+            string? collation = i < indexColumnCollations.Length ? indexColumnCollations[i] : null;
+            if (value.IsNull || DbValue.Compare(CollationSupport.NormalizeIndexValue(value, collation), keyComponents[i]) != 0)
                 return false;
         }
 

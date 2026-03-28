@@ -1178,9 +1178,11 @@ public sealed class Parser
         Expect(TokenType.LeftParen);
 
         var columns = new List<string>();
+        var columnCollations = new List<string?>();
         do
         {
             columns.Add(ExpectIdentifier());
+            columnCollations.Add(ParseOptionalCollationName());
         } while (TryConsume(TokenType.Comma));
 
         Expect(TokenType.RightParen);
@@ -1190,6 +1192,7 @@ public sealed class Parser
             IndexName = indexName,
             TableName = tableName,
             Columns = columns,
+            ColumnCollations = columnCollations,
             IsUnique = isUnique,
             IfNotExists = ifNotExists,
         };
@@ -1230,8 +1233,9 @@ public sealed class Parser
         bool isPK = false;
         bool isIdentity = false;
         bool isNullable = true;
+        string? collation = null;
 
-        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT modifiers.
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
@@ -1258,6 +1262,13 @@ public sealed class Parser
                     throw Error($"NOT NULL specified multiple times for column '{name}'.");
                 isNullable = false;
             }
+            else if (Peek().Type == TokenType.Collate)
+            {
+                if (collation != null)
+                    throw Error($"COLLATE specified multiple times for column '{name}'.");
+                Advance();
+                collation = ParseRequiredCollationName();
+            }
             else break;
         }
 
@@ -1278,6 +1289,7 @@ public sealed class Parser
             IsPrimaryKey = isPK,
             IsIdentity = isIdentity,
             IsNullable = isNullable,
+            Collation = collation,
         };
     }
 
@@ -2119,10 +2131,26 @@ public sealed class Parser
         if (Peek().Type == TokenType.Minus)
         {
             Advance();
-            var operand = ParsePrimary();
+            var operand = ParseUnary();
             return new UnaryExpression { Op = TokenType.Minus, Operand = operand };
         }
-        return ParsePrimary();
+
+        return ParsePostfix();
+    }
+
+    private Expression ParsePostfix()
+    {
+        Expression expression = ParsePrimary();
+        while (TryConsume(TokenType.Collate))
+        {
+            expression = new CollateExpression
+            {
+                Operand = expression,
+                Collation = ParseRequiredCollationName(),
+            };
+        }
+
+        return expression;
     }
 
     private static bool IsAggregateFunctionToken(TokenType type) =>
@@ -2278,6 +2306,17 @@ public sealed class Parser
         Advance();
         return token.Value;
     }
+
+    private string? ParseOptionalCollationName()
+    {
+        if (!TryConsume(TokenType.Collate))
+            return null;
+
+        return ParseRequiredCollationName();
+    }
+
+    private string ParseRequiredCollationName() =>
+        ExpectIdentifier().ToUpperInvariant();
 
     private bool TryConsume(TokenType type)
     {

@@ -15,7 +15,7 @@ public sealed class SchemaSerializerCompatibilityTests
             Columns = new[]
             {
                 new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true, IsIdentity = true, Nullable = false },
-                new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = true },
+                new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = true, Collation = "NOCASE" },
             },
             NextRowId = 1234,
         };
@@ -27,6 +27,8 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.Equal(2, decoded.Columns.Count);
         Assert.Equal(1234L, decoded.NextRowId);
         Assert.True(decoded.Columns[0].IsIdentity);
+        Assert.Null(decoded.Columns[0].Collation);
+        Assert.Equal("NOCASE", decoded.Columns[1].Collation);
     }
 
     [Fact]
@@ -46,6 +48,8 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.Equal(2, decoded.Columns.Count);
         Assert.Equal(0L, decoded.NextRowId);
         Assert.True(decoded.Columns[0].IsIdentity);
+        Assert.Null(decoded.Columns[0].Collation);
+        Assert.Null(decoded.Columns[1].Collation);
     }
 
     [Fact]
@@ -56,6 +60,7 @@ public sealed class SchemaSerializerCompatibilityTests
             IndexName = "fts_docs",
             TableName = "docs",
             Columns = ["title", "body"],
+            ColumnCollations = ["NOCASE", null],
             IsUnique = false,
             Kind = IndexKind.FullText,
             State = IndexState.Building,
@@ -69,6 +74,7 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.Equal("fts_docs", decoded.IndexName);
         Assert.Equal("docs", decoded.TableName);
         Assert.Equal(["title", "body"], decoded.Columns);
+        Assert.Equal(["NOCASE", null], decoded.ColumnCollations);
         Assert.False(decoded.IsUnique);
         Assert.Equal(IndexKind.FullText, decoded.Kind);
         Assert.Equal(IndexState.Building, decoded.State);
@@ -93,6 +99,7 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.True(decoded.IsUnique);
         Assert.Equal(IndexKind.Sql, decoded.Kind);
         Assert.Equal(IndexState.Ready, decoded.State);
+        Assert.Empty(decoded.ColumnCollations);
         Assert.Null(decoded.OwnerIndexName);
         Assert.Null(decoded.OptionsJson);
     }

@@ -179,6 +179,51 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_MapsCollationMetadata()
+    {
+        var createTable = await _client.ExecuteSqlAsync(
+            "CREATE TABLE http_collation_items (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE);",
+            Ct);
+        Assert.Null(createTable.Error);
+
+        var createIndex = await _client.ExecuteSqlAsync(
+            "CREATE INDEX idx_http_collation_items_name_binary ON http_collation_items(name COLLATE BINARY);",
+            Ct);
+        Assert.Null(createIndex.Error);
+
+        var schema = await _client.GetTableSchemaAsync("http_collation_items", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("NOCASE", Assert.Single(schema!.Columns, column => column.Name == "name").Collation);
+
+        var indexes = await _client.GetIndexesAsync(Ct);
+        var index = Assert.Single(indexes, item => item.IndexName == "idx_http_collation_items_name_binary");
+        Assert.Equal(["name"], index.Columns);
+        Assert.Equal(["BINARY"], index.ColumnCollations);
+    }
+
+    [Fact]
+    public async Task HttpTransport_MutatingSchemaEndpoints_AcceptCollationMetadata()
+    {
+        var createTable = await _client.ExecuteSqlAsync(
+            "CREATE TABLE http_mutation_collation (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.Null(createTable.Error);
+
+        await _client.AddColumnAsync("http_mutation_collation", "name", DbType.Text, notNull: false, collation: "NOCASE", ct: Ct);
+        await _client.CreateIndexAsync("idx_http_mutation_collation_name_binary", "http_mutation_collation", "name", isUnique: false, collation: "BINARY", ct: Ct);
+        await _client.UpdateIndexAsync("idx_http_mutation_collation_name_binary", "idx_http_mutation_collation_name_nocase", "http_mutation_collation", "name", isUnique: false, collation: "NOCASE", ct: Ct);
+
+        var schema = await _client.GetTableSchemaAsync("http_mutation_collation", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("NOCASE", Assert.Single(schema!.Columns, column => column.Name == "name").Collation);
+
+        var indexes = await _client.GetIndexesAsync(Ct);
+        var index = Assert.Single(indexes, item => item.IndexName == "idx_http_mutation_collation_name_nocase");
+        Assert.Equal(["name"], index.Columns);
+        Assert.Equal(["NOCASE"], index.ColumnCollations);
+    }
+
+    [Fact]
     public async Task HttpTransport_BackupAndRestore_WorkThroughApi()
     {
         string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_api_backup_{Guid.NewGuid():N}.db");

@@ -1607,6 +1607,7 @@ body {
 }
 .schema-edit-grid.cols-2 { grid-template-columns: 1fr 1fr; }
 .schema-edit-grid.cols-3 { grid-template-columns: 1.2fr 1fr auto; }
+.schema-edit-grid.cols-4 { grid-template-columns: 1.2fr 1fr 1fr auto; }
 
 /* Field group */
 .schema-field {
@@ -2723,6 +2724,7 @@ body {
     .schema-edit-grid { grid-template-columns: 1fr; }
     .schema-edit-grid.cols-2 { grid-template-columns: 1fr; }
     .schema-edit-grid.cols-3 { grid-template-columns: 1fr; }
+    .schema-edit-grid.cols-4 { grid-template-columns: 1fr; }
     .pipeline-layout { grid-template-columns: 1fr; }
     .pipeline-designer-shell { grid-template-columns: 1fr; }
     .pipeline-derived-row,

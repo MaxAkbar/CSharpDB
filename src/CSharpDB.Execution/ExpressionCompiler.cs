@@ -18,6 +18,7 @@ internal static class ExpressionCompiler
             ColumnRefExpression col => CompileColumn(col, schema),
             BinaryExpression bin => CompileBinary(bin, schema),
             UnaryExpression un => CompileUnary(un, schema),
+            CollateExpression collate => Compile(collate.Operand, schema),
             FunctionCallExpression func => CompileFunction(func, schema),
             LikeExpression like => CompileLike(like, schema),
             InExpression inExpr => CompileIn(inExpr, schema),
@@ -73,6 +74,7 @@ internal static class ExpressionCompiler
     {
         var left = Compile(bin.Left, schema);
         var right = Compile(bin.Right, schema);
+        string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
 
         return row =>
         {
@@ -81,12 +83,12 @@ internal static class ExpressionCompiler
 
             return bin.Op switch
             {
-                BinaryOp.Equals => BoolToDb(DbValue.Compare(lv, rv) == 0),
-                BinaryOp.NotEquals => BoolToDb(DbValue.Compare(lv, rv) != 0),
-                BinaryOp.LessThan => BoolToDb(DbValue.Compare(lv, rv) < 0),
-                BinaryOp.GreaterThan => BoolToDb(DbValue.Compare(lv, rv) > 0),
-                BinaryOp.LessOrEqual => BoolToDb(DbValue.Compare(lv, rv) <= 0),
-                BinaryOp.GreaterOrEqual => BoolToDb(DbValue.Compare(lv, rv) >= 0),
+                BinaryOp.Equals => BoolToDb(CollationSupport.Compare(lv, rv, collation) == 0),
+                BinaryOp.NotEquals => BoolToDb(CollationSupport.Compare(lv, rv, collation) != 0),
+                BinaryOp.LessThan => BoolToDb(CollationSupport.Compare(lv, rv, collation) < 0),
+                BinaryOp.GreaterThan => BoolToDb(CollationSupport.Compare(lv, rv, collation) > 0),
+                BinaryOp.LessOrEqual => BoolToDb(CollationSupport.Compare(lv, rv, collation) <= 0),
+                BinaryOp.GreaterOrEqual => BoolToDb(CollationSupport.Compare(lv, rv, collation) >= 0),
                 BinaryOp.And => BoolToDb(lv.IsTruthy && rv.IsTruthy),
                 BinaryOp.Or => BoolToDb(lv.IsTruthy || rv.IsTruthy),
                 BinaryOp.Plus => ArithmeticOp(lv, rv, static (a, b) => a + b, static (a, b) => a + b),
@@ -180,6 +182,7 @@ internal static class ExpressionCompiler
         var valueEvals = new Func<DbValue[], DbValue>[inExpr.Values.Count];
         for (int i = 0; i < inExpr.Values.Count; i++)
             valueEvals[i] = Compile(inExpr.Values[i], schema);
+        string? collation = CollationSupport.ResolveExpressionCollation(inExpr.Operand, schema);
 
         return row =>
         {
@@ -197,7 +200,7 @@ internal static class ExpressionCompiler
                     continue;
                 }
 
-                if (DbValue.Compare(operand, value) == 0)
+                if (CollationSupport.Compare(operand, value, collation) == 0)
                 {
                     found = true;
                     break;
@@ -215,6 +218,7 @@ internal static class ExpressionCompiler
         var operandEval = Compile(between.Operand, schema);
         var lowEval = Compile(between.Low, schema);
         var highEval = Compile(between.High, schema);
+        string? collation = CollationSupport.ResolveExpressionCollation(between.Operand, schema);
 
         return row =>
         {
@@ -224,7 +228,8 @@ internal static class ExpressionCompiler
             if (operand.IsNull || low.IsNull || high.IsNull)
                 return DbValue.Null;
 
-            bool inRange = DbValue.Compare(operand, low) >= 0 && DbValue.Compare(operand, high) <= 0;
+            bool inRange = CollationSupport.Compare(operand, low, collation) >= 0 &&
+                CollationSupport.Compare(operand, high, collation) <= 0;
             return BoolToDb(between.Negated ? !inRange : inRange);
         };
     }
