@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Storage.Catalog;
 
@@ -20,6 +21,7 @@ internal sealed class CatalogService
     private readonly ISchemaSerializer _schemaSerializer;
     private readonly IIndexProvider _indexProvider;
     private readonly ICatalogStore _catalogStore;
+    private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly CatalogCache _cacheState = new();
     private BTree? _catalogTree;
     private long _schemaVersion;
@@ -39,7 +41,9 @@ internal sealed class CatalogService
     private readonly Dictionary<string, long> _persistedTableNextRowIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableStatistics> _tableStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyTableStatistics = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _exactTableRowCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ColumnStatistics> _columnStatsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _dirtyColumnStatistics = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ColumnStatistics[]> _columnStatsByTableSnapshot = new(StringComparer.OrdinalIgnoreCase);
     private uint _persistedIndexCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedViewCatalogRootPage = PageConstants.NullPageId;
@@ -73,21 +77,35 @@ internal sealed class CatalogService
         Pager pager,
         ISchemaSerializer schemaSerializer,
         IIndexProvider indexProvider,
-        ICatalogStore catalogStore)
+        ICatalogStore catalogStore,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode)
     {
         _pager = pager;
         _schemaSerializer = schemaSerializer;
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
+        _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
     }
 
     public static async ValueTask<CatalogService> CreateAsync(Pager pager, CancellationToken ct = default)
     {
         return await CreateAsync(
             pager,
+            AdvisoryStatisticsPersistenceMode.Immediate,
+            ct);
+    }
+
+    public static async ValueTask<CatalogService> CreateAsync(
+        Pager pager,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
+        CancellationToken ct = default)
+    {
+        return await CreateAsync(
+            pager,
             new DefaultSchemaSerializer(),
             new BTreeIndexProvider(),
             new CatalogStore(),
+            advisoryStatisticsPersistenceMode,
             ct);
     }
 
@@ -95,6 +113,7 @@ internal sealed class CatalogService
         Pager pager,
         ISchemaSerializer schemaSerializer,
         IIndexProvider indexProvider,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode.Immediate,
         CancellationToken ct = default)
     {
         return await CreateAsync(
@@ -102,6 +121,7 @@ internal sealed class CatalogService
             schemaSerializer,
             indexProvider,
             new CatalogStore(),
+            advisoryStatisticsPersistenceMode,
             ct);
     }
 
@@ -110,9 +130,15 @@ internal sealed class CatalogService
         ISchemaSerializer schemaSerializer,
         IIndexProvider indexProvider,
         ICatalogStore catalogStore,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode.Immediate,
         CancellationToken ct = default)
     {
-        var catalog = new CatalogService(pager, schemaSerializer, indexProvider, catalogStore);
+        var catalog = new CatalogService(
+            pager,
+            schemaSerializer,
+            indexProvider,
+            catalogStore,
+            advisoryStatisticsPersistenceMode);
 
         if (pager.SchemaRootPage != PageConstants.NullPageId)
         {
@@ -152,7 +178,9 @@ internal sealed class CatalogService
         _triggersByTable.Clear();
         _tableStatsCache.Clear();
         _dirtyTableStatistics.Clear();
+        _exactTableRowCounts.Clear();
         _columnStatsCache.Clear();
+        _dirtyColumnStatistics.Clear();
         _columnStatsByTableSnapshot.Clear();
 
         _indexesSnapshot = Array.Empty<IndexSchema>();
@@ -380,6 +408,8 @@ internal sealed class CatalogService
                 CacheColumnStatistics(DeserializeColumnStatistics(columnStatsCursor.CurrentValue.Span));
             }
         }
+
+        ReconcileLoadedStatisticsFreshness();
     }
 
     // ============ TABLE operations ============
@@ -444,7 +474,7 @@ internal sealed class CatalogService
         return false;
     }
 
-    public bool TryGetTableRowCount(string tableName, out long rowCount)
+    public bool TryGetEstimatedTableRowCount(string tableName, out long rowCount)
     {
         if (_tableStatsCache.TryGetValue(tableName, out var stats))
         {
@@ -455,6 +485,42 @@ internal sealed class CatalogService
         rowCount = 0;
         return false;
     }
+
+    public bool TryGetExactTableRowCount(string tableName, out long rowCount)
+    {
+        if (_exactTableRowCounts.Contains(tableName) &&
+            _tableStatsCache.TryGetValue(tableName, out var stats))
+        {
+            rowCount = stats.RowCount;
+            return true;
+        }
+
+        rowCount = 0;
+        return false;
+    }
+
+    public async ValueTask<long> GetExactTableRowCountAsync(string tableName, CancellationToken ct = default)
+    {
+        if (TryGetExactTableRowCount(tableName, out long rowCount))
+            return rowCount;
+
+        long exactRowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
+        bool hasStaleColumns = _tableStatsCache.TryGetValue(tableName, out var existing) && existing.HasStaleColumns;
+        uint lastPersistedChangeCounter = existing?.LastPersistedChangeCounter ?? 0;
+        CacheTableStatistics(
+            new TableStatistics
+            {
+                TableName = tableName,
+                RowCount = exactRowCount,
+                HasStaleColumns = hasStaleColumns,
+                LastPersistedChangeCounter = lastPersistedChangeCounter,
+            },
+            isExact: true,
+            markDirty: false);
+        return exactRowCount;
+    }
+
+    public bool HasDirtyAdvisoryStatistics => _dirtyTableStatistics.Count > 0 || _dirtyColumnStatistics.Count > 0;
 
     public uint GetTableRootPage(string tableName)
     {
@@ -533,7 +599,9 @@ internal sealed class CatalogService
                 TableName = storedSchema.TableName,
                 RowCount = 0,
                 HasStaleColumns = false,
+                LastPersistedChangeCounter = 0,
             },
+            isExact: true,
             ct);
         IncrementSchemaVersion();
     }
@@ -623,25 +691,44 @@ internal sealed class CatalogService
     public async ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(rowCount);
-        CacheDirtyTableStatistics(
+        uint lastPersistedChangeCounter = _tableStatsCache.TryGetValue(tableName, out var existing)
+            ? existing.LastPersistedChangeCounter
+            : 0;
+        bool hasStaleColumns = existing is not null && existing.HasStaleColumns;
+
+        CacheTableStatistics(
             new TableStatistics
             {
                 TableName = tableName,
                 RowCount = rowCount,
-                HasStaleColumns = _tableStatsCache.TryGetValue(tableName, out var existing) && existing.HasStaleColumns,
-            });
+                HasStaleColumns = hasStaleColumns,
+                LastPersistedChangeCounter = lastPersistedChangeCounter,
+            },
+            isExact: true,
+            markDirty: true);
     }
 
     public async ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default)
     {
         long rowCount;
         bool hasStaleColumns;
+        uint lastPersistedChangeCounter;
         if (_tableStatsCache.TryGetValue(tableName, out var existing))
         {
-            rowCount = checked(existing.RowCount + delta);
+            lastPersistedChangeCounter = existing.LastPersistedChangeCounter;
+            if (_exactTableRowCounts.Contains(tableName))
+            {
+                rowCount = checked(existing.RowCount + delta);
+            }
+            else
+            {
+                long actualRowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
+                rowCount = checked(actualRowCount + delta);
+            }
+
             if (rowCount < 0)
             {
-                long actualRowCount = await GetTableTree(tableName).CountEntriesAsync(ct);
+                long actualRowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
                 rowCount = checked(actualRowCount + delta);
                 if (rowCount < 0)
                     throw new InvalidOperationException($"Table '{tableName}' row count would become negative.");
@@ -650,17 +737,21 @@ internal sealed class CatalogService
         }
         else
         {
-            rowCount = await GetTableTree(tableName).CountEntriesAsync(ct);
+            rowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
             hasStaleColumns = false;
+            lastPersistedChangeCounter = 0;
         }
 
-        CacheDirtyTableStatistics(
+        CacheTableStatistics(
             new TableStatistics
             {
                 TableName = tableName,
                 RowCount = rowCount,
                 HasStaleColumns = hasStaleColumns,
-            });
+                LastPersistedChangeCounter = lastPersistedChangeCounter,
+            },
+            isExact: true,
+            markDirty: true);
     }
 
     public async ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default)
@@ -677,9 +768,15 @@ internal sealed class CatalogService
                 continue;
             }
 
-            await UpsertTableStatisticsAsync(stats, ct);
+            await UpsertTableStatisticsAsync(stats, _exactTableRowCounts.Contains(tableName), ct);
             _dirtyTableStatistics.Remove(tableName);
         }
+    }
+
+    public async ValueTask PersistDirtyAdvisoryStatisticsAsync(CancellationToken ct = default)
+    {
+        await PersistDirtyColumnStatisticsAsync(ct);
+        await PersistDirtyTableStatisticsAsync(ct);
     }
 
     public async ValueTask ReplaceColumnStatisticsAsync(
@@ -715,6 +812,35 @@ internal sealed class CatalogService
     {
         if (!_columnStatsByTableSnapshot.TryGetValue(tableName, out var stats) || stats.Length == 0)
             return;
+
+        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Deferred)
+        {
+            bool deferredChanged = false;
+            for (int i = 0; i < stats.Length; i++)
+            {
+                if (stats[i].IsStale)
+                    continue;
+
+                CacheColumnStatistics(
+                    new ColumnStatistics
+                    {
+                        TableName = stats[i].TableName,
+                        ColumnName = stats[i].ColumnName,
+                        DistinctCount = stats[i].DistinctCount,
+                        NonNullCount = stats[i].NonNullCount,
+                        MinValue = stats[i].MinValue,
+                        MaxValue = stats[i].MaxValue,
+                        IsStale = true,
+                    },
+                    markDirty: true);
+                deferredChanged = true;
+            }
+
+            if (deferredChanged)
+                await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns: true, ct);
+
+            return;
+        }
 
         bool changed = false;
         for (int i = 0; i < stats.Length; i++)
@@ -1105,26 +1231,40 @@ internal sealed class CatalogService
         return true;
     }
 
-    private async ValueTask UpsertTableStatisticsAsync(TableStatistics stats, CancellationToken ct)
+    private async ValueTask UpsertTableStatisticsAsync(TableStatistics stats, bool isExact, CancellationToken ct)
     {
         await EnsureTableStatsCatalogTreeAsync(ct);
 
-        byte[] payload = SerializeTableStatistics(stats);
-        long key = _schemaSerializer.TableNameToKey(stats.TableName);
+        TableStatistics storedStats = isExact
+            ? new TableStatistics
+            {
+                TableName = stats.TableName,
+                RowCount = stats.RowCount,
+                HasStaleColumns = stats.HasStaleColumns,
+                LastPersistedChangeCounter = unchecked(_pager.ChangeCounter + 1),
+            }
+            : stats;
+
+        byte[] payload = SerializeTableStatistics(storedStats);
+        long key = _schemaSerializer.TableNameToKey(storedStats.TableName);
 
         try { await _tableStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
         await _tableStatsCatalogTree!.InsertAsync(key, payload, ct);
 
-        _tableStatsCache[stats.TableName] = stats;
-        _tableStatisticsSnapshotDirty = true;
-        if (_tableTrees.TryGetValue(stats.TableName, out var tree))
-            tree.SetCachedEntryCount(stats.RowCount);
+        CacheTableStatistics(storedStats, isExact, markDirty: false);
     }
 
-    private void CacheDirtyTableStatistics(TableStatistics stats)
+    private void CacheTableStatistics(TableStatistics stats, bool isExact, bool markDirty)
     {
         _tableStatsCache[stats.TableName] = stats;
-        _dirtyTableStatistics.Add(stats.TableName);
+        if (isExact)
+            _exactTableRowCounts.Add(stats.TableName);
+        else
+            _exactTableRowCounts.Remove(stats.TableName);
+
+        if (markDirty)
+            _dirtyTableStatistics.Add(stats.TableName);
+
         _tableStatisticsSnapshotDirty = true;
         if (_tableTrees.TryGetValue(stats.TableName, out var tree))
             tree.SetCachedEntryCount(stats.RowCount);
@@ -1133,6 +1273,7 @@ internal sealed class CatalogService
     private async ValueTask DeleteTableStatisticsAsync(string tableName, CancellationToken ct)
     {
         _dirtyTableStatistics.Remove(tableName);
+        _exactTableRowCounts.Remove(tableName);
         if (_tableStatsCatalogTree == null)
         {
             _tableStatsCache.Remove(tableName);
@@ -1151,6 +1292,7 @@ internal sealed class CatalogService
         if (!_tableStatsCache.TryGetValue(oldTableName, out var stats))
             return;
 
+        bool isExact = _exactTableRowCounts.Contains(oldTableName);
         _dirtyTableStatistics.Remove(oldTableName);
         await DeleteTableStatisticsAsync(oldTableName, ct);
         await UpsertTableStatisticsAsync(
@@ -1159,7 +1301,9 @@ internal sealed class CatalogService
                 TableName = newTableName,
                 RowCount = stats.RowCount,
                 HasStaleColumns = stats.HasStaleColumns,
+                LastPersistedChangeCounter = stats.LastPersistedChangeCounter,
             },
+            isExact,
             ct);
     }
 
@@ -1170,24 +1314,30 @@ internal sealed class CatalogService
             if (stats.HasStaleColumns == hasStaleColumns)
                 return;
 
-            CacheDirtyTableStatistics(
+            CacheTableStatistics(
                 new TableStatistics
                 {
                     TableName = tableName,
                     RowCount = stats.RowCount,
                     HasStaleColumns = hasStaleColumns,
-                });
+                    LastPersistedChangeCounter = stats.LastPersistedChangeCounter,
+                },
+                isExact: _exactTableRowCounts.Contains(tableName),
+                markDirty: true);
             return;
         }
 
-        long rowCount = await GetTableTree(tableName).CountEntriesAsync(ct);
-        CacheDirtyTableStatistics(
+        long rowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
+        CacheTableStatistics(
             new TableStatistics
             {
                 TableName = tableName,
                 RowCount = rowCount,
                 HasStaleColumns = hasStaleColumns,
-            });
+                LastPersistedChangeCounter = 0,
+            },
+            isExact: true,
+            markDirty: true);
     }
 
     private async ValueTask UpsertColumnStatisticsAsync(ColumnStatistics stats, CancellationToken ct)
@@ -1200,7 +1350,7 @@ internal sealed class CatalogService
         try { await _columnStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
         await _columnStatsCatalogTree!.InsertAsync(key, payload, ct);
 
-        CacheColumnStatistics(stats);
+        CacheColumnStatistics(stats, markDirty: false);
     }
 
     private async ValueTask DeleteColumnStatisticsAsync(string tableName, CancellationToken ct)
@@ -1249,10 +1399,12 @@ internal sealed class CatalogService
         await SetTableHasStaleColumnsAsync(newTableName, stats.Any(item => item.IsStale), ct);
     }
 
-    private void CacheColumnStatistics(ColumnStatistics stats)
+    private void CacheColumnStatistics(ColumnStatistics stats, bool markDirty = false)
     {
         string cacheKey = GetColumnStatisticsCacheKey(stats.TableName, stats.ColumnName);
         _columnStatsCache[cacheKey] = stats;
+        if (markDirty)
+            _dirtyColumnStatistics.Add(cacheKey);
 
         if (_columnStatsByTableSnapshot.TryGetValue(stats.TableName, out var existing))
         {
@@ -1272,7 +1424,9 @@ internal sealed class CatalogService
 
     private void RemoveColumnStatisticsFromCache(string tableName, string columnName)
     {
-        _columnStatsCache.Remove(GetColumnStatisticsCacheKey(tableName, columnName));
+        string cacheKey = GetColumnStatisticsCacheKey(tableName, columnName);
+        _columnStatsCache.Remove(cacheKey);
+        _dirtyColumnStatistics.Remove(cacheKey);
 
         if (_columnStatsByTableSnapshot.TryGetValue(tableName, out var existing))
         {
@@ -1298,11 +1452,13 @@ internal sealed class CatalogService
     private static byte[] SerializeTableStatistics(TableStatistics stats)
     {
         byte[] tableNameBytes = Encoding.UTF8.GetBytes(stats.TableName);
-        byte[] payload = new byte[4 + tableNameBytes.Length + 8 + 1];
+        byte[] payload = new byte[4 + tableNameBytes.Length + 8 + 1 + 4];
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(0, 4), tableNameBytes.Length);
         tableNameBytes.CopyTo(payload.AsSpan(4));
         BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(4 + tableNameBytes.Length, 8), stats.RowCount);
-        payload[^1] = stats.HasStaleColumns ? (byte)1 : (byte)0;
+        int staleOffset = 4 + tableNameBytes.Length + 8;
+        payload[staleOffset] = stats.HasStaleColumns ? (byte)1 : (byte)0;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(staleOffset + 1, 4), stats.LastPersistedChangeCounter);
         return payload;
     }
 
@@ -1311,13 +1467,87 @@ internal sealed class CatalogService
         int tableNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload[..4]);
         string tableName = Encoding.UTF8.GetString(payload.Slice(4, tableNameLength));
         long rowCount = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(4 + tableNameLength, 8));
-        bool hasStaleColumns = payload[4 + tableNameLength + 8] != 0;
+        int staleOffset = 4 + tableNameLength + 8;
+        bool hasStaleColumns = payload[staleOffset] != 0;
+        uint lastPersistedChangeCounter = payload.Length >= staleOffset + 1 + 4
+            ? BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(staleOffset + 1, 4))
+            : 0;
         return new TableStatistics
         {
             TableName = tableName,
             RowCount = rowCount,
             HasStaleColumns = hasStaleColumns,
+            LastPersistedChangeCounter = lastPersistedChangeCounter,
         };
+    }
+
+    private void ReconcileLoadedStatisticsFreshness()
+    {
+        foreach (var stats in _tableStatsCache.Values.ToArray())
+        {
+            bool isExact = stats.LastPersistedChangeCounter == _pager.ChangeCounter;
+            if (isExact)
+            {
+                _exactTableRowCounts.Add(stats.TableName);
+                continue;
+            }
+
+            _exactTableRowCounts.Remove(stats.TableName);
+            if (!stats.HasStaleColumns)
+            {
+                CacheTableStatistics(
+                    new TableStatistics
+                    {
+                        TableName = stats.TableName,
+                        RowCount = stats.RowCount,
+                        HasStaleColumns = true,
+                        LastPersistedChangeCounter = stats.LastPersistedChangeCounter,
+                    },
+                    isExact: false,
+                    markDirty: false);
+            }
+
+            if (_columnStatsByTableSnapshot.TryGetValue(stats.TableName, out var columnStats))
+            {
+                for (int i = 0; i < columnStats.Length; i++)
+                {
+                    if (columnStats[i].IsStale)
+                        continue;
+
+                    CacheColumnStatistics(
+                        new ColumnStatistics
+                        {
+                            TableName = columnStats[i].TableName,
+                            ColumnName = columnStats[i].ColumnName,
+                            DistinctCount = columnStats[i].DistinctCount,
+                            NonNullCount = columnStats[i].NonNullCount,
+                            MinValue = columnStats[i].MinValue,
+                            MaxValue = columnStats[i].MaxValue,
+                            IsStale = true,
+                        },
+                        markDirty: false);
+                }
+            }
+        }
+    }
+
+    private async ValueTask PersistDirtyColumnStatisticsAsync(CancellationToken ct)
+    {
+        if (_dirtyColumnStatistics.Count == 0)
+            return;
+
+        string[] cacheKeys = _dirtyColumnStatistics.ToArray();
+        for (int i = 0; i < cacheKeys.Length; i++)
+        {
+            if (!_columnStatsCache.TryGetValue(cacheKeys[i], out var stats))
+            {
+                _dirtyColumnStatistics.Remove(cacheKeys[i]);
+                continue;
+            }
+
+            await UpsertColumnStatisticsAsync(stats, ct);
+            _dirtyColumnStatistics.Remove(cacheKeys[i]);
+        }
     }
 
     private static byte[] SerializeColumnStatistics(ColumnStatistics stats)

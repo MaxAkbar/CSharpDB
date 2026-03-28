@@ -1070,6 +1070,41 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Database_CommitPathDiagnostics_TrackDurableAutoCommitStages()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_commit_diag_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLowLatencyDurableWritePreset());
+
+        try
+        {
+            await using var db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE diag_t (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+
+            db.ResetWalFlushDiagnostics();
+            db.ResetCommitPathDiagnostics();
+
+            await db.ExecuteAsync("INSERT INTO diag_t VALUES (1, 10)", ct);
+
+            WalFlushDiagnosticsSnapshot walDiagnostics = db.GetWalFlushDiagnosticsSnapshot();
+            CommitPathDiagnosticsSnapshot commitDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+
+            Assert.True(commitDiagnostics.WalAppendCount > 0);
+            Assert.True(commitDiagnostics.BufferedFlushCount > 0 || commitDiagnostics.DurableFlushCount > 0);
+            Assert.True(commitDiagnostics.PublishBatchCount > 0);
+            Assert.True(commitDiagnostics.FinalizeCommitCount > 0);
+            Assert.True(commitDiagnostics.CheckpointDecisionCount > 0);
+            Assert.True(walDiagnostics.FlushCount > 0);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task FileWriteAheadLog_Recover_TruncatesPreallocatedTailAndRetainsCommittedFrames()
     {
         var ct = TestContext.Current.CancellationToken;

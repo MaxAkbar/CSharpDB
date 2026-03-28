@@ -1356,7 +1356,7 @@ internal static class CardinalityEstimator
             }
         }
 
-        return catalog.TryGetTableRowCount(tableName, out rowCount);
+        return catalog.TryGetEstimatedTableRowCount(tableName, out rowCount);
     }
 
     private static long DivideRoundUp(long dividend, long divisor)

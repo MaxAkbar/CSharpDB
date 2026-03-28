@@ -57,7 +57,7 @@ function Convert-ToStringArray
 
     if ($null -eq $Value)
     {
-        return @()
+        return ,([string[]]@())
     }
 
     $items = New-Object System.Collections.Generic.List[string]
@@ -69,7 +69,7 @@ function Convert-ToStringArray
         }
     }
 
-    return @($items)
+    return ,([string[]]$items.ToArray())
 }
 
 function Resolve-RepoRelativePath

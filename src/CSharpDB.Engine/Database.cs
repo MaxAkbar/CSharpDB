@@ -5,6 +5,7 @@ using CSharpDB.Sql;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
+using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Engine;
@@ -22,6 +23,7 @@ public sealed class Database : IAsyncDisposable
     private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
+    private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private long _observedSchemaVersion;
@@ -45,15 +47,23 @@ public sealed class Database : IAsyncDisposable
     internal void ResetWalFlushDiagnostics() =>
         _pager.ResetWalFlushDiagnostics();
 
+    internal CommitPathDiagnosticsSnapshot GetCommitPathDiagnosticsSnapshot() =>
+        _pager.GetCommitPathDiagnosticsSnapshot();
+
+    internal void ResetCommitPathDiagnostics() =>
+        _pager.ResetCommitPathDiagnostics();
+
     private Database(
         Pager pager,
         SchemaCatalog catalog,
         IRecordSerializer recordSerializer,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
+        _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
@@ -89,7 +99,8 @@ public sealed class Database : IAsyncDisposable
         return new Database(
             context.Pager,
             context.Catalog,
-            context.RecordSerializer);
+            context.RecordSerializer,
+            context.AdvisoryStatisticsPersistenceMode);
     }
 
     /// <summary>
@@ -147,6 +158,7 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.Pager,
                 snapshotContext.Catalog,
                 snapshotContext.RecordSerializer,
+                snapshotContext.AdvisoryStatisticsPersistenceMode,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
         }
@@ -155,7 +167,8 @@ public sealed class Database : IAsyncDisposable
         var database = new Database(
             context.Pager,
             context.Catalog,
-            context.RecordSerializer);
+            context.RecordSerializer,
+            context.AdvisoryStatisticsPersistenceMode);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -208,7 +221,8 @@ public sealed class Database : IAsyncDisposable
         return new Database(
             context.Pager,
             context.Catalog,
-            context.RecordSerializer);
+            context.RecordSerializer,
+            context.AdvisoryStatisticsPersistenceMode);
     }
 
     /// <summary>
@@ -225,7 +239,8 @@ public sealed class Database : IAsyncDisposable
         return new Database(
             context.Pager,
             context.Catalog,
-            context.RecordSerializer);
+            context.RecordSerializer,
+            context.AdvisoryStatisticsPersistenceMode);
     }
 
     /// <summary>
@@ -461,6 +476,7 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
 
+        await FlushDeferredAdvisoryStatisticsAsync(ct);
         await _pager.SaveToFileAsync(filePath, ct);
     }
 
@@ -485,8 +501,11 @@ public sealed class Database : IAsyncDisposable
     private Dictionary<string, long> CaptureSnapshotRowCounts()
     {
         var snapshotRowCounts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        foreach (var stats in _catalog.GetTableStatistics())
-            snapshotRowCounts[stats.TableName] = stats.RowCount;
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            if (_catalog.TryGetExactTableRowCount(tableName, out long rowCount))
+                snapshotRowCounts[tableName] = rowCount;
+        }
 
         return snapshotRowCounts;
     }
@@ -954,14 +973,16 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<PagerCommitResult> BeginCommitWithCatalogSyncAsync(CancellationToken ct)
     {
-        await _catalog.PersistDirtyTableStatisticsAsync(ct);
+        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
+            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
         return await _pager.BeginCommitAsync(ct);
     }
 
     private async ValueTask<PagerCommitResult> BeginCommitForTableWithCatalogSyncAsync(string tableName, CancellationToken ct)
     {
-        await _catalog.PersistDirtyTableStatisticsAsync(ct);
+        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
+            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistRootPageChangesAsync(tableName, ct);
         return await _pager.BeginCommitAsync(ct);
     }
@@ -982,15 +1003,19 @@ public sealed class Database : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        bool rolledBackExplicitTransaction = false;
         if (_inTransaction)
         {
             try { await _pager.RollbackAsync(); } catch { }
             _inTransaction = false;
             ReleaseExplicitTransactionWriteGate();
+            rolledBackExplicitTransaction = true;
         }
 
         try
         {
+            if (!rolledBackExplicitTransaction)
+                await FlushDeferredAdvisoryStatisticsAsync(CancellationToken.None);
             await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
         }
         finally
@@ -998,6 +1023,54 @@ public sealed class Database : IAsyncDisposable
             await _pager.DisposeAsync();
             _hybridPersistenceCoordinator?.Dispose();
             _writeOperationGate.Dispose();
+        }
+    }
+
+    private async ValueTask FlushDeferredAdvisoryStatisticsAsync(CancellationToken ct)
+    {
+        if (_advisoryStatisticsPersistenceMode != AdvisoryStatisticsPersistenceMode.Deferred ||
+            _inTransaction ||
+            !_catalog.HasDirtyAdvisoryStatistics)
+        {
+            return;
+        }
+
+        IDisposable? writeScope = null;
+        try
+        {
+            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
+            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
+            await _catalog.PersistAllRootPageChangesAsync(ct);
+            PagerCommitResult commit = await _pager.BeginCommitAsync(ct);
+            writeScope.Dispose();
+            writeScope = null;
+            await commit.WaitAsync(ct);
+        }
+        catch
+        {
+            try
+            {
+                await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+                foreach (var cached in _collectionCache.Values)
+                {
+                    if (cached is ICollectionTreeRefresh refreshable)
+                        refreshable.RefreshTreeFromCatalog();
+                }
+
+                _statementCache.Clear();
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            throw;
+        }
+        finally
+        {
+            writeScope?.Dispose();
         }
     }
 
@@ -1194,14 +1267,14 @@ public sealed class Database : IAsyncDisposable
                 return true;
             }
 
-            if (_catalog.TryGetTableRowCount(simpleRef.TableName, out rowCount))
+            if (_catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
             {
                 result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
                 return true;
             }
 
             var tableTree = _catalog.GetTableTree(simpleRef.TableName, GetOrCreateSnapshotPager());
-            result = new QueryResult(new CountStarTableOperator(tableTree, outputSchema));
+            result = new QueryResult(new CountStarTableOperator(tableTree, outputSchema, ignoreCachedCount: true));
             return true;
         }
 

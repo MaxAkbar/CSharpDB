@@ -1,4 +1,5 @@
 using CSharpDB.Engine;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
 
@@ -127,6 +128,40 @@ public sealed class InMemoryDatabaseTests : IDisposable
 
         using var reader = db.CreateReaderSession();
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveToFileAsync(filePath, Ct).AsTask());
+    }
+
+    [Fact]
+    public async Task SaveToFileAsync_PersistsDeferredAdvisoryStatistics()
+    {
+        string filePath = NewTempDbPath();
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLowLatencyDurableWritePreset());
+
+        await using (var db = await Database.OpenInMemoryAsync(options, Ct))
+        {
+            await db.ExecuteAsync("CREATE TABLE stats_export (id INTEGER PRIMARY KEY, age INTEGER)", Ct);
+            await db.ExecuteAsync("INSERT INTO stats_export VALUES (1, 20)", Ct);
+            await db.ExecuteAsync("ANALYZE stats_export", Ct);
+            await db.ExecuteAsync("INSERT INTO stats_export VALUES (2, 30)", Ct);
+
+            await db.SaveToFileAsync(filePath, Ct);
+        }
+
+        await using var reopened = await Database.OpenAsync(filePath, options, Ct);
+        await using var statsResult = await reopened.ExecuteAsync(
+            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_export'",
+            Ct);
+        var statsRow = Assert.Single(await statsResult.ToListAsync(Ct));
+        Assert.Equal(2L, statsRow[0].AsInteger);
+        Assert.Equal(1L, statsRow[1].AsInteger);
+
+        await using var staleColumnStats = await reopened.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'stats_export' AND is_stale = 1",
+            Ct);
+        Assert.Equal(2L, Assert.Single(await staleColumnStats.ToListAsync(Ct))[0].AsInteger);
+
+        await using var countResult = await reopened.ExecuteAsync("SELECT COUNT(*) FROM stats_export", Ct);
+        Assert.Equal(2L, Assert.Single(await countResult.ToListAsync(Ct))[0].AsInteger);
     }
 
     public void Dispose()

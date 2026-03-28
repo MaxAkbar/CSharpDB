@@ -1,4 +1,5 @@
 using CSharpDB.Primitives;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Storage.Catalog;
 
@@ -17,7 +18,10 @@ public sealed class SchemaCatalog
 
     public static async ValueTask<SchemaCatalog> CreateAsync(Pager pager, CancellationToken ct = default)
     {
-        var service = await CatalogService.CreateAsync(pager, ct);
+        var service = await CatalogService.CreateAsync(
+            pager,
+            AdvisoryStatisticsPersistenceMode.Immediate,
+            ct);
         return new SchemaCatalog(service);
     }
 
@@ -25,9 +29,15 @@ public sealed class SchemaCatalog
         Pager pager,
         ISchemaSerializer schemaSerializer,
         IIndexProvider indexProvider,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode.Immediate,
         CancellationToken ct = default)
     {
-        var service = await CatalogService.CreateAsync(pager, schemaSerializer, indexProvider, ct);
+        var service = await CatalogService.CreateAsync(
+            pager,
+            schemaSerializer,
+            indexProvider,
+            advisoryStatisticsPersistenceMode,
+            ct);
         return new SchemaCatalog(service);
     }
 
@@ -36,9 +46,16 @@ public sealed class SchemaCatalog
         ISchemaSerializer schemaSerializer,
         IIndexProvider indexProvider,
         ICatalogStore catalogStore,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode.Immediate,
         CancellationToken ct = default)
     {
-        var service = await CatalogService.CreateAsync(pager, schemaSerializer, indexProvider, catalogStore, ct);
+        var service = await CatalogService.CreateAsync(
+            pager,
+            schemaSerializer,
+            indexProvider,
+            catalogStore,
+            advisoryStatisticsPersistenceMode,
+            ct);
         return new SchemaCatalog(service);
     }
 
@@ -63,7 +80,18 @@ public sealed class SchemaCatalog
         _service.TryGetFreshColumnStatistics(tableName, columnName, out stats);
 
     public bool TryGetTableRowCount(string tableName, out long rowCount) =>
-        _service.TryGetTableRowCount(tableName, out rowCount);
+        _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
+
+    public bool TryGetEstimatedTableRowCount(string tableName, out long rowCount) =>
+        _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
+
+    public bool TryGetExactTableRowCount(string tableName, out long rowCount) =>
+        _service.TryGetExactTableRowCount(tableName, out rowCount);
+
+    public ValueTask<long> GetExactTableRowCountAsync(string tableName, CancellationToken ct = default) =>
+        _service.GetExactTableRowCountAsync(tableName, ct);
+
+    public bool HasDirtyAdvisoryStatistics => _service.HasDirtyAdvisoryStatistics;
 
     public uint GetTableRootPage(string tableName) => _service.GetTableRootPage(tableName);
 
@@ -98,6 +126,9 @@ public sealed class SchemaCatalog
 
     public ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default) =>
         _service.PersistDirtyTableStatisticsAsync(ct);
+
+    public ValueTask PersistDirtyAdvisoryStatisticsAsync(CancellationToken ct = default) =>
+        _service.PersistDirtyAdvisoryStatisticsAsync(ct);
 
     public ValueTask ReplaceColumnStatisticsAsync(
         string tableName,

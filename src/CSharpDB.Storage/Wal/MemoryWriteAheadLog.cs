@@ -1,5 +1,6 @@
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Device;
+using CSharpDB.Storage.Paging;
 using System.Buffers;
 using System.Buffers.Binary;
 
@@ -9,7 +10,7 @@ namespace CSharpDB.Storage.Wal;
 /// In-memory WAL implementation that preserves the same frame/header format as the file-backed WAL.
 /// This allows load-from-disk recovery to run entirely in memory.
 /// </summary>
-public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider
+public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider, ICommitPathDiagnosticsProvider
 {
     private const int AppendFrameChunkSize = 16;
     private const int CheckpointWriteChunkPages = 16;
@@ -79,6 +80,13 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         WalFlushDiagnosticsSnapshot.Empty;
 
     void IWalRuntimeDiagnosticsProvider.ResetWalFlushDiagnostics()
+    {
+    }
+
+    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() =>
+        CommitPathDiagnosticsSnapshot.Empty;
+
+    void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()
     {
     }
 

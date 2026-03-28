@@ -499,7 +499,21 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<long> CountEntriesAsync(CancellationToken ct = default)
     {
-        if (_cachedEntryCount.HasValue)
+        return await CountEntriesCoreAsync(ignoreCachedCount: false, ct);
+    }
+
+    /// <summary>
+    /// Count entries by walking leaf pages even when a cached count is available.
+    /// Refreshes the cached count with the exact result.
+    /// </summary>
+    public async ValueTask<long> CountEntriesExactAsync(CancellationToken ct = default)
+    {
+        return await CountEntriesCoreAsync(ignoreCachedCount: true, ct);
+    }
+
+    private async ValueTask<long> CountEntriesCoreAsync(bool ignoreCachedCount, CancellationToken ct)
+    {
+        if (!ignoreCachedCount && _cachedEntryCount.HasValue)
             return _cachedEntryCount.Value;
 
         long count = 0;

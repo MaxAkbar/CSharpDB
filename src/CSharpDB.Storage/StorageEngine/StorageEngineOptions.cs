@@ -19,6 +19,12 @@ public sealed class StorageEngineOptions
     public TimeSpan DurableCommitBatchWindow { get; init; } = TimeSpan.Zero;
 
     /// <summary>
+    /// Controls when advisory planner statistics are persisted.
+    /// </summary>
+    public AdvisoryStatisticsPersistenceMode AdvisoryStatisticsPersistenceMode { get; init; }
+        = AdvisoryStatisticsPersistenceMode.Immediate;
+
+    /// <summary>
     /// Optional WAL file growth chunk used to reserve additional on-disk space
     /// ahead of future appends. Applies only to file-backed WAL instances.
     /// Set to zero to disable preallocation.

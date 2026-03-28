@@ -206,9 +206,7 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount > 0
-            ? rowCount
-            : await _tree.CountEntriesAsync(ct);
+        => await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
 
     /// <summary>
     /// Iterate all documents in the collection.
@@ -717,7 +715,7 @@ public sealed class Collection<
     }
 
     private bool HasZeroCachedRowCount()
-        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount == 0;
+        => _catalog.TryGetExactTableRowCount(_catalogTableName, out long rowCount) && rowCount == 0;
 
     private bool ShouldReconcileRowCount(ReadOnlySpan<byte> payload)
         => HasZeroCachedRowCount() ||
@@ -725,7 +723,7 @@ public sealed class Collection<
 
     private async ValueTask SyncRowCountAsync(CancellationToken ct)
     {
-        long rowCount = await _tree.CountEntriesAsync(ct);
+        long rowCount = await _tree.CountEntriesExactAsync(ct);
         await _catalog.SetTableRowCountAsync(_catalogTableName, rowCount, ct);
     }
 

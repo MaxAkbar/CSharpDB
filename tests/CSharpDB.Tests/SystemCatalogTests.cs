@@ -1,4 +1,5 @@
 using CSharpDB.Engine;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
 
@@ -532,5 +533,48 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(10L, row[2].AsInteger);
         Assert.Equal(30L, row[3].AsInteger);
         Assert.Equal(0L, row[4].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_DeferredAdvisoryStatistics_ArePersistedOnCleanDispose()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_syscat_deferred_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLowLatencyDurableWritePreset());
+
+        try
+        {
+            await using (var db = await Database.OpenAsync(dbPath, options, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE deferred_stats (id INTEGER PRIMARY KEY, age INTEGER)", ct);
+                await db.ExecuteAsync("INSERT INTO deferred_stats VALUES (1, 20)", ct);
+                await db.ExecuteAsync("INSERT INTO deferred_stats VALUES (2, 40)", ct);
+                await db.ExecuteAsync("ANALYZE deferred_stats", ct);
+                await db.ExecuteAsync("INSERT INTO deferred_stats VALUES (3, 60)", ct);
+            }
+
+            await using var reopened = await Database.OpenAsync(dbPath, options, ct);
+
+            await using var statsResult = await reopened.ExecuteAsync(
+                "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'deferred_stats'",
+                ct);
+            var statsRow = Assert.Single(await statsResult.ToListAsync(ct));
+            Assert.Equal(3L, statsRow[0].AsInteger);
+            Assert.Equal(1L, statsRow[1].AsInteger);
+
+            await using var staleColumnStats = await reopened.ExecuteAsync(
+                "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'deferred_stats' AND is_stale = 1",
+                ct);
+            Assert.Equal(2L, Assert.Single(await staleColumnStats.ToListAsync(ct))[0].AsInteger);
+
+            await using var countResult = await reopened.ExecuteAsync("SELECT COUNT(*) FROM deferred_stats", ct);
+            Assert.Equal(3L, Assert.Single(await countResult.ToListAsync(ct))[0].AsInteger);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
     }
 }

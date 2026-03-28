@@ -323,7 +323,22 @@ public sealed class QueryPlanner
             }
         }
 
-        return _catalog.TryGetTableRowCount(tableName, out rowCount);
+        return _catalog.TryGetEstimatedTableRowCount(tableName, out rowCount);
+    }
+
+    private bool TryGetExactTableRowCount(string tableName, out long rowCount)
+    {
+        if (_tableRowCountProvider is not null)
+        {
+            long? provided = _tableRowCountProvider(tableName);
+            if (provided.HasValue)
+            {
+                rowCount = provided.Value;
+                return true;
+            }
+        }
+
+        return _catalog.TryGetExactTableRowCount(tableName, out rowCount);
     }
 
     #region DDL — Tables
@@ -1620,6 +1635,7 @@ public sealed class QueryPlanner
         long rowCount = columnStats.RowCount;
         await _catalog.SetTableRowCountAsync(tableName, rowCount, ct);
         await _catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.Columns, ct);
+        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
     }
 
     private async ValueTask<(long RowCount, ColumnStatistics[] Columns)> CollectColumnStatisticsAsync(
@@ -4307,7 +4323,7 @@ public sealed class QueryPlanner
 
     private int? TryGetIndexedPayloadAggregateTableRowCountCapacityHint(string tableName)
     {
-        if (_catalog.TryGetTableRowCount(tableName, out long rowCount))
+        if (_catalog.TryGetEstimatedTableRowCount(tableName, out long rowCount))
             return ToCapacityHint(rowCount);
 
         return TryGetCachedTreeRowCountCapacityHint(_catalog.GetTableTree(tableName, _pager));
@@ -4477,14 +4493,14 @@ public sealed class QueryPlanner
 
     private bool TryBuildTableRowCountQuery(string tableName, ColumnDefinition[] outputSchema, out QueryResult result)
     {
-        if (TryGetTableRowCount(tableName, out long rowCount))
+        if (TryGetExactTableRowCount(tableName, out long rowCount))
         {
             result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
         }
 
         var tree = _catalog.GetTableTree(tableName, _pager);
-        result = new QueryResult(new CountStarTableOperator(tree, outputSchema));
+        result = new QueryResult(new CountStarTableOperator(tree, outputSchema, ignoreCachedCount: true));
         return true;
     }
 

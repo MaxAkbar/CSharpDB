@@ -38,6 +38,7 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
             schemaSerializer,
             options.IndexProvider,
             options.CatalogStore,
+            options.AdvisoryStatisticsPersistenceMode,
             ct);
 
         return new StorageEngineContext
@@ -48,6 +49,7 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
             SchemaSerializer = schemaSerializer,
             IndexProvider = options.IndexProvider,
             ChecksumProvider = options.ChecksumProvider,
+            AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
         };
     }
 }

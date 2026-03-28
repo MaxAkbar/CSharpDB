@@ -34,6 +34,7 @@ param(
     [switch]$SkipScaling,
     [switch]$SkipWriteDiagnostics,
     [switch]$SkipConcurrentWriteDiagnostics,
+    [switch]$SkipDurableSqlBatching,
     [switch]$SkipRepro
 )
 
@@ -292,6 +293,29 @@ if (-not $SkipWriteDiagnostics)
         -TargetFileName ("write-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
 }
 
+$durableSqlBatchingCapturePath = ""
+if (-not $SkipDurableSqlBatching)
+{
+    $durableSqlBatchingArgs = @("--durable-sql-batching")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $durableSqlBatchingArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $durableSqlBatchingArgs += "--repro"
+    }
+
+    $durableSqlBatchingStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Durable SQL Batching" -Arguments $durableSqlBatchingArgs
+    $durableSqlBatchingCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("durable-sql-batching-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $durableSqlBatchingStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("durable-sql-batching-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
 $concurrentWriteDiagnosticsCapturePath = ""
 if (-not $SkipConcurrentWriteDiagnostics)
 {
@@ -369,6 +393,7 @@ $machineFingerprint = Get-MachineFingerprint
     "Micro logs copied: $copiedMicroLogs"
     "Macro/Stress/Scaling CSV copied: $copiedMacro"
     "Write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeDiagnosticsCapturePath)) { "skipped" } else { $writeDiagnosticsCapturePath })"
+    "Durable SQL batching capture: $(if ([string]::IsNullOrWhiteSpace($durableSqlBatchingCapturePath)) { "skipped" } else { $durableSqlBatchingCapturePath })"
     "Concurrent write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($concurrentWriteDiagnosticsCapturePath)) { "skipped" } else { $concurrentWriteDiagnosticsCapturePath })"
     "Machine fingerprint: $(Split-Path -Leaf $machineFingerprintPath)"
     ""

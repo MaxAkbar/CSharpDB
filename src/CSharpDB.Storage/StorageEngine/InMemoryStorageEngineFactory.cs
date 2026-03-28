@@ -37,6 +37,7 @@ internal static class InMemoryStorageEngineFactory
             schemaSerializer,
             options.IndexProvider,
             options.CatalogStore,
+            options.AdvisoryStatisticsPersistenceMode,
             ct);
 
         return new StorageEngineContext
@@ -47,6 +48,7 @@ internal static class InMemoryStorageEngineFactory
             SchemaSerializer = schemaSerializer,
             IndexProvider = options.IndexProvider,
             ChecksumProvider = options.ChecksumProvider,
+            AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
         };
     }
 }

@@ -416,6 +416,54 @@
       "outputPattern": "write-diagnostics-*-median-of-3.csv"
     },
     {
+      "csv": "durable-sql-batching-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_WriteOptimized_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_WriteOptimized_Analyzed_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_LowLatency_Analyzed_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch10_LowLatency_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch100_LowLatency_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch1000_LowLatency_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 18.0,
+      "skipAllocationComparison": true,
+      "overrides": [
+        {
+          "match": {
+            "Name": "DurableSqlBatching_TxBatch1000_LowLatency_10s"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ],
+      "suiteKey": "durable-sql-batching",
+      "suiteLabel": "Durable SQL Batching",
+      "suiteArgs": [
+        "--durable-sql-batching",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "durable-sql-batching-*-median-of-3.csv"
+    },
+    {
       "csv": "concurrent-write-diagnostics-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260326-123705",
       "baselineSubDir": "macro-stress-scaling",

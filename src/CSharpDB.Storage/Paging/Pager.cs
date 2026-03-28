@@ -2,6 +2,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Storage.Caching;
 using CSharpDB.Storage.Internal;
 using System.Buffers;
+using System.Diagnostics;
 
 namespace CSharpDB.Storage.Paging;
 
@@ -28,6 +29,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
     private readonly bool _isSnapshotReader;
+    private long _walAppendCount;
+    private long _walAppendTicks;
+    private long _finalizeCommitCount;
+    private long _finalizeCommitTicks;
+    private long _checkpointDecisionCount;
+    private long _checkpointDecisionTicks;
+    private long _backgroundCheckpointStartCount;
 
     // File header state (cached in memory)
     public uint PageCount { get; internal set; }
@@ -47,6 +55,44 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_wal is IWalRuntimeDiagnosticsProvider diagnosticsProvider)
             diagnosticsProvider.ResetWalFlushDiagnostics();
+    }
+
+    internal CommitPathDiagnosticsSnapshot GetCommitPathDiagnosticsSnapshot()
+    {
+        CommitPathDiagnosticsSnapshot walDiagnostics = _wal is ICommitPathDiagnosticsProvider diagnosticsProvider
+            ? diagnosticsProvider.GetCommitPathDiagnosticsSnapshot()
+            : CommitPathDiagnosticsSnapshot.Empty;
+
+        return new CommitPathDiagnosticsSnapshot(
+            WalAppendCount: Interlocked.Read(ref _walAppendCount),
+            WalAppendTicks: Interlocked.Read(ref _walAppendTicks),
+            BufferedFlushCount: walDiagnostics.BufferedFlushCount,
+            BufferedFlushTicks: walDiagnostics.BufferedFlushTicks,
+            DurableFlushCount: walDiagnostics.DurableFlushCount,
+            DurableFlushTicks: walDiagnostics.DurableFlushTicks,
+            PublishBatchCount: walDiagnostics.PublishBatchCount,
+            PublishBatchTicks: walDiagnostics.PublishBatchTicks,
+            FinalizeCommitCount: Interlocked.Read(ref _finalizeCommitCount),
+            FinalizeCommitTicks: Interlocked.Read(ref _finalizeCommitTicks),
+            CheckpointDecisionCount: Interlocked.Read(ref _checkpointDecisionCount),
+            CheckpointDecisionTicks: Interlocked.Read(ref _checkpointDecisionTicks),
+            BackgroundCheckpointStartCount: Interlocked.Read(ref _backgroundCheckpointStartCount),
+            MaxPendingCommitCount: walDiagnostics.MaxPendingCommitCount,
+            MaxPendingCommitBytes: walDiagnostics.MaxPendingCommitBytes);
+    }
+
+    internal void ResetCommitPathDiagnostics()
+    {
+        if (_wal is ICommitPathDiagnosticsProvider diagnosticsProvider)
+            diagnosticsProvider.ResetCommitPathDiagnostics();
+
+        Interlocked.Exchange(ref _walAppendCount, 0);
+        Interlocked.Exchange(ref _walAppendTicks, 0);
+        Interlocked.Exchange(ref _finalizeCommitCount, 0);
+        Interlocked.Exchange(ref _finalizeCommitTicks, 0);
+        Interlocked.Exchange(ref _checkpointDecisionCount, 0);
+        Interlocked.Exchange(ref _checkpointDecisionTicks, 0);
+        Interlocked.Exchange(ref _backgroundCheckpointStartCount, 0);
     }
 
     // Configurable behavior
@@ -408,6 +454,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             EnforceReaderWalBackpressure(dirtyCount);
             orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
+            long walAppendStartTicks = Stopwatch.GetTimestamp();
 
             // Write all dirty pages to WAL with per-page interceptor hooks.
             for (int i = 0; i < orderedDirtyCount; i++)
@@ -434,6 +481,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             }
 
             WalCommitResult commitResult = await PrepareWalCommitAsync(ct);
+            RecordWalAppendDiagnostics(walAppendStartTicks);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             return new PagerCommitResult(CompleteCommitWithInterceptorAsync(commitResult, transactionId, dirtyCount));
@@ -461,6 +509,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         int frameCount = 0;
         try
         {
+            long walAppendStartTicks = Stopwatch.GetTimestamp();
             orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
             frameBatch = ArrayPool<WalFrameWrite>.Shared.Rent(dirtyCount);
             for (int i = 0; i < orderedDirtyCount; i++)
@@ -480,6 +529,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 ? await _wal.AppendFramesAndCommitAsync(frameBatch.AsMemory(0, frameCount), PageCount, ct)
                 : await _wal.CommitAsync(PageCount, ct);
 
+            RecordWalAppendDiagnostics(walAppendStartTicks);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             return new PagerCommitResult(CompleteCommitAsync(commitResult, transactionId));
@@ -539,9 +589,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async ValueTask FinalizeCommitAndCheckpointAsync(long transactionId, CancellationToken ct)
     {
+        long finalizeStartTicks = Stopwatch.GetTimestamp();
         _transactions!.CompleteCommit(transactionId);
 
         // Auto-checkpoint according to policy
+        long checkpointDecisionStartTicks = Stopwatch.GetTimestamp();
         bool shouldCheckpoint = _checkpoints!.ShouldCheckpoint(
             CheckpointPolicy,
             _walIndex.FrameCount,
@@ -549,17 +601,22 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             EstimateCommittedWalBytes(_walIndex.FrameCount));
         if (shouldCheckpoint)
             _checkpoints.RequestDeferredCheckpoint();
+        RecordCheckpointDecisionDiagnostics(checkpointDecisionStartTicks);
 
-        if (_options.AutoCheckpointExecutionMode == AutoCheckpointExecutionMode.Background)
+        bool backgroundMode = _options.AutoCheckpointExecutionMode == AutoCheckpointExecutionMode.Background;
+        bool shouldRunForegroundCheckpoint =
+            !backgroundMode &&
+            _checkpoints.HasPendingCheckpointRequest;
+        RecordFinalizeCommitDiagnostics(finalizeStartTicks);
+
+        if (backgroundMode)
         {
             ScheduleBackgroundCheckpointIfNeeded();
             return;
         }
 
-        if (_checkpoints.HasPendingCheckpointRequest)
-        {
+        if (shouldRunForegroundCheckpoint)
             await CheckpointAsync(ct);
-        }
     }
 
     public async ValueTask RollbackAsync(CancellationToken ct = default)
@@ -990,7 +1047,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return;
         }
 
-        _checkpoints.TryStartBackgroundCheckpoint(RunBackgroundCheckpointStepWithInterceptorsAsync);
+        if (_checkpoints.TryStartBackgroundCheckpoint(RunBackgroundCheckpointStepWithInterceptorsAsync))
+            Interlocked.Increment(ref _backgroundCheckpointStartCount);
     }
 
     private ValueTask WaitForBackgroundCheckpointAsync(CancellationToken ct = default)
@@ -1014,6 +1072,33 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private bool HasCheckpointWorkPending()
         => _walIndex.FrameCount > 0 || _wal.HasPendingCheckpoint;
+
+    private void RecordWalAppendDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _walAppendCount);
+        Interlocked.Add(ref _walAppendTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordFinalizeCommitDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _finalizeCommitCount);
+        Interlocked.Add(ref _finalizeCommitTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordCheckpointDecisionDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _checkpointDecisionCount);
+        Interlocked.Add(ref _checkpointDecisionTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
 
     private static uint[] RentSortedPageIds(IReadOnlyCollection<uint> pageIds, out int count)
     {

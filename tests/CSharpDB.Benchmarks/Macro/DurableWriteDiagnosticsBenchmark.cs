@@ -140,6 +140,7 @@ public static class DurableWriteDiagnosticsBenchmark
         }
 
         bench.Db.ResetWalFlushDiagnostics();
+        bench.Db.ResetCommitPathDiagnostics();
         interceptor.Reset();
 
         var histogram = new LatencyHistogram();
@@ -156,6 +157,7 @@ public static class DurableWriteDiagnosticsBenchmark
 
         totalSw.Stop();
         WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
+        CommitPathDiagnosticsSnapshot commitPathDiagnostics = bench.Db.GetCommitPathDiagnosticsSnapshot();
 
         var result = CreateResult(
             name,
@@ -164,6 +166,7 @@ public static class DurableWriteDiagnosticsBenchmark
             interceptor.BuildSummary(
                 policyDescription,
                 walDiagnostics,
+                commitPathDiagnostics,
                 totalSw.Elapsed.TotalMilliseconds));
 
         Console.WriteLine($"  {name}: {result.OpsPerSecond:N0} ops/sec, P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms");
@@ -236,6 +239,7 @@ public static class DurableWriteDiagnosticsBenchmark
         public string BuildSummary(
             string policyDescription,
             WalFlushDiagnosticsSnapshot walDiagnostics,
+            CommitPathDiagnosticsSnapshot commitPathDiagnostics,
             double elapsedMs)
         {
             lock (_sync)
@@ -250,9 +254,10 @@ public static class DurableWriteDiagnosticsBenchmark
                     ? 0
                     : walDiagnostics.FlushedByteCount / (double)walDiagnostics.FlushCount / 1024.0;
                 double preallocatedKiB = walDiagnostics.PreallocatedByteCount / 1024.0;
+                string commitSummary = CommitPathDiagnosticsFormatter.BuildSummary(commitPathDiagnostics);
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"policy={policyDescription}, commits={_commitCount}, avgDirtyPages={avgDirtyPages:F2}, maxDirtyPages={_maxDirtyPages}, checkpoints={_checkpointCount}, commitsWithCheckpoint={_commitCountWithCheckpoint}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, avgCommitMs={_commitLatencyMs.Mean:F3}, p99CommitMs={_commitLatencyMs.Percentile(0.99):F3}, avgCommitNoCheckpointMs={_commitWithoutCheckpointLatencyMs.Mean:F3}, avgCommitWithCheckpointMs={_commitWithCheckpointLatencyMs.Mean:F3}, avgCheckpointMs={_checkpointLatencyMs.Mean:F3}, p99CheckpointMs={_checkpointLatencyMs.Percentile(0.99):F3}");
+                    $"policy={policyDescription}, commits={_commitCount}, avgDirtyPages={avgDirtyPages:F2}, maxDirtyPages={_maxDirtyPages}, checkpoints={_checkpointCount}, commitsWithCheckpoint={_commitCountWithCheckpoint}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, avgCommitMs={_commitLatencyMs.Mean:F3}, p99CommitMs={_commitLatencyMs.Percentile(0.99):F3}, avgCommitNoCheckpointMs={_commitWithoutCheckpointLatencyMs.Mean:F3}, avgCommitWithCheckpointMs={_commitWithCheckpointLatencyMs.Mean:F3}, avgCheckpointMs={_checkpointLatencyMs.Mean:F3}, p99CheckpointMs={_checkpointLatencyMs.Percentile(0.99):F3}, {commitSummary}");
             }
         }
 

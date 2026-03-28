@@ -9,8 +9,10 @@ using CSharpDB.Storage.Wal;
 namespace CSharpDB.Benchmarks.Macro;
 
 /// <summary>
-/// Measures durable commit throughput when multiple writers share one Database
-/// instance and issue auto-commit inserts concurrently.
+/// Measures durable commit throughput when multiple in-process writer tasks share
+/// one Database instance and issue auto-commit inserts concurrently.
+/// This models engine-side write contention on a shared WAL/pager without
+/// adding cross-process transport overhead.
 /// </summary>
 public static class ConcurrentDurableWriteBenchmark
 {
@@ -63,8 +65,10 @@ public static class ConcurrentDurableWriteBenchmark
         GC.Collect();
 
         bench.Db.ResetWalFlushDiagnostics();
+        bench.Db.ResetCommitPathDiagnostics();
         var stats = await RunPhaseAsync(bench.Db, scenario.WriterCount, TimeSpan.FromSeconds(10), recordLatencies: true);
         WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
+        CommitPathDiagnosticsSnapshot commitPathDiagnostics = bench.Db.GetCommitPathDiagnosticsSnapshot();
 
         var histogram = new LatencyHistogram();
         foreach (double latencyMs in stats.CommitLatenciesMs)
@@ -79,6 +83,7 @@ public static class ConcurrentDurableWriteBenchmark
             ? 0
             : walDiagnostics.FlushedByteCount / (double)walDiagnostics.FlushCount / 1024.0;
         double preallocatedKiB = walDiagnostics.PreallocatedByteCount / 1024.0;
+        string commitSummary = CommitPathDiagnosticsFormatter.BuildSummary(commitPathDiagnostics);
 
         var result = new BenchmarkResult
         {
@@ -95,7 +100,7 @@ public static class ConcurrentDurableWriteBenchmark
             MeanMs = histogram.Mean,
             StdDevMs = histogram.StdDev,
             ExtraInfo =
-                $"writers={scenario.WriterCount}, checkpoint=FrameCount(4096)+Background(256), batchWindow={FormatBatchWindow(scenario.BatchWindow)}, walPrealloc={FormatPreallocationChunk(scenario.WalPreallocationChunkBytes)}, successfulCommits={stats.SuccessfulCommits}, busy={stats.BusyCount}, fatalErrors={stats.FatalErrorCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}",
+                $"writers={scenario.WriterCount}, checkpoint=FrameCount(4096)+Background(256), batchWindow={FormatBatchWindow(scenario.BatchWindow)}, walPrealloc={FormatPreallocationChunk(scenario.WalPreallocationChunkBytes)}, successfulCommits={stats.SuccessfulCommits}, busy={stats.BusyCount}, fatalErrors={stats.FatalErrorCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, {commitSummary}",
         };
 
         Console.WriteLine(
@@ -117,6 +122,8 @@ public static class ConcurrentDurableWriteBenchmark
         for (int writerIndex = 0; writerIndex < writerCount; writerIndex++)
         {
             int localWriterIndex = writerIndex;
+            // Each logical writer runs as its own Task against the same Database
+            // instance so the benchmark captures in-process contention.
             writerTasks[writerIndex] = Task.Run(async () =>
             {
                 var localLatencies = recordLatencies ? new List<double>(capacity: 4096) : null;

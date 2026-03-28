@@ -49,6 +49,7 @@ internal static class HybridStorageEngineFactory
             schemaSerializer,
             options.IndexProvider,
             options.CatalogStore,
+            options.AdvisoryStatisticsPersistenceMode,
             ct);
 
         return new StorageEngineContext
@@ -59,6 +60,7 @@ internal static class HybridStorageEngineFactory
             SchemaSerializer = schemaSerializer,
             IndexProvider = options.IndexProvider,
             ChecksumProvider = options.ChecksumProvider,
+            AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
         };
     }
 

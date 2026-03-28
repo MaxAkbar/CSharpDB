@@ -454,6 +454,27 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Count_PersistsAcrossReopen_WithLowLatencyDurableWritePreset()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLowLatencyDurableWritePreset());
+
+        await ReopenDatabaseAsync(ct, options);
+
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 31, "bob@example.com"), ct);
+
+        Assert.Equal(2, await users.CountAsync(ct));
+
+        await ReopenDatabaseAsync(ct, options);
+
+        var reopened = await _db.GetCollectionAsync<User>("users", ct);
+        Assert.Equal(2, await reopened.CountAsync(ct));
+    }
+
+    [Fact]
     public async Task LegacyBackingRows_AreReadableThroughCollection()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -682,10 +703,12 @@ public class CollectionTests : IAsyncLifetime
         return payload.ToArray();
     }
 
-    private async Task ReopenDatabaseAsync(CancellationToken ct)
+    private async Task ReopenDatabaseAsync(CancellationToken ct, DatabaseOptions? options = null)
     {
         await _db.DisposeAsync();
-        _db = await Database.OpenAsync(_dbPath, ct);
+        _db = options is null
+            ? await Database.OpenAsync(_dbPath, ct)
+            : await Database.OpenAsync(_dbPath, options, ct);
     }
 
     private static uint GetCollectionRootPageId<TDocument>(Collection<TDocument> collection)

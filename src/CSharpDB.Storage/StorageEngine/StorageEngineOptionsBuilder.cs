@@ -8,6 +8,7 @@ public sealed class StorageEngineOptionsBuilder
     private PagerOptions _pagerOptions;
     private DurabilityMode _durabilityMode;
     private TimeSpan _durableCommitBatchWindow;
+    private AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private long _walPreallocationChunkBytes;
     private ISerializerProvider _serializerProvider;
     private IIndexProvider _indexProvider;
@@ -26,6 +27,7 @@ public sealed class StorageEngineOptionsBuilder
         _pagerOptions = options.PagerOptions;
         _durabilityMode = options.DurabilityMode;
         _durableCommitBatchWindow = options.DurableCommitBatchWindow;
+        _advisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode;
         _walPreallocationChunkBytes = options.WalPreallocationChunkBytes;
         _serializerProvider = options.SerializerProvider;
         _indexProvider = options.IndexProvider;
@@ -43,6 +45,13 @@ public sealed class StorageEngineOptionsBuilder
     public StorageEngineOptionsBuilder UseDurabilityMode(DurabilityMode durabilityMode)
     {
         _durabilityMode = durabilityMode;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UseAdvisoryStatisticsPersistenceMode(
+        AdvisoryStatisticsPersistenceMode persistenceMode)
+    {
+        _advisoryStatisticsPersistenceMode = persistenceMode;
         return this;
     }
 
@@ -247,6 +256,17 @@ public sealed class StorageEngineOptionsBuilder
         return this;
     }
 
+    /// <summary>
+    /// Applies the write-optimized checkpoint preset and defers advisory planner-stat persistence
+    /// to maintenance boundaries so ordinary durable commits do less metadata work.
+    /// </summary>
+    public StorageEngineOptionsBuilder UseLowLatencyDurableWritePreset(int checkpointFrameThreshold = 4096)
+    {
+        UseWriteOptimizedPreset(checkpointFrameThreshold);
+        _advisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode.Deferred;
+        return this;
+    }
+
     public StorageEngineOptionsBuilder UseMemoryMappedReads(bool enabled = true)
     {
         _pagerOptions = new PagerOptions
@@ -303,6 +323,7 @@ public sealed class StorageEngineOptionsBuilder
         {
             DurabilityMode = _durabilityMode,
             DurableCommitBatchWindow = _durableCommitBatchWindow,
+            AdvisoryStatisticsPersistenceMode = _advisoryStatisticsPersistenceMode,
             WalPreallocationChunkBytes = _walPreallocationChunkBytes,
             PagerOptions = _pagerOptions,
             SerializerProvider = _serializerProvider,

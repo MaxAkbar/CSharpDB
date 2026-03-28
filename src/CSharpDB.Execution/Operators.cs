@@ -13483,6 +13483,7 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
 public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvider
 {
     private readonly BTree _tableTree;
+    private readonly bool _ignoreCachedCount;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -13490,9 +13491,10 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
 
-    public CountStarTableOperator(BTree tableTree, ColumnDefinition[] outputSchema)
+    public CountStarTableOperator(BTree tableTree, ColumnDefinition[] outputSchema, bool ignoreCachedCount = false)
     {
         _tableTree = tableTree;
+        _ignoreCachedCount = ignoreCachedCount;
         OutputSchema = outputSchema;
     }
 
@@ -13508,7 +13510,9 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
         if (_emitted) return false;
         _emitted = true;
 
-        long count = await _tableTree.CountEntriesAsync(ct);
+        long count = _ignoreCachedCount
+            ? await _tableTree.CountEntriesExactAsync(ct)
+            : await _tableTree.CountEntriesAsync(ct);
         Current = new[] { DbValue.FromInteger(count) };
         return true;
     }

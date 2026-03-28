@@ -379,6 +379,34 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesLowLatencyDurableWritePreset()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseLowLatencyDurableWritePreset());
+
+        var policy = Assert.IsType<FrameCountCheckpointPolicy>(options.StorageEngineOptions.PagerOptions.CheckpointPolicy);
+        Assert.Equal(4096, policy.Threshold);
+        Assert.Equal(
+            AutoCheckpointExecutionMode.Background,
+            options.StorageEngineOptions.PagerOptions.AutoCheckpointExecutionMode);
+        Assert.Equal(
+            AdvisoryStatisticsPersistenceMode.Deferred,
+            options.StorageEngineOptions.AdvisoryStatisticsPersistenceMode);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_AppliesExplicitAdvisoryStatisticsPersistenceMode()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder =>
+                builder.UseAdvisoryStatisticsPersistenceMode(AdvisoryStatisticsPersistenceMode.Deferred));
+
+        Assert.Equal(
+            AdvisoryStatisticsPersistenceMode.Deferred,
+            options.StorageEngineOptions.AdvisoryStatisticsPersistenceMode);
+    }
+
+    [Fact]
     public async Task NonBTreeIndexProvider_SupportsIndexLookupsAndRangeScans()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -155,7 +155,7 @@ public static class DatabaseMaintenanceCoordinator
             try
             {
                 await CopyDatabaseAsync(source, destination, ct);
-                await destination.Catalog.PersistDirtyTableStatisticsAsync(ct);
+                await destination.Catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
                 await destination.Catalog.PersistAllRootPageChangesAsync(ct);
                 await destination.Pager.CommitAsync(ct);
             }
