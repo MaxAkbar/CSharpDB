@@ -12,6 +12,26 @@ public sealed class StorageEngineOptions
     public DurabilityMode DurabilityMode { get; init; } = DurabilityMode.Durable;
 
     /// <summary>
+    /// Optional delay used by durable WAL group commit to collect additional
+    /// pending commits before forcing the OS flush. Ignored unless file-backed
+    /// durable commit flushing allows concurrent writers.
+    /// </summary>
+    public TimeSpan DurableCommitBatchWindow { get; init; } = TimeSpan.Zero;
+
+    /// <summary>
+    /// Controls when advisory planner statistics are persisted.
+    /// </summary>
+    public AdvisoryStatisticsPersistenceMode AdvisoryStatisticsPersistenceMode { get; init; }
+        = AdvisoryStatisticsPersistenceMode.Immediate;
+
+    /// <summary>
+    /// Optional WAL file growth chunk used to reserve additional on-disk space
+    /// ahead of future appends. Applies only to file-backed WAL instances.
+    /// Set to zero to disable preallocation.
+    /// </summary>
+    public long WalPreallocationChunkBytes { get; init; }
+
+    /// <summary>
     /// Pager behavior options (cache, lock timeout, checkpoint policy).
     /// </summary>
     public PagerOptions PagerOptions { get; init; } = new();

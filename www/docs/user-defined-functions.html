@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'User-Defined Functions (UDFs)',
+        description: 'CSharpDB user-defined functions \u2014 built-in scalar functions, custom C# registration, native plugin extensions, table-valued functions, and WASM sandboxing.',
+        keywords: 'CSharpDB UDF, user-defined functions, scalar functions, aggregate functions, native plugin, WASM, NativeAOT',
+        canonicalPath: 'docs/user-defined-functions.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#motivation">Motivation</a></li>
+                        <li><a href="#function-types">Function Types</a></li>
+                        <li><a href="#usage">Usage</a>
+                            <ul>
+                                <li><a href="#built-in-functions">Built-in Functions</a></li>
+                                <li><a href="#custom-functions">Custom Functions (C# API)</a></li>
+                                <li><a href="#adonet">Via ADO.NET</a></li>
+                                <li><a href="#native-plugins">Native Plugin Extensions</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#writing-native-plugin">Writing a Native Plugin</a></li>
+                        <li><a href="#security-model">Security Model</a></li>
+                        <li><a href="#architecture">Architecture</a></li>
+                        <li><a href="#implementation-plan">Implementation Plan</a></li>
+                        <li><a href="#prior-art">Prior Art &amp; References</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>User-Defined Functions (UDFs) for CSharpDB</h1>
+                <p>Call C# libraries as SQL functions inside CSharpDB queries.</p>
+
+                <h2 id="motivation">Motivation</h2>
+                <p>CSharpDB currently supports aggregate functions (<code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>) evaluated inside the <code>AggregateOperator</code>, but has no scalar function infrastructure. Users cannot call functions like <code>UPPER(name)</code>, <code>ABS(balance)</code>, or register custom logic that runs per-row during query evaluation.</p>
+                <p>Adding user-defined functions (UDFs) enables:</p>
+                <ul>
+                    <li><strong>Built-in scalar functions</strong> &mdash; string, math, date, type-inspection utilities expected from any SQL database</li>
+                    <li><strong>Custom C# logic</strong> &mdash; domain-specific transformations compiled as native plugins</li>
+                    <li><strong>Sandboxed UDFs</strong> &mdash; safe execution of untrusted user-submitted functions via WebAssembly</li>
+                </ul>
+
+                <h3>NativeAOT Constraint</h3>
+                <p>CSharpDB targets NativeAOT (<code>PublishAot=true</code>) for its native FFI library. This eliminates traditional .NET dynamic code loading:</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Approach</th>
+                            <th>Why it doesn't work</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>Assembly.LoadFrom()</code></td><td>No JIT compiler to execute loaded IL</td></tr>
+                        <tr><td><code>AssemblyLoadContext</code></td><td>Requires JIT infrastructure</td></tr>
+                        <tr><td><code>Reflection.Emit</code></td><td>Requires JIT</td></tr>
+                        <tr><td>Roslyn <code>CSharpScript</code></td><td>Compiles to in-memory assemblies, needs JIT</td></tr>
+                    </tbody>
+                </table>
+                <p>CSharpDB uses approaches that are fully AOT-compatible: static registration, <code>NativeLibrary.Load()</code> for native shared libraries, and optionally Wasmtime for WASM sandboxing.</p>
+
+                <h2 id="function-types">Function Types</h2>
+
+                <h3>Scalar Functions</h3>
+                <p>Return a single value for each row. Called in <code>SELECT</code> lists, <code>WHERE</code> clauses, <code>ORDER BY</code>, etc.</p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT UPPER(name), ABS(balance) FROM accounts WHERE LENGTH(name) &gt; 3;</code></pre>
+                </div>
+
+                <h3>Aggregate Functions</h3>
+                <p>Accumulate state across rows and produce a final result. Used with <code>GROUP BY</code>.</p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT department, COUNT(*), AVG(salary) FROM employees GROUP BY department;</code></pre>
+                </div>
+                <p>CSharpDB already supports <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>. The UDF system generalizes this to user-defined aggregates.</p>
+
+                <h3>Table-Valued Functions (Planned)</h3>
+                <p>Return a result set (multiple rows and columns). Used in <code>FROM</code> clauses.</p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT * FROM generate_series(1, 100) WHERE value % 2 = 0;
+SELECT * FROM read_csv('data.csv') WHERE amount &gt; 500;</code></pre>
+                </div>
+
+                <h2 id="usage">Usage</h2>
+
+                <h3 id="built-in-functions">Built-in Functions</h3>
+                <p>Available out of the box with no registration required.</p>
+
+                <p><strong>String functions:</strong></p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT UPPER('hello');              -- 'HELLO'
+SELECT LOWER('World');              -- 'world'
+SELECT LENGTH('CSharpDB');          -- 8
+SELECT SUBSTR('CSharpDB', 2, 5);   -- 'Sharp'
+SELECT TRIM('  hello  ');           -- 'hello'
+SELECT REPLACE('foo bar', 'bar', 'baz');  -- 'foo baz'
+SELECT INSTR('hello world', 'world');     -- 7</code></pre>
+                </div>
+
+                <p><strong>Math functions:</strong></p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT ABS(-42);          -- 42
+SELECT ROUND(3.14159, 2); -- 3.14
+SELECT SIGN(-7);          -- -1
+SELECT CEIL(2.3);         -- 3
+SELECT FLOOR(2.9);        -- 2</code></pre>
+                </div>
+
+                <p><strong>Type and conditional functions:</strong></p>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT TYPEOF(42);                    -- 'integer'
+SELECT TYPEOF('hello');               -- 'text'
+SELECT COALESCE(NULL, NULL, 'found'); -- 'found'
+SELECT IIF(score &gt; 90, 'A', 'B') FROM grades;
+SELECT NULLIF(a, b) FROM data;       -- NULL if a = b, else a
+SELECT IFNULL(nickname, name) FROM users;</code></pre>
+                </div>
+
+                <h3 id="custom-functions">Registering Custom Functions (C# API)</h3>
+                <p>Register scalar functions from your application code:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>using CSharpDB.Engine;
+
+var db = await Database.OpenAsync("mydata.db");
+
+// Register a scalar function
+db.RegisterScalarFunction("my_hash", argCount: 1, args =&gt;
+{
+    if (args[0].IsNull) return DbValue.Null;
+    var hash = args[0].AsText.GetHashCode();
+    return DbValue.FromInteger(hash);
+});
+
+// Use it in queries
+var result = await db.ExecuteAsync("SELECT my_hash(name) FROM users");</code></pre>
+                </div>
+
+                <p>Register custom aggregate functions:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// Custom aggregate: string concatenation with separator
+db.RegisterAggregateFunction&lt;List&lt;string&gt;&gt;(
+    name: "group_concat",
+    argCount: 1,
+    init: () =&gt; new List&lt;string&gt;(),
+    step: (state, args) =&gt;
+    {
+        if (!args[0].IsNull)
+            state.Add(args[0].AsText);
+        return state;
+    },
+    finalize: state =&gt; DbValue.FromText(string.Join(", ", state))
+);
+
+var result = await db.ExecuteAsync(
+    "SELECT department, group_concat(name) FROM employees GROUP BY department");</code></pre>
+                </div>
+
+                <h3 id="adonet">Registering via ADO.NET</h3>
+                <div class="code-block" data-title="C#">
+                    <pre><code>using var connection = new CSharpDbConnection("Data Source=mydata.db");
+await connection.OpenAsync();
+
+connection.RegisterScalarFunction("double_it", 1, args =&gt;
+    DbValue.FromInteger(args[0].AsInteger * 2));
+
+using var cmd = connection.CreateCommand();
+cmd.CommandText = "SELECT double_it(value) FROM numbers";
+using var reader = await cmd.ExecuteReaderAsync();</code></pre>
+                </div>
+
+                <h3 id="native-plugins">Loading Native Plugin Extensions</h3>
+                <p>Load a NativeAOT-compiled shared library that registers functions:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>// C# API
+db.LoadExtension("path/to/my_extension.dll");</code></pre>
+                </div>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>-- SQL
+LOAD EXTENSION 'path/to/my_extension.dll';</code></pre>
+                </div>
+                <div class="code-block" data-title="Text">
+                    <pre><code>-- CLI meta-command
+.load path/to/my_extension.dll</code></pre>
+                </div>
+                <p>Extension loading is <strong>disabled by default</strong> and must be explicitly enabled:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>var db = await Database.OpenAsync("mydata.db", new DatabaseOptions
+{
+    AllowExtensionLoading = true,
+    ExtensionSearchPath = "/usr/local/lib/csharpdb/extensions"
+});</code></pre>
+                </div>
+
+                <h2 id="writing-native-plugin">Writing a Native Plugin</h2>
+                <p>Native plugins are shared libraries (<code>.dll</code>/<code>.so</code>/<code>.dylib</code>) that export a C-compatible init function. They can be written in any language that produces native shared libraries &mdash; C#, C, C++, Rust, Go, etc.</p>
+
+                <h3>C# Plugin Example</h3>
+                <p><strong>1. Create the project:</strong></p>
+                <div class="code-block" data-title="XML">
+                    <pre><code>&lt;Project Sdk="Microsoft.NET.Sdk"&gt;
+  &lt;PropertyGroup&gt;
+    &lt;TargetFramework&gt;net10.0&lt;/TargetFramework&gt;
+    &lt;PublishAot&gt;true&lt;/PublishAot&gt;
+    &lt;NativeLib&gt;Shared&lt;/NativeLib&gt;
+  &lt;/PropertyGroup&gt;
+  &lt;ItemGroup&gt;
+    &lt;PackageReference Include="CSharpDB.Plugin.Sdk" Version="1.0.0" /&gt;
+  &lt;/ItemGroup&gt;
+&lt;/Project&gt;</code></pre>
+                </div>
+
+                <p><strong>2. Implement the extension:</strong></p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>using CSharpDB.Plugin.Sdk;
+
+public static class MyExtension
+{
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_extension_init")]
+    public static unsafe int Init(CSharpDbApi* api)
+    {
+        // Verify ABI compatibility
+        if (api-&gt;Version &lt; CSharpDbApi.MinSupportedVersion)
+            return -1;
+
+        // Register a scalar function
+        fixed (byte* name = "rot13"u8)
+        {
+            api-&gt;RegisterScalar(name, 1, &amp;Rot13, IntPtr.Zero);
+        }
+
+        return 0; // success
+    }
+
+    [UnmanagedCallersOnly]
+    private static unsafe DbValueInterop Rot13(
+        IntPtr userData, DbValueInterop* args, int argCount)
+    {
+        if (args[0].Type == DbType.Null)
+            return DbValueInterop.Null;
+
+        var text = args[0].GetText();
+        var rotated = string.Create(text.Length, text, (span, src) =&gt;
+        {
+            for (int i = 0; i &lt; src.Length; i++)
+            {
+                char c = src[i];
+                if (c is &gt;= 'a' and &lt;= 'z')
+                    span[i] = (char)('a' + (c - 'a' + 13) % 26);
+                else if (c is &gt;= 'A' and &lt;= 'Z')
+                    span[i] = (char)('A' + (c - 'A' + 13) % 26);
+                else
+                    span[i] = c;
+            }
+        });
+
+        return DbValueInterop.FromText(rotated);
+    }
+}</code></pre>
+                </div>
+
+                <p><strong>3. Build and publish:</strong></p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet publish -c Release</code></pre>
+                </div>
+
+                <h3>Rust Plugin Example</h3>
+                <div class="code-block" data-title="Rust">
+                    <pre><code>use std::os::raw::c_int;
+
+#[repr(C)]
+pub struct CSharpDbApi {
+    pub version: c_int,
+    pub register_scalar: unsafe extern "C" fn(
+        name: *const u8,
+        arg_count: c_int,
+        func: unsafe extern "C" fn(*mut (), *const DbValueInterop, c_int) -&gt; DbValueInterop,
+        user_data: *mut (),
+    ) -&gt; c_int,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn csharpdb_extension_init(api: *const CSharpDbApi) -&gt; c_int {
+    let api = &amp;*api;
+    (api.register_scalar)(
+        b"rust_hello\0".as_ptr(),
+        0,
+        rust_hello,
+        std::ptr::null_mut(),
+    );
+    0
+}
+
+unsafe extern "C" fn rust_hello(
+    _user_data: *mut (),
+    _args: *const DbValueInterop,
+    _arg_count: c_int,
+) -&gt; DbValueInterop {
+    DbValueInterop::from_text("Hello from Rust!")
+}</code></pre>
+                </div>
+
+                <h2 id="security-model">Security Model</h2>
+                <h3>Permission Levels</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Level</th>
+                            <th>Description</th>
+                            <th>Use Case</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Built-in only</strong></td>
+                            <td>No external functions; only shipped built-ins</td>
+                            <td>Production default</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Application-registered</strong></td>
+                            <td>C# delegates registered via <code>Database</code> API</td>
+                            <td>Application-specific logic</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Trusted extensions</strong></td>
+                            <td>Native plugins from a configured path</td>
+                            <td>Vetted third-party extensions</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Sandboxed</strong> (future)</td>
+                            <td>WASM modules with resource limits</td>
+                            <td>Untrusted user-submitted code</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Native Plugin Security</h3>
+                <p>Native plugins run <strong>in-process with full trust</strong>. A malicious or buggy plugin can crash the engine, corrupt data, or access the filesystem.</p>
+                <p>Mitigations:</p>
+                <ul>
+                    <li>Extension loading disabled by default</li>
+                    <li>Optional path restriction (<code>ExtensionSearchPath</code>)</li>
+                    <li>Future: cryptographic signature verification</li>
+                    <li>Future: WASM sandbox for untrusted code</li>
+                </ul>
+
+                <h3>Resource Limits (WASM &mdash; Future)</h3>
+                <div class="code-block" data-title="SQL">
+                    <pre><code>CREATE FUNCTION expensive_udf(x REAL) RETURNS REAL
+    LANGUAGE WASM
+    FROM 'analysis.wasm'
+    WITH (MAX_FUEL = 1000000, MAX_MEMORY = '4MB');</code></pre>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Resource</th>
+                            <th>Enforcement</th>
+                            <th>Default</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>CPU</td><td>Wasmtime fuel (instruction count)</td><td>1M instructions</td></tr>
+                        <tr><td>Memory</td><td>WASM linear memory cap</td><td>4 MB</td></tr>
+                        <tr><td>Time</td><td>CancellationToken deadline</td><td>Query timeout</td></tr>
+                        <tr><td>I/O</td><td>No filesystem/network imports</td><td>Fully denied</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="architecture">Architecture</h2>
+                <h3>Query Pipeline Integration</h3>
+                <div class="code-block" data-title="Text">
+                    <pre><code>SQL: SELECT my_func(col) FROM t WHERE other_func(col) &gt; 0
+         |                              |
+         v                              v
+    Parser: FunctionCallExpression  FunctionCallExpression
+         |                              |
+         v                              v
+    QueryPlanner: Is it aggregate? --No--&gt; Scalar path
+         |                              |
+         v                              v
+    AggregateOperator              ExpressionEvaluator
+    (step/finalize)                    |
+                                       v
+                                  FunctionRegistry.TryGetScalar("my_func")
+                                       |
+                                       v
+                                  Invoke delegate(args) -&gt; DbValue</code></pre>
+                </div>
+
+                <h3>Function Registry</h3>
+                <div class="code-block" data-title="Text">
+                    <pre><code>FunctionRegistry
+  +-- Built-in scalars (UPPER, ABS, COALESCE, ...)
+  +-- Built-in aggregates (COUNT, SUM, AVG, ...)
+  +-- User-registered scalars (via Database API)
+  +-- User-registered aggregates (via Database API)
+  +-- Native plugin functions (via NativeLibrary.Load)
+  +-- WASM functions (via Wasmtime, future)</code></pre>
+                </div>
+                <p>All function types share the same <code>FunctionRegistry</code> and are invoked through the same code path in the expression evaluator.</p>
+
+                <h3>NativeAOT Compatibility</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>AOT Strategy</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Built-in functions</td><td>Static <code>Func&lt;DbValue[], DbValue&gt;</code> delegates</td></tr>
+                        <tr><td>User-registered</td><td>Runtime delegate registration (no reflection)</td></tr>
+                        <tr><td>Native plugins</td><td><code>NativeLibrary.Load</code> + <code>GetExport</code> + <code>delegate* unmanaged</code></td></tr>
+                        <tr><td>WASM</td><td>Wasmtime native library via P/Invoke</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="implementation-plan">Implementation Plan</h2>
+
+                <h3>Phase 1 &mdash; Built-in Function Registry &amp; Scalar Evaluation</h3>
+                <p><strong>Status:</strong> Planned &nbsp;|&nbsp; <strong>Estimated scope:</strong> ~500&ndash;800 lines across 4&ndash;5 files</p>
+                <p><strong>Goal:</strong> Add a static function registry and wire scalar function calls through the query pipeline.</p>
+
+                <h4>Built-in Function Set (Initial)</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Functions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>String</strong></td><td><code>UPPER</code>, <code>LOWER</code>, <code>LENGTH</code>, <code>TRIM</code>, <code>LTRIM</code>, <code>RTRIM</code>, <code>SUBSTR</code>, <code>REPLACE</code>, <code>INSTR</code>, <code>HEX</code>, <code>QUOTE</code>, <code>CHAR</code>, <code>UNICODE</code></td></tr>
+                        <tr><td><strong>Math</strong></td><td><code>ABS</code>, <code>ROUND</code>, <code>MIN</code> (scalar), <code>MAX</code> (scalar), <code>RANDOM</code>, <code>SIGN</code>, <code>CEIL</code>, <code>FLOOR</code></td></tr>
+                        <tr><td><strong>Type</strong></td><td><code>TYPEOF</code>, <code>CAST</code>, <code>COALESCE</code>, <code>NULLIF</code>, <code>IIF</code>, <code>IFNULL</code></td></tr>
+                        <tr><td><strong>Date/Time</strong></td><td><code>DATE</code>, <code>TIME</code>, <code>DATETIME</code>, <code>STRFTIME</code>, <code>JULIANDAY</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Phase 2 &mdash; User-Registered Functions (In-Process C# API)</h3>
+                <p><strong>Status:</strong> Planned &nbsp;|&nbsp; <strong>Estimated scope:</strong> ~300&ndash;400 lines</p>
+                <p>Allow C# application code to register custom scalar and aggregate functions at runtime.</p>
+
+                <h3>Phase 3 &mdash; Native Plugin Extensions (Shared Library Model)</h3>
+                <p><strong>Status:</strong> Research &nbsp;|&nbsp; <strong>Estimated scope:</strong> ~800&ndash;1200 lines (new <code>CSharpDB.Extensions</code> project)</p>
+                <p>Load C# (or C/Rust/Go) functions from NativeAOT-compiled shared libraries at runtime, following the SQLite/DuckDB extension model.</p>
+
+                <h3>Phase 4 &mdash; Table-Valued Functions</h3>
+                <p><strong>Status:</strong> Research &nbsp;|&nbsp; <strong>Estimated scope:</strong> ~600&ndash;800 lines</p>
+                <p>Support functions that return result sets (multiple rows/columns), enabling virtual table patterns.</p>
+
+                <h3>Phase 5 &mdash; WebAssembly Sandboxed UDFs (Optional)</h3>
+                <p><strong>Status:</strong> Research &nbsp;|&nbsp; <strong>Estimated scope:</strong> New optional package <code>CSharpDB.Wasm</code></p>
+                <p>Execute untrusted user-submitted UDFs in a WebAssembly sandbox with resource limits.</p>
+
+                <h3>Implementation Priority</h3>
+                <div class="code-block" data-title="Text">
+                    <pre><code>Phase 1: Built-in Function Registry
+   |
+   v
+Phase 2: User-Registered Functions (C# API)
+   |
+   +----------------------+
+   v                      v
+Phase 3: Native Plugins   Phase 4: Table-Valued Functions
+   |
+   v
+Phase 5: WASM Sandboxed UDFs (optional)</code></pre>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Phase</th>
+                            <th>Complexity</th>
+                            <th>Prerequisites</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Phase 1 &mdash; Built-in functions</td><td>Low&ndash;Medium</td><td>None</td></tr>
+                        <tr><td>Phase 2 &mdash; User-registered functions</td><td>Low</td><td>Phase 1</td></tr>
+                        <tr><td>Phase 3 &mdash; Native plugins</td><td>Medium&ndash;High</td><td>Phase 2</td></tr>
+                        <tr><td>Phase 4 &mdash; Table-valued functions</td><td>Medium</td><td>Phase 1</td></tr>
+                        <tr><td>Phase 5 &mdash; WASM sandboxing</td><td>High</td><td>Phase 2</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="prior-art">Prior Art &amp; References</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Database</th>
+                            <th>Extension Model</th>
+                            <th>Sandboxing</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>SQLite</strong></td><td>C shared library via <code>dlopen</code></td><td>None</td><td>Closest analog</td></tr>
+                        <tr><td><strong>DuckDB</strong></td><td>NativeAOT-style shared libraries + signed extensions</td><td>None</td><td>Added cryptographic signing</td></tr>
+                        <tr><td><strong>PostgreSQL</strong></td><td>C shared library + PL/pgSQL, PL/Python, etc.</td><td>Process-level</td><td>Most mature ecosystem</td></tr>
+                        <tr><td><strong>SQL Server</strong></td><td>CLR hosted in-process</td><td>AppDomain (deprecated)</td><td>Requires full CLR</td></tr>
+                        <tr><td><strong>ScyllaDB</strong></td><td>WebAssembly via Wasmtime</td><td>Full WASM sandbox</td><td>Pioneered WASM UDFs</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Comparison with Other Databases</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>CSharpDB (Planned)</th>
+                            <th>SQLite</th>
+                            <th>DuckDB</th>
+                            <th>SQL Server</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Built-in scalar functions</td><td>Phase 1</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+                        <tr><td>User-registered functions</td><td>Phase 2</td><td>Yes (C API)</td><td>Yes</td><td>Yes (CLR)</td></tr>
+                        <tr><td>Native extension loading</td><td>Phase 3</td><td>Yes (<code>dlopen</code>)</td><td>Yes (signed)</td><td>No</td></tr>
+                        <tr><td>Table-valued functions</td><td>Phase 4</td><td>Yes (vtable)</td><td>Yes</td><td>Yes (CLR)</td></tr>
+                        <tr><td>Sandboxed execution</td><td>Phase 5 (WASM)</td><td>No</td><td>No</td><td>AppDomain (deprecated)</td></tr>
+                        <tr><td>NativeAOT compatible</td><td>Yes</td><td>N/A (C)</td><td>N/A (C++)</td><td>No (requires CLR)</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../roadmap.html">CSharpDB Roadmap</a></li>
+                    <li><a href="architecture.html">Architecture Guide</a></li>
+                    <li><a href="storage-engine.html">Storage Engine Guide</a></li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

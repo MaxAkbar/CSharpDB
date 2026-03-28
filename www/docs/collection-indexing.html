@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Collection Indexing & Query Examples',
+        description: 'CSharpDB collection indexing guide — scalar, nested, array-element, and nested array-object path indexes with query examples.',
+        keywords: 'CSharpDB collection, indexing, EnsureIndexAsync, FindByIndexAsync, FindByPathAsync, document database, NoSQL',
+        canonicalPath: 'docs/collection-indexing.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <!-- Sidebar TOC -->
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#what-collection-indexes-support">What Collection Indexes Support</a></li>
+                        <li><a href="#end-to-end-example">End-to-End Example</a></li>
+                        <li><a href="#path-shapes">Path Shapes</a></li>
+                        <li><a href="#expression-based-variants">Expression-Based Variants</a></li>
+                        <li><a href="#practical-rules">Practical Rules</a></li>
+                        <li><a href="#related-docs">Related Docs</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <div class="doc-content">
+                <h1>Collection Indexing and Query Examples</h1>
+                <p>This guide covers the document-style <code>Collection&lt;T&gt;</code> API, not SQL <code>CREATE INDEX</code>.</p>
+                <p>If you are working with SQL tables, use SQL indexes. If you are storing typed documents through <code>GetCollectionAsync&lt;T&gt;()</code>, this is the indexing model you want.</p>
+
+                <h2 id="what-collection-indexes-support">What Collection Indexes Support</h2>
+                <p>Collection indexes can be created over:</p>
+                <ul>
+                    <li>scalar members such as <code>Email</code> or <code>LoyaltyPoints</code></li>
+                    <li>nested object paths such as <code>$.address.city</code></li>
+                    <li>terminal array-element paths such as <code>$.tags[]</code></li>
+                    <li>nested array-object paths such as <code>$.orders[].sku</code></li>
+                </ul>
+                <p>Collection queries use an index when present and fall back to a scan when the index does not exist. For hot paths, create the index first.</p>
+                <p>Range queries are supported only for scalar paths. Array-element paths are equality/contains only.</p>
+
+                <h2 id="end-to-end-example">End-to-End Example</h2>
+                <div class="code-block" data-title="C#">
+                    <pre><code>using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("collections-demo.db");
+var users = await db.GetCollectionAsync&lt;UserDocument&gt;("users");
+
+await users.PutAsync("user:ada", new UserDocument(
+    Email: "ada@acme.io",
+    LoyaltyPoints: 1200,
+    Address: new AddressDocument("Seattle", "WA"),
+    Tags: ["premium", "beta"],
+    Orders:
+    [
+        new OrderDocument("SKU-1001", 2),
+        new OrderDocument("SKU-2005", 1)
+    ]));
+
+await users.PutAsync("user:grace", new UserDocument(
+    Email: "grace@acme.io",
+    LoyaltyPoints: 420,
+    Address: new AddressDocument("Portland", "OR"),
+    Tags: ["standard"],
+    Orders:
+    [
+        new OrderDocument("SKU-2005", 3)
+    ]));
+
+await users.PutAsync("user:linus", new UserDocument(
+    Email: "linus@acme.io",
+    LoyaltyPoints: 2450,
+    Address: new AddressDocument("Seattle", "WA"),
+    Tags: ["premium"],
+    Orders:
+    [
+        new OrderDocument("SKU-9000", 1)
+    ]));
+
+// Top-level scalar indexes
+await users.EnsureIndexAsync("Email");
+await users.EnsureIndexAsync("LoyaltyPoints");
+
+// Nested object path
+await users.EnsureIndexAsync("$.address.city");
+
+// Terminal array element path: "contains this tag"
+await users.EnsureIndexAsync("$.tags[]");
+
+// Nested array-object path: "any order has this SKU"
+await users.EnsureIndexAsync("$.orders[].sku");
+
+// Equality lookup on a top-level field
+await foreach (var match in users.FindByIndexAsync("Email", "ada@acme.io"))
+    Console.WriteLine($"email =&gt; {match.Key}");
+
+// Equality lookup on a nested object path
+await foreach (var match in users.FindByPathAsync("Address.City", "Seattle"))
+    Console.WriteLine($"city =&gt; {match.Key}");
+
+// Array-element membership lookup
+await foreach (var match in users.FindByPathAsync("$.tags[]", "premium"))
+    Console.WriteLine($"tag =&gt; {match.Key}");
+
+// Nested array-object lookup
+await foreach (var match in users.FindByPathAsync("$.orders[].sku", "SKU-2005"))
+    Console.WriteLine($"sku =&gt; {match.Key}");
+
+// Numeric range query on a scalar path
+await foreach (var match in users.FindByPathRangeAsync("LoyaltyPoints", 1000, 3000))
+    Console.WriteLine($"points =&gt; {match.Key}");
+
+// Ordered text range query on a scalar text index
+await foreach (var match in users.FindByPathRangeAsync("Email", "a", "h", upperInclusive: false))
+    Console.WriteLine($"email range =&gt; {match.Key}");
+
+public sealed record UserDocument(
+    string Email,
+    int LoyaltyPoints,
+    AddressDocument Address,
+    string[] Tags,
+    OrderDocument[] Orders);
+
+public sealed record AddressDocument(string City, string State);
+
+public sealed record OrderDocument(string Sku, int Quantity);</code></pre>
+                </div>
+
+                <h2 id="path-shapes">Path Shapes</h2>
+                <p>Use these path forms with <code>EnsureIndexAsync</code>, <code>FindByIndexAsync</code>, <code>FindByPathAsync</code>, and <code>FindByPathRangeAsync</code>:</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Path shape</th>
+                            <th>Example</th>
+                            <th>Meaning</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Top-level scalar member</td>
+                            <td><code>Email</code></td>
+                            <td>Index/query one property on the document</td>
+                        </tr>
+                        <tr>
+                            <td>Nested object member</td>
+                            <td><code>$.address.city</code></td>
+                            <td>Index/query a nested scalar value</td>
+                        </tr>
+                        <tr>
+                            <td>Terminal array element</td>
+                            <td><code>$.tags[]</code></td>
+                            <td>Match documents where any array element equals the lookup value</td>
+                        </tr>
+                        <tr>
+                            <td>Nested array-object member</td>
+                            <td><code>$.orders[].sku</code></td>
+                            <td>Match documents where any object inside the array has a matching member</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>Both <code>Address.City</code> and <code>$.address.city</code> normalize to the same path shape for typed collections.</p>
+
+                <h2 id="expression-based-variants">Expression-Based Variants</h2>
+                <p>For simple member paths, you can use strongly typed selectors instead of strings:</p>
+                <div class="code-block" data-title="C#">
+                    <pre><code>await users.EnsureIndexAsync(u =&gt; u.Email);
+await users.EnsureIndexAsync(u =&gt; u.LoyaltyPoints);
+
+await foreach (var match in users.FindByIndexAsync(u =&gt; u.Email, "ada@acme.io"))
+    Console.WriteLine(match.Key);
+
+await foreach (var match in users.FindByPathRangeAsync(u =&gt; u.LoyaltyPoints, 1000, 3000))
+    Console.WriteLine(match.Key);</code></pre>
+                </div>
+                <p>Use string paths when you need array-element forms such as <code>$.tags[]</code> or <code>$.orders[].sku</code>.</p>
+
+                <h2 id="practical-rules">Practical Rules</h2>
+                <ul>
+                    <li>Create the index before the query becomes performance-sensitive.</li>
+                    <li>Use scalar paths for range queries.</li>
+                    <li>Use <code>[]</code> only for array membership paths.</li>
+                    <li>Prefer top-level names such as <code>Email</code> when a simple member is enough.</li>
+                    <li>Use <code>FindByIndexAsync(...)</code> or <code>FindByPathAsync(...)</code> for equality lookups.</li>
+                    <li>Use <code>FindByPathRangeAsync(...)</code> for ordered integer, temporal, or text ranges.</li>
+                </ul>
+
+                <h2 id="related-docs">Related Docs</h2>
+                <ul>
+                    <li><a href="samples.html">Samples Overview</a></li>
+                    <li><a href="core-concepts.html">Getting Started</a></li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

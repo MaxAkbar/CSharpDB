@@ -3,6 +3,7 @@ param(
     [string]$Configuration = "Release",
     [string]$OutputRoot = "",
     [int]$MacroRepeatCount = 3,
+    [int]$DurabilityRepeatCount = 3,
     [string[]]$MicroFilters = @(
         "*PointLookupBenchmarks*",
         "*InMemorySqlBenchmarks*",
@@ -20,6 +21,8 @@ param(
         "*InsertBenchmarks*",
         "*JoinBenchmarks*",
         "*OrderByIndexBenchmarks*",
+        "*IndexAggregateBenchmarks*",
+        "*ScanProjectionBenchmarks*",
         "*ScalarAggregateBenchmarks*",
         "*ScalarAggregateLookupBenchmarks*",
         "*WalBenchmarks*",
@@ -29,6 +32,9 @@ param(
     [switch]$SkipMacro,
     [switch]$SkipStress,
     [switch]$SkipScaling,
+    [switch]$SkipWriteDiagnostics,
+    [switch]$SkipConcurrentWriteDiagnostics,
+    [switch]$SkipDurableSqlBatching,
     [switch]$SkipRepro
 )
 
@@ -51,6 +57,116 @@ New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
 $startUtc = (Get-Date).ToUniversalTime()
 
+function Get-OsPlatformName
+{
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows))
+    {
+        return "Windows"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux))
+    {
+        return "Linux"
+    }
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX))
+    {
+        return "macOS"
+    }
+
+    return "Unknown"
+}
+
+function Get-ProcessorName
+{
+    $cpuName = ""
+
+    try
+    {
+        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
+            (Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
+        {
+            $cpuName = [string](Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+        }
+    }
+    catch
+    {
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command lscpu -ErrorAction SilentlyContinue)
+            {
+                $modelLine = & lscpu 2>$null | Where-Object { $_ -match "^Model name:\s*(.+)$" } | Select-Object -First 1
+                if ($modelLine -match "^Model name:\s*(.+)$")
+                {
+                    $cpuName = [string]$matches[1]
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        try
+        {
+            if (Get-Command sysctl -ErrorAction SilentlyContinue)
+            {
+                $cpuName = [string]((& sysctl -n machdep.cpu.brand_string 2>$null) | Select-Object -First 1)
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($cpuName))
+    {
+        $cpuName = [string]$env:PROCESSOR_IDENTIFIER
+    }
+
+    return $cpuName.Trim()
+}
+
+function Get-MachineFingerprint
+{
+    $dotnetVersion = ""
+    try
+    {
+        $dotnetVersion = [string]((& dotnet --version) | Select-Object -First 1)
+    }
+    catch
+    {
+    }
+
+    $dotnetVersion = $dotnetVersion.Trim()
+    $dotnetMajorMinor = ""
+    if ($dotnetVersion -match "^(?<major>\d+)\.(?<minor>\d+)")
+    {
+        $dotnetMajorMinor = "$($matches.major).$($matches.minor)"
+    }
+
+    return [ordered]@{
+        fingerprintVersion = 1
+        capturedUtc = (Get-Date).ToUniversalTime().ToString("o")
+        runnerId = [string]$env:CSHARPDB_PERF_RUNNER_ID
+        machineName = [Environment]::MachineName
+        cpuName = Get-ProcessorName
+        logicalCoreCount = [Environment]::ProcessorCount
+        osPlatform = Get-OsPlatformName
+        osDescription = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
+        osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        dotnetVersion = $dotnetVersion
+        dotnetMajorMinor = $dotnetMajorMinor
+    }
+}
+
 function Invoke-BenchmarkRun
 {
     param(
@@ -65,6 +181,48 @@ function Invoke-BenchmarkRun
     {
         throw "Benchmark step failed: $Label"
     }
+}
+
+function Get-LatestArtifactSince
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc
+    )
+
+    if (-not (Test-Path $SourceDir))
+    {
+        throw "Benchmark results directory not found: $SourceDir"
+    }
+
+    return Get-ChildItem -Path $SourceDir -File -Filter $Pattern |
+        Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc } |
+        Sort-Object LastWriteTimeUtc, Name |
+        Select-Object -Last 1
+}
+
+function Copy-LatestArtifactToSnapshot
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc,
+        [Parameter(Mandatory = $true)][string]$TargetSubDir,
+        [Parameter(Mandatory = $true)][string]$TargetFileName
+    )
+
+    $artifact = Get-LatestArtifactSince -SourceDir $SourceDir -Pattern $Pattern -NotBeforeUtc $NotBeforeUtc
+    if ($null -eq $artifact)
+    {
+        throw "No benchmark artifact matching '$Pattern' was produced after $NotBeforeUtc."
+    }
+
+    $targetDir = Join-Path $snapshotDir $TargetSubDir
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    $destinationPath = Join-Path $targetDir $TargetFileName
+    Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+    return $destinationPath
 }
 
 if (-not $SkipMicro)
@@ -112,6 +270,75 @@ if (-not $SkipScaling)
     Invoke-BenchmarkRun -Label "Scaling" -Arguments $scalingArgs
 }
 
+$writeDiagnosticsCapturePath = ""
+if (-not $SkipWriteDiagnostics)
+{
+    $writeDiagnosticsArgs = @("--write-diagnostics")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $writeDiagnosticsArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $writeDiagnosticsArgs += "--repro"
+    }
+
+    $writeDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Write Diagnostics" -Arguments $writeDiagnosticsArgs
+    $writeDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $writeDiagnosticsStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("write-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
+$durableSqlBatchingCapturePath = ""
+if (-not $SkipDurableSqlBatching)
+{
+    $durableSqlBatchingArgs = @("--durable-sql-batching")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $durableSqlBatchingArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $durableSqlBatchingArgs += "--repro"
+    }
+
+    $durableSqlBatchingStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Durable SQL Batching" -Arguments $durableSqlBatchingArgs
+    $durableSqlBatchingCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("durable-sql-batching-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $durableSqlBatchingStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("durable-sql-batching-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
+$concurrentWriteDiagnosticsCapturePath = ""
+if (-not $SkipConcurrentWriteDiagnostics)
+{
+    $concurrentWriteDiagnosticsArgs = @("--concurrent-write-diagnostics")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $concurrentWriteDiagnosticsArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $concurrentWriteDiagnosticsArgs += "--repro"
+    }
+
+    $concurrentWriteDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "Concurrent Write Diagnostics" -Arguments $concurrentWriteDiagnosticsArgs
+    $concurrentWriteDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("concurrent-write-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $concurrentWriteDiagnosticsStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("concurrent-write-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
 function Copy-NewArtifacts
 {
     param(
@@ -147,9 +374,11 @@ $copiedMicroLogs = Copy-NewArtifacts -SourceDir $bdnRoot -TargetSubDir "micro-lo
 $copiedMacro = Copy-NewArtifacts -SourceDir $benchResults -TargetSubDir "macro-stress-scaling" -Pattern "*.csv"
 
 $metadataPath = Join-Path $snapshotDir "metadata.txt"
+$machineFingerprintPath = Join-Path $snapshotDir "machine.json"
 $gitHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 $gitStatus = & git -C $repoRoot status --short
 $dotnetInfo = & dotnet --info
+$machineFingerprint = Get-MachineFingerprint
 
 @(
     "UTC Timestamp: $runTimestamp"
@@ -157,11 +386,16 @@ $dotnetInfo = & dotnet --info
     "Benchmark project: $benchmarkProject"
     "Configuration: $Configuration"
     "Macro repeat count: $MacroRepeatCount"
+    "Durability repeat count: $DurabilityRepeatCount"
     "Repro mode: $(if ($SkipRepro) { "disabled" } else { "enabled" })"
     "Commit: $gitHead"
     "Micro CSV copied: $copiedMicroCsv"
     "Micro logs copied: $copiedMicroLogs"
     "Macro/Stress/Scaling CSV copied: $copiedMacro"
+    "Write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeDiagnosticsCapturePath)) { "skipped" } else { $writeDiagnosticsCapturePath })"
+    "Durable SQL batching capture: $(if ([string]::IsNullOrWhiteSpace($durableSqlBatchingCapturePath)) { "skipped" } else { $durableSqlBatchingCapturePath })"
+    "Concurrent write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($concurrentWriteDiagnosticsCapturePath)) { "skipped" } else { $concurrentWriteDiagnosticsCapturePath })"
+    "Machine fingerprint: $(Split-Path -Leaf $machineFingerprintPath)"
     ""
     "git status --short:"
     ($gitStatus -join [Environment]::NewLine)
@@ -169,6 +403,8 @@ $dotnetInfo = & dotnet --info
     "dotnet --info:"
     $dotnetInfo
 ) | Set-Content -Path $metadataPath -Encoding UTF8
+
+$machineFingerprint | ConvertTo-Json -Depth 4 | Set-Content -Path $machineFingerprintPath -Encoding UTF8
 
 Write-Host ""
 Write-Host "Baseline snapshot written to: $snapshotDir"

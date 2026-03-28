@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'REST API Reference',
+        description: 'CSharpDB REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.',
+        keywords: 'CSharpDB REST API, HTTP endpoints, tables, rows, indexes, views, triggers, SQL execution, procedures',
+        canonicalPath: 'docs/rest-api.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#running-the-api">Running the API</a></li>
+                        <li><a href="#configuration">Configuration</a></li>
+                        <li><a href="#endpoints">Endpoints</a>
+                            <ul>
+                                <li><a href="#database-info">Database Info</a></li>
+                                <li><a href="#storage-inspection">Storage Inspection</a></li>
+                                <li><a href="#tables">Tables</a></li>
+                                <li><a href="#rows">Rows</a></li>
+                                <li><a href="#indexes">Indexes</a></li>
+                                <li><a href="#views">Views</a></li>
+                                <li><a href="#triggers">Triggers</a></li>
+                                <li><a href="#sql-execution">SQL Execution</a></li>
+                                <li><a href="#procedures">Procedures</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#error-handling">Error Handling</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>CSharpDB REST API Reference</h1>
+                <p>The CSharpDB REST API exposes the full database feature set over HTTP, enabling cross-language interoperability. Built with ASP.NET Core Minimal APIs, it includes OpenAPI documentation and an interactive Scalar UI.</p>
+
+                <h2 id="running-the-api">Running the API</h2>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Api</code></pre></div>
+                <p>The API starts on <code>http://localhost:61818</code> (HTTP) and <code>https://localhost:61819</code> (HTTPS).</p>
+                <p><strong>Interactive documentation:</strong> Open <code>http://localhost:61818/scalar/v1</code> in a browser to explore and test endpoints with the Scalar API explorer.</p>
+
+                <h2 id="configuration">Configuration</h2>
+                <p>The default database path is configured in <code>src/CSharpDB.Api/appsettings.json</code>:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=csharpdb.db"
+  }
+}</code></pre></div>
+                <p>CORS is enabled for all origins by default (development convenience). JSON responses use camelCase naming and omit null values.</p>
+
+                <h2 id="endpoints">Endpoints</h2>
+                <p>All endpoints are prefixed with <code>/api</code>.</p>
+
+                <h3 id="database-info">Database Info</h3>
+                <h4><code>GET /api/info</code></h4>
+                <p>Returns a summary of the database.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "dataSource": "csharpdb.db",
+  "tableCount": 3,
+  "indexCount": 2,
+  "viewCount": 1,
+  "triggerCount": 1,
+  "procedureCount": 2
+}</code></pre></div>
+
+                <h3 id="storage-inspection">Storage Inspection</h3>
+                <p>Read-only physical diagnostics endpoints for <code>.db</code> and <code>.wal</code> inspection.</p>
+
+                <h4><code>GET /api/inspect</code></h4>
+                <p>Run a full database file inspection.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>includePages</code> (default: <code>false</code>) — include per-page decoded details in the response</li>
+                    <li><code>path</code> (optional) — override database path for this request</li>
+                </ul>
+
+                <h4><code>GET /api/inspect/wal</code></h4>
+                <p>Inspect WAL header/frame/checksum state.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>path</code> (optional) — override database path for this request</li>
+                </ul>
+
+                <h4><code>GET /api/inspect/page/{id}</code></h4>
+                <p>Inspect a single page by page id.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>hex</code> (default: <code>false</code>) — include page hex dump</li>
+                    <li><code>path</code> (optional) — override database path for this request</li>
+                </ul>
+
+                <h4><code>GET /api/inspect/indexes</code></h4>
+                <p>Validate index metadata and root tree reachability.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>index</code> (optional) — check one index by name</li>
+                    <li><code>sample</code> (optional) — sample size hint for future index validation passes</li>
+                    <li><code>path</code> (optional) — override database path for this request</li>
+                </ul>
+                <p>Responses follow the diagnostics models documented in <a href="storage-inspector.html">Storage Inspector</a>.</p>
+
+                <h3 id="tables">Tables</h3>
+
+                <h4><code>GET /api/tables</code></h4>
+                <p>List all table names.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>["users", "orders", "products"]</code></pre></div>
+
+                <h4><code>GET /api/tables/{name}/schema</code></h4>
+                <p>Get the full schema for a table.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "tableName": "users",
+  "columns": [
+    { "name": "id", "type": "Integer", "nullable": false, "isPrimaryKey": true, "isIdentity": true },
+    { "name": "name", "type": "Text", "nullable": false, "isPrimaryKey": false, "isIdentity": false },
+    { "name": "age", "type": "Integer", "nullable": true, "isPrimaryKey": false, "isIdentity": false }
+  ]
+}</code></pre></div>
+
+                <h4><code>GET /api/tables/{name}/count</code></h4>
+                <p>Get the row count for a table.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "count": 42 }</code></pre></div>
+
+                <h4><code>DELETE /api/tables/{name}</code></h4>
+                <p>Drop a table.</p>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Table 'users' dropped." }</code></p>
+
+                <h4><code>PATCH /api/tables/{name}/rename</code></h4>
+                <p>Rename a table.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "newName": "customers" }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Table renamed from 'users' to 'customers'." }</code></p>
+
+                <h4><code>POST /api/tables/{name}/columns</code></h4>
+                <p>Add a column to a table.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "columnName": "email", "type": "TEXT", "notNull": false }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column 'email' added to 'users'." }</code></p>
+
+                <h4><code>DELETE /api/tables/{name}/columns/{col}</code></h4>
+                <p>Drop a column.</p>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column 'email' dropped from 'users'." }</code></p>
+
+                <h4><code>PATCH /api/tables/{name}/columns/{col}/rename</code></h4>
+                <p>Rename a column.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "newName": "full_name" }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column renamed from 'name' to 'full_name' in 'users'." }</code></p>
+
+                <h3 id="rows">Rows</h3>
+
+                <h4><code>GET /api/tables/{name}/rows</code></h4>
+                <p>Browse table rows with pagination.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>page</code> (default: 1) — Page number</li>
+                    <li><code>pageSize</code> (default: 50, max: 1000) — Rows per page</li>
+                </ul>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "tableName": "users",
+  "page": 1,
+  "pageSize": 50,
+  "totalRows": 3,
+  "columns": ["id", "name", "age"],
+  "rows": [
+    { "id": 1, "name": "Alice", "age": 30 },
+    { "id": 2, "name": "Bob", "age": 25 }
+  ]
+}</code></pre></div>
+
+                <h4><code>GET /api/tables/{name}/rows/{pkValue}</code></h4>
+                <p>Get a single row by primary key.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>pkColumn</code> (default: "id") — Name of the primary key column</li>
+                </ul>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "id": 1, "name": "Alice", "age": 30 }</code></pre></div>
+
+                <h4><code>POST /api/tables/{name}/rows</code></h4>
+                <p>Insert a new row.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "values": { "id": 4, "name": "Diana", "age": 28 } }</code></pre></div>
+                <p><strong>Response:</strong> <code>201 Created</code> with <code>{ "message": "Row inserted into 'users'.", "rowsAffected": 1 }</code></p>
+
+                <h4><code>PUT /api/tables/{name}/rows/{pkValue}</code></h4>
+                <p>Update a row by primary key.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>pkColumn</code> (default: "id") — Name of the primary key column</li>
+                </ul>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "values": { "name": "Diana Updated", "age": 29 } }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Row updated in 'users'.", "rowsAffected": 1 }</code></p>
+
+                <h4><code>DELETE /api/tables/{name}/rows/{pkValue}</code></h4>
+                <p>Delete a row by primary key.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>pkColumn</code> (default: "id") — Name of the primary key column</li>
+                </ul>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Row deleted from 'users'.", "rowsAffected": 1 }</code></p>
+
+                <h3 id="indexes">Indexes</h3>
+
+                <h4><code>GET /api/indexes</code></h4>
+                <p>List all indexes.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>[
+  { "name": "idx_category", "tableName": "products", "columnName": "category", "isUnique": false }
+]</code></pre></div>
+
+                <h4><code>POST /api/indexes</code></h4>
+                <p>Create an index.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "indexName": "idx_email", "tableName": "users", "columnName": "email", "isUnique": true }</code></pre></div>
+                <p><strong>Response:</strong> <code>201 Created</code> with <code>{ "message": "Index 'idx_email' created." }</code></p>
+
+                <h4><code>PUT /api/indexes/{name}</code></h4>
+                <p>Update (drop and recreate) an index.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "newIndexName": "idx_user_email", "tableName": "users", "columnName": "email", "isUnique": true }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code></p>
+
+                <h4><code>DELETE /api/indexes/{name}</code></h4>
+                <p>Drop an index.</p>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Index 'idx_email' dropped." }</code></p>
+
+                <h3 id="views">Views</h3>
+
+                <h4><code>GET /api/views</code></h4>
+                <p>List all views.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>["order_summary", "product_catalog"]</code></pre></div>
+
+                <h4><code>GET /api/views/{name}</code></h4>
+                <p>Get a view definition.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "viewName": "order_summary",
+  "selectSql": "SELECT o.id, c.name, o.total FROM orders o INNER JOIN customers c ON o.customer_id = c.id"
+}</code></pre></div>
+
+                <h4><code>GET /api/views/{name}/rows</code></h4>
+                <p>Browse view results with pagination.</p>
+                <p><strong>Query parameters:</strong></p>
+                <ul>
+                    <li><code>page</code> (default: 1)</li>
+                    <li><code>pageSize</code> (default: 50, max: 1000)</li>
+                </ul>
+                <p><strong>Response:</strong> Same shape as table browse (columns + rows).</p>
+
+                <h4><code>POST /api/views</code></h4>
+                <p>Create a view.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "viewName": "expensive_products", "selectSql": "SELECT name, price FROM products WHERE price &gt; 50" }</code></pre></div>
+                <p><strong>Response:</strong> <code>201 Created</code></p>
+
+                <h4><code>PUT /api/views/{name}</code></h4>
+                <p>Update a view (drop and recreate).</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "newViewName": "expensive_products", "selectSql": "SELECT name, price FROM products WHERE price &gt; 100" }</code></pre></div>
+                <p><strong>Response:</strong> <code>200 OK</code></p>
+
+                <h4><code>DELETE /api/views/{name}</code></h4>
+                <p>Drop a view.</p>
+                <p><strong>Response:</strong> <code>200 OK</code></p>
+
+                <h3 id="triggers">Triggers</h3>
+
+                <h4><code>GET /api/triggers</code></h4>
+                <p>List all triggers.</p>
+                <p><strong>Response:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>[
+  {
+    "name": "trg_update_stock",
+    "tableName": "order_items",
+    "timing": "After",
+    "event": "Insert",
+    "bodySql": "UPDATE products SET stock = stock - NEW.quantity WHERE id = NEW.product_id"
+  }
+]</code></pre></div>
+
+                <h4><code>POST /api/triggers</code></h4>
+                <p>Create a trigger.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "triggerName": "trg_audit_insert",
+  "tableName": "users",
+  "timing": "After",
+  "event": "Insert",
+  "bodySql": "INSERT INTO audit_log VALUES ('INSERT', NEW.name)"
+}</code></pre></div>
+                <p>Timing values: <code>"Before"</code>, <code>"After"</code></p>
+                <p>Event values: <code>"Insert"</code>, <code>"Update"</code>, <code>"Delete"</code></p>
+                <p><strong>Response:</strong> <code>201 Created</code></p>
+
+                <h4><code>PUT /api/triggers/{name}</code></h4>
+                <p>Update a trigger (drop and recreate).</p>
+                <p><strong>Response:</strong> <code>200 OK</code></p>
+
+                <h4><code>DELETE /api/triggers/{name}</code></h4>
+                <p>Drop a trigger.</p>
+                <p><strong>Response:</strong> <code>200 OK</code></p>
+
+                <h3 id="sql-execution">SQL Execution</h3>
+
+                <h4><code>POST /api/sql/execute</code></h4>
+                <p>Execute an arbitrary SQL statement.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{ "sql": "SELECT name, price FROM products WHERE price &gt; 10 ORDER BY price DESC" }</code></pre></div>
+                <p><strong>Response (query):</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "isQuery": true,
+  "columnNames": ["name", "price"],
+  "rows": [
+    { "name": "Widget", "price": 29.99 },
+    { "name": "Gadget", "price": 14.99 }
+  ],
+  "rowsAffected": 0,
+  "elapsed": 1.23
+}</code></pre></div>
+                <p><strong>Response (mutation):</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "isQuery": false,
+  "columnNames": null,
+  "rows": null,
+  "rowsAffected": 3,
+  "elapsed": 0.87
+}</code></pre></div>
+
+                <h3 id="procedures">Procedures</h3>
+                <p>Table-backed procedure catalog (<code>__procedures</code>) with strict parameter metadata validation and transactional execution.</p>
+
+                <h4><code>GET /api/procedures</code></h4>
+                <p>List procedure metadata.</p>
+
+                <h4><code>GET /api/procedures/{name}</code></h4>
+                <p>Get one procedure definition.</p>
+
+                <h4><code>POST /api/procedures</code></h4>
+                <p>Create a procedure.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "name": "GetUserById",
+  "bodySql": "SELECT * FROM users WHERE id = @id;",
+  "parameters": [
+    { "name": "id", "type": "INTEGER", "required": true, "default": null, "description": "User ID" }
+  ],
+  "description": "Lookup user by ID",
+  "isEnabled": true
+}</code></pre></div>
+
+                <h4><code>PUT /api/procedures/{name}</code></h4>
+                <p>Update (or rename) a procedure.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "newName": "GetUserById",
+  "bodySql": "SELECT * FROM users WHERE id = @id;",
+  "parameters": [
+    { "name": "id", "type": "INTEGER", "required": true }
+  ],
+  "description": "Updated description",
+  "isEnabled": true
+}</code></pre></div>
+
+                <h4><code>DELETE /api/procedures/{name}</code></h4>
+                <p>Delete a procedure.</p>
+
+                <h4><code>POST /api/procedures/{name}/execute</code></h4>
+                <p>Execute a stored procedure by name.</p>
+                <p><strong>Request:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "args": {
+    "id": 123
+  }
+}</code></pre></div>
+                <p><strong>Response (success):</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "procedureName": "GetUserById",
+  "succeeded": true,
+  "statements": [
+    {
+      "statementIndex": 0,
+      "statementText": "SELECT * FROM users WHERE id = @id;",
+      "isQuery": true,
+      "columnNames": ["id", "name"],
+      "rows": [{ "id": 123, "name": "Alice" }],
+      "rowsAffected": 1,
+      "elapsedMs": 0.34
+    }
+  ],
+  "error": null,
+  "failedStatementIndex": null,
+  "elapsedMs": 0.51
+}</code></pre></div>
+                <p><strong>Response (validation/runtime failure):</strong> <code>400 Bad Request</code> with the same shape and <code>succeeded = false</code>.</p>
+
+                <h2 id="error-handling">Error Handling</h2>
+                <p>The API uses standard HTTP status codes and returns structured error responses:</p>
+                <table>
+                    <thead>
+                        <tr><th>HTTP Status</th><th>CSharpDB Error Code</th><th>Meaning</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>400</td><td><code>SyntaxError</code>, <code>TypeMismatch</code></td><td>Bad request — invalid SQL or type mismatch</td></tr>
+                        <tr><td>404</td><td><code>TableNotFound</code>, <code>ColumnNotFound</code></td><td>Resource not found</td></tr>
+                        <tr><td>409</td><td><code>DuplicateKey</code>, <code>TableAlreadyExists</code></td><td>Conflict — duplicate resource</td></tr>
+                        <tr><td>422</td><td><code>ConstraintViolation</code></td><td>Constraint violated (NOT NULL, UNIQUE)</td></tr>
+                        <tr><td>503</td><td><code>Busy</code></td><td>Database is busy (another writer is active)</td></tr>
+                        <tr><td>500</td><td>(other)</td><td>Unexpected server error</td></tr>
+                    </tbody>
+                </table>
+                <p><strong>Error response format:</strong></p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "error": "Table 'nonexistent' not found.",
+  "code": "TableNotFound"
+}</code></pre></div>
+                <p>In development mode, a <code>detail</code> field with a stack trace is included.</p>
+
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                    <li><a href="../getting-started.html">Getting Started Tutorial</a> — Engine API walkthrough</li>
+                    <li><a href="architecture.html">Architecture Guide</a> — How the engine works internally</li>
+                    <li><a href="cli.html">CLI Reference</a> — Interactive REPL commands</li>
+                    <li><a href="samples.html">Sample Datasets</a> — Ready-to-run SQL scripts</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

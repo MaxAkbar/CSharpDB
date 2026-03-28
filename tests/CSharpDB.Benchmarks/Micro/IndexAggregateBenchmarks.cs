@@ -126,6 +126,22 @@ public class IndexAggregateBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "COUNT(text_col) WHERE value BETWEEN ... (no index)")]
+    public async Task CountTextRange_NoIndex()
+    {
+        await using var result = await _benchNoIndex.Db.ExecuteAsync(
+            "SELECT COUNT(text_col) FROM bench WHERE value BETWEEN 250000 AND 750000");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "COUNT(text_col) WHERE value BETWEEN ... (payload-backed index aggregate)")]
+    public async Task CountTextRange_WithIndex()
+    {
+        await using var result = await _benchWithIndex.Db.ExecuteAsync(
+            "SELECT COUNT(text_col) FROM bench WHERE value BETWEEN 250000 AND 750000");
+        await result.ToListAsync();
+    }
+
     private async Task GlobalSetupAsync()
     {
         _benchNoIndex = await BenchmarkDatabase.CreateAsync(RowCount);

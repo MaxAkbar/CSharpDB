@@ -336,6 +336,735 @@ public class BatchEvaluationContractTests
         Assert.False(await op.MoveNextBatchAsync(ct));
     }
 
+    [Fact]
+    public void BatchPlanCompiler_BindsRealBetweenFilterAndProjection()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_real",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "price", Type = DbType.Real, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "price" },
+            Low = new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = 2.0d },
+            High = new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = 3.5d },
+            Negated = false,
+        };
+        Expression[] projections =
+        [
+            new ColumnRefExpression { ColumnName = "id" },
+            new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "price" },
+                Right = new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = 0.5d },
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.NotNull(plan);
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromReal(1.5d)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromReal(2.0d)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromReal(3.0d)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromReal(4.0d)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(2.5d, destination.GetRowSpan(0)[1].AsReal);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(3.5d, destination.GetRowSpan(1)[1].AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsOrderedTextPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_text",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.And,
+            Left = new BinaryExpression
+            {
+                Op = BinaryOp.GreaterOrEqual,
+                Left = new ColumnRefExpression { ColumnName = "category" },
+                Right = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "B" },
+            },
+            Right = new BinaryExpression
+            {
+                Op = BinaryOp.LessThan,
+                Left = new ColumnRefExpression { ColumnName = "category" },
+                Right = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "D" },
+            },
+        };
+        Expression[] projections =
+        [
+            new ColumnRefExpression { ColumnName = "category" },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.NotNull(plan);
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("A")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("B")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("C")]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromText("D")]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal("B", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("C", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsIntegerInPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_in",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "value", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "value" },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 10L },
+                new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 30L },
+            ],
+            Negated = false,
+        };
+        Expression[] projections =
+        [
+            new ColumnRefExpression { ColumnName = "id" },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.NotNull(plan);
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 0, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal(1L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextInPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_text_in",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "category" },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "Beta" },
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "Gamma" },
+            ],
+            Negated = false,
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "category" }], schema);
+
+        Assert.NotNull(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("Alpha")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("Beta")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("Gamma")]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal("Beta", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("Gamma", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsRealInPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_real_in",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "price", Type = DbType.Real, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "price" },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = 2.0d },
+                new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 4L },
+            ],
+            Negated = false,
+        };
+        Expression[] projections =
+        [
+            new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "price" },
+                Right = new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = 0.25d },
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.NotNull(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromReal(1.5d)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromReal(2.0d)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromReal(4.0d)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(2.25d, destination.GetRowSpan(0)[0].AsReal);
+        Assert.Equal(4.25d, destination.GetRowSpan(1)[0].AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNegatedBetweenPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_not_between",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "score" },
+            Low = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 20L },
+            High = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 30L },
+            Negated = true,
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "id" }], schema);
+
+        Assert.NotNull(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(40)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 0, 3 }, selection.AsSpan().ToArray());
+        Assert.Equal(1L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(4L, destination.GetRowSpan(1)[0].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNegatedInPredicate_WithNullLiteral()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_not_in",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "category" },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "Alpha" },
+                new LiteralExpression { LiteralType = TokenType.Null, Value = null },
+            ],
+            Negated = true,
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "id" }], schema);
+
+        Assert.NotNull(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("Alpha")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("Beta")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.Null]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(0, written);
+        Assert.Empty(selection.AsSpan().ToArray());
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsLikePredicateWithEscape()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_like",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "label", Type = DbType.Text, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new LikeExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "label" },
+            Pattern = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "%!%%" },
+            EscapeChar = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "!" },
+            Negated = false,
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "label" }], schema);
+
+        Assert.NotNull(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("plain")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("100%")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("x%y")]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal("100%", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("x%y", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarCountStarAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_count_star",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "score" },
+            Low = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 20L },
+            High = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 40L },
+            Negated = false,
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "COUNT",
+            columnIndex: -1,
+            isCountStar: true,
+            isDistinct: false,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.IsType<SpecializedScalarAggregateBatchPlan>(plan);
+        Assert.Equal(2, plan!.PushdownFilters.Length);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(50)]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(2L, plan.GetResult().AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarSumAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_sum",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "score" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 20L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "SUM",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: false,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.Null]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(50L, plan.GetResult().AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarAvgAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_avg",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "AVG",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: false,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.Null]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(35)]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(27.5d, plan.GetResult().AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarDistinctCountAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_count_distinct",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "COUNT",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: true,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 5);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("alpha")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("beta")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("beta")]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.Null]);
+        source.CopyRowFrom(4, [DbValue.FromInteger(5), DbValue.FromText("gamma")]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(2L, plan.GetResult().AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarDistinctAvgAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_avg_distinct",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "AVG",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: true,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 5);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.Null]);
+        source.CopyRowFrom(4, [DbValue.FromInteger(5), DbValue.FromInteger(35)]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(27.5d, plan.GetResult().AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_DistinctScalarAggregatePlan_DeduplicatesAcrossBatches()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_count_distinct_batches",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "COUNT",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: true,
+            schema);
+
+        Assert.NotNull(plan);
+
+        var firstBatch = new RowBatch(columnCount: 2, capacity: 3);
+        firstBatch.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("alpha")]);
+        firstBatch.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("beta")]);
+        firstBatch.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("gamma")]);
+
+        var secondBatch = new RowBatch(columnCount: 2, capacity: 3);
+        secondBatch.CopyRowFrom(0, [DbValue.FromInteger(4), DbValue.FromText("beta")]);
+        secondBatch.CopyRowFrom(1, [DbValue.FromInteger(5), DbValue.FromText("delta")]);
+        secondBatch.CopyRowFrom(2, [DbValue.FromInteger(6), DbValue.Null]);
+
+        plan!.Reset();
+        plan.Accumulate(firstBatch);
+        plan.Accumulate(secondBatch);
+
+        Assert.Equal(3L, plan.GetResult().AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_DistinctScalarAggregatePlan_ResetClearsDistinctState()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_avg_distinct_batches",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 1L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "AVG",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: true,
+            schema);
+
+        Assert.NotNull(plan);
+
+        var firstRun = new RowBatch(columnCount: 2, capacity: 3);
+        firstRun.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        firstRun.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(10)]);
+        firstRun.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var secondRun = new RowBatch(columnCount: 2, capacity: 2);
+        secondRun.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(5)]);
+        secondRun.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(15)]);
+
+        plan!.Reset();
+        plan.Accumulate(firstRun);
+        Assert.Equal(20d, plan.GetResult().AsReal);
+
+        plan.Reset();
+        plan.Accumulate(secondRun);
+        Assert.Equal(10d, plan.GetResult().AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarTextMinAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_min_text",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "MIN",
+            columnIndex: 1,
+            isCountStar: false,
+            isDistinct: false,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("zulu")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("delta")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.Null]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromText("echo")]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal("delta", plan.GetResult().AsText);
+    }
+
     private static RowBatch CreateBatch(params DbValue[][] rows)
     {
         int columnCount = rows.Length == 0 ? 0 : rows[0].Length;

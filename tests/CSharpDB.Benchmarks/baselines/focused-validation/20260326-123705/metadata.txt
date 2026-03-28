@@ -1,0 +1,11 @@
+UTC Timestamp: 20260326-123705
+Purpose: Focused validation guardrail baseline
+Source write diagnostics CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260328-011755-median-of-3.csv
+Source durable SQL batching CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260327-235637-median-of-3.csv
+Source concurrent write diagnostics CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260328-012652-median-of-3.csv
+Stable staged write diagnostics CSV: macro-stress-scaling/write-diagnostics-median-of-3.csv
+Stable staged durable SQL batching CSV: macro-stress-scaling/durable-sql-batching-median-of-3.csv
+Stable staged concurrent diagnostics CSV: macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv
+Tracked micro baseline CSVs: micro-results/*.csv
+Source micro snapshots: focused-validation/20260324-112510, focused-validation/20260324-122734, focused-validation/20260324-154942, focused-validation/20260324-222637
+Machine fingerprint: machine.json

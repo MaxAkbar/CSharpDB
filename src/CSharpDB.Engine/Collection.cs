@@ -35,6 +35,8 @@ public sealed class Collection<
     private readonly string _catalogTableName;
     private BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterWriteScopeAsync;
+    private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
@@ -47,6 +49,8 @@ public sealed class Collection<
         BTree tree,
         IRecordSerializer recordSerializer,
         Func<bool> isInTransaction,
+        Func<CancellationToken, ValueTask<IDisposable>> enterWriteScopeAsync,
+        Func<string, CancellationToken, ValueTask<PagerCommitResult>> beginImplicitCommitAsync,
         Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
     {
         _pager = pager;
@@ -55,6 +59,8 @@ public sealed class Collection<
         _tree = tree;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _enterWriteScopeAsync = enterWriteScopeAsync ?? throw new ArgumentNullException(nameof(enterWriteScopeAsync));
+        _beginImplicitCommitAsync = beginImplicitCommitAsync ?? throw new ArgumentNullException(nameof(beginImplicitCommitAsync));
         _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
         _observedSchemaVersion = catalog.SchemaVersion;
         ReloadCollectionIndexes();
@@ -65,9 +71,36 @@ public sealed class Collection<
     /// </summary>
     void ICollectionTreeRefresh.RefreshTreeFromCatalog()
     {
+        RefreshTreeFromCatalogCore();
+    }
+
+    private void RefreshTreeFromCatalogCore()
+    {
         _tree = _catalog.GetTableTree(_catalogTableName);
         _observedSchemaVersion = _catalog.SchemaVersion;
         ReloadCollectionIndexes();
+    }
+
+    private async ValueTask RecoverCatalogStateAfterFailedCommitAsync()
+    {
+        try
+        {
+            await _pager.RollbackAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
+
+        try
+        {
+            await _catalog.ReloadAsync(CancellationToken.None);
+            RefreshTreeFromCatalogCore();
+        }
+        catch
+        {
+            // Preserve the original failure.
+        }
     }
 
     // ===== Tier 1 API =====
@@ -200,9 +233,7 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount > 0
-            ? rowCount
-            : await _tree.CountEntriesAsync(ct);
+        => await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
 
     /// <summary>
     /// Iterate all documents in the collection.
@@ -711,7 +742,7 @@ public sealed class Collection<
     }
 
     private bool HasZeroCachedRowCount()
-        => _catalog.TryGetTableRowCount(_catalogTableName, out long rowCount) && rowCount == 0;
+        => _catalog.TryGetExactTableRowCount(_catalogTableName, out long rowCount) && rowCount == 0;
 
     private bool ShouldReconcileRowCount(ReadOnlySpan<byte> payload)
         => HasZeroCachedRowCount() ||
@@ -719,7 +750,7 @@ public sealed class Collection<
 
     private async ValueTask SyncRowCountAsync(CancellationToken ct)
     {
-        long rowCount = await _tree.CountEntriesAsync(ct);
+        long rowCount = await _tree.CountEntriesExactAsync(ct);
         await _catalog.SetTableRowCountAsync(_catalogTableName, rowCount, ct);
     }
 
@@ -772,6 +803,19 @@ public sealed class Collection<
                 "Collection indexes cannot be created while an explicit transaction is active.");
         }
 
+        using var writeScope = await _enterWriteScopeAsync(ct);
+        RefreshIndexesIfSchemaChanged();
+
+        if (_indexes.ContainsKey(fieldPath))
+            return;
+
+        existing = _catalog.GetIndex(indexName);
+        if (existing != null)
+        {
+            AttachIndexBinding(existing);
+            return;
+        }
+
         CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
 
         bool createdIndex = false;
@@ -794,8 +838,8 @@ public sealed class Collection<
             var binding = AttachIndexBinding(indexSchema);
             await BackfillIndexAsync(binding, ct);
 
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
+            PagerCommitResult commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
+            await commit.WaitAsync();
             _observedSchemaVersion = _catalog.SchemaVersion;
         }
         catch
@@ -816,7 +860,7 @@ public sealed class Collection<
 
             try
             {
-                await _pager.RollbackAsync(ct);
+                await RecoverCatalogStateAfterFailedCommitAsync();
             }
             catch
             {
@@ -1130,20 +1174,35 @@ public sealed class Collection<
             return;
         }
 
-        await _pager.BeginTransactionAsync(ct);
+        PagerCommitResult commit = PagerCommitResult.Completed;
+        IDisposable? writeScope = null;
         try
         {
+            writeScope = await _enterWriteScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
             await action();
-            await _catalog.PersistDirtyTableStatisticsAsync(ct);
-            await _catalog.PersistRootPageChangesAsync(_catalogTableName, ct);
-            await _pager.CommitAsync(ct);
-            await _afterImplicitCommitAsync(ct);
+            commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
         }
         catch
         {
-            await _pager.RollbackAsync(ct);
-            await _catalog.ReloadAsync(ct);
+            await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
+        finally
+        {
+            writeScope?.Dispose();
+        }
+
+        try
+        {
+            await commit.WaitAsync();
+        }
+        catch
+        {
+            await RecoverCatalogStateAfterFailedCommitAsync();
+            throw;
+        }
+
+        await _afterImplicitCommitAsync(ct);
     }
 }

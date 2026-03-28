@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+    window.pageConfig = {
+        title: 'Storage Usage &amp; Extensibility Guide',
+        description: 'How to use CSharpDB.Storage from application code, which parts are replaceable, and how to configure the storage stack.',
+        keywords: 'CSharpDB storage, extensibility, IStorageDevice, IPageCache, ICheckpointPolicy, PagerOptions, StorageEngineOptionsBuilder',
+        canonicalPath: 'docs/tutorials/storage-extensibility.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h3>On this page</h3>
+                    <ul>
+                        <li><a href="#start-at-the-right-level">1. Start at the right level</a></li>
+                        <li><a href="#current-composition-model">2. Current composition model</a></li>
+                        <li><a href="#extension-points-that-exist-today">3. Extension points that exist today</a></li>
+                        <li><a href="#what-the-builder-actually-controls">4. What the builder actually controls</a></li>
+                        <li><a href="#usage-patterns-by-scenario">5. Usage patterns by scenario</a></li>
+                        <li><a href="#what-is-still-concrete">6. What is still concrete</a></li>
+                        <li><a href="#diagnostics-live-in-a-separate-project">7. Diagnostics live in a separate project</a></li>
+                        <li><a href="#suggested-reading-order">8. Suggested reading order</a></li>
+                        <li><a href="#practical-summary">9. Practical summary</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content">
+                <h1>CSharpDB.Storage Usage and Extensibility Guide</h1>
+
+                <p>This guide is about the storage API that exists today in this repository. It focuses on two questions:</p>
+                <ol>
+                    <li>How do you use <code>CSharpDB.Storage</code> from application code?</li>
+                    <li>Which parts of the storage stack are intentionally replaceable, and which are still concrete internals?</li>
+                </ol>
+                <p>If you want the architectural walkthrough first, read <a href="storage.html">architecture</a> before this guide.</p>
+
+                <h2 id="start-at-the-right-level">1. Start at the right level</h2>
+
+                <p>There are two realistic entry points into the storage layer.</p>
+
+                <h3 id="most-applications-configure-storage-through-database">Most applications: configure storage through Database</h3>
+
+                <p>If you are building on the SQL/engine layer, the normal path is:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>using CSharpDB.Engine;
+using CSharpDB.Storage.Caching;
+using CSharpDB.Storage.Checkpointing;
+using CSharpDB.Storage.Paging;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt;
+    {
+        builder.UsePagerOptions(new PagerOptions
+        {
+            MaxCachedPages = 2048,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(500),
+            WriterLockTimeout = TimeSpan.FromSeconds(10),
+        });
+
+        builder.UseCachingBTreeIndexes(findCacheCapacity: 4096);
+    });
+
+await using var db = await Database.OpenAsync("app.cdb", options);</code></pre></div>
+
+                <p>Use this path when you want SQL execution, collections, transactions, and storage customization without manually composing the storage graph.</p>
+
+                <h3 id="low-level-tooling-or-experiments">Low-level tooling or experiments: open the storage graph directly</h3>
+
+                <p>If you want direct access to <code>Pager</code>, <code>SchemaCatalog</code>, or the serializer/index provider graph, use <code>DefaultStorageEngineFactory</code>.</p>
+
+                <div class="code-block" data-title="C#"><pre><code>using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Paging;
+using CSharpDB.Storage.StorageEngine;
+
+var storageOptions = new StorageEngineOptionsBuilder()
+    .UsePagerOptions(new PagerOptions
+    {
+        MaxCachedPages = 1024,
+    })
+    .UseBTreeIndexes()
+    .Build();
+
+var factory = new DefaultStorageEngineFactory();
+var context = await factory.OpenAsync("lowlevel.cdb", storageOptions);
+await using var pager = context.Pager;
+
+await pager.BeginTransactionAsync();
+try
+{
+    uint rootPageId = await BTree.CreateNewAsync(pager);
+    var tree = new BTree(pager, rootPageId);
+
+    await tree.InsertAsync(1, new byte[] { 1, 2, 3, 4 });
+    await pager.CommitAsync();
+}
+catch
+{
+    await pager.RollbackAsync();
+    throw;
+}</code></pre></div>
+
+                <p>Use this path when you are writing diagnostics, storage-focused benchmarks, or experiments that bypass the SQL layer.</p>
+
+                <h2 id="current-composition-model">2. Current composition model</h2>
+
+                <p>The current composition chain is:</p>
+
+                <div class="code-block" data-title="Text"><pre><code>Database.OpenAsync(...)
+  -&gt; IStorageEngineFactory.OpenAsync(...)
+       -&gt; StorageEngineContext
+            -&gt; Pager
+            -&gt; SchemaCatalog
+            -&gt; IRecordSerializer
+            -&gt; ISchemaSerializer
+            -&gt; IIndexProvider
+            -&gt; IPageChecksumProvider</code></pre></div>
+
+                <p><code>StorageEngineOptionsBuilder</code> configures the default composition root. It does not create a <code>StorageEngine</code> service object. The concrete factory type in this repository is <code>DefaultStorageEngineFactory</code>.</p>
+
+                <p>Internal helpers such as <code>PageBufferManager</code>, <code>PageAllocator</code>, <code>TransactionCoordinator</code>, and <code>CheckpointCoordinator</code> are useful to understand when reading the source, but they are not the public customization surface.</p>
+
+                <h2 id="extension-points-that-exist-today">3. Extension points that exist today</h2>
+
+                <p>The current storage layer is partially provider-driven. These are the real seams you can replace without rewriting <code>Pager</code> or <code>BTree</code>.</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Concern</th>
+                            <th>API</th>
+                            <th>Default</th>
+                            <th>How to configure</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Storage backend</td>
+                            <td><code>IStorageDevice</code></td>
+                            <td><code>FileStorageDevice</code></td>
+                            <td>Use a custom <code>IStorageEngineFactory</code>, or construct <code>Pager</code> directly in tests/tools</td>
+                        </tr>
+                        <tr>
+                            <td>Page cache</td>
+                            <td><code>IPageCache</code></td>
+                            <td><code>DictionaryPageCache</code> or <code>LruPageCache</code></td>
+                            <td><code>PagerOptions.MaxCachedPages</code> or <code>PagerOptions.PageCacheFactory</code></td>
+                        </tr>
+                        <tr>
+                            <td>Auto-checkpoint policy</td>
+                            <td><code>ICheckpointPolicy</code></td>
+                            <td><code>FrameCountCheckpointPolicy</code></td>
+                            <td><code>PagerOptions.CheckpointPolicy</code></td>
+                        </tr>
+                        <tr>
+                            <td>Lifecycle hooks</td>
+                            <td><code>IPageOperationInterceptor</code></td>
+                            <td><code>NoOpPageOperationInterceptor</code></td>
+                            <td><code>PagerOptions.Interceptors</code></td>
+                        </tr>
+                        <tr>
+                            <td>WAL checksum</td>
+                            <td><code>IPageChecksumProvider</code></td>
+                            <td><code>AdditiveChecksumProvider</code></td>
+                            <td><code>StorageEngineOptionsBuilder.UseChecksumProvider(...)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Index implementation</td>
+                            <td><code>IIndexProvider</code></td>
+                            <td><code>BTreeIndexProvider</code></td>
+                            <td><code>UseBTreeIndexes()</code>, <code>UseCachingBTreeIndexes(...)</code>, or <code>UseIndexProvider(...)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Record/schema serialization</td>
+                            <td><code>ISerializerProvider</code></td>
+                            <td><code>DefaultSerializerProvider</code></td>
+                            <td><code>UseSerializerProvider(...)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Catalog payload codec</td>
+                            <td><code>ICatalogStore</code></td>
+                            <td><code>CatalogStore</code></td>
+                            <td><code>UseCatalogStore(...)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Storage composition root</td>
+                            <td><code>IStorageEngineFactory</code></td>
+                            <td><code>DefaultStorageEngineFactory</code></td>
+                            <td><code>DatabaseOptions.StorageEngineFactory</code></td>
+                        </tr>
+                        <tr>
+                            <td>Clock for time-based policies</td>
+                            <td><code>IClock</code></td>
+                            <td><code>SystemClock</code></td>
+                            <td>Pass to <code>TimeIntervalCheckpointPolicy</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>Two important boundaries:</p>
+                <ul>
+                    <li><code>IWriteAheadLog</code> is an interface, but the builder does not expose WAL replacement directly. Replacing WAL behavior means supplying a custom <code>IStorageEngineFactory</code>.</li>
+                    <li><code>BTree</code>, <code>Pager</code>, <code>SlottedPage</code>, and the on-disk page format are concrete implementation details today, not strategy interfaces.</li>
+                </ul>
+
+                <h2 id="what-the-builder-actually-controls">4. What the builder actually controls</h2>
+
+                <p><code>StorageEngineOptionsBuilder</code> currently controls five top-level registrations:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>var storageOptions = new StorageEngineOptionsBuilder()
+    .UsePagerOptions(new PagerOptions
+    {
+        MaxCachedPages = 1000,
+        CheckpointPolicy = new FrameCountCheckpointPolicy(500),
+    })
+    .UseSerializerProvider&lt;DefaultSerializerProvider&gt;()
+    .UseBTreeIndexes()
+    .UseCatalogStore&lt;CatalogStore&gt;()
+    .UseChecksumProvider&lt;AdditiveChecksumProvider&gt;()
+    .Build();</code></pre></div>
+
+                <p>That <code>StorageEngineOptions</code> instance is then passed into <code>DefaultStorageEngineFactory.OpenAsync(filePath, options)</code>.</p>
+
+                <p>From the engine layer, the equivalent pattern is:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>using CSharpDB.Engine;
+using CSharpDB.Storage.Checkpointing;
+using CSharpDB.Storage.Paging;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt;
+    {
+        builder.UsePagerOptions(new PagerOptions
+        {
+            MaxCachedPages = 1000,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(500),
+        });
+
+        builder.UseCachingBTreeIndexes(findCacheCapacity: 2048);
+    });
+
+await using var db = await Database.OpenAsync("mydb.cdb", options);</code></pre></div>
+
+                <p>There is no <code>new Database("path", options =&gt; ...)</code> constructor in the current codebase.</p>
+
+                <h2 id="usage-patterns-by-scenario">5. Usage patterns by scenario</h2>
+
+                <h3 id="tune-cache-behavior">Tune cache behavior</h3>
+
+                <p>Use <code>MaxCachedPages</code> when you just want the built-in LRU cache:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UsePagerOptions(new PagerOptions
+{
+    MaxCachedPages = 5000,
+});</code></pre></div>
+
+                <p>Use <code>PageCacheFactory</code> when you want a custom cache implementation:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UsePagerOptions(new PagerOptions
+{
+    PageCacheFactory = () =&gt; new MetricsPageCache(maxPages: 5000),
+});</code></pre></div>
+
+                <h3 id="tune-checkpoint-behavior">Tune checkpoint behavior</h3>
+
+                <p>All automatic checkpointing decisions flow through <code>ICheckpointPolicy</code>.</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UsePagerOptions(new PagerOptions
+{
+    CheckpointPolicy = new AnyCheckpointPolicy(
+        new FrameCountCheckpointPolicy(500),
+        new TimeIntervalCheckpointPolicy(TimeSpan.FromMinutes(5))),
+});</code></pre></div>
+
+                <p>If you want to disable auto-checkpointing during a bulk import, provide a policy that always returns <code>false</code>, then call <code>Database.CheckpointAsync()</code> or <code>Pager.CheckpointAsync()</code> explicitly when the import is finished.</p>
+
+                <h3 id="add-diagnostics-or-fault-injection">Add diagnostics or fault injection</h3>
+
+                <p>Attach one or more <code>IPageOperationInterceptor</code> implementations through <code>PagerOptions.Interceptors</code>.</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UsePagerOptions(new PagerOptions
+{
+    Interceptors =
+    [
+        new ConsoleLoggingInterceptor(),
+        new LatencyTrackingInterceptor(),
+    ],
+});</code></pre></div>
+
+                <p>When no interceptors are configured, <code>Pager</code> uses <code>NoOpPageOperationInterceptor</code> and skips interceptor dispatch on the hot path.</p>
+
+                <h3 id="swap-index-strategy">Swap index strategy</h3>
+
+                <p>The default index provider is B+tree-backed:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UseBTreeIndexes();</code></pre></div>
+
+                <p>For a cache-decorated variant:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UseCachingBTreeIndexes(findCacheCapacity: 4096);</code></pre></div>
+
+                <p>For a custom implementation:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UseIndexProvider(new MyIndexProvider());</code></pre></div>
+
+                <h3 id="replace-serializers-or-catalog-encoding">Replace serializers or catalog encoding</h3>
+
+                <p>These are already interface-based in the current codebase:</p>
+
+                <div class="code-block" data-title="C#"><pre><code>builder.UseSerializerProvider(new MySerializerProvider());
+builder.UseCatalogStore(new MyCatalogStore());</code></pre></div>
+
+                <p>This is one of the main differences between the current repository and older mental models of the storage layer: serializer and index composition are already first-class builder concerns.</p>
+
+                <h2 id="what-is-still-concrete">6. What is still concrete</h2>
+
+                <p>These pieces are still concrete implementation details in the default storage stack:</p>
+                <ul>
+                    <li><code>Pager</code> internals (<code>PageBufferManager</code>, <code>PageAllocator</code>, dirty-page bookkeeping)</li>
+                    <li><code>WriteAheadLog</code> behavior selected by <code>DefaultStorageEngineFactory</code></li>
+                    <li><code>BTree</code> page layout and split/merge logic</li>
+                    <li><code>SlottedPage</code> binary format</li>
+                    <li>File-header and WAL-frame layouts in <code>PageConstants</code></li>
+                </ul>
+
+                <p>You can still replace large portions of the stack, but once you want to change WAL orchestration or pager composition, you have moved beyond builder-level customization and into custom factory territory.</p>
+
+                <h2 id="diagnostics-live-in-a-separate-project">7. Diagnostics live in a separate project</h2>
+
+                <p>Inspection helpers are real, but they do not live under <code>src/CSharpDB.Storage/</code>.</p>
+
+                <p>Current layout:</p>
+
+                <div class="code-block" data-title="Text"><pre><code>src/CSharpDB.Storage/             core storage engine
+src/CSharpDB.Storage.Diagnostics/ inspectors and integrity tooling</code></pre></div>
+
+                <p>That distinction matters because a reader following a file map should not go looking for <code>DatabaseInspector</code>, <code>WalInspector</code>, or <code>IndexInspector</code> inside the core storage project.</p>
+
+                <h2 id="suggested-reading-order">8. Suggested reading order</h2>
+
+                <p>If your goal is understanding:</p>
+                <ol>
+                    <li>Read <a href="storage.html">architecture</a> for the mental model.</li>
+                    <li>Read <a href="storage-examples.html">examples</a> for the runnable extension examples project.</li>
+                    <li>Then inspect the source in this order:
+                        <ul>
+                            <li><code>StorageEngine/DefaultStorageEngineFactory.cs</code></li>
+                            <li><code>Paging/Pager.cs</code></li>
+                            <li><code>Wal/WriteAheadLog.cs</code></li>
+                            <li><code>BTree/BTree.cs</code></li>
+                            <li><code>Catalog/SchemaCatalog.cs</code></li>
+                        </ul>
+                    </li>
+                </ol>
+
+                <p>If your goal is customization:</p>
+                <ol>
+                    <li>Start with <code>DatabaseOptions.ConfigureStorageEngine(...)</code>.</li>
+                    <li>Only drop to <code>DefaultStorageEngineFactory</code> when you truly need direct <code>Pager</code> access.</li>
+                    <li>Reach for a custom <code>IStorageEngineFactory</code> only when builder-level seams are not enough.</li>
+                </ol>
+
+                <h2 id="practical-summary">9. Practical summary</h2>
+
+                <p>Use <code>DatabaseOptions.ConfigureStorageEngine(...)</code> for normal application customization.</p>
+
+                <p>Use <code>DefaultStorageEngineFactory</code> when you need direct access to <code>Pager</code>, <code>SchemaCatalog</code>, or low-level components.</p>
+
+                <p>Treat <code>IStorageDevice</code>, <code>IPageCache</code>, <code>ICheckpointPolicy</code>, <code>IPageOperationInterceptor</code>, <code>IPageChecksumProvider</code>, <code>IIndexProvider</code>, <code>ISerializerProvider</code>, <code>ICatalogStore</code>, and <code>IStorageEngineFactory</code> as the supported extension surface today.</p>
+
+                <p>Treat pager internals, WAL orchestration, and B+tree page algorithms as concrete implementation details unless you are intentionally replacing the storage composition root.</p>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

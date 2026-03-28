@@ -40,6 +40,27 @@ public class JoinBenchmarks
         db.ExecuteAsync(
             "CREATE TABLE right_comp_t (id INTEGER PRIMARY KEY, a INTEGER NOT NULL, b TEXT NOT NULL, amount INTEGER, left_id INTEGER)")
             .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE mid_left_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, label TEXT)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE mid_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE reorder_big_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL, nullable_tag INTEGER)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE reorder_mid_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, marker INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE reorder_small_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, flag INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE stats_join_left_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync(
+            "CREATE TABLE stats_join_right_t (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)")
+            .AsTask().GetAwaiter().GetResult();
 
         // Small table for cross join
         db.ExecuteAsync("CREATE TABLE small_t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -70,6 +91,44 @@ public class JoinBenchmarks
             $"INSERT INTO right_comp_t VALUES ({i}, {i % 100}, 'code_{i / 100}', {i * 3}, {i})")
             .GetAwaiter().GetResult();
         db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_t_ab ON right_comp_t(a, b)")
+            .AsTask().GetAwaiter().GetResult();
+        _bench.SeedAsync("mid_left_t", 800, i =>
+            $"INSERT INTO mid_left_t VALUES ({i}, {i}, 'mid_left_{i}')")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("mid_right_t", 1000, i =>
+            $"INSERT INTO mid_right_t VALUES ({i}, {i}, {i * 13})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_big_t", 5000, i =>
+        {
+            int code = ((i - 1) % 200) + 1;
+            string nullableTag = i <= 5 ? "NULL" : i.ToString();
+            return $"INSERT INTO reorder_big_t VALUES ({i}, {code}, {i * 17}, {nullableTag})";
+        }).GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_mid_t", 200, i =>
+            $"INSERT INTO reorder_mid_t VALUES ({i}, {i}, {i * 19})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("reorder_small_t", 10, i =>
+            $"INSERT INTO reorder_small_t VALUES ({i}, {i}, {i * 23})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("stats_join_left_t", 3000, i =>
+            $"INSERT INTO stats_join_left_t VALUES ({i}, {i})")
+            .GetAwaiter().GetResult();
+        _bench.SeedAsync("stats_join_right_t", 10000, i =>
+        {
+            int code = ((i - 1) % 5000) + 1;
+            return $"INSERT INTO stats_join_right_t VALUES ({i}, {code}, {i * 11})";
+        }).GetAwaiter().GetResult();
+        db.ExecuteAsync("CREATE INDEX idx_stats_join_right_t_code ON stats_join_right_t(code)")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE stats_join_left_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE stats_join_right_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_big_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_mid_t")
+            .AsTask().GetAwaiter().GetResult();
+        db.ExecuteAsync("ANALYZE reorder_small_t")
             .AsTask().GetAwaiter().GetResult();
 
         // Skewed table (20K rows) to stress hash build-side choice.
@@ -115,6 +174,14 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 800x1K (planner builds smaller side)")]
+    public async Task InnerJoin_800x1K_BuildSmallerSide()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.payload FROM mid_left_t l INNER JOIN mid_right_t r ON l.code = r.code");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "INNER JOIN 20Kx1K (natural build side)")]
     public async Task InnerJoin_Skewed_20Kx1K_Natural()
     {
@@ -136,6 +203,22 @@ public class JoinBenchmarks
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id + 0 = r.left_id");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task InnerJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l INNER JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop expression projection)")]
+    public async Task InnerJoin_1Kx1K_ForcedNestedLoop_ExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_t l INNER JOIN right_t r ON l.id + 0 = r.left_id");
         await result.ToListAsync();
     }
 
@@ -203,6 +286,110 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "INNER JOIN 3Kx10K (stats-driven non-unique lookup)")]
+    public async Task InnerJoin_StatsDrivenNonUniqueLookup()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM stats_join_left_t l INNER JOIN stats_join_right_t r ON l.code = r.code");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (planner reorder chain)")]
+    public async Task InnerJoin_ReorderedThreeWayChain()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_big_t b INNER JOIN reorder_mid_t m ON b.code = m.code INNER JOIN reorder_small_t s ON m.code = s.code");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with selective leaf)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveLeaf()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code AND b.id = 42");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer WHERE filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterWhere()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id = 42");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer range filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterRange()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id BETWEEN 1 AND 5");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer IN filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterIn()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id IN (1, 2, 3)");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer IS NULL filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterIsNull()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.nullable_tag IS NULL");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer OR filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterOr()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id = 1 OR b.id = 2 OR b.id = 3");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer OR range filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterOrRange()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id BETWEEN 1 AND 2 OR b.id BETWEEN 10 AND 11");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer mixed union filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterMixedUnion()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.id IN (1, 2, 3) OR b.id BETWEEN 10 AND 11");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 5Kx200x10 (reorder chain with outer NULL OR filter)")]
+    public async Task InnerJoin_ReorderedThreeWayChain_SelectiveOuterNullOr()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM reorder_small_t s INNER JOIN reorder_mid_t m ON m.code = s.code INNER JOIN reorder_big_t b ON b.code = m.code WHERE b.nullable_tag IS NULL OR b.nullable_tag = 42");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite index lookup LIMIT 1)")]
+    public async Task InnerJoin_CompositeIndexLookup_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "INNER JOIN 1Kx1K (composite index lookup expression projection)")]
+    public async Task InnerJoin_CompositeIndexLookup_ExpressionProjection()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.id, r.amount + l.id FROM left_comp_t l INNER JOIN right_comp_t r ON l.b = r.b AND l.a = r.a");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "RIGHT JOIN on left PK (rewritten index nested-loop)")]
     public async Task RightJoin_OnLeftPk_RewrittenIndexNestedLoop()
     {
@@ -227,11 +414,35 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
+    [Benchmark(Description = "LEFT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task LeftJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l LEFT JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "RIGHT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    public async Task RightJoin_1Kx1K_ForcedNestedLoop_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT l.label, r.amount FROM left_t l RIGHT JOIN right_t r ON l.id + 0 = r.left_id LIMIT 1");
+        await result.ToListAsync();
+    }
+
     [Benchmark(Description = "CROSS JOIN 100x100")]
     public async Task CrossJoin_100x100()
     {
         await using var result = await _bench.Db.ExecuteAsync(
             "SELECT a.name, b.name FROM small_t a CROSS JOIN small_t b");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "CROSS JOIN 100x100 LIMIT 1")]
+    public async Task CrossJoin_100x100_Limit1()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "SELECT a.name, b.name FROM small_t a CROSS JOIN small_t b LIMIT 1");
         await result.ToListAsync();
     }
 

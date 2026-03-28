@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+    window.pageConfig = {
+        title: 'Native FFI Tutorials',
+        description: 'Use CSharpDB from non-.NET languages via the NativeAOT shared library. Tutorials for Python and JavaScript/Node.js.',
+        keywords: 'CSharpDB FFI, native library, NativeAOT, ctypes, koffi, Python, JavaScript, Node.js',
+        canonicalPath: 'docs/tutorials/native-ffi.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Native FFI Tutorials</h1>
+
+                <p>These tutorials show how to use CSharpDB from non-.NET languages via the NativeAOT shared library (<code>CSharpDB.Native</code>). The native library exposes a C-compatible API that any language with FFI support can call.</p>
+
+                <h2 id="prerequisites">Prerequisites</h2>
+
+                <ol>
+                    <li>
+                        <strong>Build the native library</strong> (requires .NET 10 SDK + C++ toolchain):
+                        <div class="code-block" data-title="Bash"><pre><code># Windows
+dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r win-x64
+
+# Linux
+dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r linux-x64
+
+# macOS
+dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r osx-arm64</code></pre></div>
+                    </li>
+                    <li>
+                        The published library will be at:
+                        <div class="code-block" data-title="Text"><pre><code>src/CSharpDB.Native/bin/Release/net10.0/&lt;rid&gt;/publish/CSharpDB.Native.{dll,so,dylib}</code></pre></div>
+                    </li>
+                </ol>
+
+                <h2 id="tutorials">Tutorials</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Language</th>
+                            <th>Tutorial</th>
+                            <th>Dependencies</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><a href="native-ffi-python.html">Python</a></td>
+                            <td>Built-in <code>ctypes</code> wrapper</td>
+                            <td>None (uses built-in <code>ctypes</code>)</td>
+                        </tr>
+                        <tr>
+                            <td><a href="native-ffi-javascript.html">JavaScript / Node.js</a></td>
+                            <td>koffi-based ESM wrapper</td>
+                            <td><code>koffi</code> (npm package)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="architecture">Architecture</h2>
+
+                <div class="code-block" data-title="Text"><pre><code>Your App (Python / Node.js / Go / Rust / ...)
+    |
+    | FFI call (ctypes / koffi / cgo / extern "C")
+    v
+CSharpDB.Native.dll (.so / .dylib)   &lt;-- NativeAOT compiled, no .NET runtime
+    |
+    | Direct function calls
+    v
+CSharpDB Engine (embedded in the native binary)
+    |
+    v
+Database file on disk (*.db)</code></pre></div>
+
+                <p>Each tutorial includes:</p>
+                <ul>
+                    <li>A <strong>reusable wrapper module</strong> that loads the native library and provides an idiomatic API</li>
+                    <li><strong>Runnable examples</strong> covering CRUD operations, transactions, and queries</li>
+                    <li>A <strong>README</strong> with setup and usage instructions</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

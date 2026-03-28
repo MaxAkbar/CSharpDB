@@ -1,5 +1,5 @@
 {
-  "baselineSnapshot": "20260302-001757",
+  "baselineSnapshot": "focused-validation/20260326-123705",
   "defaults": {
     "maxMeanRegressionPercent": 8.0,
     "maxAllocRegressionPercent": 10.0,
@@ -8,6 +8,7 @@
   "checks": [
     {
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "PreSeededRows"
@@ -29,6 +30,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -71,7 +73,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260309-212042",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method"
       ],
@@ -98,22 +100,139 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method"
       ]
     },
     {
-      "csv": "CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260303-190500",
+      "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'Compact scan batch plan: residual column projection'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Compact scan batch plan: residual column projection'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Compact scan batch plan: expression projection (20% selectivity)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Compact scan batch plan: expression projection (20% selectivity)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Compact scan batch plan: IN column projection'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Compact scan batch plan: IN column projection'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Compact scan batch plan: LIKE column projection'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Compact scan batch plan: LIKE column projection'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Generic scan batch plan: residual column projection + LIMIT'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Generic scan batch plan: residual column projection + LIMIT'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Generic scan batch plan: expression projection + LIMIT (20% selectivity)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Generic scan batch plan: expression projection + LIMIT (20% selectivity)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Generic scan batch plan: IN expression projection + LIMIT'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Generic scan batch plan: IN expression projection + LIMIT'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'Generic scan batch plan: NOT IN expression projection + LIMIT'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Generic scan batch plan: NOT IN expression projection + LIMIT'",
+          "RowCount": "100000"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'Range scan WHERE value BETWEEN ... AND category IS NOT NULL (compact residual batch plan)'",
+          "RowCount": "1000"
+        },
+        {
+          "Method": "'Range scan WHERE value BETWEEN ... AND category IS NOT NULL (compact residual batch plan)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'Range scan WHERE value BETWEEN ... AND category IS NOT NULL (compact residual batch plan)'",
+          "RowCount": "100000"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.IndexAggregateBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'COUNT(text_col) WHERE value BETWEEN ... (no index)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'COUNT(text_col) WHERE value BETWEEN ... (no index)'",
+          "RowCount": "100000"
+        },
+        {
+          "Method": "'COUNT(text_col) WHERE value BETWEEN ... (payload-backed index aggregate)'",
+          "RowCount": "10000"
+        },
+        {
+          "Method": "'COUNT(text_col) WHERE value BETWEEN ... (payload-backed index aggregate)'",
+          "RowCount": "100000"
+        }
       ],
       "maxMeanRegressionPercent": 25.0
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260303-190500",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -122,7 +241,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260303-190500",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -131,7 +250,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260304-000103",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -160,7 +279,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260304-005821",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -185,7 +304,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260304-013013",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -222,7 +341,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260303-180221",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "RowCount"
@@ -251,6 +370,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [
         "Method",
         "WalFramesBeforeCheckpoint"
@@ -263,6 +383,122 @@
           "maxMeanRegressionPercent": 25.0
         }
       ]
+    },
+    {
+      "csv": "write-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256_10s"
+        },
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s"
+        },
+        {
+          "Name": "WriteDiagnostics_SingleRow_Frame4096Background256Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 15.0,
+      "skipAllocationComparison": true,
+      "suiteKey": "write-diagnostics",
+      "suiteLabel": "Write Diagnostics",
+      "suiteArgs": [
+        "--write-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "write-diagnostics-*-median-of-3.csv"
+    },
+    {
+      "csv": "durable-sql-batching-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_WriteOptimized_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_WriteOptimized_Analyzed_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_AutoCommitSingle_LowLatency_Analyzed_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch10_LowLatency_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch100_LowLatency_10s"
+        },
+        {
+          "Name": "DurableSqlBatching_TxBatch1000_LowLatency_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 18.0,
+      "skipAllocationComparison": true,
+      "overrides": [
+        {
+          "match": {
+            "Name": "DurableSqlBatching_TxBatch1000_LowLatency_10s"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ],
+      "suiteKey": "durable-sql-batching",
+      "suiteLabel": "Durable SQL Batching",
+      "suiteArgs": [
+        "--durable-sql-batching",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "durable-sql-batching-*-median-of-3.csv"
+    },
+    {
+      "csv": "concurrent-write-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "ConcurrentDurableWrite_W4_Batch0_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W4_Batch250us_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch0_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch250us_10s"
+        },
+        {
+          "Name": "ConcurrentDurableWrite_W8_Batch0_Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 18.0,
+      "skipAllocationComparison": true,
+      "suiteKey": "concurrent-write-diagnostics",
+      "suiteLabel": "Concurrent Write Diagnostics",
+      "suiteArgs": [
+        "--concurrent-write-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "concurrent-write-diagnostics-*-median-of-3.csv"
     }
   ]
 }

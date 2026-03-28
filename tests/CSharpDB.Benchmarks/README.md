@@ -2,12 +2,32 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current snapshot in this README mixes the March 15, 2026 refreshed reproducible macro captures, the March 14, 2026 full baseline capture, the latest focused reruns still present in `BenchmarkDotNet.Artifacts/results`, and a smaller set of archived March 12 validation numbers called out inline below.
+The current snapshot in this README mixes the March 25-28, 2026 durable and buffered reproducible macro/direct/hybrid captures, the March 27-28, 2026 durable batching and durable-write refreshes, the March 26, 2026 targeted micro refreshes for `JoinBenchmarks`, `WalCoreBenchmarks`, and `InMemoryPersistenceBenchmarks` plus the March 25, 2026 broad sequential micro rerun that still covers the remaining suites in `BenchmarkDotNet.Artifacts/results`, the March 24-26, 2026 focused guardrail refreshes, and a smaller set of archived March 12 validation numbers called out inline below.
 
-- `Refreshed reproducible macro capture on March 15, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260316-050941-median-of-3.csv`
-- `Refreshed in-memory rotating batch capture on March 15, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260316-053315-median-of-3.csv`
+- `Full sequential reproducible macro capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260325-123112-median-of-3.csv`
+- `Buffered reproducible macro capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260325-233253-median-of-3.csv`
+- `Full sequential reproducible in-memory rotating batch capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-batch-memory-20260325-125528-median-of-3.csv`
+- `Full sequential reproducible write diagnostics capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260325-125704-median-of-3.csv`
+- `Latest durable SQL batching median-of-3 capture on March 27, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260327-235637-median-of-3.csv`
+- `Latest durable write median-of-3 capture on March 28, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260328-011755-median-of-3.csv`
+- `Latest concurrent durable write median-of-3 capture on March 28, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260328-012652-median-of-3.csv`
+- `Full sequential reproducible direct client transport capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260325-130329-median-of-3.csv`
+- `Buffered direct client transport capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260326-001622-median-of-3.csv`
+- `Full sequential reproducible hybrid storage-mode capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260325-130952-median-of-3.csv`
+- `Buffered hybrid storage-mode capture on March 26, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260326-002328-median-of-3.csv`
+- `Full sequential reproducible hybrid cold-open capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260325-132052-median-of-3.csv`
+- `Full sequential reproducible hybrid hot-set capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260325-132145-median-of-3.csv`
+- `Full sequential reproducible hybrid post-checkpoint capture on March 25, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260325-132222-median-of-3.csv`
 - `Full sequential baseline capture on March 14, 2026: tests/CSharpDB.Benchmarks/baselines/20260314-173320`
-- `Latest focused reruns on March 15, 2026: InsertBenchmarks, PointLookupBenchmarks, ReaderSessionBenchmarks, MemoryMappedReadBenchmarks, WalReadCacheBenchmarks, BTreeCursorBenchmarks, OrderByIndexBenchmarks, ScanBenchmarks, ScanProjectionBenchmarks, ScalarAggregateBenchmarks, DistinctBenchmarks, JoinBenchmarks, CompositeGroupedIndexBenchmarks, ColdLookupBenchmarks, InMemorySqlBenchmarks, InMemoryCollectionBenchmarks, InMemoryAdoNetBenchmarks, InMemoryPersistenceBenchmarks, CollectionPayloadBenchmarks, CollectionFieldExtractionBenchmarks, CollectionAccessBenchmarks, CollectionSchemaBreadthBenchmarks`
+- `Focused validation baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-112510`
+- `Focused scan projection baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-122734`
+- `Focused index aggregate baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-154942`
+- `Focused guardrail coverage baseline refresh on March 24, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260324-222637`
+- `Focused durability guardrail baseline refresh on March 26, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705`
+- `Latest broad micro rerun on March 25, 2026: full sequential CSharpDB.Benchmarks.Micro suite`
+- `Targeted JoinBenchmarks refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
+- `Targeted WAL core refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalCoreBenchmarks-report.csv`
+- `Targeted in-memory persistence refresh on March 26, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryPersistenceBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv`
@@ -89,6 +109,12 @@ dotnet run -c Release -- --macro --repeat 3 --repro
 # Durable write variance diagnostics
 dotnet run -c Release -- --write-diagnostics --repeat 3 --repro
 
+# Durable SQL batching diagnostics
+dotnet run -c Release -- --durable-sql-batching --repeat 3 --repro
+
+# Concurrent durable write diagnostics
+dotnet run -c Release -- --concurrent-write-diagnostics --repeat 3 --repro
+
 # Focused direct hybrid transport comparison (no gRPC)
 dotnet run -c Release -- --direct-file-cache-transport --repeat 3 --repro
 
@@ -114,6 +140,14 @@ dotnet run -c Release -- --scaling
 
 Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `BenchmarkDotNet.Artifacts/results/`.
 
+### Concurrent Durable Write Methodology
+
+- `ConcurrentDurableWriteBenchmark` is an in-process contention benchmark, not a multi-process transport benchmark.
+- Each scenario launches `4` or `8` parallel writer `Task`s against one shared `Database` instance and one shared WAL/pager.
+- All writers are released together through a start gate, then each task loops on auto-commit `INSERT` statements for the timed phase.
+- `Ops/sec` in the concurrent durability CSVs is total successful commits per second across all writers combined, not per-writer throughput.
+- The high shared-engine throughput rows therefore belong to the `8`-writer scenarios in `concurrent-write-diagnostics-*.csv`, while the much lower single-writer rows belong to the separate `write-diagnostics-*.csv` and `durable-sql-batching-*.csv` harnesses.
+
 ### New In-Memory Suites
 
 - `InMemorySqlBenchmarks`: file-backed vs in-memory SQL point lookups and inserts
@@ -127,6 +161,8 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `CollectionIndexBenchmarks`: focused collection secondary-index lookup and indexed write-maintenance costs
 - `StorageTuningBenchmarks`: cache-size, index-provider, and reader-session matrix for file-backed indexed lookups
 - `DurableWriteDiagnosticsBenchmark`: file-backed single-row write diagnostics across frame-count and WAL-size checkpoint policies, including background sliced auto-checkpoint scheduling
+- `DurableSqlBatchingBenchmark`: file-backed durable SQL ingest sweep covering auto-commit single-row inserts, analyzed-table single-row inserts, and explicit transaction batches of `10`, `100`, and `1000` rows with commit-path stage diagnostics
+- `ConcurrentDurableWriteBenchmark`: shared-database multi-writer auto-commit sweep where `4` or `8` in-process writer tasks hit one shared `Database` instance for durable batch-window tuning under actual writer contention
 - `InMemoryBatchBenchmark`: rotating x100 batch throughput for in-memory SQL and collections
 - `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
 - `SharedMemoryAdoNetBenchmark`: named shared-memory reader/writer contention through the provider host layer
@@ -146,7 +182,8 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 - `BTreeCursorBenchmarks`: isolates raw forward cursor traversal and seek+window scans over a B+tree so sequential leaf-scan changes can be measured without the SQL executor on top
 - `CoveringIndexBenchmarks`: isolates unique-index lookup shapes that could become index-only from shapes that still need the wide base-row payload
 - `IndexProjectionBenchmarks`: isolates non-unique secondary-index lookups where `SELECT id` or `SELECT indexed_col` can now avoid base-row fetches
-- `OrderByIndexBenchmarks`: isolates indexed `ORDER BY`, covered integer range scans, and compact non-covered range projection shapes where indexed filtering still avoids full row materialization
+- `OrderByIndexBenchmarks`: isolates indexed `ORDER BY`, covered integer range scans, and compact non-covered range projection shapes, including residual-filter batch-plan variants where indexed filtering still avoids full row materialization
+- `ScanProjectionBenchmarks`: isolates compact table scans and LIMIT-forced generic scans where scan-heavy filter/projection shapes now stay on the internal row-batch transport path
 - `IndexAggregateBenchmarks`: isolates scalar `SUM` / `COUNT` / `MIN` / `MAX` queries and range aggregates that can now execute directly from integer index keys
 - `PrimaryKeyAggregateBenchmarks`: isolates scalar and ranged aggregates that can now execute directly from the `INTEGER PRIMARY KEY` table B-tree key stream
 - `GroupedIndexAggregateBenchmarks`: isolates `GROUP BY` on a duplicate-heavy integer key so grouped aggregates can be compared against the new direct index-grouped fast path
@@ -172,274 +209,289 @@ Defaults:
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
+- The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
+- The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
+- Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
+- Set `CSHARPDB_PERF_RUNNER_ID` on the canonical perf runner before capturing a baseline if you want strict regression failures to be limited to that designated machine.
+- The focused durability checks compare `Mean` against the stable median-of-3 durable rows only. Allocation comparison is intentionally skipped for those checks because the diagnostics CSVs emit raw millisecond values, not BenchmarkDotNet `Allocated` columns.
 
 ## Current Performance Snapshot
 
+For the API snapshot, hot steady-state, and master comparison tables below, CSharpDB values are shown as `Durable / Buffered` when both modes were run on the same harness.
+
 ### SQL API (latest refreshed reproducible macro snapshot)
 
-| Metric | Current Result | Notes |
-|--------|----------------|-------|
-| Single INSERT | 25.11K ops/sec | Auto-commit durable write |
-| Batch 100 rows/tx | ~640K rows/sec | 6,395.0 tx/sec x 100 rows |
-| Point lookup (10K rows) | 1.51M ops/sec | `Comparison_SQL_PointLookup_10k` |
-| Mixed workload reads | 58.7K ops/sec | 80/20 read/write mix |
-| Mixed workload writes | 14.7K ops/sec | 80/20 read/write mix |
-| Reader throughput (8 readers, per-query sessions) | 855.09K ops/sec | Total `COUNT(*)` queries/sec across 8 readers |
-| Reader throughput (8 readers, reused snapshots x32) | 10.81M ops/sec | `ReaderScalingBurst32_8readers_Readers` |
-| Writer throughput under 8 readers | 20.37K ops/sec | Same 8-reader scaling run |
-| Checkpoint time (1,000 WAL frames) | 3.78 ms | Manual checkpoint |
+| Metric | Durable / Buffered | Notes |
+|--------|---------------------|-------|
+| Single INSERT | 287.5 ops/sec / 21.21K ops/sec | Auto-commit write |
+| Batch 100 rows/tx | ~27.24K / ~587.69K rows/sec | 272.4 vs 5,876.9 tx/sec x 100 rows |
+| Point lookup (10K rows) | 1.46M / 1.28M ops/sec | `Comparison_SQL_PointLookup_10k` |
+| Mixed workload reads | 1,111.3 / 49.04K ops/sec | 80/20 read/write mix |
+| Mixed workload writes | 285.0 / 12.24K ops/sec | 80/20 read/write mix |
+| Reader throughput (8 readers, per-query sessions) | 534.24K / 390.16K ops/sec | Total `COUNT(*)` queries/sec across 8 readers |
+| Reader throughput (8 readers, reused snapshots x32) | 9.47M / 8.17M ops/sec | `ReaderScalingBurst32_8readers_Readers` |
+| Writer throughput under 8 readers | 266.6 / 13.59K ops/sec | Same 8-reader scaling run |
+| Checkpoint time (1,000 WAL frames) | 6.89 ms / 3.95 ms | Manual checkpoint |
 
 ### Collection API (latest refreshed reproducible macro snapshot)
 
-| Metric | Current Result | Notes |
-|--------|----------------|-------|
-| Single Put | 30.35K ops/sec | Auto-commit durable document write |
-| Batch 100 docs/tx | ~419K docs/sec | 4,187.5 tx/sec x 100 docs |
-| Point Get (10K docs) | 1.99M ops/sec | Direct collection lookup |
-| Mixed workload reads | 82.3K ops/sec | 80/20 read/write mix |
-| Mixed workload writes | 20.6K ops/sec | 80/20 read/write mix |
-| Full Scan (1K docs) | 4,592 scans/sec | Full collection scan |
-| Filtered Find (1K docs, 20% match) | 4,556 scans/sec | Predicate evaluation path |
-| Indexed equality lookup (10K docs) | 730.34K ops/sec | `Collection_FindByIndex_Value_10k_15s` |
-| Single Put (with 1 secondary index) | 23.40K ops/sec | `Collection_Put_Single_WithIndex_15s` |
+| Metric | Durable / Buffered | Notes |
+|--------|---------------------|-------|
+| Single Put | 290.2 ops/sec / 21.37K ops/sec | Auto-commit document write |
+| Batch 100 docs/tx | ~26.56K / ~371.23K docs/sec | 265.6 vs 3,712.3 tx/sec x 100 docs |
+| Point Get (10K docs) | 1.99M / 1.87M ops/sec | Direct collection lookup |
+| Mixed workload reads | 1,101.6 / 54.29K ops/sec | 80/20 read/write mix |
+| Mixed workload writes | 282.4 / 13.55K ops/sec | 80/20 read/write mix |
+| Full Scan (1K docs) | 4,404.6 / 4,255.4 scans/sec | Full collection scan |
+| Filtered Find (1K docs, 20% match) | 4,395.3 / 4,192.5 scans/sec | Predicate evaluation path |
+| Indexed equality lookup (10K docs) | 687.66K / 580.16K ops/sec | `Collection_FindByIndex_Value_10k_15s` |
+| Single Put (with 1 secondary index) | 282.4 / 16.40K ops/sec | `Collection_Put_Single_WithIndex_15s` |
 
 ### Collection Path Micro Spot Checks
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection encode (direct payload) | 173.5 ns | 552 B | Current versioned binary direct-payload path |
-| Collection encode (legacy row format) | 268.8 ns | 304 B | Prior `DbValue[]` + record serializer path |
-| Collection decode (direct payload) | 164.6 ns | 328 B | Current binary direct-payload path with direct header reuse |
-| Collection decode (legacy row format) | 414.6 ns | 600 B | Prior `DbValue[]` + record serializer path |
-| Collection put (minimal schema, in-memory) | 2.37 us | 1046 B | Auto-commit write with only the target collection loaded |
-| Collection put (48 extra tables + 48 extra collections, in-memory) | 2.36 us | 1020 B | Unrelated schema breadth still does not add measurable write tax |
+| Collection encode (direct payload) | 198.7 ns | 552 B | Current versioned binary direct-payload path |
+| Collection encode (legacy row format) | 280.7 ns | 304 B | Prior `DbValue[]` + record serializer path |
+| Collection decode (direct payload) | 210.1 ns | 328 B | Current binary direct-payload path with direct header reuse |
+| Collection decode (legacy row format) | 444.6 ns | 600 B | Prior `DbValue[]` + record serializer path |
+| Collection put (minimal schema, in-memory) | 2.733 us | 1.28 KB | Auto-commit write with only the target collection loaded |
+| Collection put (48 extra tables + 48 extra collections, in-memory) | 2.760 us | 1.25 KB | Unrelated schema breadth still does not add measurable write tax |
 
-### Collection Path Index Spot Checks (March 15, 2026)
+### WAL Core Micro Spot Checks (March 26, 2026)
+
+Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalCoreBenchmarks-report.csv`
+
+| Metric | 100 frames before checkpoint | 500 frames before checkpoint | 1000 frames before checkpoint | Notes |
+|--------|-----------------------------:|-----------------------------:|------------------------------:|-------|
+| WAL core: 100-frame batch commit | 10.803 ms | 10.301 ms | 10.613 ms | Direct `AppendFramesAndCommitAsync(...)` path |
+| WAL core: 100-frame staged commit | 10.584 ms | 10.717 ms | 10.477 ms | Repeated `AppendFrameAsync(...)` calls staged and emitted at `CommitAsync(...)` |
+| WAL core: single-frame commit | 4.202 ms | 4.297 ms | 4.450 ms | One page + one durable commit |
+| WAL core: manual checkpoint after N frames | 20.449 ms | 44.536 ms | 85.726 ms | Commit N single-page appends, then checkpoint |
+
+The important result for async I/O batching is still the staged-vs-direct comparison: the repeated-`AppendFrameAsync(...)` path stays close to the direct batched WAL path instead of collapsing into one durable write per page before commit, while manual checkpoint cost rises sharply as the frame threshold grows.
+
+### Collection Path Index Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` nested path equality (`$.address.city`) | 493.2 ns | 1.05 KB | Public string-path index lookup over a nested scalar path with many matches |
-| Collection `FindByPath` nested path equality (`$.address.city`) | 501.1 ns | 1.05 KB | Query-facing path API running on the same nested scalar index |
-| Collection `FindByIndex` array path equality (`$.tags[]`) | 403.6 ns | 912 B | Multi-value array element lookup over a public string-path collection index |
-| Collection `FindByPath` array path equality (`$.tags[]`) | 414.7 ns | 912 B | Query-facing path API running on the same array index |
-| Collection `FindByPath` nested array path equality (`$.orders[].sku`) | 496.1 ns | 1.13 KB | Query-facing path API over an index on scalar fields inside array elements |
-| Collection `FindByPath` integer range (`Value`, 1024 matches) | 491.8 us | 307.18 KB | Ordered integer path range over the collection index path/query surface |
-| Collection `FindByPath` text range (`Tag`, 1000 matches) | 496.9 us | 449.78 KB | Ordered text path range over prefix-bucket text indexes with exact in-bucket filtering |
-| Collection `FindByPath` Guid equality (`SessionId`) | 890.4 ns | 1.10 KB | Canonical `Guid` path lookup over the ordered text collection index path/query surface |
-| Collection `FindByPath` DateOnly range (`EventDate`, 1000 matches) | 438.1 us | 203.02 KB | Canonical `DateOnly` range over ordered text collection indexes using fixed-width ISO keys |
+| Collection `FindByIndex` nested path equality (`$.address.city`) | 579.9 ns | 1080 B | Public string-path index lookup over a nested scalar path with many matches |
+| Collection `FindByPath` nested path equality (`$.address.city`) | 568.9 ns | 1080 B | Query-facing path API running on the same nested scalar index |
+| Collection `FindByIndex` array path equality (`$.tags[]`) | 481.4 ns | 912 B | Multi-value array element lookup over a public string-path collection index |
+| Collection `FindByPath` array path equality (`$.tags[]`) | 474.8 ns | 912 B | Query-facing path API running on the same array index |
+| Collection `FindByPath` nested array path equality (`$.orders[].sku`) | 599.3 ns | 1160 B | Query-facing path API over an index on scalar fields inside array elements |
+| Collection `FindByPath` integer range (`Value`, 1024 matches) | 552.79 us | 314548 B | Ordered integer path range over the collection index path/query surface |
+| Collection `FindByPath` text range (`Tag`, 1000 matches) | 545.69 us | 460571 B | Ordered text path range over prefix-bucket text indexes with exact in-bucket filtering |
+| Collection `FindByPath` Guid equality (`SessionId`) | 595.3 ns | 1123 B | Canonical `Guid` path lookup over the ordered text collection index path/query surface |
+| Collection `FindByPath` DateOnly range (`EventDate`, 1000 matches) | 264.79 us | 207888 B | Canonical `DateOnly` range over ordered text collection indexes using fixed-width ISO keys |
 
-### Collection Extraction Spot Checks (March 15, 2026)
+### Collection Extraction Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection field read (early field) | 50.46 ns | 112 B | Direct binary payload scan near the front of the document |
-| Collection field read (middle field) | 69.99 ns | 64 B | Unbound middle-field integer read |
-| Collection field read (late field) | 100.49 ns | 64 B | Unbound late-field integer read |
-| Collection field compare (late text field, bound accessor) | 86.23 ns | 0 B | Bound accessor text compare stays allocation-free |
-| Collection field read (middle field, bound accessor) | 50.42 ns | 0 B | Bound accessor integer extraction on the binary payload path |
-| Collection field read (nested path, bound accessor) | 187.84 ns | 40 B | Nested document walk without hydrating `T` |
-| Collection hydrate document (comparison) | 437.70 ns | 912 B | Full typed hydration on the new binary direct-payload path |
+| Collection field read (early field) | 65.40 ns | 112 B | Direct binary payload scan near the front of the document |
+| Collection field read (middle field) | 76.72 ns | 64 B | Unbound middle-field integer read |
+| Collection field read (late field) | 121.01 ns | 64 B | Unbound late-field integer read |
+| Collection field compare (late text field, bound accessor) | 127.38 ns | 0 B | Bound accessor text compare stays allocation-free |
+| Collection field read (middle field, bound accessor) | 56.72 ns | 0 B | Bound accessor integer extraction on the binary payload path |
+| Collection field read (nested path, bound accessor) | 214.10 ns | 40 B | Nested document walk without hydrating `T` |
+| Collection hydrate document (comparison) | 517.23 ns | 912 B | Full typed hydration on the new binary direct-payload path |
 
 ### Query Micro Spot Checks
 
 | Metric | Mean | Allocated |
 |--------|------|-----------|
-| SQL PK lookup (10K rows) | 519 ns | 728 B |
-| SQL PK lookup (100K rows) | 729 ns | 728 B |
-| SQL indexed lookup (100K rows) | 677 ns | 490 B |
-| SQL point miss (100K rows) | 330 ns | 424 B |
+| SQL PK lookup (10K rows) | 548.0 ns | 768 B |
+| SQL PK lookup (100K rows) | 802.9 ns | 768 B |
+| SQL indexed lookup (100K rows) | 2,450.7 ns | 17185 B |
+| SQL point miss (100K rows) | 366.3 ns | 464 B |
 
-### Reader Session Spot Checks (March 14, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| `COUNT(*)` with per-query reader sessions | 168.80 ns | 464 B | Full reader-session create/execute/dispose path |
-| `COUNT(*)` with reused reader session | 85.28 ns | 242 B | Same query with a reused snapshot session |
-| Point lookup with per-query reader sessions | 649.83 ns | 735 B | Reader-session setup is now close to direct execute cost |
-| Point lookup with reused reader session | 617.39 ns | 513 B | Small remaining gap versus direct execution |
-| Point lookup with direct `ExecuteAsync` | 582.32 ns | 504 B | Lower bound for the same simple PK read path |
-
-### Memory-Mapped Read Spot Checks (March 14, 2026)
+### Reader Session Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| SQL cold lookup, copy-based read path | 27.04 us | 9.50 KB | File-backed cache-pressured lookup with `UseMemoryMappedReads = false` |
-| SQL cold lookup, mmap read path | 1.30 us | 648 B | Same workload with clean main-file pages served from mapped read views |
-| Collection cold get, copy-based read path | 27.38 us | 9.35 KB | File-backed cache-pressured collection lookup with `UseMemoryMappedReads = false` |
-| Collection cold get, mmap read path | 1.23 us | 418 B | Same workload with mapped main-file reads and copy-on-write only on mutable access |
+| `COUNT(*)` with per-query reader sessions | 1,035.5 ns | 7528 B | Full reader-session create/execute/dispose path |
+| `COUNT(*)` with reused reader session | 105.7 ns | 321 B | Same query with a reused snapshot session |
+| Point lookup with per-query reader sessions | 1,703.7 ns | 7799 B | Reader-session setup is materially higher than direct execute on the current path |
+| Point lookup with reused reader session | 680.9 ns | 592 B | Small remaining gap versus direct execution |
+| Point lookup with direct `ExecuteAsync` | 663.6 ns | 640 B | Lower bound for the same simple PK read path |
 
-### WAL Read Cache Spot Checks (March 14, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| SQL cold lookup, WAL-backed, no WAL cache | 25.64 us | 8.68 KB | File-backed cache-pressured lookup where the latest table pages are still read from WAL frames |
-| SQL cold lookup, WAL-backed, 128-page WAL cache | 17.80 us | 6.09 KB | Same workload with `MaxCachedWalReadPages = 128` so immutable WAL frame images can be reused between reads |
-
-### B-Tree Cursor Spot Checks (March 14, 2026)
+### Memory-Mapped Read Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| B-tree cursor full scan (10K rows, read-ahead off) | 9.12 ms | 3.26 MB | File-backed raw forward scan with `EnableSequentialLeafReadAhead = false` |
-| B-tree cursor full scan (10K rows, read-ahead on) | 7.86 ms | 3.18 MB | Same scan with speculative next-leaf reads enabled |
-| B-tree cursor seek + 1024-row window (10K rows, read-ahead off) | 928.10 us | 350.67 KB | Mid-tree seek followed by sequential leaf traversal |
-| B-tree cursor seek + 1024-row window (10K rows, read-ahead on) | 798.90 us | 337.41 KB | Same seek-window path with speculative next-leaf reads |
-| B-tree cursor full scan (100K rows, read-ahead off) | 88.88 ms | 32.60 MB | File-backed forward scan across a deeper leaf chain |
-| B-tree cursor full scan (100K rows, read-ahead on) | 80.58 ms | 31.83 MB | Same scan with speculative next-leaf reads enabled |
-| B-tree cursor seek + 1024-row window (100K rows, read-ahead off) | 899.50 us | 350.68 KB | Mid-tree seek followed by a bounded sequential window |
-| B-tree cursor seek + 1024-row window (100K rows, read-ahead on) | 797.40 us | 337.39 KB | Seek-window path with speculative next-leaf reads; latency stays roughly flat as the tree grows |
+| SQL cold lookup, copy-based read path | 28.704 us | 9707 B | File-backed cache-pressured lookup with `UseMemoryMappedReads = false` |
+| SQL cold lookup, mmap read path | 1.608 us | 784 B | Same workload with clean main-file pages served from mapped read views |
+| Collection cold get, copy-based read path | 29.286 us | 9373 B | File-backed cache-pressured collection lookup with `UseMemoryMappedReads = false` |
+| Collection cold get, mmap read path | 1.252 us | 409 B | Same workload with mapped main-file reads and copy-on-write only on mutable access |
 
-### SQL Covered Read-Path Spot Checks (March 14, 2026)
+### WAL Read Cache Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Unique index lookup `SELECT *` (100K rows) | 6.88 us | 2.95 KB | Baseline unique secondary-index lookup |
-| Unique index lookup `SELECT id` (100K rows) | 5.78 us | 1.08 KB | Covered projection from index payload |
-| Unique index lookup `SELECT lookup_key` (100K rows) | 5.78 us | 1.11 KB | Covered projection from index payload |
-| Non-unique index lookup `SELECT *` (100K rows) | 388.88 us | 71.04 KB | Baseline duplicate-key secondary-index lookup |
-| Non-unique index lookup `SELECT id` (100K rows) | 378.87 us | 33.59 KB | Covered projection drops most row materialization cost |
-| `ORDER BY value` no index (100K rows) | 155.35 ms | 48.64 MB | Full sort baseline from the latest indexed-order rerun |
-| `ORDER BY value` covered index-order scan (100K rows) | 28.06 ms | 14.56 MB | `SELECT id, value` stays on index data |
-| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 37.47 us | 34.37 KB | Index order avoids sort, still fetches base rows |
-| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 19.99 us | 16.35 KB | Index-only top-N path |
-| `WHERE value BETWEEN ...` row fetch (100K rows) | 50.48 ms | 16.43 MB | Integer range scan with base-row fetch |
-| `WHERE value BETWEEN ...` covered projection (100K rows) | 15.88 ms | 7.30 MB | Integer range scan that stays on index data |
-| `WHERE value BETWEEN ... SELECT id, category` compact projection (100K rows) | 36.79 ms | 7.28 MB | Non-covered indexed range scan decodes only projected payload columns instead of wide rows |
-| `WHERE value BETWEEN ... SELECT id, value + id` compact expression projection (100K rows) | 42.45 ms | 11.47 MB | Indexed range scan keeps the compact payload decode path even when projection includes an expression |
+| SQL cold lookup, WAL-backed, no WAL cache | 28.74 us | 8.68 KB | File-backed cache-pressured lookup where the latest table pages are still read from WAL frames |
+| SQL cold lookup, WAL-backed, 128-page WAL cache | 19.83 us | 6.27 KB | Same workload with `MaxCachedWalReadPages = 128` so immutable WAL frame images can be reused between reads |
 
-### SQL Composite Equality Lookup Spot Checks (March 14, 2026)
+### B-Tree Cursor Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `WHERE a = ... AND b = ...` no index (100K rows) | 175.17 ms | 69.43 MB | Full scan over wide rows |
-| `WHERE a = ... AND b = ...` single-column index (100K rows) | 23.92 us | 4.27 KB | Uses `a` only, then filters `b` after row fetch |
-| `WHERE a = ... AND b = ... SELECT *` composite index (100K rows) | 1.17 us | 1.83 KB | Direct composite equality lookup over hashed secondary index |
-| `WHERE a = ... AND b = ... SELECT id, a, b` composite covered projection (100K rows) | 1.40 us | 2.03 KB | Index-only projection now uses no-copy hashed-payload matching on the covered path |
-| `WHERE a = ... AND b = ... SELECT id, a, b` unique composite covered projection (100K rows) | 1.46 us | 2.03 KB | Same covered path on a unique composite index |
+| B-tree cursor full scan (10K rows, read-ahead off) | 9.25 ms | 3.34 MB | File-backed raw forward scan with `EnableSequentialLeafReadAhead = false` |
+| B-tree cursor full scan (10K rows, read-ahead on) | 8.51 ms | 3.26 MB | Same scan with speculative next-leaf reads enabled |
+| B-tree cursor seek + 1024-row window (10K rows, read-ahead off) | 919.2 us | 359.98 KB | Mid-tree seek followed by sequential leaf traversal |
+| B-tree cursor seek + 1024-row window (10K rows, read-ahead on) | 822.2 us | 346.56 KB | Same seek-window path with speculative next-leaf reads |
+| B-tree cursor full scan (100K rows, read-ahead off) | 92.74 ms | 33.46 MB | File-backed forward scan across a deeper leaf chain |
+| B-tree cursor full scan (100K rows, read-ahead on) | 87.41 ms | 32.69 MB | Same scan with speculative next-leaf reads enabled |
+| B-tree cursor seek + 1024-row window (100K rows, read-ahead off) | 945.7 us | 359.98 KB | Mid-tree seek followed by a bounded sequential window |
+| B-tree cursor seek + 1024-row window (100K rows, read-ahead on) | 824.7 us | 346.54 KB | Seek-window path with speculative next-leaf reads; latency stays roughly flat as the tree grows |
 
-### SQL Indexed Aggregate Spot Checks (March 14, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| `SUM(value)` no index (100K rows) | 5.75 ms | 482 B | Full table aggregate over decoded rows |
-| `SUM(value)` direct index aggregate (100K rows) | 3.57 ms | 553 B | Walks integer index keys without base-row fetch |
-| `COUNT(value)` no index (100K rows) | 4.02 ms | 490 B | Full table aggregate |
-| `COUNT(value)` direct index aggregate (100K rows) | 2.87 ms | 561 B | Counts row-id payloads per integer key |
-| `MIN(value)` no index (100K rows) | 5.09 ms | 482 B | Full scan baseline |
-| `MIN(value)` direct index aggregate (100K rows) | 387 ns | 552 B | First-key fast path on ordered integer index |
-| `MAX(value)` no index (100K rows) | 5.50 ms | 482 B | Full scan baseline |
-| `MAX(value)` direct index aggregate (100K rows) | 404 ns | 552 B | Rightmost-key fast path on ordered integer index |
-| `COUNT(*) WHERE value BETWEEN ...` no index (100K rows) | 9.74 ms | 2.45 KB | Scan + predicate baseline |
-| `COUNT(*) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 1.80 ms | 1.05 KB | Range aggregate from integer index keys |
-| `SUM(value) WHERE value BETWEEN ...` no index (100K rows) | 12.53 ms | 2.74 KB | Scan + predicate baseline |
-| `SUM(value) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 1.84 ms | 984 B | Range aggregate stays on index data |
-
-### SQL Primary-Key Aggregate Spot Checks (March 14, 2026)
+### SQL Covered Read-Path Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `MIN(id)` via table key aggregate (100K rows) | 330 ns | 504 B | First-row fast path on the table B-tree key |
-| `MAX(id)` via table key aggregate (100K rows) | 341 ns | 552 B | Rightmost-key fast path on the table B-tree key |
-| `COUNT(id)` via table key aggregate (100K rows) | 200 ns | 344 B | Reuses cached table row count; same semantics as `COUNT(*)` on integer PK |
-| `SUM(id)` via table key aggregate (100K rows) | 3.47 ms | 505 B | Sums row keys without row payload decode |
-| `COUNT(*) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 1.42 ms | 744 B | Range aggregate stays on the table key stream |
-| `SUM(id) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 1.42 ms | 800 B | PK range aggregate without row fetch |
+| Unique index lookup `SELECT *` (100K rows) | 5.963 us | 19.47 KB | Baseline unique secondary-index lookup |
+| Unique index lookup `SELECT id` (100K rows) | 2.374 us | 9.92 KB | Covered projection from index payload |
+| Unique index lookup `SELECT lookup_key` (100K rows) | 2.870 us | 9.88 KB | Covered projection from index payload |
+| Non-unique index lookup `SELECT *` (100K rows) | 148.913 us | 83.00 KB | Baseline duplicate-key secondary-index lookup |
+| Non-unique index lookup `SELECT id` (100K rows) | 19.163 us | 34.61 KB | Covered projection drops most row materialization cost |
+| `ORDER BY value` no index (100K rows) | 160.914 ms | 63.53 MB | Full sort baseline from the latest indexed-order rerun |
+| `ORDER BY value` covered index-order scan (100K rows) | 33.637 ms | 14.58 MB | `SELECT id, value` stays on index data |
+| `ORDER BY value LIMIT 100` index-order scan (100K rows) | 63.45 us | 83.22 KB | Index order avoids sort, still fetches base rows |
+| `ORDER BY value LIMIT 100` covered index-order scan (100K rows) | 21.78 us | 40.75 KB | Index-only top-N path |
+| `WHERE value BETWEEN ...` row fetch (100K rows) | 52.728 ms | 16.45 MB | Integer range scan with base-row fetch |
+| `WHERE value BETWEEN ...` covered projection (100K rows) | 16.619 ms | 7.30 MB | Integer range scan that stays on index data |
+| `WHERE value BETWEEN ... SELECT id, category` compact projection (100K rows) | 38.913 ms | 7.30 MB | Non-covered indexed range scan decodes only projected payload columns instead of wide rows |
+| `WHERE value BETWEEN ... SELECT id, value + id` compact expression projection (100K rows) | 39.049 ms | 7.30 MB | Indexed range scan keeps the compact payload decode path even when projection includes an expression |
 
-### SQL DISTINCT Aggregate Spot Checks (March 14, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| `COUNT(DISTINCT value)` no index (100K rows) | 3.39 ms | 200.01 KB | Duplicate-heavy integer column with 1,024 distinct keys |
-| `COUNT(DISTINCT value)` direct index aggregate (100K rows) | 41.07 us | 576 B | Counts unique integer index keys without row decode |
-| `SUM(DISTINCT value)` no index (100K rows) | 3.47 ms | 200.01 KB | Full table distinct-set baseline |
-| `SUM(DISTINCT value)` direct index aggregate (100K rows) | 38.69 us | 576 B | Sums unique integer index keys directly |
-| `AVG(DISTINCT value)` no index (100K rows) | 4.11 ms | 200.01 KB | Full table distinct-set baseline |
-| `AVG(DISTINCT value)` direct index aggregate (100K rows) | 38.85 us | 576 B | Computes distinct sum/count from index keys only |
-
-### SQL Grouped Aggregate Spot Checks (March 14, 2026)
+### SQL Composite Equality Lookup Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `GROUP BY group_id SELECT group_id, COUNT(*)` no index (100K rows) | 33.34 ms | 11.45 MB | Generic grouped hash aggregate over a duplicate-heavy integer key |
-| `GROUP BY group_id SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 146.74 us | 102.98 KB | Streams distinct integer index keys and row-id payload counts without row decode |
-| `GROUP BY group_id SELECT group_id, COUNT(*), SUM(group_id), AVG(group_id)` no index (100K rows) | 35.30 ms | 11.71 MB | Generic grouped hash aggregate with multiple scalar states per group |
-| `GROUP BY group_id SELECT group_id, COUNT(*), SUM(group_id), AVG(group_id)` direct index aggregate (100K rows) | 160.43 us | 165.84 KB | Same grouped result computed directly from ordered index keys |
-| `GROUP BY group_id WHERE group_id BETWEEN ... SELECT group_id, COUNT(*)` no index (100K rows) | 33.36 ms | 11.14 MB | Generic grouped aggregate still scans and groups the filtered input |
-| `GROUP BY group_id WHERE group_id BETWEEN ... SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 76.36 us | 52.18 KB | Range-restricted grouped aggregate stays on the ordered integer index |
-| `GROUP BY group_id ORDER BY group_id LIMIT 100 SELECT group_id, COUNT(*)` no index (100K rows) | 33.20 ms | 11.44 MB | Generic grouped aggregate still materializes, sorts, and then trims |
-| `GROUP BY group_id ORDER BY group_id LIMIT 100 SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 15.96 us | 10.30 KB | Natural key order from the index lets the grouped path stop after the first 100 groups |
-| `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` no index (100K rows) | 28.07 ms | 10.76 MB | Equality filter still scans the table, groups one key, and applies HAVING in the generic path |
-| `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 1.04 us | 1.41 KB | Equality-restricted grouped fast path now applies `HAVING COUNT(*)` directly from the index payload count |
+| `WHERE a = ... AND b = ...` no index (100K rows) | 182.879 ms | 69.44 MB | Full scan over wide rows |
+| `WHERE a = ... AND b = ...` single-column index (100K rows) | 32.360 us | 20.54 KB | Uses `a` only, then filters `b` after row fetch |
+| `WHERE a = ... AND b = ... SELECT *` composite index (100K rows) | 3.427 us | 18.19 KB | Direct composite equality lookup over hashed secondary index |
+| `WHERE a = ... AND b = ... SELECT id, a, b` composite covered projection (100K rows) | 2.523 us | 10.33 KB | Index-only projection now uses no-copy hashed-payload matching on the covered path |
+| `WHERE a = ... AND b = ... SELECT id, a, b` unique composite covered projection (100K rows) | 2.575 us | 10.33 KB | Same covered path on a unique composite index |
 
-### SQL Composite Grouped Aggregate Spot Checks (March 14, 2026)
+### SQL Indexed Aggregate Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `GROUP BY a, b SELECT a, b, COUNT(*)` no index (100K rows) | 45.17 ms | 22.64 MB | Generic grouped aggregate over the full composite key builds hash state from decoded rows |
-| `GROUP BY a, b SELECT a, b, COUNT(*)` composite index aggregate (100K rows) | 3.01 ms | 3.65 MB | Streams hashed composite index payloads and aggregates directly from grouped key buckets |
-| `GROUP BY a SELECT a, COUNT(*)` no index (100K rows) | 35.53 ms | 11.46 MB | Generic grouped aggregate over the leftmost composite key prefix |
-| `GROUP BY a SELECT a, COUNT(*)` composite index prefix aggregate (100K rows) | 951.0 us | 2.09 MB | Leftmost-prefix grouping stays on the `(a, b)` index and avoids base-row decode |
+| `SUM(value)` no index (100K rows) | 56.782 ms | 20.79 MB | Full table aggregate over decoded rows |
+| `SUM(value)` direct index aggregate (100K rows) | 14.491 ms | 4.46 MB | Walks integer index keys without base-row fetch |
+| `COUNT(value)` no index (100K rows) | 56.479 ms | 20.79 MB | Full table aggregate |
+| `COUNT(value)` direct index aggregate (100K rows) | 14.519 ms | 4.47 MB | Counts row-id payloads per integer key |
+| `MIN(value)` no index (100K rows) | 57.152 ms | 20.78 MB | Full scan baseline |
+| `MIN(value)` direct index aggregate (100K rows) | 7.608 us | 5674 B | First-key fast path on ordered integer index |
+| `MAX(value)` no index (100K rows) | 57.626 ms | 20.78 MB | Full scan baseline |
+| `MAX(value)` direct index aggregate (100K rows) | 519.6 ns | 824 B | Rightmost-key fast path on ordered integer index |
+| `COUNT(*) WHERE value BETWEEN ...` no index (100K rows) | 56.392 ms | 20.79 MB | Scan + predicate baseline |
+| `COUNT(*) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 7.304 ms | 2.20 MB | Range aggregate from integer index keys |
+| `SUM(value) WHERE value BETWEEN ...` no index (100K rows) | 57.880 ms | 20.79 MB | Scan + predicate baseline |
+| `SUM(value) WHERE value BETWEEN ...` direct index aggregate (100K rows) | 7.284 ms | 2.20 MB | Range aggregate stays on index data |
 
-### SQL Predicate Pushdown Spot Checks (March 14, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| `WHERE value < 200000` (100K rows) | 15.16 ms | 6.06 MB | Single simple pre-decode predicate with about 20% selectivity |
-| `WHERE value >= 10000 AND value < 20000` (100K rows) | 7.36 ms | 1.04 MB | Compound same-column range now pushes both bounds into pre-decode filtering |
-| `WHERE category = 'Alpha' AND value < 200000` (100K rows) | 7.57 ms | 1.81 MB | Compound mixed text + integer predicate now pushes both conjuncts before row decode |
-
-### SQL Scan Projection Spot Checks (March 15, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| Filtered scan + column projection (10K rows, 20% selectivity) | 738.0 us | 252.56 KB | Generic projection batching now reaches the projection boundary too; small `10K` gain is modest, but the column path stays flat while the batch transport survives longer |
-| Filtered scan + expression projection (10K rows, 20% selectivity) | 711.5 us | 426.74 KB | `FilterProjectionOperator` now keeps generic expression projections batch-backed instead of dropping to row transport immediately |
-| Filtered scan + column projection (100K rows, 20% selectivity) | 57.09 ms | 24.24 MB | Large filtered scan improves once the generic `ProjectionOperator` preserves batch transport on the non-compact path |
-| Filtered scan + expression projection (100K rows, 20% selectivity) | 57.76 ms | 24.95 MB | Same scan shape with batch transport carried through `FilterProjectionOperator`, cutting broad expression-projection overhead |
-
-### SQL Batched Scan Root Spot Checks (March 15, 2026)
+### SQL Primary-Key Aggregate Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `SELECT *` full scan (100K rows) | 111.10 ms | 48.64 MB | First broader non-compact batch-backed root: plain `TableScanOperator` now feeds `QueryResult` through row batches instead of only row-by-row materialization |
-| `SELECT * WHERE value < 200000` (100K rows) | 77.50 ms | 27.36 MB | Plain filtered scan now stays batch-backed through `FilterOperator` on the simple scan path |
-| `SELECT * WHERE value < 10000` (100K rows) | 57.85 ms | 21.93 MB | Same batched scan root with a low-selectivity predicate |
-| `SELECT * LIMIT 100` (100K rows) | 119.36 us | 97.50 KB | `LimitOperator` now preserves the scan batch root instead of forcing row-by-row materialization at the result boundary |
+| `MIN(id)` via table key aggregate (100K rows) | 7.052 us | 5526 B | First-row fast path on the table B-tree key |
+| `MAX(id)` via table key aggregate (100K rows) | 409.1 ns | 728 B | Rightmost-key fast path on the table B-tree key |
+| `COUNT(id)` via table key aggregate (100K rows) | 278.5 ns | 520 B | Reuses cached table row count; same semantics as `COUNT(*)` on integer PK |
+| `SUM(id)` via table key aggregate (100K rows) | 55.462 ms | 20.79 MB | Sums row keys without row payload decode |
+| `COUNT(*) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 27.535 ms | 10.67 MB | Range aggregate stays on the table key stream |
+| `SUM(id) WHERE id BETWEEN ...` via table key aggregate (100K rows) | 27.166 ms | 10.67 MB | PK range aggregate without row fetch |
 
-### SQL Batched Sort / Distinct Spot Checks (March 15, 2026)
-
-| Metric | Mean | Allocated | Notes |
-|--------|------|-----------|-------|
-| `SELECT DISTINCT value` (10K rows) | 1.75 ms | 2.23 MB | `DistinctOperator` now ingests batch sources directly and can act as a batch-backed root rather than pulling one row at a time through the result boundary |
-| `SELECT DISTINCT value ORDER BY value LIMIT 100` (10K rows) | 2.27 ms | 969.46 KB | `Distinct` feeding `Sort` now stays batch-aware on both operators before final row materialization |
-| `SELECT * ORDER BY value` (100K rows) | 152.39 ms | 64.82 MB | `SortOperator` now materializes input from batch sources in `OpenAsync` and can emit sorted output in row batches |
-| `SELECT * ORDER BY value + id` (100K rows) | 145.88 ms | 64.75 MB | Same full-sort path with an expression key; batch-aware input still helps when sort keys are computed |
-| `SELECT * ORDER BY value LIMIT 100` (100K rows) | 53.49 ms | 20.89 MB | Top-N sort root now stays batch-backed at the output boundary too |
-| `SELECT * ORDER BY value + id LIMIT 100` (100K rows) | 53.40 ms | 20.93 MB | Expression top-N path over the batch-aware sort root |
-
-### SQL Batched Aggregate Consumer Spot Checks (March 15, 2026)
+### SQL DISTINCT Aggregate Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `Scalar SUM(value)` (100K rows) | 55.62 ms | 20.78 MB | `ScalarAggregateOperator` now ingests batch sources directly, removing row-by-row executor calls on the generic scan-fed aggregate path |
-| `Scalar COUNT(value)` (100K rows) | 55.82 ms | 20.79 MB | Same generic scalar aggregate consumer path with batch-fed row accumulation |
-| `Scalar MIN(value)` (100K rows) | 56.10 ms | 20.78 MB | Generic aggregate consumer stays on batched scan input even when the aggregate itself is non-additive |
-| `Hash SUM(value) via GROUP BY 1` (100K rows) | 55.02 ms | 20.79 MB | `HashAggregateOperator` now reads batches directly before materializing grouped output rows |
-| `GROUP BY with COUNT + AVG` (100K rows) | 58.42 ms | 20.93 MB | Generic grouped aggregate path over the batch-fed scan root; specialized index-grouped paths remain much faster when they apply |
+| `COUNT(DISTINCT value)` no index (100K rows) | 29.054 ms | 10.95 MB | Duplicate-heavy integer column with 1,024 distinct keys |
+| `COUNT(DISTINCT value)` direct index aggregate (100K rows) | 81.74 us | 904 B | Counts unique integer index keys without row decode |
+| `SUM(DISTINCT value)` no index (100K rows) | 29.739 ms | 10.94 MB | Full table distinct-set baseline |
+| `SUM(DISTINCT value)` direct index aggregate (100K rows) | 83.80 us | 904 B | Sums unique integer index keys directly |
+| `AVG(DISTINCT value)` no index (100K rows) | 29.635 ms | 10.95 MB | Full table distinct-set baseline |
+| `AVG(DISTINCT value)` direct index aggregate (100K rows) | 83.26 us | 904 B | Computes distinct sum/count from index keys only |
 
-### SQL Join Projection Spot Checks (March 15, 2026)
+### SQL Grouped Aggregate Spot Checks (March 25, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `INNER JOIN 1K x 1K` hash join | 289.1 us | 312.13 KB | `HashJoinOperator` now ingests build and probe sides from batch sources internally, reducing join-core overhead on the plain hash path |
-| `INNER JOIN 1K x 20K` planner-swap hash join | 5.00 ms | 2.04 MB | Same internal batch-fed hash path on a skewed join where the planner flips the build side |
-| Wide late-projection hash join (`1K x 1K`) | 410.8 us | 398.16 KB | Hash join still trims both sides to join keys plus projected tail columns, now over the batch-fed join core |
-| Wide late-projection forced nested-loop join (`1K x 1K`) | 43.55 ms | 561.03 KB | Nested-loop path trims decode too, but remains far slower than hash join |
-| Composite join `SELECT l.label, r.amount` lookup join (`1K x 1K`) | 528.6 us | 437.72 KB | Right-side composite/text lookup join path over hashed secondary indexes; still fetches base rows for non-covered right columns |
-| Composite join `SELECT l.label, r.amount` forced hash (`1K x 1K`) | 474.9 us | 682.61 KB | Same join shape forced back to hash join; faster here, but with materially higher allocation |
-| Composite join `SELECT l.label, r.id, r.a, r.b` covered lookup (`1K x 1K`) | 440.8 us | 500.56 KB | Covered composite join stays on index payloads for right PK and indexed key columns |
-| Composite join `SELECT l.label, r.id, r.a, r.b` covered forced hash (`1K x 1K`) | 514.4 us | 745.48 KB | Same covered projection forced to hash join; slower and more allocation-heavy than the covered lookup path |
-| Join `SELECT l.id, r.amount + l.id` (`1K x 1K`) | 345.3 us | 568.12 KB | Generic expression-projection batching still sits above the join, with the join core itself now batch-fed internally |
-| Join `SELECT l.id, r.amount + l.id WHERE r.amount > 2500` (`1K x 1K`) | 329.8 us | 517.55 KB | Same join + residual filter shape over the batch-fed hash join core |
+| `GROUP BY group_id SELECT group_id, COUNT(*)` no index (100K rows) | 34.742 ms | 11.51 MB | Generic grouped hash aggregate over a duplicate-heavy integer key |
+| `GROUP BY group_id SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 153.156 us | 103.10 KB | Streams distinct integer index keys and row-id payload counts without row decode |
+| `GROUP BY group_id SELECT group_id, COUNT(*), SUM(group_id), AVG(group_id)` no index (100K rows) | 37.018 ms | 11.93 MB | Generic grouped hash aggregate with multiple scalar states per group |
+| `GROUP BY group_id SELECT group_id, COUNT(*), SUM(group_id), AVG(group_id)` direct index aggregate (100K rows) | 170.621 us | 165.96 KB | Same grouped result computed directly from ordered index keys |
+| `GROUP BY group_id WHERE group_id BETWEEN ... SELECT group_id, COUNT(*)` no index (100K rows) | 35.477 ms | 11.24 MB | Generic grouped aggregate still scans and groups the filtered input |
+| `GROUP BY group_id WHERE group_id BETWEEN ... SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 87.671 us | 52.30 KB | Range-restricted grouped aggregate stays on the ordered integer index |
+| `GROUP BY group_id ORDER BY group_id LIMIT 100 SELECT group_id, COUNT(*)` no index (100K rows) | 35.231 ms | 11.52 MB | Generic grouped aggregate still materializes, sorts, and then trims |
+| `GROUP BY group_id ORDER BY group_id LIMIT 100 SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 17.615 us | 18.55 KB | Natural key order from the index lets the grouped path stop after the first 100 groups |
+| `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` no index (100K rows) | 32.516 ms | 10.76 MB | Equality filter still scans the table, groups one key, and applies HAVING in the generic path |
+| `GROUP BY group_id WHERE group_id = ... HAVING COUNT(*) >= ... SELECT group_id, COUNT(*)` direct index aggregate (100K rows) | 1.155 us | 1.53 KB | Equality-restricted grouped fast path now applies `HAVING COUNT(*)` directly from the index payload count |
+
+### SQL Composite Grouped Aggregate Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `GROUP BY a, b SELECT a, b, COUNT(*)` no index (100K rows) | 44.156 ms | 22.57 MB | Generic grouped aggregate over the full composite key builds hash state from decoded rows |
+| `GROUP BY a, b SELECT a, b, COUNT(*)` composite index aggregate (100K rows) | 3.571 ms | 3.66 MB | Streams hashed composite index payloads and aggregates directly from grouped key buckets |
+| `GROUP BY a SELECT a, COUNT(*)` no index (100K rows) | 35.172 ms | 11.41 MB | Generic grouped aggregate over the leftmost composite key prefix |
+| `GROUP BY a SELECT a, COUNT(*)` composite index prefix aggregate (100K rows) | 927.8 us | 2.09 MB | Leftmost-prefix grouping stays on the `(a, b)` index and avoids base-row decode |
+
+### SQL Predicate Pushdown Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `WHERE value < 200000` (100K rows) | 67.312 ms | 26.89 MB | Single simple pre-decode predicate with about 20% selectivity |
+| `WHERE value >= 10000 AND value < 20000` (100K rows) | 54.542 ms | 21.84 MB | Compound same-column range now pushes both bounds into pre-decode filtering |
+| `WHERE category = 'Alpha' AND value < 200000` (100K rows) | 56.748 ms | 22.61 MB | Compound mixed text + integer predicate now pushes both conjuncts before row decode |
+
+### SQL Scan Projection Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| Compact scan batch plan: residual column projection (10K rows) | 1.172 ms | 780.69 KB | Compact scan path keeps residual filtering and column projection on the internal row-batch transport |
+| Compact scan batch plan: expression projection (10K rows, 20% selectivity) | 856.8 us | 266.12 KB | Compact scan path keeps expression projection batch-backed instead of dropping to row transport immediately |
+| Compact scan batch plan: residual column projection (100K rows) | 71.956 ms | 28.64 MB | Large filtered compact scan stays on the internal row-batch path end to end |
+| Generic scan batch plan: expression projection + LIMIT (100K rows, 20% selectivity) | 56.532 ms | 23.41 MB | Generic scan path still reaches the projection boundary without losing the batch transport |
+
+### SQL Batched Scan Root Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `SELECT *` full scan (100K rows) | 123.052 ms | 48.32 MB | Plain `TableScanOperator` now feeds `QueryResult` through row batches instead of only row-by-row materialization |
+| `SELECT * WHERE value < 200000` (100K rows) | 68.517 ms | 26.89 MB | Plain filtered scan stays batch-backed through `FilterOperator` on the simple scan path |
+| `SELECT * WHERE value < 10000` (100K rows) | 54.625 ms | 21.83 MB | Same batched scan root with a low-selectivity predicate |
+| `SELECT * LIMIT 100` (100K rows) | 110.620 us | 98.49 KB | `LimitOperator` preserves the scan batch root instead of forcing row-by-row materialization at the result boundary |
+
+### SQL Batched Sort / Distinct Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `SELECT DISTINCT value` (10K rows) | 2.004 ms | 2.21 MB | `DistinctOperator` ingests batch sources directly and can act as a batch-backed root rather than pulling one row at a time through the result boundary |
+| `SELECT DISTINCT value ORDER BY value LIMIT 100` (10K rows) | 2.660 ms | 974.79 KB | `Distinct` feeding `Sort` stays batch-aware on both operators before final row materialization |
+| `SELECT * ORDER BY value` (100K rows) | 146.535 ms | 63.56 MB | `SortOperator` materializes input from batch sources in `OpenAsync` and can emit sorted output in row batches |
+| `SELECT * ORDER BY value + id` (100K rows) | 161.375 ms | 63.56 MB | Same full-sort path with an expression key; batch-aware input still helps when sort keys are computed |
+| `SELECT * ORDER BY value LIMIT 100` (100K rows) | 52.767 ms | 20.89 MB | Top-N sort root stays batch-backed at the output boundary too |
+| `SELECT * ORDER BY value + id LIMIT 100` (100K rows) | 52.864 ms | 20.93 MB | Expression top-N path over the batch-aware sort root |
+
+### SQL Batched Aggregate Consumer Spot Checks (March 25, 2026)
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `Scalar SUM(value)` (100K rows) | 53.467 ms | 20.79 MB | `ScalarAggregateOperator` ingests batch sources directly, removing row-by-row executor calls on the generic scan-fed aggregate path |
+| `Scalar COUNT(value)` (100K rows) | 53.435 ms | 20.79 MB | Same generic scalar aggregate consumer path with batch-fed row accumulation |
+| `Scalar MIN(value)` (100K rows) | 53.660 ms | 20.78 MB | Generic aggregate consumer stays on batched scan input even when the aggregate itself is non-additive |
+| `Hash SUM(value) via GROUP BY 1` (100K rows) | 53.400 ms | 20.79 MB | `HashAggregateOperator` reads batches directly before materializing grouped output rows |
+| `GROUP BY with COUNT + AVG` (100K rows) | 57.704 ms | 20.98 MB | Generic grouped aggregate path over the batch-fed scan root; specialized index-grouped paths remain much faster when they apply |
+
+### SQL Join Spot Checks (March 26, 2026)
+
+Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv`
+
+| Metric | Mean | Allocated | Notes |
+|--------|------|-----------|-------|
+| `INNER JOIN 5Kx200x10` reorder chain with outer mixed union filter | 2.071 ms | 792.46 KB | Focused planner/executor stress case for reordered multi-join pipelines under an outer mixed union filter |
+
+The latest targeted join rerun is narrower than the older March 25 projection matrix: this refresh is a focused reorder-chain validation case rather than a full hash-vs-nested-loop sweep.
 
 ### Focused Query-Engine Validation (March 12, 2026)
 
@@ -458,20 +510,22 @@ Defaults:
 
 ### In-Memory Spot Checks
 
+The single-op, ADO.NET, and dedicated rotating batch rows below were refreshed on March 25, 2026. The load/save rows were refreshed on March 26, 2026 from `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InMemoryPersistenceBenchmarks-report.csv`.
+
 | Metric | Current Result | Notes |
 |--------|----------------|-------|
-| SQL insert (private engine in-memory) | 3.02 us | `InMemorySqlBenchmarks` |
-| Collection put (private engine in-memory) | 2.12 us | `InMemoryCollectionBenchmarks` on the binary payload path |
-| SQL batch insert x100 (rotating in-memory) | ~1.47M rows/sec | Dedicated 10s run, resets the in-memory DB every 100K inserted rows |
-| Collection batch put x100 (rotating in-memory) | ~946K docs/sec | Dedicated 10s run, resets the in-memory DB every 100K inserted docs |
-| ADO.NET ExecuteScalar (`:memory:`) | 224 ns | Private connection-local in-memory DB |
-| ADO.NET ExecuteScalar (`:memory:name`) | 331 ns | Named shared in-memory DB |
-| ADO.NET insert (`:memory:`) | 2.65 us | Private connection-local in-memory DB |
-| ADO.NET insert (`:memory:name`) | 2.61 us | Named shared in-memory DB |
-| Load SQL DB + WAL into memory | 0.70 ms | `Database.LoadIntoMemoryAsync` |
-| Load collection DB + WAL into memory | 1.01 ms | `Database.LoadIntoMemoryAsync` |
-| Save in-memory SQL snapshot to disk | 1.81 ms | `Database.SaveToFileAsync` |
-| Save in-memory collection snapshot to disk | 2.21 ms | `Database.SaveToFileAsync` |
+| SQL insert (private engine in-memory) | 3.23 us | `InMemorySqlBenchmarks` |
+| Collection put (private engine in-memory) | 3.60 us | `InMemoryCollectionBenchmarks` on the binary payload path |
+| SQL batch insert x100 (rotating in-memory) | ~1.32M rows/sec | Dedicated 10s run, resets the in-memory DB every 100K inserted rows |
+| Collection batch put x100 (rotating in-memory) | ~868.16K docs/sec | Dedicated 10s run, resets the in-memory DB every 100K inserted docs |
+| ADO.NET ExecuteScalar (`:memory:`) | 238.7 ns | Private connection-local in-memory DB |
+| ADO.NET ExecuteScalar (`:memory:name`) | 347.1 ns | Named shared in-memory DB |
+| ADO.NET insert (`:memory:`) | 2.722 us | Private connection-local in-memory DB |
+| ADO.NET insert (`:memory:name`) | 2.903 us | Named shared in-memory DB |
+| Load SQL DB + WAL into memory | 1.812 ms | `Database.LoadIntoMemoryAsync` |
+| Load collection DB + WAL into memory | 2.493 ms | `Database.LoadIntoMemoryAsync` |
+| Save in-memory SQL snapshot to disk | 4.143 ms | `Database.SaveToFileAsync` |
+| Save in-memory collection snapshot to disk | 4.448 ms | `Database.SaveToFileAsync` |
 
 ### Cold / Cache-Pressured Lookup Spot Checks
 
@@ -479,45 +533,50 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 
 | Metric | Current Result | Notes |
 |--------|----------------|-------|
-| SQL cold lookup (file-backed) | 30.05 us | Cache-pressured primary-key lookup |
-| SQL cold lookup (in-memory) | 2.34 us | Same workload after `LoadIntoMemoryAsync` |
-| Collection cold get (file-backed) | 30.51 us | Cache-pressured direct collection lookup |
-| Collection cold get (in-memory) | 2.04 us | Same workload after `LoadIntoMemoryAsync` |
+| SQL cold lookup (file-backed) | 29.608 us | Cache-pressured primary-key lookup |
+| SQL cold lookup (in-memory) | 2.507 us | Same workload after `LoadIntoMemoryAsync` |
+| Collection cold get (file-backed) | 30.146 us | Cache-pressured direct collection lookup |
+| Collection cold get (in-memory) | 2.178 us | Same workload after `LoadIntoMemoryAsync` |
 
 ### Indexed Lookup / Tuning Spot Checks
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| Collection `FindByIndex` int equality (1 match) | 1.17 us | 1.51 KB | Direct integer-key index probe |
-| Collection `FindByIndex` text equality (1 match) | 1.68 us | 3.90 KB | Ordered text bucket probe with exact string match before document materialization |
-| Collection `FindByIndex` nested path equality | 493 ns | 1.05 KB | Indexed nested scalar path probe |
-| Collection `FindByPath` nested path equality | 501 ns | 1.05 KB | Query-facing path API on the same indexed nested path |
-| Collection `FindByIndex` array path equality | 404 ns | 912 B | Indexed terminal-array contains lookup |
-| Collection `FindByPath` array path equality | 415 ns | 912 B | Query-facing path API on the same indexed array path |
-| Collection `FindByPath` nested array path equality | 496 ns | 1.13 KB | Indexed scalar lookup through array-of-object elements |
-| Collection `FindByPath` integer range (1024 matches) | 491.8 us | 307.18 KB | Ordered integer path range query over the public collection path surface |
-| Collection `FindByPath` text range (1000 matches) | 496.9 us | 449.78 KB | Ordered text path range query over prefix-bucket collection indexes |
-| Collection `PutAsync` with secondary indexes (insert) | 8.99 us | 42.08 KB | Transaction + rollback micro for write maintenance |
-| Collection `PutAsync` with secondary indexes (update) | 20.34 us | 72.54 KB | Includes old-entry removal plus reinsert |
-| Collection `DeleteAsync` with secondary indexes | 17.51 us | 64.58 KB | Transaction + rollback micro for delete-side cleanup |
+| Collection `FindByIndex` int equality (1 match) | 1.407 us | 1546 B | Direct integer-key index probe |
+| Collection `FindByIndex` text equality (1 match) | 2.152 us | 3993 B | Ordered text bucket probe with exact string match before document materialization |
+| Collection `FindByIndex` nested path equality | 579.9 ns | 1080 B | Indexed nested scalar path probe |
+| Collection `FindByPath` nested path equality | 568.9 ns | 1080 B | Query-facing path API on the same indexed nested path |
+| Collection `FindByIndex` array path equality | 481.4 ns | 912 B | Indexed terminal-array contains lookup |
+| Collection `FindByPath` array path equality | 474.8 ns | 912 B | Query-facing path API on the same indexed array path |
+| Collection `FindByPath` nested array path equality | 599.3 ns | 1160 B | Indexed scalar lookup through array-of-object elements |
+| Collection `FindByPath` integer range (1024 matches) | 552.79 us | 314548 B | Ordered integer path range query over the public collection path surface |
+| Collection `FindByPath` text range (1000 matches) | 545.69 us | 460571 B | Ordered text path range query over prefix-bucket collection indexes |
+| Collection `PutAsync` with secondary indexes (insert) | 12.453 us | 43205 B | Transaction + rollback micro for write maintenance |
+| Collection `PutAsync` with secondary indexes (update) | 29.079 us | 74375 B | Includes old-entry removal plus reinsert |
+| Collection `DeleteAsync` with secondary indexes | 47.314 us | 209424 B | Transaction + rollback micro for delete-side cleanup |
 
 ### File-Backed Lookup Tuning Takeaways
 
-- `MaxCachedPages = 2048` was the best collection setting in the current tuning matrix: indexed collection lookup fell from `66.65 us` at 16 pages to `24.58 us` at 2048 pages.
-- `UseCachingBTreeIndexes` was neutral-to-negative on these lookup workloads. The worst regressions showed up on SQL reader-session paths, so it is not the recommended default tuning knob.
-- The older reader-session setup penalty has largely been removed. In the latest dedicated `ReaderSessionBenchmarks`, simple point lookups measured `649.83 ns` with per-query sessions, `617.39 ns` with a reused session, and `582.32 ns` with direct `ExecuteAsync`.
-- A small dedicated WAL read cache also helps once the hottest pages live in the WAL instead of the main file: the WAL-backed SQL cold-lookup micro dropped from `25.64 us` to `17.80 us` when `MaxCachedWalReadPages = 128`.
-- Raw storage traversal benefits from speculative next-leaf reads too: on the direct file-backed `BTreeCursor` micro, full scans improved from `9.12 ms` to `7.86 ms` at `10K` rows and from `88.88 ms` to `80.58 ms` at `100K`, while the `1024`-row seek window improved from about `928 us` to `799 us` at `10K` and from `900 us` to `797 us` at `100K`.
+- `MaxCachedPages = 2048` was still the best collection setting in the current tuning matrix: indexed collection lookup fell from `54.15 us` at 16 pages to `20.57 us` at 2048 pages with `UseCachingIndexes = false`.
+- `UseCachingIndexes` stayed neutral-to-negative on these lookup workloads. At `256` pages, SQL indexed lookup worsened from `91.55 us` to `273.44 us`, and the reused reader-session path worsened from `41.36 us` to `212.94 us`; collection lookup was roughly flat at `32.35 us` vs `34.06 us`.
+- The reader-session setup penalty is visible again in the latest dedicated `ReaderSessionBenchmarks`: simple point lookups measured `1,703.7 ns` with per-query sessions, `680.9 ns` with a reused session, and `663.6 ns` with direct `ExecuteAsync`.
+- A small dedicated WAL read cache still helps once the hottest pages live in the WAL instead of the main file: the WAL-backed SQL cold-lookup micro dropped from `28.74 us` to `19.83 us` when `MaxCachedWalReadPages = 128`.
+- Raw storage traversal still benefits from speculative next-leaf reads: on the direct file-backed `BTreeCursor` micro, full scans improved from `9.25 ms` to `8.51 ms` at `10K` rows and from `92.74 ms` to `87.41 ms` at `100K`, while the `1024`-row seek window improved from `919.2 us` to `822.2 us` at `10K` and from `945.7 us` to `824.7 us` at `100K`.
 - Recommended direct file-backed read preset for hot local workloads: `builder.UseDirectLookupOptimizedPreset()` keeps the existing page-cache shape and read path.
 - Recommended direct cold-file preset for cache-pressured local reads: `builder.UseDirectColdFileLookupPreset()` keeps the existing cache shape but enables memory-mapped reads for clean main-file pages.
 
 ### File-Backed Durable Write Tuning Takeaways
 
-- In the March 10, 2026 `write-diagnostics` median-of-3 run after the final revert and checkpoint cleanup, `FrameCount(4096)+Background(64 pages/step)` was the best measured write-heavy variant at `31.96K ops/sec`. `Background(256)` followed at `31.95K`, foreground `FrameCount(4096)` measured `31.73K`, and `WalSize(8 MiB)` measured `30.28K`.
-- Background auto-checkpointing still does not make checkpoints cheaper. It moves them off the triggering commit. In the same median run, foreground `FrameCount(4096)` had `236` commits that paid checkpoint cost, while the `64`-page and `256`-page background variants had `0`.
-- Smaller slices still reduce per-checkpoint task time but are no longer the throughput winner. At `16` pages/step, average checkpoint time fell to about `2.09 ms`, but throughput landed lower at `29.24K ops/sec` because more background steps were required.
-- The non-checkpoint commit path is now much cleaner than the earlier checkpoint phase. The two changes that mattered were deferring DB flushes until checkpoint completion and rebuilding retained WAL index state from the copied bytes instead of rescanning the retained suffix after compaction.
-- Higher frame-count thresholds still help by making checkpoints less frequent, and background sliced scheduling helps by keeping almost all of that work off the write call that triggered it.
+- Do not compare the durable write harnesses directly. `durable-sql-batching` answers explicit-transaction and analyzed-table SQL questions, `write-diagnostics` answers single-row checkpoint/WAL policy questions, and `concurrent-write-diagnostics` answers shared-engine in-process writer contention questions.
+- The March 27, 2026 `durable-sql-batching-20260327-235637-median-of-3.csv` run showed that application-level batching is the largest lever. Auto-commit single-row SQL stayed around `270.5 ops/sec`, but explicit transactions scaled to about `2695.8 rows/sec` at `10` rows/commit, `26999.5 rows/sec` at `100` rows/commit, and `197256.9 rows/sec` at `1000` rows/commit.
+- The same batching run also showed that `UseLowLatencyDurableWritePreset()` did not beat the baseline analyzed single-row path on this runner: analyzed `UseWriteOptimizedPreset()` landed at `267.8 ops/sec`, while analyzed `UseLowLatencyDurableWritePreset()` landed at `261.4 ops/sec`. Treat the low-latency preset as measure-first rather than the new default recommendation.
+- Commit-path diagnostics from the batching run still pointed at the durable flush as the dominant fixed cost for single-row durable SQL. WAL append, publish-batch, finalize, and checkpoint-decision stages remained comparatively small.
+- The latest dedicated single-writer `write-diagnostics-20260328-011755-median-of-3.csv` rerun stayed in a tight `~274-276 ops/sec` band. `FrameCount(4096)` led at `276.3 ops/sec`, `FrameCount(4096)+Background(256 pages/step)` was effectively tied at `275.9 ops/sec`, and `WalSize(8 MiB)` landed at `273.8 ops/sec`. `WalPrealloc(1MiB)` did not improve the background row on this runner, moving it from `275.9` to `273.7 ops/sec`.
+- Background auto-checkpointing still matters because it keeps checkpoint work off the triggering commit. In the stable March 28 rerun, the background rows again recorded `0` commits that paid checkpoint cost while staying essentially tied with the top single-writer rows.
+- `BatchWindow(250us)` remained a non-win on the single-writer path at `267.2 ops/sec`, and `BatchWindow(1ms)` remained clearly bad at `65.8 ops/sec`. Single-writer durable commits still do not have enough contention to amortize an intentional wait.
+- The stable concurrent median-of-3 rerun in `concurrent-write-diagnostics-20260328-012652-median-of-3.csv` restored the expected `8`-writer range. `W8_Batch0_Prealloc1MiB` led at `1078.6 commits/sec`, followed closely by `W8_Batch250us` at `1070.4`, `W8_Batch250us_Prealloc1MiB` at `1069.8`, `W8_Batch0` at `1068.2`, and `W8_Batch500us` at `1065.8`.
+- In that same concurrent rerun, the best `4`-writer row was `W4_Batch250us` at `553.4 commits/sec`, with `W4_Batch500us` at `542.6` and `W4_Batch0` at `525.2`.
+- Recommended interpretation after the latest reruns: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, and benchmark explicit transaction batching before batch-window or preallocation tuning. For shared-instance `8`-writer contention on this runner, benchmark `UseWalPreallocationChunkBytes(1 * 1024 * 1024)` with `BatchWindow(0)` first and `BatchWindow(250us)` second. For `4` writers, benchmark `BatchWindow(250us)` first.
 - Recommended file-backed write-heavy preset: `builder.UseWriteOptimizedPreset()`. This is opt-in and does not change the engine default checkpoint policy.
 
 ## CSharpDB Storage Mode Comparison
@@ -531,12 +590,12 @@ These tables isolate the embedded CSharpDB storage modes relevant to the current
 
 The tables below come from different focused harnesses and should not be mixed:
 
-- resident hot-set read source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260317-050305-median-of-3.csv`
-- post-checkpoint hot reread source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260317-050524-median-of-3.csv`
-- hot steady-state source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260317-023317-median-of-3.csv`
-- cold open source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260317-050403-median-of-3.csv`
+- resident hot-set read source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260325-132145-median-of-3.csv`
+- post-checkpoint hot reread source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260325-132222-median-of-3.csv`
+- hot steady-state source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260325-130952-median-of-3.csv`
+- cold open source: `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260325-132052-median-of-3.csv`
 
-Use the resident hot-set table as the canonical “pinned/resident hot object”
+Use the resident hot-set table as the canonical "pinned/resident hot object"
 comparison. That harness opens fresh instances and times only the immediate hot
 read burst. Use the cold-open tables to see the up-front cost of that preload,
 and use the post-checkpoint table to see the baseline lazy-hybrid checkpoint
@@ -550,10 +609,10 @@ table shows read speed after the mode is ready to serve.
 
 | Mode | SQL Hot Burst | SQL P50 | Collection Hot Burst | Collection P50 |
 |------|---------------|---------|----------------------|----------------|
-| **File-backed** | **25.0K ops/sec** | **0.038 ms** | **26.7K ops/sec** | **0.037 ms** |
-| **Hybrid incremental-durable** | **26.0K ops/sec** | **0.038 ms** | **26.8K ops/sec** | **0.037 ms** |
-| **Hybrid hot-set incremental-durable** | **196.0K ops/sec** | **0.004 ms** | **298.8K ops/sec** | **0.003 ms** |
-| **In-memory** | **179.3K ops/sec** | **0.006 ms** | **210.8K ops/sec** | **0.005 ms** |
+| **File-backed** | **44.94K ops/sec** | **0.0218 ms** | **42.42K ops/sec** | **0.0222 ms** |
+| **Hybrid incremental-durable** | **37.79K ops/sec** | **0.0238 ms** | **44.24K ops/sec** | **0.0216 ms** |
+| **Hybrid hot-set incremental-durable** | **625.76K ops/sec** | **0.0015 ms** | **707.38K ops/sec** | **0.0011 ms** |
+| **In-memory** | **264.39K ops/sec** | **0.0022 ms** | **457.45K ops/sec** | **0.0016 ms** |
 
 ### Hybrid Open Cost
 
@@ -561,19 +620,19 @@ This is the cost you pay to get the resident hot-set behavior above.
 
 | Mode | SQL Open Only | SQL P50 | Collection Open Only | Collection P50 |
 |------|---------------|---------|----------------------|----------------|
-| **File-backed** | **65 ops/sec** | **15.11 ms** | **71 ops/sec** | **14.17 ms** |
-| **Hybrid incremental-durable** | **69 ops/sec** | **13.56 ms** | **69 ops/sec** | **14.68 ms** |
-| **Hybrid hot-set incremental-durable** | **6 ops/sec** | **155.08 ms** | **4 ops/sec** | **226.67 ms** |
-| **In-memory** | **34 ops/sec** | **28.28 ms** | **24 ops/sec** | **42.50 ms** |
+| **File-backed** | **73.2 ops/sec** | **12.9939 ms** | **74.6 ops/sec** | **13.1392 ms** |
+| **Hybrid incremental-durable** | **78.7 ops/sec** | **12.5047 ms** | **72.6 ops/sec** | **12.7956 ms** |
+| **Hybrid hot-set incremental-durable** | **11.2 ops/sec** | **87.3876 ms** | **7.7 ops/sec** | **128.5941 ms** |
+| **In-memory** | **68.1 ops/sec** | **14.2196 ms** | **47.3 ops/sec** | **20.7517 ms** |
 
 ### Cold Open + First Read
 
 | Mode | SQL Open + First Lookup | SQL P50 | Collection Open + First Get | Collection P50 |
 |------|--------------------------|---------|------------------------------|----------------|
-| **File-backed** | **64 ops/sec** | **15.67 ms** | **67 ops/sec** | **14.58 ms** |
-| **Hybrid incremental-durable** | **67 ops/sec** | **15.07 ms** | **68 ops/sec** | **15.05 ms** |
-| **Hybrid hot-set incremental-durable** | **7 ops/sec** | **150.19 ms** | **4 ops/sec** | **230.39 ms** |
-| **In-memory** | **34 ops/sec** | **29.01 ms** | **23 ops/sec** | **42.50 ms** |
+| **File-backed** | **76.7 ops/sec** | **12.6744 ms** | **77.5 ops/sec** | **12.7313 ms** |
+| **Hybrid incremental-durable** | **75.5 ops/sec** | **12.8785 ms** | **76.3 ops/sec** | **12.8148 ms** |
+| **Hybrid hot-set incremental-durable** | **11.0 ops/sec** | **90.6611 ms** | **7.6 ops/sec** | **132.3073 ms** |
+| **In-memory** | **66.0 ops/sec** | **14.1714 ms** | **44.5 ops/sec** | **22.3301 ms** |
 
 ### Post-Checkpoint Hot Reread
 
@@ -583,18 +642,18 @@ harness.
 
 | Mode | SQL Rereads/sec | SQL P50 | Collection Rereads/sec | Collection P50 |
 |------|-----------------|---------|------------------------|----------------|
-| **File-backed** | **24.7K ops/sec** | **0.020 ms** | **22.9K ops/sec** | **0.024 ms** |
-| **Hybrid incremental-durable** | **46.5K ops/sec** | **0.002 ms** | **49.8K ops/sec** | **0.002 ms** |
-| **Hybrid hot-set incremental-durable** | **46.0K ops/sec** | **0.002 ms** | **47.4K ops/sec** | **0.002 ms** |
-| **In-memory** | **257.5K ops/sec** | **0.003 ms** | **360.5K ops/sec** | **0.002 ms** |
+| **File-backed** | **18.31K ops/sec** | **0.0126 ms** | **17.63K ops/sec** | **0.0143 ms** |
+| **Hybrid incremental-durable** | **23.70K ops/sec** | **0.0010 ms** | **24.25K ops/sec** | **0.0007 ms** |
+| **Hybrid hot-set incremental-durable** | **23.78K ops/sec** | **0.0011 ms** | **23.13K ops/sec** | **0.0008 ms** |
+| **In-memory** | **638.59K ops/sec** | **0.0013 ms** | **902.56K ops/sec** | **0.0009 ms** |
 
 ### Hot Steady-State SQL
 
 | Mode | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |------|---------------|----------------|--------------|------------------|
-| **File-backed** | **25.1K ops/sec** | **~519.3K rows/sec** | **~1.15M ops/sec** | **~1.72M / ~16.38M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **Hybrid incremental-durable** | **25.0K ops/sec** | **~518.9K rows/sec** | **~1.16M ops/sec** | **~1.72M / ~16.82M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **In-memory** | **~323.4K ops/sec** | **~947.1K rows/sec** | **~1.15M ops/sec** | **~1.76M / ~16.30M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **File-backed** | **285.5 / 20.72K ops/sec** | **~26.95K / ~471.5K rows/sec** | **~1.10M / ~1.05M ops/sec** | **D ~675.05K / ~12.82M; B ~540.40K / ~9.90M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **Hybrid incremental-durable** | **296.9 / 20.24K ops/sec** | **~27.80K / ~461.4K rows/sec** | **~1.11M / ~0.99M ops/sec** | **D ~638.49K / ~13.53M; B ~591.49K / ~10.61M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **In-memory** | **~315.54K / ~289.78K ops/sec** | **~937.43K / ~875.5K rows/sec** | **~1.10M / ~1.03M ops/sec** | **D ~640.45K / ~12.59M; B ~566.23K / ~9.87M COUNT(*) ops/sec (8r, per-query / reused x32)** |
 
 `Hybrid hot-set incremental-durable` is intentionally not shown in the generic
 steady-state table. Once the workload itself has already touched the hot pages,
@@ -605,17 +664,19 @@ hot-set table above for that feature.
 
 | Mode | Single Put | Batched Put | Point Get |
 |------|------------|-------------|-----------|
-| **File-backed** | **30.9K ops/sec** | **~413.6K docs/sec** | **~1.90M ops/sec** |
-| **Hybrid incremental-durable** | **30.3K ops/sec** | **~399.0K docs/sec** | **~1.87M ops/sec** |
-| **In-memory** | **~432.3K ops/sec** | **~863.5K docs/sec** | **~1.86M ops/sec** |
+| **File-backed** | **281.7 / 21.23K ops/sec** | **~25.88K / ~377.2K docs/sec** | **~1.78M / ~1.54M ops/sec** |
+| **Hybrid incremental-durable** | **290.4 / 19.32K ops/sec** | **~26.73K / ~331.4K docs/sec** | **~1.80M / ~1.48M ops/sec** |
+| **In-memory** | **~293.63K / ~258.76K ops/sec** | **~820.55K / ~764.5K docs/sec** | **~1.82M / ~1.50M ops/sec** |
 
 ## Competitor Comparison
 
 The master table below separates embedded engine runs from client/hosted runs so the interface cost is visible.
 
-- Embedded engine file-backed, in-memory, and hybrid SQL/collection rows were refreshed on March 17, 2026 from `hybrid-storage-mode-20260317-023317-median-of-3.csv` using the same focused hot storage-mode harness.
+- Embedded engine durable SQL/collection rows were refreshed on March 25, 2026 from `hybrid-storage-mode-20260325-130952-median-of-3.csv` using the focused hot storage-mode harness.
+- Embedded engine buffered SQL/collection rows were refreshed on March 26, 2026 from `hybrid-storage-mode-20260326-002328-median-of-3.csv` using the same harness with `CSHARPDB_BENCH_DURABILITY=Buffered`.
 - CSharpDB SQL concurrent reads are shown as `per-query sessions / reused reader sessions (x32 reads per snapshot)` because those patterns measure materially different setup costs.
-- The direct local SQL client row was refreshed on March 16, 2026 from `direct-hybrid-transport-20260316-070212-median-of-3.csv` using the in-process direct client transport (same process, no gRPC). That suite is now named `DirectFileCacheTransportBenchmark`; the historical CSV file name still reflects the older benchmark name.
+- The direct local SQL client row was refreshed in durable mode on March 25, 2026 from `direct-file-cache-transport-20260325-130329-median-of-3.csv`, and in buffered mode on March 26, 2026 from `direct-file-cache-transport-20260326-001622-median-of-3.csv`.
+- The top SQL/collection API snapshot tables above use the macro harness in durable mode (`macro-20260325-123112-median-of-3.csv`) and buffered mode (`macro-20260325-233253-median-of-3.csv`).
 - Cold / cache-pressured lookup numbers were also refreshed on March 15, 2026 from `ColdLookupBenchmarks-report.csv`, but they stay in the dedicated spot-check section rather than the master table.
 - Ordered/range covered-scan numbers were refreshed on March 14, 2026 from `OrderByIndexBenchmarks`, but they stay in the micro sections because the master table tracks durable writes, cold point lookups, and concurrent-read throughput rather than scan-shape throughput.
 - Indexed aggregate numbers were refreshed on March 14, 2026 from `IndexAggregateBenchmarks`, but they stay in the micro sections because the master table does not currently have an aggregate column.
@@ -625,15 +686,17 @@ The master table below separates embedded engine runs from client/hosted runs so
 
 ### Master Comparison Table
 
+CSharpDB rows below are shown as `Durable / Buffered`. Competitor rows remain single published directional ranges.
+
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|----------|------|---------------|----------------|--------------|------------------|
-| **CSharpDB SQL (embedded engine, file-backed)** | **C#** | **Relational SQL** | **25.1K ops/sec** | **~519.3K rows/sec** | **~1.15M ops/sec** | **~1.72M / ~16.38M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB SQL (embedded engine, incremental-durable hybrid)** | **C#** | **Relational SQL** | **25.0K ops/sec** | **~518.9K rows/sec** | **~1.16M ops/sec** | **~1.72M / ~16.82M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB SQL (direct client, local process)** | **C#** | **Relational SQL** | **22.9K ops/sec** | **~5.70K rows/sec** | **~568K ops/sec** | **~918.67K COUNT(*) ops/sec (8r, with 1 writer)** |
-| **CSharpDB SQL (embedded engine, in-memory)** | **C#** | **Relational SQL** | **~323.4K ops/sec** | **~947.1K rows/sec** | **~1.15M ops/sec** | **~1.76M / ~16.30M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB Collection (embedded engine, file-backed)** | **C#** | **Document (NoSQL)** | **30.9K ops/sec** | **~413.6K docs/sec** | **~1.90M ops/sec** | **-** |
-| **CSharpDB Collection (embedded engine, incremental-durable hybrid)** | **C#** | **Document (NoSQL)** | **30.3K ops/sec** | **~399.0K docs/sec** | **~1.87M ops/sec** | **-** |
-| **CSharpDB Collection (embedded engine, in-memory)** | **C#** | **Document (NoSQL)** | **~432.3K ops/sec** | **~863.5K docs/sec** | **~1.86M ops/sec** | **-** |
+| **CSharpDB SQL (embedded engine, file-backed)** | **C#** | **Relational SQL** | **285.5 ops/sec / 20.72K ops/sec** | **~26.95K / ~471.5K rows/sec** | **~1.10M / ~1.05M ops/sec** | **D ~675.05K / ~12.82M; B ~540.40K / ~9.90M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB SQL (embedded engine, incremental-durable hybrid)** | **C#** | **Relational SQL** | **296.9 ops/sec / 20.24K ops/sec** | **~27.80K / ~461.4K rows/sec** | **~1.11M / ~0.99M ops/sec** | **D ~638.49K / ~13.53M; B ~591.49K / ~10.61M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB SQL (direct client, local process)** | **C#** | **Relational SQL** | **286.7 ops/sec / 19.68K ops/sec** | **~3.27K / ~5.40K rows/sec** | **~543.17K / ~532.20K ops/sec** | **~507.59K / ~349.22K COUNT(*) ops/sec (8r)** |
+| **CSharpDB SQL (embedded engine, in-memory)** | **C#** | **Relational SQL** | **~315.54K / ~289.78K ops/sec** | **~937.43K / ~875.5K rows/sec** | **~1.10M / ~1.03M ops/sec** | **D ~640.45K / ~12.59M; B ~566.23K / ~9.87M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB Collection (embedded engine, file-backed)** | **C#** | **Document (NoSQL)** | **281.7 ops/sec / 21.23K ops/sec** | **~25.88K / ~377.2K docs/sec** | **~1.78M / ~1.54M ops/sec** | **-** |
+| **CSharpDB Collection (embedded engine, incremental-durable hybrid)** | **C#** | **Document (NoSQL)** | **290.4 ops/sec / 19.32K ops/sec** | **~26.73K / ~331.4K docs/sec** | **~1.80M / ~1.48M ops/sec** | **-** |
+| **CSharpDB Collection (embedded engine, in-memory)** | **C#** | **Document (NoSQL)** | **~293.63K / ~258.76K ops/sec** | **~820.55K / ~764.5K docs/sec** | **~1.82M / ~1.50M ops/sec** | **-** |
 | SQLite | C | Relational SQL | ~1-4K ops/sec | ~80-114K rows/sec | N/A | WAL lock limited |
 | LiteDB | C# | Document (NoSQL) | ~1K ops/sec | ~16-21K rows/sec | N/A | N/A |
 | Realm | C++ | Object DB | ~9-76K obj/sec | N/A | N/A | Multi-reader |
