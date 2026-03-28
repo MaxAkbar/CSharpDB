@@ -1483,6 +1483,14 @@ internal sealed class CatalogService
 
     private void ReconcileLoadedStatisticsFreshness()
     {
+        if (_advisoryStatisticsPersistenceMode != AdvisoryStatisticsPersistenceMode.Deferred)
+        {
+            foreach (string tableName in _tableStatsCache.Keys)
+                _exactTableRowCounts.Add(tableName);
+
+            return;
+        }
+
         foreach (var stats in _tableStatsCache.Values.ToArray())
         {
             bool isExact = stats.LastPersistedChangeCounter == _pager.ChangeCounter;

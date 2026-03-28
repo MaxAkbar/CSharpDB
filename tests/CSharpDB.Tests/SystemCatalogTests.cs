@@ -559,6 +559,51 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ImmediateStats_RemainFreshAcrossReopen_AfterUnrelatedWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE primary_stats (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO primary_stats VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO primary_stats VALUES (2, 30)", ct);
+        await _db.ExecuteAsync("ANALYZE primary_stats", ct);
+
+        await _db.ExecuteAsync("CREATE TABLE unrelated_stats_churn (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO unrelated_stats_churn VALUES (1, 'noise')", ct);
+
+        await using (var inSessionStats = await _db.ExecuteAsync(
+            "SELECT is_stale FROM sys.column_stats WHERE table_name = 'primary_stats' AND column_name = 'score'",
+            ct))
+        {
+            Assert.Equal(0L, Assert.Single(await inSessionStats.ToListAsync(ct))[0].AsInteger);
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var tableStats = await _db.ExecuteAsync(
+            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'primary_stats'",
+            ct);
+        var tableStatsRow = Assert.Single(await tableStats.ToListAsync(ct));
+        Assert.Equal(2L, tableStatsRow[0].AsInteger);
+        Assert.Equal(0L, tableStatsRow[1].AsInteger);
+
+        await using var columnStats = await _db.ExecuteAsync(
+            """
+            SELECT distinct_count, non_null_count, min_value, max_value, is_stale
+            FROM sys.column_stats
+            WHERE table_name = 'primary_stats' AND column_name = 'score'
+            """,
+            ct);
+        var columnStatsRow = Assert.Single(await columnStats.ToListAsync(ct));
+        Assert.Equal(2L, columnStatsRow[0].AsInteger);
+        Assert.Equal(2L, columnStatsRow[1].AsInteger);
+        Assert.Equal(10L, columnStatsRow[2].AsInteger);
+        Assert.Equal(30L, columnStatsRow[3].AsInteger);
+        Assert.Equal(0L, columnStatsRow[4].AsInteger);
+    }
+
+    [Fact]
     public async Task SystemCatalog_DeferredAdvisoryStatistics_ArePersistedOnCleanDispose()
     {
         var ct = TestContext.Current.CancellationToken;
