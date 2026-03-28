@@ -9988,7 +9988,9 @@ public sealed class QueryPlanner
     {
         string? normalized = CollationSupport.NormalizeMetadataName(collation);
         if (!CollationSupport.IsSupported(normalized))
-            throw new CSharpDbException(ErrorCode.SyntaxError, $"Unsupported collation '{collation}'. Supported collations are BINARY and NOCASE.");
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Unsupported collation '{collation}'. Supported collations are {CollationSupport.DescribeSupportedCollations()}.");
 
         return normalized;
     }

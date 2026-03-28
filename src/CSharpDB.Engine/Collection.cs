@@ -363,7 +363,7 @@ public sealed class Collection<
 
     /// <summary>
     /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
-    /// Text paths may opt into a specific collation such as <c>NOCASE</c>.
+    /// Text paths may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
     /// </summary>
     public async ValueTask EnsureIndexAsync<TField>(
         Expression<Func<T, TField>> fieldSelector,
@@ -385,7 +385,7 @@ public sealed class Collection<
 
     /// <summary>
     /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
-    /// Text paths may opt into a specific collation such as <c>NOCASE</c>.
+    /// Text paths may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
     /// </summary>
     public ValueTask EnsureIndexAsync(
         string fieldPath,

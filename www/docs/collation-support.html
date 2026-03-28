@@ -12,8 +12,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Collation Guide',
-        description: 'How to use text collation in CSharpDB - BINARY, NOCASE, SQL examples, collection indexes, performance, and current limitations.',
-        keywords: 'CSharpDB collation, multilingual text, COLLATE, NOCASE, BINARY, case-insensitive search, SQL sorting, collection indexes',
+        description: 'How to use text collation in CSharpDB - BINARY, NOCASE, NOCASE_AI, SQL examples, collection indexes, performance, and current limitations.',
+        keywords: 'CSharpDB collation, multilingual text, COLLATE, NOCASE, NOCASE_AI, BINARY, case-insensitive search, SQL sorting, collection indexes',
         canonicalPath: 'docs/collation-support.html',
         ogType: 'article',
     };
@@ -49,14 +49,14 @@
 
             <div class="doc-content">
                 <h1>Collation Guide</h1>
-                <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code> vs <code>NOCASE</code>, and how to apply collation in SQL and collection indexes.</p>
+                <p class="lead">How text comparison and sorting work in CSharpDB today, when to use <code>BINARY</code>, <code>NOCASE</code>, or <code>NOCASE_AI</code>, and how to apply collation in SQL and collection indexes.</p>
 
                 <div class="callout callout-success">
-                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code> and <code>NOCASE</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
+                    <strong>Available now:</strong> CSharpDB supports opt-in <code>BINARY</code>, <code>NOCASE</code>, and <code>NOCASE_AI</code> collation across SQL schema definitions, query expressions, metadata surfaces, and collection path indexes.
                 </div>
 
                 <div class="callout callout-warning">
-                    <strong>Still planned:</strong> Accent-insensitive collation (<code>NOCASE_AI</code>), locale-aware collation (<code>ICU:&lt;locale&gt;</code>), and dedicated ordered SQL text index optimization are not implemented yet.
+                    <strong>Still planned:</strong> Locale-aware collation (<code>ICU:&lt;locale&gt;</code>) and dedicated ordered SQL text index optimization are not implemented yet.
                 </div>
 
                 <h2 id="overview">Overview</h2>
@@ -139,8 +139,8 @@
                         <tr>
                             <td><code>NOCASE_AI</code></td>
                             <td>You want case-insensitive and accent-insensitive behavior</td>
-                            <td>Not implemented yet</td>
-                            <td>Planned</td>
+                            <td>Accent-stripped, invariant-case normalization for equality, ordering, and index semantics</td>
+                            <td>Available</td>
                         </tr>
                         <tr>
                             <td><code>ICU:&lt;locale&gt;</code></td>
@@ -234,7 +234,7 @@ await foreach (var match in users.FindByPathAsync("$.tags[]", "GREEN", ct))
                         </tr>
                         <tr>
                             <td>Accent-insensitive behavior</td>
-                            <td>Not available yet; planned as <code>NOCASE_AI</code></td>
+                            <td><code>NOCASE_AI</code></td>
                         </tr>
                         <tr>
                             <td>Locale-aware linguistic ordering for a specific language or region</td>

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
@@ -7,29 +9,51 @@ internal static class CollationSupport
 {
     public const string BinaryCollation = "BINARY";
     public const string NoCaseCollation = "NOCASE";
+    public const string NoCaseAccentInsensitiveCollation = "NOCASE_AI";
+
+    private static readonly RegisteredCollation BinaryDefinition = new BinaryCollationDefinition();
+    private static readonly RegisteredCollation NoCaseDefinition = new NoCaseCollationDefinition();
+    private static readonly RegisteredCollation NoCaseAccentInsensitiveDefinition = new NoCaseAccentInsensitiveCollationDefinition();
+
+    private static readonly string[] SupportedCollationNames =
+    [
+        BinaryCollation,
+        NoCaseCollation,
+        NoCaseAccentInsensitiveCollation,
+    ];
+
+    private static readonly Dictionary<string, RegisteredCollation> Registry =
+        new(StringComparer.Ordinal)
+        {
+            [BinaryCollation] = BinaryDefinition,
+            [NoCaseCollation] = NoCaseDefinition,
+            [NoCaseAccentInsensitiveCollation] = NoCaseAccentInsensitiveDefinition,
+        };
+
+    public static string DescribeSupportedCollations() => string.Join(", ", SupportedCollationNames);
 
     public static string? NormalizeMetadataName(string? collation)
     {
         if (string.IsNullOrWhiteSpace(collation))
             return null;
 
-        return collation.Trim().ToUpperInvariant();
+        string normalized = collation.Trim().ToUpperInvariant();
+        return TryResolveRegistered(normalized, out var definition)
+            ? definition.Name
+            : normalized;
     }
 
     public static bool IsSupported(string? collation)
     {
         string? normalized = NormalizeMetadataName(collation);
-        return normalized is null or BinaryCollation or NoCaseCollation;
+        return normalized is null || TryResolveRegistered(normalized, out _);
     }
 
     public static bool IsNoCase(string? collation) =>
         string.Equals(NormalizeMetadataName(collation), NoCaseCollation, StringComparison.Ordinal);
 
-    public static bool IsBinaryOrDefault(string? collation)
-    {
-        string? normalized = NormalizeMetadataName(collation);
-        return normalized is null or BinaryCollation;
-    }
+    public static bool IsBinaryOrDefault(string? collation) =>
+        ResolveOrDefault(collation).IsBinaryLike;
 
     public static bool SemanticallyEquals(string? left, string? right) =>
         string.Equals(Canonicalize(left), Canonicalize(right), StringComparison.Ordinal);
@@ -39,8 +63,7 @@ internal static class CollationSupport
         if (!left.IsNull &&
             !right.IsNull &&
             left.Type == DbType.Text &&
-            right.Type == DbType.Text &&
-            IsNoCase(collation))
+            right.Type == DbType.Text)
         {
             return CompareText(left.AsText, right.AsText, collation);
         }
@@ -48,23 +71,15 @@ internal static class CollationSupport
         return DbValue.Compare(left, right);
     }
 
-    public static int CompareText(string left, string right, string? collation)
-    {
-        if (!IsNoCase(collation))
-            return string.Compare(left, right, StringComparison.Ordinal);
-
-        return string.Compare(
-            NormalizeText(left, collation),
-            NormalizeText(right, collation),
-            StringComparison.Ordinal);
-    }
+    public static int CompareText(string left, string right, string? collation) =>
+        ResolveOrDefault(collation).CompareText(left, right);
 
     public static string NormalizeText(string text, string? collation) =>
-        IsNoCase(collation) ? text.ToUpperInvariant() : text;
+        ResolveOrDefault(collation).NormalizeText(text);
 
     public static DbValue NormalizeIndexValue(DbValue value, string? collation)
     {
-        if (value.Type == DbType.Text && IsNoCase(collation))
+        if (value.Type == DbType.Text)
             return DbValue.FromText(NormalizeText(value.AsText, collation));
 
         return value;
@@ -175,6 +190,94 @@ internal static class CollationSupport
         return true;
     }
 
-    private static string Canonicalize(string? collation) =>
-        NormalizeMetadataName(collation) ?? BinaryCollation;
+    private static string Canonicalize(string? collation)
+    {
+        string? normalized = NormalizeMetadataName(collation);
+        if (normalized == null)
+            return BinaryCollation;
+
+        return TryResolveRegistered(normalized, out var definition)
+            ? definition.Name
+            : normalized;
+    }
+
+    private static RegisteredCollation ResolveOrDefault(string? collation)
+    {
+        string? normalized = NormalizeMetadataName(collation);
+        if (normalized != null && TryResolveRegistered(normalized, out var definition))
+            return definition;
+
+        return BinaryDefinition;
+    }
+
+    private static bool TryResolveRegistered(string normalized, out RegisteredCollation definition) =>
+        Registry.TryGetValue(normalized, out definition!);
+
+    private abstract class RegisteredCollation
+    {
+        protected RegisteredCollation(string name, bool isBinaryLike)
+        {
+            Name = name;
+            IsBinaryLike = isBinaryLike;
+        }
+
+        public string Name { get; }
+
+        public bool IsBinaryLike { get; }
+
+        public virtual int CompareText(string left, string right) =>
+            string.Compare(left, right, StringComparison.Ordinal);
+
+        public virtual string NormalizeText(string text) => text;
+    }
+
+    private sealed class BinaryCollationDefinition : RegisteredCollation
+    {
+        public BinaryCollationDefinition()
+            : base(BinaryCollation, isBinaryLike: true)
+        {
+        }
+    }
+
+    private sealed class NoCaseCollationDefinition : RegisteredCollation
+    {
+        public NoCaseCollationDefinition()
+            : base(NoCaseCollation, isBinaryLike: false)
+        {
+        }
+
+        public override int CompareText(string left, string right) =>
+            string.Compare(NormalizeText(left), NormalizeText(right), StringComparison.Ordinal);
+
+        public override string NormalizeText(string text) => text.ToUpperInvariant();
+    }
+
+    private sealed class NoCaseAccentInsensitiveCollationDefinition : RegisteredCollation
+    {
+        public NoCaseAccentInsensitiveCollationDefinition()
+            : base(NoCaseAccentInsensitiveCollation, isBinaryLike: false)
+        {
+        }
+
+        public override int CompareText(string left, string right) =>
+            string.Compare(NormalizeText(left), NormalizeText(right), StringComparison.Ordinal);
+
+        public override string NormalizeText(string text)
+        {
+            string decomposed = text.Normalize(NormalizationForm.FormD);
+            var builder = new StringBuilder(decomposed.Length);
+
+            for (int i = 0; i < decomposed.Length; i++)
+            {
+                char ch = decomposed[i];
+                UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(ch);
+                if (category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark)
+                    continue;
+
+                builder.Append(char.ToUpperInvariant(ch));
+            }
+
+            return builder.ToString().Normalize(NormalizationForm.FormC);
+        }
+    }
 }

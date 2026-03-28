@@ -4435,7 +4435,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         Integer,
         Real,
         Text,
-        TextNoCase,
+        TextCollated,
     }
 
     private enum LateMaterializationOverrideMode
@@ -5035,9 +5035,9 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         {
             DbType.Integer => SingleClauseComparerKind.Integer,
             DbType.Real => SingleClauseComparerKind.Real,
-            DbType.Text => CollationSupport.IsNoCase(clause.Collation)
-                ? SingleClauseComparerKind.TextNoCase
-                : SingleClauseComparerKind.Text,
+            DbType.Text => CollationSupport.IsBinaryOrDefault(clause.Collation)
+                ? SingleClauseComparerKind.Text
+                : SingleClauseComparerKind.TextCollated,
             _ => SingleClauseComparerKind.Default,
         };
     }
@@ -5066,9 +5066,9 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
                     return string.Compare(a.AsText, b.AsText, StringComparison.Ordinal);
                 break;
 
-            case SingleClauseComparerKind.TextNoCase:
+            case SingleClauseComparerKind.TextCollated:
                 if (a.Type == DbType.Text && b.Type == DbType.Text)
-                    return CollationSupport.CompareText(a.AsText, b.AsText, CollationSupport.NoCaseCollation);
+                    return CollationSupport.CompareText(a.AsText, b.AsText, _singleClauseCollation);
                 break;
         }
 
@@ -5326,8 +5326,8 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             {
                 PrecomputedSingleKeyKind.Integer => _lateMaterializedIntKeys![aIndex].CompareTo(_lateMaterializedIntKeys![bIndex]),
                 PrecomputedSingleKeyKind.Real => _lateMaterializedRealKeys![aIndex].CompareTo(_lateMaterializedRealKeys![bIndex]),
-                PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextNoCase
-                    ? CollationSupport.CompareText(_lateMaterializedTextKeys![aIndex]!, _lateMaterializedTextKeys![bIndex]!, CollationSupport.NoCaseCollation)
+                PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextCollated
+                    ? CollationSupport.CompareText(_lateMaterializedTextKeys![aIndex]!, _lateMaterializedTextKeys![bIndex]!, _singleClauseCollation)
                     : string.Compare(_lateMaterializedTextKeys![aIndex], _lateMaterializedTextKeys![bIndex], StringComparison.Ordinal),
                 _ => 0,
             };
@@ -5346,8 +5346,8 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         {
             PrecomputedSingleKeyKind.Integer => _singlePrecomputedIntKeys![aIndex].CompareTo(_singlePrecomputedIntKeys![bIndex]),
             PrecomputedSingleKeyKind.Real => _singlePrecomputedRealKeys![aIndex].CompareTo(_singlePrecomputedRealKeys![bIndex]),
-            PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextNoCase
-                ? CollationSupport.CompareText(_singlePrecomputedTextKeys![aIndex]!, _singlePrecomputedTextKeys![bIndex]!, CollationSupport.NoCaseCollation)
+            PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextCollated
+                ? CollationSupport.CompareText(_singlePrecomputedTextKeys![aIndex]!, _singlePrecomputedTextKeys![bIndex]!, _singleClauseCollation)
                 : string.Compare(_singlePrecomputedTextKeys![aIndex], _singlePrecomputedTextKeys![bIndex], StringComparison.Ordinal),
             _ => 0,
         };

@@ -105,6 +105,26 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureIndex_BackfillsExistingDocuments_ForStringField_WithNoCaseAiCollation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users_name_nocase_ai", ct);
+
+        await users.PutAsync("u:1", new User("José", 30, "jose@example.com"), ct);
+        await users.PutAsync("u:2", new User("JOSE", 31, "jose2@example.com"), ct);
+        await users.PutAsync("u:3", new User("Joëlle", 32, "joelle@example.com"), ct);
+
+        await users.EnsureIndexAsync(x => x.Name, "NOCASE_AI", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync(x => x.Name, "jose", ct), ct);
+
+        Assert.Equal(["u:1", "u:2"], matches.Select(x => x.Key).OrderBy(x => x).ToArray());
+
+        var binding = GetBinding(users, nameof(User.Name));
+        Assert.Equal("NOCASE_AI", binding.Collation);
+    }
+
+    [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_WithManyDuplicateIntegerKeys()
     {
         var ct = TestContext.Current.CancellationToken;

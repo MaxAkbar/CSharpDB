@@ -21,6 +21,18 @@ public sealed class CollationMetadataTests
     }
 
     [Fact]
+    public async Task CreateTable_WithNoCaseAiColumnCollation_PersistsSchemaMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+
+        await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE_AI NOT NULL)", Ct);
+
+        var schema = db.GetTableSchema("users");
+        Assert.NotNull(schema);
+        Assert.Equal("NOCASE_AI", schema.Columns[1].Collation);
+    }
+
+    [Fact]
     public async Task AlterTable_AddColumn_WithCollation_PersistsSchemaMetadata()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);
@@ -44,6 +56,18 @@ public sealed class CollationMetadataTests
         var index = Assert.Single(db.GetIndexes(), static item => string.Equals(item.IndexName, "idx_users_name", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(["name"], index.Columns);
         Assert.Equal(["NOCASE"], index.ColumnCollations);
+    }
+
+    [Fact]
+    public async Task CreateIndex_WithNoCaseAiColumnCollation_PersistsIndexMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", Ct);
+
+        await db.ExecuteAsync("CREATE INDEX idx_users_name_ai ON users (name COLLATE NOCASE_AI)", Ct);
+
+        var index = Assert.Single(db.GetIndexes(), static item => string.Equals(item.IndexName, "idx_users_name_ai", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(["NOCASE_AI"], index.ColumnCollations);
     }
 
     [Fact]

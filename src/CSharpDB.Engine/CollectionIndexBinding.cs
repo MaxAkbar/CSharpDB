@@ -883,7 +883,7 @@ internal sealed class CollectionIndexBinding<
         if (!CollationSupport.IsSupported(normalized))
         {
             throw new NotSupportedException(
-                $"Collection indexes currently support only BINARY and NOCASE collations. '{collation}' is not supported.");
+                $"Collection indexes currently support {CollationSupport.DescribeSupportedCollations()} collations. '{collation}' is not supported.");
         }
 
         return normalized;

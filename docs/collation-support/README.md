@@ -1,8 +1,8 @@
 # Multilingual Text Support Plan
 
-> **Status (March 2026):** In progress. The `BINARY` / `NOCASE` MVP is now implemented across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly locale-aware collations (`ICU:<locale>` / `NOCASE_AI`), ordered SQL text index optimization, and benchmark hardening.
+> **Status (March 2026):** In progress. `BINARY`, `NOCASE`, and `NOCASE_AI` are now implemented across SQL DDL and query semantics, schema/catalog metadata, client and API surfaces, Admin tooling, and collection path indexes. Remaining work is mainly locale-aware `ICU:<locale>` collation, ordered SQL text index optimization, and benchmark hardening.
 
-CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting still remain ordinal unless users opt into collation explicitly, but `BINARY` and `NOCASE` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
+CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning any language can be stored and retrieved correctly. Default text comparison and sorting still remain ordinal unless users opt into collation explicitly, but `BINARY`, `NOCASE`, and `NOCASE_AI` collations are now supported in SQL schema definitions, query expressions, and collection path indexes.
 
 ---
 
@@ -11,7 +11,7 @@ CSharpDB stores all text as UTF-8 and supports the full Unicode range, meaning a
 The first multilingual-text slice is in place, but three important limitations still remain:
 
 1. Default text semantics are still ordinal. Users must opt into `COLLATE NOCASE` on columns, indexes, collection indexes, or query expressions.
-2. Only `BINARY` and `NOCASE` are implemented today. `NOCASE_AI` and `ICU:<locale>` remain future work.
+2. Locale-aware `ICU:<locale>` collation remains future work.
 3. SQL text `ORDER BY` and range semantics are now collation-correct, but the planner does not yet have a dedicated ordered SQL text index path for those plans.
 
 The current implementation centers collation in these paths:
@@ -53,10 +53,10 @@ The current implementation centers collation in these paths:
 |------|----------|----------------|
 | `BINARY` | Current ordinal behavior (default) | `StringComparison.Ordinal` — no change |
 | `NOCASE` | Case-insensitive, locale-independent | `TextInfo.ToLowerInvariant()` normalization on write; ordinal compare on normalized keys |
-| `NOCASE_AI` | Case-insensitive, accent-insensitive | `string.Compare(..., CompareOptions.IgnoreCase \| IgnoreNonSpace)` or Unicode normalization + folding |
+| `NOCASE_AI` | Case-insensitive, accent-insensitive | Unicode decomposition + combining-mark stripping + invariant-case normalization |
 | `ICU:<locale>` | Full locale-aware collation | `CompareInfo.GetSortKey()` from `System.Globalization` for the specified culture |
 
-`NOCASE` should ship first — it covers the vast majority of use cases (case-insensitive lookups and sorts) with minimal cost.
+`NOCASE` and `NOCASE_AI` cover the common case-insensitive text scenarios today, while `ICU:<locale>` remains the path for future locale-specific linguistic behavior.
 
 ### SQL Syntax
 
@@ -130,7 +130,7 @@ Collection changes:
 
 ### Phase 3: NOCASE_AI (Accent-Insensitive)
 
-**Goal:** Support accent-insensitive matching for European languages.
+**Status:** Implemented for normalization-based equality, ordering, and index semantics.
 
 - Use Unicode canonical decomposition (NFD) + accent stripping, or `CompareOptions.IgnoreNonSpace`
 - Pre-compute normalized keys at write time
@@ -228,8 +228,7 @@ Several engine paths rebuild AST objects. Any new collation fields must be prese
 
 1. SQL ordered text collation/index strategy
 2. ICU locale-aware collation
-3. `NOCASE_AI` accent-insensitive collation
-4. Benchmark and compatibility hardening
+3. Benchmark and compatibility hardening
 
 ---
 
