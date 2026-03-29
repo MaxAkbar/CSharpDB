@@ -127,6 +127,7 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("DATETIME_PRECISION", typeof(short));
         table.Columns.Add("IS_PRIMARY_KEY", typeof(bool));
         table.Columns.Add("IS_IDENTITY", typeof(bool));
+        table.Columns.Add("COLLATION_NAME", typeof(string));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -171,7 +172,8 @@ internal static class CSharpDbSchemaProvider
                     GetNumericScale(column.Type),
                     DBNull.Value,
                     column.IsPrimaryKey,
-                    column.IsIdentity);
+                    column.IsIdentity,
+                    column.Collation is null ? DBNull.Value : column.Collation);
             }
         }
 
@@ -192,6 +194,7 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("INDEX_TYPE", typeof(string));
         table.Columns.Add("INDEX_STATE", typeof(string));
         table.Columns.Add("COLUMN_LIST", typeof(string));
+        table.Columns.Add("COLLATION_LIST", typeof(string));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -212,6 +215,11 @@ internal static class CSharpDbSchemaProvider
                 continue;
             }
 
+            TableSchema? tableSchema = connection.GetTableSchema(index.TableName);
+            string collationList = string.Join(
+                ", ",
+                index.Columns.Select((columnName, position) => ResolveEffectiveIndexColumnCollation(index, tableSchema, position, columnName) ?? string.Empty));
+
             table.Rows.Add(
                 catalog,
                 DBNull.Value,
@@ -223,7 +231,8 @@ internal static class CSharpDbSchemaProvider
                 index.IsUnique,
                 index.Kind.ToString(),
                 index.State.ToString(),
-                string.Join(", ", index.Columns));
+                string.Join(", ", index.Columns),
+                collationList);
         }
 
         return table;
@@ -271,6 +280,22 @@ internal static class CSharpDbSchemaProvider
         => restrictionValues is not null && index < restrictionValues.Length
             ? restrictionValues[index]
             : null;
+
+    private static string? ResolveEffectiveIndexColumnCollation(
+        IndexSchema index,
+        TableSchema? tableSchema,
+        int columnPosition,
+        string columnName)
+    {
+        if (columnPosition < index.ColumnCollations.Count && !string.IsNullOrWhiteSpace(index.ColumnCollations[columnPosition]))
+            return index.ColumnCollations[columnPosition];
+
+        if (tableSchema == null)
+            return null;
+
+        int tableColumnIndex = tableSchema.GetColumnIndex(columnName);
+        return tableColumnIndex >= 0 ? tableSchema.Columns[tableColumnIndex].Collation : null;
+    }
 
     private static bool MatchesRestriction(string? actualValue, string? restrictionValue)
     {

@@ -1,21 +1,21 @@
 # What's New
 
-## v2.5.0
+## v2.6.0
 
-### Durable WAL Recovery, Concurrency, and Tuning
+### Multilingual Collations and Ordered Text Indexes
 
-- Refactored the file-backed WAL commit path to batch staged frame appends at commit time, reduce unnecessary writer-lock hold time, and harden recovery and repair behavior around checkpoint and WAL edge cases.
-- Exposed durable-write tuning through `DatabaseOptions.ConfigureStorageEngine(...)`, including `UseWriteOptimizedPreset()`, `UseDurableCommitBatchWindow(...)`, and `UseWalPreallocationChunkBytes(...)` for advanced file-backed write workloads.
-- Added process-crash durability coverage, concurrent durable-write diagnostics and benchmarks, and machine-aware performance guardrails with checked-in focused baselines to make release validation more reproducible.
-- Fixed a collection write-gate leak on cached collection opens that could stall later collection count and browse requests through the HTTP API and gRPC daemon after earlier collection writes.
+- Expanded SQL and collection collation support with explicit `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` options for comparisons, ordering, unique enforcement, and path indexes.
+- Added ordered SQL text index options and planning support, including collation-aware metadata, guardrails, and benchmark coverage for text-heavy index shapes.
+- Stabilized ordered-text overflow handling so large duplicate or prefix-heavy text indexes can spill safely instead of overloading a single index page.
 
-### Phase-1 Cost-Based Join Planning
+### Maintenance, Diagnostics, and Admin Hardening
 
-- Added the first stats-driven cardinality estimation phase for the SQL planner, using `ANALYZE` data to improve non-unique lookup selection, join method choice, and hash build-side choice.
-- Added limited greedy inner-join reordering so selective predicates can move earlier in supported inner-join chains when statistics are available.
-- Expanded selectivity heuristics and planner coverage for range predicates, `IN` lists, nullable disjunctions, and mixed `UNION` join cases, plus new join microbenchmarks for those shapes.
+- Hardened reindex rebuilds, WAL open failure cleanup, and advisory statistics freshness after reopen so maintenance and recovery paths behave more predictably after index or storage edge cases.
+- Improved the Admin experience for large datasets by reusing table-style pagination and filters in SQL and designer results, making welcome-page row counts on-demand, and clarifying storage-maintenance failures.
+- Tightened storage diagnostics and repair coverage around corrupt indexes, live-database inspection, and maintenance workflows.
 
-### Documentation and Release Guidance
+### Reusable Benchmark Data and Release Validation
 
-- Refreshed the root, engine, execution, and storage READMEs with updated performance snapshots, thread-safety guidance, current write-tuning recommendations, and documentation of the current cost-based optimizer phase.
-- Updated benchmark docs and scripts so durability diagnostics, guardrail capture, and machine compatibility handling are documented and easier to run on a fresh clone.
+- Added `tests/CSharpDB.DataGen`, a JSON-spec-driven data generator for relational, document, and time-series workloads with CSV, JSONL, and direct binary-load output modes.
+- Added focused release benchmark mode plus refreshed benchmark docs and baseline tooling so release validation is easier to reproduce on a clean machine.
+- Reorganized sample and tutorial project paths, refreshed NuGet search metadata, and updated docs and site content to match the current shipped surface.

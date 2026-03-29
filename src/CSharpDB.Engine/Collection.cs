@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
+using CSharpDB.Execution;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
@@ -358,10 +359,20 @@ public sealed class Collection<
     public async ValueTask EnsureIndexAsync<TField>(
         Expression<Func<T, TField>> fieldSelector,
         CancellationToken ct = default)
+        => await EnsureIndexAsync(fieldSelector, collation: null, ct);
+
+    /// <summary>
+    /// Ensure a secondary index exists for a field/property selector path such as x => x.Age or x => x.Address.City.
+    /// Text paths may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
+    /// </summary>
+    public async ValueTask EnsureIndexAsync<TField>(
+        Expression<Func<T, TField>> fieldSelector,
+        string? collation,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fieldSelector);
         string fieldPath = CollectionIndexBinding<T>.GetFieldPath(fieldSelector);
-        await EnsureIndexCoreAsync(fieldPath, ct);
+        await EnsureIndexCoreAsync(fieldPath, collation, ct);
     }
 
     /// <summary>
@@ -370,9 +381,19 @@ public sealed class Collection<
     public ValueTask EnsureIndexAsync(
         string fieldPath,
         CancellationToken ct = default)
+        => EnsureIndexAsync(fieldPath, collation: null, ct);
+
+    /// <summary>
+    /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
+    /// Text paths may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
+    /// </summary>
+    public ValueTask EnsureIndexAsync(
+        string fieldPath,
+        string? collation,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
-        return EnsureIndexCoreAsync(CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath), ct);
+        return EnsureIndexCoreAsync(CollectionIndexBinding<T>.NormalizeFieldPath(fieldPath), collation, ct);
     }
 
     /// <summary>
@@ -447,7 +468,8 @@ public sealed class Collection<
             _indexes[fieldPath] = CollectionIndexBinding<T>.Create(
                 fieldPath,
                 schema.IndexName,
-                _catalog.GetIndexStore(schema.IndexName));
+                _catalog.GetIndexStore(schema.IndexName),
+                GetCollectionIndexCollation(schema));
         }
     }
 
@@ -479,7 +501,8 @@ public sealed class Collection<
         var binding = CollectionIndexBinding<T>.Create(
             fieldPath,
             schema.IndexName,
-            _catalog.GetIndexStore(schema.IndexName));
+            _catalog.GetIndexStore(schema.IndexName),
+            GetCollectionIndexCollation(schema));
         _indexes[fieldPath] = binding;
         _observedSchemaVersion = _catalog.SchemaVersion;
         return binding;
@@ -782,17 +805,22 @@ public sealed class Collection<
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
-    private async ValueTask EnsureIndexCoreAsync(string fieldPath, CancellationToken ct)
+    private async ValueTask EnsureIndexCoreAsync(string fieldPath, string? collation, CancellationToken ct)
     {
         RefreshIndexesIfSchemaChanged();
+        string? normalizedCollation = CollationSupport.NormalizeMetadataName(collation);
 
-        if (_indexes.ContainsKey(fieldPath))
+        if (_indexes.TryGetValue(fieldPath, out var existingBinding))
+        {
+            EnsureRequestedCollectionIndexCollation(fieldPath, normalizedCollation, existingBinding.Collation);
             return;
+        }
 
         string indexName = BuildCollectionIndexName(fieldPath);
         var existing = _catalog.GetIndex(indexName);
         if (existing != null)
         {
+            EnsureRequestedCollectionIndexCollation(fieldPath, normalizedCollation, GetCollectionIndexCollation(existing));
             AttachIndexBinding(existing);
             return;
         }
@@ -806,12 +834,16 @@ public sealed class Collection<
         using var writeScope = await _enterWriteScopeAsync(ct);
         RefreshIndexesIfSchemaChanged();
 
-        if (_indexes.ContainsKey(fieldPath))
+        if (_indexes.TryGetValue(fieldPath, out existingBinding))
+        {
+            EnsureRequestedCollectionIndexCollation(fieldPath, normalizedCollation, existingBinding.Collation);
             return;
+        }
 
         existing = _catalog.GetIndex(indexName);
         if (existing != null)
         {
+            EnsureRequestedCollectionIndexCollation(fieldPath, normalizedCollation, GetCollectionIndexCollation(existing));
             AttachIndexBinding(existing);
             return;
         }
@@ -828,6 +860,7 @@ public sealed class Collection<
                 IndexName = indexName,
                 TableName = _catalogTableName,
                 Columns = [fieldPath],
+                ColumnCollations = normalizedCollation is null ? Array.Empty<string?>() : [normalizedCollation],
                 IsUnique = false,
                 Kind = IndexKind.Collection,
             };
@@ -924,7 +957,10 @@ public sealed class Collection<
             }
 
             if (!OrderedTextIndexPayloadCodec.IsEncoded(payload) ||
-                !OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, expectedValue.AsText, out rowIdPayload))
+                !OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    CollationSupport.NormalizeText(expectedValue.AsText, attachedBinding.Collation),
+                    out rowIdPayload))
             {
                 yield break;
             }
@@ -1000,7 +1036,7 @@ public sealed class Collection<
                 nameof(upperBound));
         }
 
-        int boundComparison = DbValue.Compare(lowerValue, upperValue);
+        int boundComparison = CollationSupport.Compare(lowerValue, upperValue, binding.Collation);
         if (boundComparison > 0 ||
             (boundComparison == 0 && (!lowerInclusive || !upperInclusive)))
         {
@@ -1063,9 +1099,9 @@ public sealed class Collection<
                 textRowIds!.Clear();
                 if (!OrderedTextIndexPayloadCodec.TryCollectMatchingRowIdsInRange(
                         rowIdPayload.Span,
-                        lowerValue.AsText,
+                        CollationSupport.NormalizeText(lowerValue.AsText, attachedBinding.Collation),
                         lowerInclusive,
-                        upperValue.AsText,
+                        CollationSupport.NormalizeText(upperValue.AsText, attachedBinding.Collation),
                         upperInclusive,
                         textRowIds))
                 {
@@ -1125,6 +1161,23 @@ public sealed class Collection<
                     yield return new KeyValuePair<string, T>(key, document);
             }
         }
+    }
+
+    private static string? GetCollectionIndexCollation(IndexSchema schema)
+        => schema.ColumnCollations.Count == 0
+            ? null
+            : CollationSupport.NormalizeMetadataName(schema.ColumnCollations[0]);
+
+    private static void EnsureRequestedCollectionIndexCollation(
+        string fieldPath,
+        string? requestedCollation,
+        string? existingCollation)
+    {
+        if (requestedCollation is null || CollationSupport.SemanticallyEquals(requestedCollation, existingCollation))
+            return;
+
+        throw new InvalidOperationException(
+            $"Collection index '{fieldPath}' already exists with collation '{existingCollation ?? CollationSupport.BinaryCollation}'. Drop and recreate it to change collation.");
     }
 
     private static void AddGroupedRowId(

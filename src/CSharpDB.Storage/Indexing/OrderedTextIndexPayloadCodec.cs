@@ -90,9 +90,9 @@ internal static class OrderedTextIndexPayloadCodec
 
     public static bool TryCollectMatchingRowIdsInRange(
         ReadOnlySpan<byte> payload,
-        string lowerBound,
+        string? lowerBound,
         bool lowerInclusive,
-        string upperBound,
+        string? upperBound,
         bool upperInclusive,
         List<long> rowIds)
     {
@@ -299,18 +299,24 @@ internal static class OrderedTextIndexPayloadCodec
 
     private static bool IsWithinRange(
         string value,
-        string lowerBound,
+        string? lowerBound,
         bool lowerInclusive,
-        string upperBound,
+        string? upperBound,
         bool upperInclusive)
     {
-        int lowerComparison = string.Compare(value, lowerBound, StringComparison.Ordinal);
-        if (lowerComparison < 0 || (!lowerInclusive && lowerComparison == 0))
-            return false;
+        if (lowerBound != null)
+        {
+            int lowerComparison = string.Compare(value, lowerBound, StringComparison.Ordinal);
+            if (lowerComparison < 0 || (!lowerInclusive && lowerComparison == 0))
+                return false;
+        }
 
-        int upperComparison = string.Compare(value, upperBound, StringComparison.Ordinal);
-        if (upperComparison > 0 || (!upperInclusive && upperComparison == 0))
-            return false;
+        if (upperBound != null)
+        {
+            int upperComparison = string.Compare(value, upperBound, StringComparison.Ordinal);
+            if (upperComparison > 0 || (!upperInclusive && upperComparison == 0))
+                return false;
+        }
 
         return true;
     }

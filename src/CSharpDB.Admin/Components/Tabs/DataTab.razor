@@ -72,6 +72,7 @@
                                 <tr>
                                     <th>Name</th>
                                     <th>Type</th>
+                                    <th>Collation</th>
                                     <th>Primary Key</th>
                                     <th>Identity</th>
                                     <th>Nullable</th>
@@ -83,6 +84,7 @@
                                     <tr>
                                         <td class="@(col.IsPrimaryKey ? "pk-val" : "")">@col.Name</td>
                                         <td><span class="col-type-badge @GetTypeBadgeClass(col.Type.ToString())">@col.Type.ToString().ToUpperInvariant()</span></td>
+                                        <td class="mono-cell">@GetColumnCollationLabel(col)</td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
                                         <td>@(col.IsIdentity ? "Yes" : "No")</td>
                                         <td>@(col.Nullable ? "Yes" : "No")</td>
@@ -120,11 +122,22 @@
                                         </div>
                                         <div class="schema-field">
                                             <label>Type</label>
-                                            <select class="schema-input" value="@_addColType" @onchange="e => { if (Enum.TryParse<DbType>(e.Value?.ToString(), out var t)) _addColType = t; }">
+                                            <select class="schema-input" value="@_addColType" @onchange="OnAddColumnTypeChanged">
                                                 <option value="@DbType.Integer">INTEGER</option>
                                                 <option value="@DbType.Real">REAL</option>
                                                 <option value="@DbType.Text">TEXT</option>
                                                 <option value="@DbType.Blob">BLOB</option>
+                                            </select>
+                                        </div>
+                                        <div class="schema-field">
+                                            <label>Collation</label>
+                                            <select class="schema-input mono" @bind="_addColCollation" disabled="@(_addColType != DbType.Text)">
+                                                <option value="">@(_addColType == DbType.Text ? "Default (BINARY)" : "Not applicable")</option>
+                                                @if (_addColType == DbType.Text)
+                                                {
+                                                    <option value="BINARY">BINARY</option>
+                                                    <option value="NOCASE">NOCASE</option>
+                                                }
                                             </select>
                                         </div>
                                         <div class="schema-field">
@@ -188,6 +201,7 @@
                                 <tr>
                                     <th>Name</th>
                                     <th>Columns</th>
+                                    <th>Collation</th>
                                     <th>Unique</th>
                                     <th style="width:80px;">Actions</th>
                                 </tr>
@@ -199,6 +213,7 @@
                                     <tr>
                                         <td class="mono-cell">@idx.IndexName</td>
                                         <td class="mono-cell">@string.Join(", ", idx.Columns)</td>
+                                        <td class="mono-cell">@GetIndexCollationLabel(idx)</td>
                                         <td>@(idx.IsUnique ? "Yes" : "No")</td>
                                         <td>
                                             @if (_confirmDrop == key)
@@ -228,20 +243,31 @@
                     }
 
                     <div class="schema-edit-form schema-edit-compact">
-                        <div class="schema-edit-grid cols-3">
+                        <div class="schema-edit-grid cols-4">
                             <div class="schema-field">
                                 <label>@(_editingIdxName is null ? "New Index" : $"Editing: {_editingIdxName}")</label>
                                 <input class="schema-input mono" placeholder="index_name" @bind="_idxName" />
                             </div>
                             <div class="schema-field">
                                 <label>Column</label>
-                                <select class="schema-input mono" @bind="_idxColumn">
+                                <select class="schema-input mono" value="@_idxColumn" @onchange="OnIndexColumnChanged">
                                     @if (_schema is not null)
                                     {
                                         @foreach (var col in _schema.Columns)
                                         {
                                             <option value="@col.Name">@col.Name</option>
                                         }
+                                    }
+                                </select>
+                            </div>
+                            <div class="schema-field">
+                                <label>Collation</label>
+                                <select class="schema-input mono" @bind="_idxCollation" disabled="@(!SelectedIndexColumnSupportsCollation)">
+                                    <option value="">@(SelectedIndexColumnSupportsCollation ? GetIndexDefaultCollationLabel() : "Not applicable")</option>
+                                    @if (SelectedIndexColumnSupportsCollation)
+                                    {
+                                        <option value="BINARY">BINARY</option>
+                                        <option value="NOCASE">NOCASE</option>
                                     }
                                 </select>
                             </div>
@@ -389,6 +415,7 @@
     private TableOp _tableOperation = TableOp.AddColumn;
     private string _addColName = string.Empty;
     private DbType _addColType = DbType.Text;
+    private string _addColCollation = string.Empty;
     private bool _addColNotNull;
     private string _dropColName = string.Empty;
     private string _renameOldCol = string.Empty;
@@ -399,6 +426,7 @@
     private string? _editingIdxName;
     private string _idxName = string.Empty;
     private string _idxColumn = string.Empty;
+    private string _idxCollation = string.Empty;
     private bool _idxUnique;
 
     // ─── Trigger editing state ──────────
@@ -451,6 +479,8 @@
                         _renameOldCol = _schema.Columns[0].Name;
                     if (string.IsNullOrEmpty(_idxColumn))
                         _idxColumn = _schema.Columns[0].Name;
+
+                    NormalizeIndexCollationSelection();
                 }
             }
             else
@@ -520,6 +550,22 @@
             _tableOperation = op;
     }
 
+    private void OnAddColumnTypeChanged(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<DbType>(e.Value?.ToString(), out var type))
+            return;
+
+        _addColType = type;
+        if (_addColType != DbType.Text)
+            _addColCollation = string.Empty;
+    }
+
+    private void OnIndexColumnChanged(ChangeEventArgs e)
+    {
+        _idxColumn = e.Value?.ToString() ?? string.Empty;
+        NormalizeIndexCollationSelection();
+    }
+
     private async Task ApplyAlterTableAsync()
     {
         _submitting = true;
@@ -528,9 +574,10 @@
             switch (_tableOperation)
             {
                 case TableOp.AddColumn:
-                    await DbClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull);
+                    await DbClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull, NormalizeCollation(_addColCollation));
                     Toast.Success($"Added column '{_addColName}'.");
                     _addColName = string.Empty;
+                    _addColCollation = string.Empty;
                     break;
                 case TableOp.DropColumn:
                     await DbClient.DropColumnAsync(ObjectName, _dropColName);
@@ -563,13 +610,16 @@
         _editingIdxName = idx.IndexName;
         _idxName = idx.IndexName;
         _idxColumn = idx.Columns.FirstOrDefault() ?? string.Empty;
+        _idxCollation = NormalizeCollation(idx.ColumnCollations.FirstOrDefault()) ?? string.Empty;
         _idxUnique = idx.IsUnique;
+        NormalizeIndexCollationSelection();
     }
 
     private void CancelIndexEdit()
     {
         _editingIdxName = null;
         _idxName = string.Empty;
+        _idxCollation = string.Empty;
         _idxUnique = false;
     }
 
@@ -580,12 +630,12 @@
         {
             if (_editingIdxName is null)
             {
-                await DbClient.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique);
+                await DbClient.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
                 Toast.Success($"Created index '{_idxName}'.");
             }
             else
             {
-                await DbClient.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique);
+                await DbClient.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
                 Toast.Success($"Updated index '{_editingIdxName}'.");
             }
             CancelIndexEdit();
@@ -742,6 +792,55 @@
         "BLOB" => "type-blob",
         _ => "type-other"
     };
+
+    private bool SelectedIndexColumnSupportsCollation => GetColumn(_idxColumn)?.Type == DbType.Text;
+
+    private string GetColumnCollationLabel(ColumnDefinition column)
+        => column.Type != DbType.Text
+            ? "N/A"
+            : NormalizeCollation(column.Collation) ?? "BINARY (default)";
+
+    private string GetIndexCollationLabel(IndexSchema index)
+        => index.Columns.Count == 0
+            ? string.Empty
+            : string.Join(", ", index.Columns.Select((columnName, ordinal) => GetIndexCollationLabel(index, columnName, ordinal)));
+
+    private string GetIndexCollationLabel(IndexSchema index, string columnName, int ordinal)
+    {
+        var column = GetColumn(columnName);
+        if (column?.Type != DbType.Text)
+            return "N/A";
+
+        string? explicitCollation = ordinal < index.ColumnCollations.Count
+            ? NormalizeCollation(index.ColumnCollations[ordinal])
+            : null;
+        if (!string.IsNullOrWhiteSpace(explicitCollation))
+            return explicitCollation;
+
+        string? inheritedCollation = NormalizeCollation(column.Collation);
+        return inheritedCollation is null ? "BINARY (default)" : $"{inheritedCollation} (column)";
+    }
+
+    private string GetIndexDefaultCollationLabel()
+    {
+        string? inheritedCollation = NormalizeCollation(GetColumn(_idxColumn)?.Collation);
+        return inheritedCollation is null ? "Default (BINARY)" : $"Default ({inheritedCollation} from column)";
+    }
+
+    private ColumnDefinition? GetColumn(string columnName)
+        => _schema?.Columns.FirstOrDefault(column => column.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
+
+    private void NormalizeIndexCollationSelection()
+    {
+        if (!SelectedIndexColumnSupportsCollation)
+            _idxCollation = string.Empty;
+    }
+
+    private string? NormalizeIndexCollation()
+        => SelectedIndexColumnSupportsCollation ? NormalizeCollation(_idxCollation) : null;
+
+    private static string? NormalizeCollation(string? collation)
+        => string.IsNullOrWhiteSpace(collation) ? null : collation.Trim().ToUpperInvariant();
 
     private enum TableOp { AddColumn, DropColumn, RenameColumn, RenameTable }
 }

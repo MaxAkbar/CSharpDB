@@ -55,6 +55,24 @@ internal static class InspectorEngine
         public required List<IntegrityIssue> Issues { get; init; }
     }
 
+    private sealed class CommittedWalOverlay
+    {
+        public required uint CommittedPageCount { get; init; }
+        public required Dictionary<uint, byte[]> Pages { get; init; }
+    }
+
+    private readonly record struct ParsedFileHeader(
+        string Magic,
+        bool MagicValid,
+        int Version,
+        bool VersionValid,
+        int PageSize,
+        bool PageSizeValid,
+        uint DeclaredPageCount,
+        uint SchemaRootPage,
+        uint FreelistHead,
+        uint ChangeCounter);
+
     internal static async ValueTask<DatabaseSnapshot> ReadDatabaseSnapshotAsync(
         string databasePath,
         bool captureLeafPayload,
@@ -74,7 +92,7 @@ internal static class InspectorEngine
             useAsync: true);
 
         long fileLength = stream.Length;
-        int physicalPageCount = checked((int)(fileLength / PageConstants.PageSize));
+        int filePhysicalPageCount = checked((int)(fileLength / PageConstants.PageSize));
         int trailingBytes = checked((int)(fileLength % PageConstants.PageSize));
 
         if (trailingBytes > 0)
@@ -101,60 +119,58 @@ internal static class InspectorEngine
             });
         }
 
-        string magic = headerRead >= 4 ? System.Text.Encoding.ASCII.GetString(fileHeader.AsSpan(0, 4)) : string.Empty;
-        bool magicValid = headerRead >= 4 && fileHeader.AsSpan(0, 4).SequenceEqual(PageConstants.MagicBytes);
+        ParsedFileHeader parsedHeader = ParseFileHeader(fileHeader, headerRead);
+        CommittedWalOverlay? walOverlay = await TryReadCommittedWalOverlayAsync(databasePath, ct);
+        if (walOverlay is not null &&
+            walOverlay.Pages.TryGetValue(0, out byte[]? headerPageBytes))
+        {
+            parsedHeader = ParseFileHeader(headerPageBytes, PageConstants.FileHeaderSize);
+        }
 
-        int version = headerRead >= 8 ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.AsSpan(PageConstants.VersionOffset, 4)) : 0;
-        bool versionValid = version == PageConstants.FormatVersion;
-
-        int pageSize = headerRead >= 12 ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.AsSpan(PageConstants.PageSizeOffset, 4)) : 0;
-        bool pageSizeValid = pageSize == PageConstants.PageSize;
-
-        uint declaredPageCount = headerRead >= 16 ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(PageConstants.PageCountOffset, 4)) : 0;
-        uint schemaRootPage = headerRead >= 20 ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(PageConstants.SchemaRootPageOffset, 4)) : 0;
-        uint freelistHead = headerRead >= 24 ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(PageConstants.FreelistHeadOffset, 4)) : 0;
-        uint changeCounter = headerRead >= 28 ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(PageConstants.ChangeCounterOffset, 4)) : 0;
-
-        if (!magicValid)
+        if (!parsedHeader.MagicValid)
         {
             issues.Add(new IntegrityIssue
             {
                 Code = "DB_HEADER_BAD_MAGIC",
                 Severity = InspectSeverity.Error,
-                Message = $"Unexpected database magic '{magic}'.",
+                Message = $"Unexpected database magic '{parsedHeader.Magic}'.",
                 Offset = 0,
             });
         }
 
-        if (!versionValid)
+        if (!parsedHeader.VersionValid)
         {
             issues.Add(new IntegrityIssue
             {
                 Code = "DB_HEADER_BAD_VERSION",
                 Severity = InspectSeverity.Error,
-                Message = $"Unsupported format version {version}.",
+                Message = $"Unsupported format version {parsedHeader.Version}.",
                 Offset = PageConstants.VersionOffset,
             });
         }
 
-        if (!pageSizeValid)
+        if (!parsedHeader.PageSizeValid)
         {
             issues.Add(new IntegrityIssue
             {
                 Code = "DB_HEADER_BAD_PAGE_SIZE",
                 Severity = InspectSeverity.Error,
-                Message = $"Unexpected page size {pageSize}; expected {PageConstants.PageSize}.",
+                Message = $"Unexpected page size {parsedHeader.PageSize}; expected {PageConstants.PageSize}.",
                 Offset = PageConstants.PageSizeOffset,
             });
         }
 
-        if (declaredPageCount != (uint)physicalPageCount)
+        int physicalPageCount = walOverlay is { CommittedPageCount: > 0 }
+            ? checked((int)walOverlay.CommittedPageCount)
+            : filePhysicalPageCount;
+
+        if (parsedHeader.DeclaredPageCount != (uint)physicalPageCount)
         {
             issues.Add(new IntegrityIssue
             {
                 Code = "DB_PAGE_COUNT_MISMATCH",
                 Severity = InspectSeverity.Warning,
-                Message = $"Header page count ({declaredPageCount}) does not match physical page count ({physicalPageCount}).",
+                Message = $"Header page count ({parsedHeader.DeclaredPageCount}) does not match physical page count ({physicalPageCount}).",
                 Offset = PageConstants.PageCountOffset,
             });
         }
@@ -163,17 +179,17 @@ internal static class InspectorEngine
         {
             FileLengthBytes = fileLength,
             PhysicalPageCount = physicalPageCount,
-            Magic = magic,
-            MagicValid = magicValid,
-            Version = version,
-            VersionValid = versionValid,
-            PageSize = pageSize,
-            PageSizeValid = pageSizeValid,
-            DeclaredPageCount = declaredPageCount,
-            DeclaredPageCountMatchesPhysical = declaredPageCount == (uint)physicalPageCount,
-            SchemaRootPage = schemaRootPage,
-            FreelistHead = freelistHead,
-            ChangeCounter = changeCounter,
+            Magic = parsedHeader.Magic,
+            MagicValid = parsedHeader.MagicValid,
+            Version = parsedHeader.Version,
+            VersionValid = parsedHeader.VersionValid,
+            PageSize = parsedHeader.PageSize,
+            PageSizeValid = parsedHeader.PageSizeValid,
+            DeclaredPageCount = parsedHeader.DeclaredPageCount,
+            DeclaredPageCountMatchesPhysical = parsedHeader.DeclaredPageCount == (uint)physicalPageCount,
+            SchemaRootPage = parsedHeader.SchemaRootPage,
+            FreelistHead = parsedHeader.FreelistHead,
+            ChangeCounter = parsedHeader.ChangeCounter,
         };
 
         var pages = new Dictionary<uint, ParsedPage>();
@@ -181,21 +197,43 @@ internal static class InspectorEngine
 
         for (uint pageId = 0; pageId < physicalPageCount; pageId++)
         {
-            int read = await ReadAtAsync(stream, (long)pageId * PageConstants.PageSize, pageBuffer, ct);
-            if (read != PageConstants.PageSize)
+            byte[]? pageBytes = null;
+            if (walOverlay is not null &&
+                walOverlay.Pages.TryGetValue(pageId, out byte[]? walPageBytes))
+            {
+                pageBytes = walPageBytes;
+            }
+            else if (pageId < filePhysicalPageCount)
+            {
+                int read = await ReadAtAsync(stream, (long)pageId * PageConstants.PageSize, pageBuffer, ct);
+                if (read != PageConstants.PageSize)
+                {
+                    issues.Add(new IntegrityIssue
+                    {
+                        Code = "DB_PAGE_SHORT_READ",
+                        Severity = InspectSeverity.Error,
+                        Message = $"Failed to read full page {pageId}; got {read} bytes.",
+                        PageId = pageId,
+                        Offset = (long)pageId * PageConstants.PageSize,
+                    });
+                    continue;
+                }
+
+                pageBytes = pageBuffer;
+            }
+            else
             {
                 issues.Add(new IntegrityIssue
                 {
-                    Code = "DB_PAGE_SHORT_READ",
+                    Code = "DB_PAGE_MISSING_FROM_COMMITTED_VIEW",
                     Severity = InspectSeverity.Error,
-                    Message = $"Failed to read full page {pageId}; got {read} bytes.",
+                    Message = $"Committed page {pageId} is not present in the database file or committed WAL frames.",
                     PageId = pageId,
-                    Offset = (long)pageId * PageConstants.PageSize,
                 });
                 continue;
             }
 
-            ParsePageResult parsed = ParsePage(pageId, pageBuffer, captureLeafPayload);
+            ParsePageResult parsed = ParsePage(pageId, pageBytes, captureLeafPayload);
             pages[pageId] = parsed.Page;
             issues.AddRange(parsed.Issues);
         }
@@ -212,6 +250,16 @@ internal static class InspectorEngine
 
     internal static async ValueTask<byte[]?> ReadPageBytesAsync(string databasePath, uint pageId, CancellationToken ct = default)
     {
+        CommittedWalOverlay? walOverlay = await TryReadCommittedWalOverlayAsync(databasePath, ct);
+        if (walOverlay is { CommittedPageCount: > 0 })
+        {
+            if (pageId >= walOverlay.CommittedPageCount)
+                return null;
+
+            if (walOverlay.Pages.TryGetValue(pageId, out byte[]? walPageBytes))
+                return walPageBytes;
+        }
+
         if (!File.Exists(databasePath))
             return null;
 
@@ -273,7 +321,9 @@ internal static class InspectorEngine
         ushort cellContentStart = BinaryPrimitives.ReadUInt16LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.FreeSpaceStartOffset, 2));
         uint rightChildOrNextLeaf = BinaryPrimitives.ReadUInt32LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.RightChildOffset, 4));
 
-        if (pageType != PageConstants.PageTypeLeaf && pageType != PageConstants.PageTypeInterior)
+        if (pageType != PageConstants.PageTypeLeaf &&
+            pageType != PageConstants.PageTypeInterior &&
+            pageType != PageConstants.PageTypeOverflow)
         {
             if (pageType != PageConstants.PageTypeFreelist)
             {
@@ -669,6 +719,7 @@ internal static class InspectorEngine
     {
         PageConstants.PageTypeLeaf => "leaf",
         PageConstants.PageTypeInterior => "interior",
+        PageConstants.PageTypeOverflow => "overflow",
         PageConstants.PageTypeFreelist => "freelist",
         _ => "unknown",
     };
@@ -731,5 +782,147 @@ internal static class InspectorEngine
         }
 
         return total;
+    }
+
+    private static ParsedFileHeader ParseFileHeader(ReadOnlySpan<byte> fileHeader, int availableBytes)
+    {
+        string magic = availableBytes >= 4
+            ? System.Text.Encoding.ASCII.GetString(fileHeader[..4])
+            : string.Empty;
+        bool magicValid = availableBytes >= 4 &&
+                          fileHeader[..4].SequenceEqual(PageConstants.MagicBytes);
+
+        int version = availableBytes >= 8
+            ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.Slice(PageConstants.VersionOffset, 4))
+            : 0;
+        bool versionValid = version == PageConstants.FormatVersion;
+
+        int pageSize = availableBytes >= 12
+            ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.Slice(PageConstants.PageSizeOffset, 4))
+            : 0;
+        bool pageSizeValid = pageSize == PageConstants.PageSize;
+
+        uint declaredPageCount = availableBytes >= 16
+            ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.Slice(PageConstants.PageCountOffset, 4))
+            : 0;
+        uint schemaRootPage = availableBytes >= 20
+            ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.Slice(PageConstants.SchemaRootPageOffset, 4))
+            : 0;
+        uint freelistHead = availableBytes >= 24
+            ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.Slice(PageConstants.FreelistHeadOffset, 4))
+            : 0;
+        uint changeCounter = availableBytes >= 28
+            ? BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.Slice(PageConstants.ChangeCounterOffset, 4))
+            : 0;
+
+        return new ParsedFileHeader(
+            magic,
+            magicValid,
+            version,
+            versionValid,
+            pageSize,
+            pageSizeValid,
+            declaredPageCount,
+            schemaRootPage,
+            freelistHead,
+            changeCounter);
+    }
+
+    private static async ValueTask<CommittedWalOverlay?> TryReadCommittedWalOverlayAsync(
+        string databasePath,
+        CancellationToken ct = default)
+    {
+        string walPath = databasePath + ".wal";
+        if (!File.Exists(walPath))
+            return null;
+
+        await using var stream = new FileStream(
+            walPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            bufferSize: 4096,
+            useAsync: true);
+
+        if (stream.Length < PageConstants.WalHeaderSize)
+            return null;
+
+        byte[] header = new byte[PageConstants.WalHeaderSize];
+        int headerRead = await ReadAtAsync(stream, 0, header, ct);
+        if (headerRead != PageConstants.WalHeaderSize)
+            return null;
+
+        if (!header.AsSpan(0, 4).SequenceEqual(PageConstants.WalMagic))
+            return null;
+
+        int version = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(4, 4));
+        int pageSize = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(8, 4));
+        if (version != 1 || pageSize != PageConstants.PageSize)
+            return null;
+
+        uint salt1 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(16, 4));
+        uint salt2 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(20, 4));
+
+        long frameBytes = Math.Max(0, stream.Length - PageConstants.WalHeaderSize);
+        int fullFrameCount = checked((int)(frameBytes / PageConstants.WalFrameSize));
+        if (fullFrameCount == 0)
+            return null;
+
+        var visiblePages = new Dictionary<uint, byte[]>();
+        var pendingPages = new Dictionary<uint, byte[]>();
+        byte[] frameHeader = new byte[PageConstants.WalFrameHeaderSize];
+        byte[] pageData = new byte[PageConstants.PageSize];
+        uint committedPageCount = 0;
+
+        for (int i = 0; i < fullFrameCount; i++)
+        {
+            long frameOffset = PageConstants.WalHeaderSize + (long)i * PageConstants.WalFrameSize;
+            int frameHeaderRead = await ReadAtAsync(stream, frameOffset, frameHeader, ct);
+            int framePageRead = await ReadAtAsync(stream, frameOffset + PageConstants.WalFrameHeaderSize, pageData, ct);
+
+            if (frameHeaderRead != PageConstants.WalFrameHeaderSize ||
+                framePageRead != PageConstants.PageSize)
+            {
+                break;
+            }
+
+            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(8, 4));
+            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(12, 4));
+            if (frameSalt1 != salt1 || frameSalt2 != salt2)
+                break;
+
+            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(16, 4));
+            uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(20, 4));
+            uint actualHeaderChecksum = Checksum(frameHeader.AsSpan(0, 16));
+            uint actualDataChecksum = Checksum(pageData);
+
+            if (actualHeaderChecksum != expectedHeaderChecksum ||
+                actualDataChecksum != expectedDataChecksum)
+            {
+                break;
+            }
+
+            uint pageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(0, 4));
+            uint dbPageCount = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(4, 4));
+            pendingPages[pageId] = pageData.ToArray();
+
+            if (dbPageCount == 0)
+                continue;
+
+            foreach (var pending in pendingPages)
+                visiblePages[pending.Key] = pending.Value;
+
+            pendingPages.Clear();
+            committedPageCount = dbPageCount;
+        }
+
+        if (committedPageCount == 0)
+            return null;
+
+        return new CommittedWalOverlay
+        {
+            CommittedPageCount = committedPageCount,
+            Pages = visiblePages,
+        };
     }
 }

@@ -100,7 +100,8 @@ internal static class BoundColumnAccessHelper
         ReadOnlySpan<int> columnIndices,
         ReadOnlySpan<DbValue> keyComponents,
         RecordColumnAccessor?[]? accessors,
-        byte[][]? textBytes)
+        byte[][]? textBytes,
+        string?[]? keyCollations = null)
     {
         if (columnIndices.Length != keyComponents.Length)
             return false;
@@ -108,8 +109,9 @@ internal static class BoundColumnAccessHelper
         for (int i = 0; i < columnIndices.Length; i++)
         {
             DbValue expected = keyComponents[i];
+            string? collation = keyCollations is { Length: > 0 } ? keyCollations[i] : null;
             byte[]? expectedTextBytes = textBytes is { Length: > 0 } ? textBytes[i] : null;
-            if (expectedTextBytes != null)
+            if (expectedTextBytes != null && CollationSupport.IsBinaryOrDefault(collation))
             {
                 bool supported;
                 bool equals;
@@ -130,7 +132,7 @@ internal static class BoundColumnAccessHelper
             DbValue actual = accessors is { Length: > 0 } && accessors[i] is { } decodeAccessor
                 ? decodeAccessor.Decode(payload)
                 : serializer.DecodeColumn(payload, columnIndices[i]);
-            if (actual.IsNull || DbValue.Compare(actual, expected) != 0)
+            if (actual.IsNull || DbValue.Compare(CollationSupport.NormalizeIndexValue(actual, collation), expected) != 0)
                 return false;
         }
 
@@ -3570,6 +3572,9 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
             case UnaryExpression un:
                 CollectAggregates(un.Operand);
                 break;
+            case CollateExpression collate:
+                CollectAggregates(collate.Operand);
+                break;
         }
     }
 
@@ -3677,6 +3682,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
                 : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
+            CollateExpression collate => EvalWithAggregates(collate.Operand, group),
             _ => group.FirstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, group.FirstRow, _inputSchema)
                 : DbValue.Null,
@@ -4181,6 +4187,9 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
             case UnaryExpression un:
                 CollectAggregates(un.Operand);
                 break;
+            case CollateExpression collate:
+                CollectAggregates(collate.Operand);
+                break;
         }
     }
 
@@ -4193,6 +4202,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
                 : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
+            CollateExpression collate => EvalWithAggregates(collate.Operand, firstRow),
             _ => firstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, firstRow, _inputSchema)
                 : DbValue.Null,
@@ -4425,6 +4435,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         Integer,
         Real,
         Text,
+        TextCollated,
     }
 
     private enum LateMaterializationOverrideMode
@@ -4440,6 +4451,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         public readonly int ColumnIndex;
         public readonly int KeyIndex;
         public readonly int Direction;
+        public readonly string? Collation;
         public readonly Func<DbValue[], DbValue>? KeyEvaluator;
 
         public CompiledSortClause(
@@ -4447,12 +4459,14 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             int columnIndex,
             int keyIndex,
             bool descending,
+            string? collation,
             Func<DbValue[], DbValue>? keyEvaluator)
         {
             Expression = expression;
             ColumnIndex = columnIndex;
             KeyIndex = keyIndex;
             Direction = descending ? -1 : 1;
+            Collation = collation;
             KeyEvaluator = keyEvaluator;
         }
 
@@ -4475,6 +4489,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
     private readonly int _singleClauseKeyIndex;
     private readonly int _singleClauseDirection;
     private readonly SingleClauseComparerKind _singleClauseComparerKind;
+    private readonly string? _singleClauseCollation;
     private readonly TableSchema _schema;
     private TableScanOperator? _lateMaterializedTableScan;
     private List<DbValue[]>? _sortedRows;
@@ -4513,6 +4528,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             _singleClauseColumnIndex = clause.ColumnIndex;
             _singleClauseKeyIndex = clause.KeyIndex;
             _singleClauseDirection = clause.Direction;
+            _singleClauseCollation = clause.Collation;
             _singleClauseComparerKind = ResolveSingleClauseComparerKind(clause, schema);
         }
     }
@@ -4923,7 +4939,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             var clause = _compiledOrderBy[i];
             var va = clause.EvaluateRow(a);
             var vb = clause.EvaluateRow(b);
-            int cmp = DbValue.Compare(va, vb);
+            int cmp = CollationSupport.Compare(va, vb, clause.Collation);
             if (cmp != 0) return cmp * clause.Direction;
         }
 
@@ -4953,7 +4969,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
                     ? singleRows[bIndex][_singleClauseColumnIndex]
                     : DbValue.Null);
             if (_singleClauseComparerKind == SingleClauseComparerKind.Default)
-                return DbValue.Compare(va, vb) * _singleClauseDirection;
+                return CollationSupport.Compare(va, vb, _singleClauseCollation) * _singleClauseDirection;
             return CompareSingleClauseValues(va, vb) * _singleClauseDirection;
         }
 
@@ -4968,7 +4984,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             var vb = clause.KeyIndex >= 0
                 ? keyColumns[clause.KeyIndex][bIndex]
                 : clause.EvaluateRow(rows[bIndex]);
-            int cmp = DbValue.Compare(va, vb);
+            int cmp = CollationSupport.Compare(va, vb, clause.Collation);
             if (cmp != 0) return cmp * clause.Direction;
         }
 
@@ -4985,10 +5001,11 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             var clause = orderBy[i];
             int columnIndex = ResolveColumnIndex(clause.Expression, schema);
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
+            string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
                 ? ExpressionCompiler.Compile(clause.Expression, schema)
                 : null;
-            compiled[i] = new CompiledSortClause(clause.Expression, columnIndex, keyIndex, clause.Descending, keyEvaluator);
+            compiled[i] = new CompiledSortClause(clause.Expression, columnIndex, keyIndex, clause.Descending, collation, keyEvaluator);
         }
 
         return compiled;
@@ -4996,6 +5013,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
 
     private static int ResolveColumnIndex(Expression expression, TableSchema schema)
     {
+        expression = CollationSupport.StripCollation(expression);
         if (expression is not ColumnRefExpression col)
             return -1;
 
@@ -5017,7 +5035,9 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         {
             DbType.Integer => SingleClauseComparerKind.Integer,
             DbType.Real => SingleClauseComparerKind.Real,
-            DbType.Text => SingleClauseComparerKind.Text,
+            DbType.Text => CollationSupport.IsBinaryOrDefault(clause.Collation)
+                ? SingleClauseComparerKind.Text
+                : SingleClauseComparerKind.TextCollated,
             _ => SingleClauseComparerKind.Default,
         };
     }
@@ -5045,9 +5065,14 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
                 if (a.Type == DbType.Text && b.Type == DbType.Text)
                     return string.Compare(a.AsText, b.AsText, StringComparison.Ordinal);
                 break;
+
+            case SingleClauseComparerKind.TextCollated:
+                if (a.Type == DbType.Text && b.Type == DbType.Text)
+                    return CollationSupport.CompareText(a.AsText, b.AsText, _singleClauseCollation);
+                break;
         }
 
-        return DbValue.Compare(a, b);
+        return CollationSupport.Compare(a, b, _singleClauseCollation);
     }
 
     private bool TryPrecomputeSingleClauseKeys(List<DbValue[]> rows, int rowCount)
@@ -5301,7 +5326,9 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             {
                 PrecomputedSingleKeyKind.Integer => _lateMaterializedIntKeys![aIndex].CompareTo(_lateMaterializedIntKeys![bIndex]),
                 PrecomputedSingleKeyKind.Real => _lateMaterializedRealKeys![aIndex].CompareTo(_lateMaterializedRealKeys![bIndex]),
-                PrecomputedSingleKeyKind.Text => string.Compare(_lateMaterializedTextKeys![aIndex], _lateMaterializedTextKeys![bIndex], StringComparison.Ordinal),
+                PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextCollated
+                    ? CollationSupport.CompareText(_lateMaterializedTextKeys![aIndex]!, _lateMaterializedTextKeys![bIndex]!, _singleClauseCollation)
+                    : string.Compare(_lateMaterializedTextKeys![aIndex], _lateMaterializedTextKeys![bIndex], StringComparison.Ordinal),
                 _ => 0,
             };
         }
@@ -5319,7 +5346,9 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         {
             PrecomputedSingleKeyKind.Integer => _singlePrecomputedIntKeys![aIndex].CompareTo(_singlePrecomputedIntKeys![bIndex]),
             PrecomputedSingleKeyKind.Real => _singlePrecomputedRealKeys![aIndex].CompareTo(_singlePrecomputedRealKeys![bIndex]),
-            PrecomputedSingleKeyKind.Text => string.Compare(_singlePrecomputedTextKeys![aIndex], _singlePrecomputedTextKeys![bIndex], StringComparison.Ordinal),
+            PrecomputedSingleKeyKind.Text => _singleClauseComparerKind == SingleClauseComparerKind.TextCollated
+                ? CollationSupport.CompareText(_singlePrecomputedTextKeys![aIndex]!, _singlePrecomputedTextKeys![bIndex]!, _singleClauseCollation)
+                : string.Compare(_singlePrecomputedTextKeys![aIndex], _singlePrecomputedTextKeys![bIndex], StringComparison.Ordinal),
             _ => 0,
         };
     }
@@ -5410,6 +5439,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
         public readonly int MaxReferencedColumnIndex;
         public readonly int KeyIndex;
         public readonly int Direction;
+        public readonly string? Collation;
         public readonly Func<DbValue[], DbValue>? KeyEvaluator;
 
         public CompiledSortClause(
@@ -5418,6 +5448,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
             int maxReferencedColumnIndex,
             int keyIndex,
             bool descending,
+            string? collation,
             Func<DbValue[], DbValue>? keyEvaluator)
         {
             Expression = expression;
@@ -5425,6 +5456,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
             MaxReferencedColumnIndex = maxReferencedColumnIndex;
             KeyIndex = keyIndex;
             Direction = descending ? -1 : 1;
+            Collation = collation;
             KeyEvaluator = keyEvaluator;
         }
 
@@ -5789,7 +5821,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
                 rightValue = clause.EvaluateRow(right.Row);
             }
 
-            int cmp = DbValue.Compare(leftValue, rightValue);
+            int cmp = CollationSupport.Compare(leftValue, rightValue, clause.Collation);
             if (cmp != 0)
                 return cmp * clause.Direction;
         }
@@ -5804,7 +5836,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
 
     private int CompareSingleKeyRowIdRankedRows(SingleKeyRowIdRankedRow left, SingleKeyRowIdRankedRow right)
     {
-        int cmp = DbValue.Compare(left.Key, right.Key);
+        int cmp = CollationSupport.Compare(left.Key, right.Key, _compiledOrderBy[0].Collation);
         if (cmp == 0)
             return 0;
 
@@ -5962,6 +5994,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
                 schema,
                 out maxReferencedColumnIndex);
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
+            string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
                 ? ExpressionCompiler.Compile(clause.Expression, schema)
                 : null;
@@ -5971,6 +6004,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
                 hasKnownMaxReferencedColumn ? maxReferencedColumnIndex : -1,
                 keyIndex,
                 clause.Descending,
+                collation,
                 keyEvaluator);
         }
 
@@ -5979,6 +6013,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
 
     private static int ResolveColumnIndex(Expression expression, TableSchema schema)
     {
+        expression = CollationSupport.StripCollation(expression);
         if (expression is not ColumnRefExpression col)
             return -1;
 
@@ -6025,6 +6060,8 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
                     && TryAccumulateMaxReferencedColumn(binaryExpression.Right, schema, ref maxReferencedColumnIndex);
             case UnaryExpression unaryExpression:
                 return TryAccumulateMaxReferencedColumn(unaryExpression.Operand, schema, ref maxReferencedColumnIndex);
+            case CollateExpression collateExpression:
+                return TryAccumulateMaxReferencedColumn(collateExpression.Operand, schema, ref maxReferencedColumnIndex);
             case LikeExpression likeExpression:
                 return TryAccumulateMaxReferencedColumn(likeExpression.Operand, schema, ref maxReferencedColumnIndex)
                     && TryAccumulateMaxReferencedColumn(likeExpression.Pattern, schema, ref maxReferencedColumnIndex)
@@ -6816,6 +6853,8 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
                     && TryMarkBuildSideColumnsForExpression(binaryExpression.Right, markBuildColumn);
             case UnaryExpression unaryExpression:
                 return TryMarkBuildSideColumnsForExpression(unaryExpression.Operand, markBuildColumn);
+            case CollateExpression collateExpression:
+                return TryMarkBuildSideColumnsForExpression(collateExpression.Operand, markBuildColumn);
             case LikeExpression likeExpression:
                 return TryMarkBuildSideColumnsForExpression(likeExpression.Operand, markBuildColumn)
                     && TryMarkBuildSideColumnsForExpression(likeExpression.Pattern, markBuildColumn)
@@ -8388,6 +8427,8 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private readonly JoinType _joinType;
     private readonly int[] _outerKeyIndices;
     private readonly int[] _rightKeyColumnIndices;
+    private readonly string?[] _rightKeyCollations;
+    private readonly bool _usesOrderedTextPayload;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly int _rightPrimaryKeyColumnIndex;
@@ -8427,11 +8468,13 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         JoinType joinType,
         ReadOnlySpan<int> outerKeyIndices,
         ReadOnlySpan<int> rightKeyColumnIndices,
+        ReadOnlySpan<string?> rightKeyCollations,
         int leftColCount,
         int rightColCount,
         int rightPrimaryKeyColumnIndex,
         Expression? residualCondition,
         TableSchema compositeSchema,
+        bool usesOrderedTextPayload = false,
         IRecordSerializer? recordSerializer = null,
         int? estimatedOutputRowCount = null)
     {
@@ -8441,6 +8484,8 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _joinType = joinType;
         _outerKeyIndices = outerKeyIndices.ToArray();
         _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
+        _rightKeyCollations = rightKeyCollations.ToArray();
+        _usesOrderedTextPayload = usesOrderedTextPayload;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _rightPrimaryKeyColumnIndex = rightPrimaryKeyColumnIndex;
@@ -8784,7 +8829,17 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             if (value.IsNull || value.Type is not (DbType.Integer or DbType.Text))
                 return false;
 
-            keyComponents[i] = value;
+            string? collation = i < _rightKeyCollations.Length ? _rightKeyCollations[i] : null;
+            keyComponents[i] = CollationSupport.NormalizeIndexValue(value, collation);
+        }
+
+        if (_usesOrderedTextPayload)
+        {
+            if (keyComponents is not [var textComponent] || textComponent.Type != DbType.Text)
+                return false;
+
+            lookupKey = OrderedTextIndexKeyCodec.ComputeKey(textComponent.AsText);
+            return true;
         }
 
         lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
@@ -8795,6 +8850,30 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     {
         _pendingRowIdOffset = 0;
         _rowIdsVerifiedByIndexPayload = false;
+
+        if (_usesOrderedTextPayload && payload is { Length: > 0 })
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            if (_currentKeyComponents is [var expectedText] &&
+                expectedText.Type == DbType.Text &&
+                OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    expectedText.AsText,
+                    out var orderedMatchingRowIds))
+            {
+                _pendingRowIdPayload = orderedMatchingRowIds;
+                _rowIdsVerifiedByIndexPayload = true;
+                return;
+            }
+
+            _pendingRowIdPayload = ReadOnlyMemory<byte>.Empty;
+            return;
+        }
 
         if (_currentKeyComponents is { Length: > 0 } &&
             payload is { Length: > 0 } &&
@@ -9678,6 +9757,8 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IProject
                     && TryMarkConditionColumnsForExpression(binaryExpression.Right, markLeftColumn, markRightColumn);
             case UnaryExpression unaryExpression:
                 return TryMarkConditionColumnsForExpression(unaryExpression.Operand, markLeftColumn, markRightColumn);
+            case CollateExpression collateExpression:
+                return TryMarkConditionColumnsForExpression(collateExpression.Operand, markLeftColumn, markRightColumn);
             case LikeExpression likeExpression:
                 return TryMarkConditionColumnsForExpression(likeExpression.Operand, markLeftColumn, markRightColumn)
                     && TryMarkConditionColumnsForExpression(likeExpression.Pattern, markLeftColumn, markRightColumn)
@@ -10108,8 +10189,10 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     private readonly IRecordSerializer _recordSerializer;
     private readonly int[]? _expectedKeyColumnIndices;
     private readonly DbValue[]? _expectedKeyComponents;
+    private readonly string?[]? _expectedKeyCollations;
     private readonly RecordColumnAccessor?[]? _expectedKeyAccessors;
     private readonly byte[][]? _expectedKeyTextBytes;
+    private readonly bool _usesOrderedTextPayload;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
     private bool _rowIdsVerifiedByIndexPayload;
@@ -10140,6 +10223,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     internal long SeekValue => _seekValue;
     internal int[]? ExpectedKeyColumnIndices => _expectedKeyColumnIndices;
     internal DbValue[]? ExpectedKeyComponents => _expectedKeyComponents;
+    internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
 
     public IndexScanOperator(
         IIndexStore indexStore,
@@ -10148,7 +10232,9 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         long seekValue,
         IRecordSerializer? recordSerializer = null,
         int[]? expectedKeyColumnIndices = null,
-        DbValue[]? expectedKeyComponents = null)
+        DbValue[]? expectedKeyComponents = null,
+        string?[]? expectedKeyCollations = null,
+        bool usesOrderedTextPayload = false)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
@@ -10157,6 +10243,8 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _expectedKeyColumnIndices = expectedKeyColumnIndices;
         _expectedKeyComponents = expectedKeyComponents;
+        _expectedKeyCollations = expectedKeyCollations;
+        _usesOrderedTextPayload = usesOrderedTextPayload;
         if (expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 })
         {
             _expectedKeyAccessors = BoundColumnAccessHelper.CreateAccessors(_recordSerializer, expectedKeyColumnIndices);
@@ -10448,6 +10536,32 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _rowIdPayloadOffset = 0;
         _rowIdsVerifiedByIndexPayload = false;
 
+        if (_usesOrderedTextPayload && payload is { Length: > 0 })
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(payload))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            if (_expectedKeyComponents is [var expectedText] &&
+                expectedText.Type == DbType.Text &&
+                OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    expectedText.AsText,
+                    out var orderedMatchingRowIds))
+            {
+                _rowIdPayload = orderedMatchingRowIds;
+                _estimatedRowCount = _rowIdPayload.Length / sizeof(long);
+                _rowIdsVerifiedByIndexPayload = true;
+                return;
+            }
+
+            _rowIdPayload = ReadOnlyMemory<byte>.Empty;
+            _estimatedRowCount = 0;
+            return;
+        }
+
         if (_expectedKeyComponents is { Length: > 0 } &&
             payload is { Length: > 0 } &&
             HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, _expectedKeyComponents, _expectedKeyTextBytes, out var matchingRowIds))
@@ -10476,7 +10590,8 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
             _expectedKeyColumnIndices,
             _expectedKeyComponents,
             _expectedKeyAccessors,
-            _expectedKeyTextBytes);
+            _expectedKeyTextBytes,
+            _expectedKeyCollations);
     }
 }
 
@@ -10703,9 +10818,16 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
     private readonly int _keyColumnIndex;
     private readonly IndexScanRange _scanRange;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly bool _usesOrderedTextPayload;
+    private readonly string? _orderedTextLowerBound;
+    private readonly bool _orderedTextLowerInclusive;
+    private readonly string? _orderedTextUpperBound;
+    private readonly bool _orderedTextUpperInclusive;
     private IIndexCursor? _cursor;
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
+    private List<long>? _orderedTextRowIds;
+    private int _orderedTextRowIdOffset;
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private bool _reuseCurrentBatch = true;
@@ -10731,6 +10853,7 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
     internal BTree TableTree => _tableTree;
     internal int KeyColumnIndex => _keyColumnIndex;
     internal IndexScanRange ScanRange => _scanRange;
+    internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
 
     public IndexOrderedScanOperator(
         IIndexStore indexStore,
@@ -10738,6 +10861,11 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         TableSchema schema,
         int keyColumnIndex,
         IndexScanRange scanRange,
+        bool usesOrderedTextPayload = false,
+        string? orderedTextLowerBound = null,
+        bool orderedTextLowerInclusive = true,
+        string? orderedTextUpperBound = null,
+        bool orderedTextUpperInclusive = true,
         IRecordSerializer? recordSerializer = null)
     {
         _indexStore = indexStore;
@@ -10745,6 +10873,11 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         _schema = schema;
         _keyColumnIndex = keyColumnIndex;
         _scanRange = scanRange;
+        _usesOrderedTextPayload = usesOrderedTextPayload;
+        _orderedTextLowerBound = orderedTextLowerBound;
+        _orderedTextLowerInclusive = orderedTextLowerInclusive;
+        _orderedTextUpperBound = orderedTextUpperBound;
+        _orderedTextUpperInclusive = orderedTextUpperInclusive;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
         _currentBatch = CreateBatch(GetTargetColumnCount());
@@ -10792,6 +10925,8 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
         _cursor = _indexStore.CreateCursor(_scanRange);
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
+        _orderedTextRowIdOffset = 0;
+        _orderedTextRowIds?.Clear();
         _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
         _currentBatch = CreateBatch(GetTargetColumnCount());
@@ -10863,7 +10998,34 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
 
         while (true)
         {
-            if (_rowIdPayloadOffset + 8 <= _rowIdPayload.Length)
+            if (_usesOrderedTextPayload)
+            {
+                if (_orderedTextRowIds is { Count: > 0 } &&
+                    _orderedTextRowIdOffset < _orderedTextRowIds.Count)
+                {
+                    long rowId = _orderedTextRowIds[_orderedTextRowIdOffset++];
+                    ReadOnlyMemory<byte>? orderedPayload;
+                    if (_tableTree.TryFindCachedMemory(rowId, out var cachedOrderedPayload))
+                    {
+                        orderedPayload = cachedOrderedPayload;
+                    }
+                    else
+                    {
+                        orderedPayload = await _tableTree.FindMemoryAsync(rowId, ct);
+                    }
+
+                    if (orderedPayload is not { } orderedPayloadMemory)
+                        continue;
+
+                    if (_hasPreDecodeFilter && !EvaluatePreDecodeFilter(orderedPayloadMemory.Span))
+                        continue;
+
+                    CurrentRowId = rowId;
+                    _currentPayload = orderedPayloadMemory;
+                    return true;
+                }
+            }
+            else if (_rowIdPayloadOffset + 8 <= _rowIdPayload.Length)
             {
                 long rowId = BinaryPrimitives.ReadInt64LittleEndian(
                     _rowIdPayload.Span.Slice(_rowIdPayloadOffset, 8));
@@ -10894,6 +11056,32 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
             {
                 _currentPayload = ReadOnlyMemory<byte>.Empty;
                 return false;
+            }
+
+            if (_usesOrderedTextPayload)
+            {
+                if (!OrderedTextIndexPayloadCodec.IsEncoded(_cursor.CurrentValue.Span))
+                {
+                    throw new InvalidOperationException(
+                        "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+                }
+
+                _orderedTextRowIds ??= [];
+                _orderedTextRowIds.Clear();
+                if (!OrderedTextIndexPayloadCodec.TryCollectMatchingRowIdsInRange(
+                        _cursor.CurrentValue.Span,
+                        _orderedTextLowerBound,
+                        _orderedTextLowerInclusive,
+                        _orderedTextUpperBound,
+                        _orderedTextUpperInclusive,
+                        _orderedTextRowIds))
+                {
+                    throw new InvalidOperationException(
+                        "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+                }
+
+                _orderedTextRowIdOffset = 0;
+                continue;
             }
 
             _rowIdPayload = _cursor.CurrentValue;

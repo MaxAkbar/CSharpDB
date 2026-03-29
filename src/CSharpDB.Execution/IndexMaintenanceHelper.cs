@@ -18,6 +18,12 @@ internal static class IndexMaintenanceHelper
                 $"Index '{indexSchema.IndexName}' references unsupported columns for table '{tableSchema.TableName}'.");
         }
 
+        string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(
+            indexSchema,
+            tableSchema,
+            indexColumnIndices);
+        SqlIndexStorageMode storageMode = ResolveSqlIndexStorageMode(indexSchema, tableSchema);
+
         var tableTree = catalog.GetTableTree(indexSchema.TableName);
         var indexStore = catalog.GetIndexStore(indexSchema.IndexName);
         var scan = new TableScanOperator(tableTree, tableSchema, readSerializer);
@@ -31,8 +37,17 @@ internal static class IndexMaintenanceHelper
 
                 while (await scan.MoveNextAsync(ct))
                 {
-                    if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out _))
+                    if (!TryBuildIndexKey(
+                            scan.Current,
+                            indexColumnIndices,
+                            indexColumnCollations,
+                            usesDirectIntegerKey,
+                            storageMode,
+                            out long indexKey,
+                            out _))
+                    {
                         continue;
+                    }
 
                     if (!groupedRowIds.TryGetValue(indexKey, out var rowIds))
                     {
@@ -49,12 +64,64 @@ internal static class IndexMaintenanceHelper
                 return;
             }
 
+            if (storageMode == SqlIndexStorageMode.OrderedText)
+            {
+                var groupedTextPayloads = new SortedDictionary<long, SortedDictionary<string, List<long>>>();
+
+                while (await scan.MoveNextAsync(ct))
+                {
+                    if (!TryBuildIndexKey(
+                            scan.Current,
+                            indexColumnIndices,
+                            indexColumnCollations,
+                            usesDirectIntegerKey,
+                            storageMode,
+                            out long indexKey,
+                            out DbValue[]? keyComponents))
+                    {
+                        continue;
+                    }
+
+                    string text = keyComponents![0].AsText;
+                    if (!groupedTextPayloads.TryGetValue(indexKey, out var bucketEntries))
+                    {
+                        bucketEntries = new SortedDictionary<string, List<long>>(StringComparer.Ordinal);
+                        groupedTextPayloads[indexKey] = bucketEntries;
+                    }
+
+                    if (!bucketEntries.TryGetValue(text, out var rowIds))
+                    {
+                        rowIds = [];
+                        bucketEntries[text] = rowIds;
+                    }
+
+                    rowIds.Add(scan.CurrentRowId);
+                }
+
+                foreach (var entry in groupedTextPayloads)
+                {
+                    byte[] payload = OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value);
+                    await indexStore.InsertAsync(entry.Key, payload, ct);
+                }
+
+                return;
+            }
+
             var groupedPayloads = new SortedDictionary<long, byte[]>();
 
             while (await scan.MoveNextAsync(ct))
             {
-                if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+                if (!TryBuildIndexKey(
+                        scan.Current,
+                        indexColumnIndices,
+                        indexColumnCollations,
+                        usesDirectIntegerKey,
+                        storageMode,
+                        out long indexKey,
+                        out DbValue[]? keyComponents))
+                {
                     continue;
+                }
 
                 if (!groupedPayloads.TryGetValue(indexKey, out var payload))
                 {
@@ -77,8 +144,17 @@ internal static class IndexMaintenanceHelper
 
         while (await scan.MoveNextAsync(ct))
         {
-            if (!TryBuildIndexKey(scan.Current, indexColumnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+            if (!TryBuildIndexKey(
+                    scan.Current,
+                    indexColumnIndices,
+                    indexColumnCollations,
+                    usesDirectIntegerKey,
+                    storageMode,
+                    out long indexKey,
+                    out DbValue[]? keyComponents))
+            {
                 continue;
+            }
 
             if (indexSchema.IsUnique)
             {
@@ -98,23 +174,25 @@ internal static class IndexMaintenanceHelper
                 }
                 else
                 {
-                    await EnsureHashedUniqueConstraintAsync(
+                    await EnsureUniqueConstraintAsync(
                         indexStore,
                         tableTree,
                         tableSchema,
                         readSerializer,
                         indexColumnIndices,
+                        indexColumnCollations,
                         keyComponents!,
                         indexKey,
+                        storageMode,
                         indexSchema.IndexName,
                         ct);
 
-                    await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, ct);
+                    await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, storageMode, ct);
                 }
             }
             else
             {
-                await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, ct);
+                await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, storageMode, ct);
             }
         }
     }
@@ -124,20 +202,43 @@ internal static class IndexMaintenanceHelper
         long indexKey,
         long rowId,
         DbValue[]? keyComponents = null,
+        SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         CancellationToken ct = default)
     {
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
         {
-            byte[] initialPayload = keyComponents is { Length: > 0 }
-                ? HashedIndexPayloadCodec.CreateSingle(keyComponents, rowId)
-                : RowIdPayloadCodec.CreateSingle(rowId);
+            byte[] initialPayload = storageMode switch
+            {
+                SqlIndexStorageMode.OrderedText => OrderedTextIndexPayloadCodec.CreateSingle(
+                    GetOrderedTextKeyComponent(keyComponents),
+                    rowId),
+                _ => keyComponents is { Length: > 0 }
+                    ? HashedIndexPayloadCodec.CreateSingle(keyComponents, rowId)
+                    : RowIdPayloadCodec.CreateSingle(rowId),
+            };
             await indexStore.InsertAsync(indexKey, initialPayload, ct);
             return;
         }
 
         byte[] newPayload;
-        if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
+        if (storageMode == SqlIndexStorageMode.OrderedText)
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            newPayload = OrderedTextIndexPayloadCodec.Insert(
+                existing,
+                GetOrderedTextKeyComponent(keyComponents),
+                rowId,
+                out bool changed);
+            if (!changed)
+                return;
+        }
+        else if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
         {
             newPayload = HashedIndexPayloadCodec.Insert(existing, keyComponents, rowId, out bool changed);
             if (!changed)
@@ -157,6 +258,7 @@ internal static class IndexMaintenanceHelper
         long indexKey,
         long rowId,
         DbValue[]? keyComponents = null,
+        SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         CancellationToken ct = default)
     {
         var existing = await indexStore.FindAsync(indexKey, ct);
@@ -164,7 +266,23 @@ internal static class IndexMaintenanceHelper
             return;
 
         byte[]? newPayload;
-        if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
+        if (storageMode == SqlIndexStorageMode.OrderedText)
+        {
+            if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+            {
+                throw new InvalidOperationException(
+                    "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+            }
+
+            newPayload = OrderedTextIndexPayloadCodec.Remove(
+                existing,
+                GetOrderedTextKeyComponent(keyComponents),
+                rowId,
+                out bool changed);
+            if (!changed)
+                return;
+        }
+        else if (keyComponents is { Length: > 0 } && HashedIndexPayloadCodec.IsEncoded(existing))
         {
             newPayload = HashedIndexPayloadCodec.Remove(existing, keyComponents, rowId, out bool changed);
             if (!changed)
@@ -212,7 +330,9 @@ internal static class IndexMaintenanceHelper
     public static bool TryBuildIndexKey(
         DbValue[] row,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         bool usesDirectIntegerKey,
+        SqlIndexStorageMode storageMode,
         out long indexKey,
         out DbValue[]? keyComponents)
     {
@@ -249,13 +369,27 @@ internal static class IndexMaintenanceHelper
             if (value.Type is not (DbType.Integer or DbType.Text))
                 return false;
 
-            components[i] = value;
+            string? collation = i < indexColumnCollations.Length ? indexColumnCollations[i] : null;
+            components[i] = CollationSupport.NormalizeIndexValue(value, collation);
+        }
+
+        if (storageMode == SqlIndexStorageMode.OrderedText)
+        {
+            indexKey = OrderedTextIndexKeyCodec.ComputeKey(GetOrderedTextKeyComponent(components));
+            keyComponents = components;
+            return true;
         }
 
         indexKey = ComputeIndexKey(components);
         keyComponents = components;
         return true;
     }
+
+    public static SqlIndexStorageMode ResolveSqlIndexStorageMode(IndexSchema index, TableSchema schema)
+        => SqlIndexOptionsCodec.Resolve(index, schema);
+
+    public static bool UsesOrderedTextIndexKey(IndexSchema index, TableSchema schema)
+        => ResolveSqlIndexStorageMode(index, schema) == SqlIndexStorageMode.OrderedText;
 
     public static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
     {
@@ -288,12 +422,50 @@ internal static class IndexMaintenanceHelper
         return unchecked((long)hash);
     }
 
+    public static async ValueTask EnsureUniqueConstraintAsync(
+        IIndexStore indexStore,
+        BTree tableTree,
+        TableSchema schema,
+        IRecordSerializer readSerializer,
+        int[] indexColumnIndices,
+        string?[] indexColumnCollations,
+        DbValue[] keyComponents,
+        long indexKey,
+        SqlIndexStorageMode storageMode,
+        string indexName,
+        CancellationToken ct)
+    {
+        if (storageMode == SqlIndexStorageMode.OrderedText)
+        {
+            await EnsureOrderedTextUniqueConstraintAsync(
+                indexStore,
+                keyComponents,
+                indexKey,
+                indexName,
+                ct);
+            return;
+        }
+
+        await EnsureHashedUniqueConstraintAsync(
+            indexStore,
+            tableTree,
+            schema,
+            readSerializer,
+            indexColumnIndices,
+            indexColumnCollations,
+            keyComponents,
+            indexKey,
+            indexName,
+            ct);
+    }
+
     private static async ValueTask EnsureHashedUniqueConstraintAsync(
         IIndexStore indexStore,
         BTree tableTree,
         TableSchema schema,
         IRecordSerializer readSerializer,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         DbValue[] keyComponents,
         long indexKey,
         string indexName,
@@ -326,7 +498,7 @@ internal static class IndexMaintenanceHelper
                 continue;
 
             var existingRow = readSerializer.DecodeUpTo(existingRowPayloadMemory.Span, maxIndexedColumn);
-            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
+            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, indexColumnCollations, keyComponents))
             {
                 throw new CSharpDbException(
                     ErrorCode.ConstraintViolation,
@@ -338,6 +510,7 @@ internal static class IndexMaintenanceHelper
     private static bool IndexRowMatchesKeyComponents(
         DbValue[] row,
         int[] indexColumnIndices,
+        string?[] indexColumnCollations,
         DbValue[] keyComponents)
     {
         if (indexColumnIndices.Length != keyComponents.Length)
@@ -350,11 +523,52 @@ internal static class IndexMaintenanceHelper
                 return false;
 
             var value = row[colIdx];
-            if (value.IsNull || DbValue.Compare(value, keyComponents[i]) != 0)
+            string? collation = i < indexColumnCollations.Length ? indexColumnCollations[i] : null;
+            if (value.IsNull || DbValue.Compare(CollationSupport.NormalizeIndexValue(value, collation), keyComponents[i]) != 0)
                 return false;
         }
 
         return true;
+    }
+
+    private static async ValueTask EnsureOrderedTextUniqueConstraintAsync(
+        IIndexStore indexStore,
+        DbValue[] keyComponents,
+        long indexKey,
+        string indexName,
+        CancellationToken ct)
+    {
+        var existing = await indexStore.FindAsync(indexKey, ct);
+        if (existing == null || existing.Length == 0)
+            return;
+
+        if (!OrderedTextIndexPayloadCodec.IsEncoded(existing))
+        {
+            throw new InvalidOperationException(
+                "SQL text index payload format mismatch detected. Rebuild the index before continuing.");
+        }
+
+        if (OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                existing,
+                GetOrderedTextKeyComponent(keyComponents),
+                out ReadOnlyMemory<byte> matchingRowIds) &&
+            matchingRowIds.Length > 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Duplicate key value in unique index '{indexName}'.");
+        }
+    }
+
+    private static string GetOrderedTextKeyComponent(DbValue[]? keyComponents)
+    {
+        if (keyComponents is not [var textComponent] || textComponent.Type != DbType.Text)
+        {
+            throw new InvalidOperationException(
+                "Ordered text SQL indexes require a single normalized text key component.");
+        }
+
+        return textComponent.AsText;
     }
 
     private static ulong HashIndexKeyComponent(ulong hash, DbValue value, ulong prime)
@@ -388,4 +602,24 @@ internal static class IndexMaintenanceHelper
                 throw new InvalidOperationException($"Cannot hash index component of type '{value.Type}'.");
         }
     }
+}
+
+public sealed class OrderedTextIndexOverflowException : Exception
+{
+    public OrderedTextIndexOverflowException(string indexName, long indexKey, int cellLength, int maxCellLength)
+        : base($"Ordered text index '{indexName}' produced leaf cell length {cellLength} for key {indexKey}, exceeding max leaf cell length {maxCellLength}.")
+    {
+        IndexName = indexName;
+        IndexKey = indexKey;
+        CellLength = cellLength;
+        MaxCellLength = maxCellLength;
+    }
+
+    public string IndexName { get; }
+
+    public long IndexKey { get; }
+
+    public int CellLength { get; }
+
+    public int MaxCellLength { get; }
 }

@@ -71,6 +71,7 @@ public enum TokenType
     Alter,
     Add,
     Column,
+    Collate,
     Rename,
     To,
     Index,
@@ -104,6 +105,7 @@ public enum TokenType
 
     // Punctuation
     Comma,
+    Colon,
     Dot,
     LeftParen,
     RightParen,

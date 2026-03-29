@@ -1,3 +1,5 @@
+using CSharpDB.Primitives;
+
 namespace CSharpDB.Storage.Paging;
 
 /// <summary>
@@ -44,7 +46,15 @@ internal sealed class PageAllocator : IPageAllocator
         {
             uint pageId = freelistHead;
             var freePage = await _getPageAsync(pageId, ct);
-            _setFreelistHead(BitConverter.ToUInt32(freePage, 0));
+            int contentOffset = PageConstants.ContentOffset(pageId);
+            if (freePage[contentOffset + PageConstants.PageTypeOffset] != PageConstants.PageTypeFreelist)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Freelist page {pageId} has unexpected page type 0x{freePage[contentOffset + PageConstants.PageTypeOffset]:X2}.");
+            }
+
+            _setFreelistHead(BitConverter.ToUInt32(freePage, contentOffset + PageConstants.FreelistNextOffset));
             Array.Clear(freePage);
             await _markDirtyAsync(pageId, ct);
             return pageId;
@@ -62,12 +72,15 @@ internal sealed class PageAllocator : IPageAllocator
     {
         if (_isSnapshotReader())
             throw new InvalidOperationException("Cannot free pages on a read-only snapshot pager.");
+        if (pageId == PageConstants.NullPageId)
+            throw new CSharpDbException(ErrorCode.CorruptDatabase, "Cannot free the database header page.");
 
         var page = await _getPageAsync(pageId, ct);
         await _markDirtyAsync(pageId, ct);
         Array.Clear(page);
-        BitConverter.TryWriteBytes(page.AsSpan(), _getFreelistHead());
-        page[PageConstants.ContentOffset(pageId)] = PageConstants.PageTypeFreelist;
+        int contentOffset = PageConstants.ContentOffset(pageId);
+        BitConverter.TryWriteBytes(page.AsSpan(contentOffset + PageConstants.FreelistNextOffset, sizeof(uint)), _getFreelistHead());
+        page[contentOffset + PageConstants.PageTypeOffset] = PageConstants.PageTypeFreelist;
         _setFreelistHead(pageId);
     }
 }

@@ -102,12 +102,16 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         }, cancellationToken: ct), ct);
 
     public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default)
+        => AddColumnAsync(tableName, columnName, type, notNull, collation: null, ct);
+
+    public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, string? collation, CancellationToken ct = default)
         => CallEmptyAsync(_client.AddColumnAsync(new AddColumnRequest
         {
             TableName = tableName,
             ColumnName = columnName,
             Type = GrpcModelMapper.ToMessage(type),
             NotNull = notNull,
+            Collation = collation ?? string.Empty,
         }, cancellationToken: ct), ct);
 
     public Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default)
@@ -129,15 +133,22 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         => CallAsync(_client.GetIndexesAsync(EmptyRequest, cancellationToken: ct), response => (IReadOnlyList<IndexSchema>)response.Items.Select(GrpcModelMapper.ToModel).ToList(), ct);
 
     public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => CreateIndexAsync(indexName, tableName, columnName, isUnique, collation: null, ct);
+
+    public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
         => CallEmptyAsync(_client.CreateIndexAsync(new CreateIndexRequest
         {
             IndexName = indexName,
             TableName = tableName,
             ColumnName = columnName,
             IsUnique = isUnique,
+            Collation = collation ?? string.Empty,
         }, cancellationToken: ct), ct);
 
     public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation: null, ct);
+
+    public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
         => CallEmptyAsync(_client.UpdateIndexAsync(new UpdateIndexRequest
         {
             ExistingIndexName = existingIndexName,
@@ -145,6 +156,7 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
             TableName = tableName,
             ColumnName = columnName,
             IsUnique = isUnique,
+            Collation = collation ?? string.Empty,
         }, cancellationToken: ct), ct);
 
     public Task DropIndexAsync(string indexName, CancellationToken ct = default)

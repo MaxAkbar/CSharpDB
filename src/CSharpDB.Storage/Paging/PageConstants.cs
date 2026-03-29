@@ -20,16 +20,21 @@ public static class PageConstants
 
     // Slotted page header layout (within each B+tree page)
     public const int PageTypeOffset = 0;         // 1 byte
+    public const int FreelistNextOffset = 1;     // 4 bytes (uint32) — next freelist page; byte 0 remains the page type
     public const int CellCountOffset = 1;        // 2 bytes (ushort)
     public const int FreeSpaceStartOffset = 3;   // 2 bytes (ushort) — start of cell content area
     public const int RightChildOffset = 5;       // 4 bytes (uint32) — rightmost child for interior pages
     public const int NextLeafOffset = 5;         // 4 bytes (uint32) — next leaf for leaf pages (reuses offset since interior uses RightChild)
     public const int SlottedPageHeaderSize = 9;  // total header before cell pointer array
     public const int CellPointerSize = 2;        // each cell pointer is 2 bytes (ushort offset within page)
+    public const int OverflowNextOffset = 1;     // 4 bytes (uint32) — next overflow page, 0 = end of chain
+    public const int OverflowChunkLengthOffset = 5; // 2 bytes (ushort) — payload bytes stored on this overflow page
+    public const int OverflowPageHeaderSize = 7; // total header before overflow payload bytes
 
     // Page types
     public const byte PageTypeInterior = 0x05;
     public const byte PageTypeLeaf = 0x0D;
+    public const byte PageTypeOverflow = 0x0F;
     public const byte PageTypeFreelist = 0x00;
 
     // Special page IDs

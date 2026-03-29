@@ -1,0 +1,111 @@
+{
+  "dataset": "documents",
+  "collections": [
+    {
+      "generatorKey": "events",
+      "name": "events",
+      "outputFileName": "events.jsonl",
+      "rowCount": { "op": "option", "name": "rowCount" },
+      "locals": [
+        { "name": "eventNumber", "value": { "op": "rowIndex" } },
+        { "name": "eventId", "value": { "op": "format", "format": "evt:{0:D12}", "args": [ { "op": "value", "name": "eventNumber" } ] } },
+        { "name": "tenantId", "value": { "op": "format", "format": "tenant-{0:D4}", "args": [ { "op": "int", "min": 1, "max": { "op": "option", "name": "tenantCount" }, "seedParts": [ { "op": "value", "name": "eventNumber" }, "tenant" ] } ] } },
+        { "name": "eventType", "value": { "op": "pick", "values": [ "profile", "booking", "audit", "message", "session" ], "seedParts": [ { "op": "value", "name": "eventNumber" }, "type" ] } },
+        { "name": "createdUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 14, "fullWindowDays": 180, "recentRate": { "op": "option", "name": "recentRate" }, "seedParts": [ { "op": "value", "name": "eventNumber" }, "created" ] } },
+        { "name": "updatedUtc", "value": { "op": "dateAdd", "value": { "op": "value", "name": "createdUtc" }, "minutes": { "op": "int", "min": 1, "max": 2880, "seedParts": [ { "op": "value", "name": "eventNumber" }, "updatedOffset" ] } } },
+        { "name": "targetSizeBytes", "value": { "op": "targetJsonSize", "averageBytes": { "op": "option", "name": "avgDocSizeBytes" }, "seedParts": [ { "op": "value", "name": "eventNumber" }, "size" ] } }
+      ],
+      "key": { "op": "value", "name": "eventId" },
+      "document": {
+        "op": "padObjectToSize",
+        "targetSize": { "op": "value", "name": "targetSizeBytes" },
+        "containerPath": "payload",
+        "value": {
+          "id": { "op": "value", "name": "eventId" },
+          "tenantId": { "op": "value", "name": "tenantId" },
+          "type": { "op": "value", "name": "eventType" },
+          "createdUtc": { "op": "value", "name": "createdUtc" },
+          "updatedUtc": { "op": "value", "name": "updatedUtc" },
+          "profile": {
+            "op": "chance",
+            "probability": { "op": "multiply", "values": [ { "op": "option", "name": "nullRate" }, 2 ] },
+            "then": null,
+            "else": {
+              "displayName": {
+                "op": "chance",
+                "probability": 0.2,
+                "then": { "op": "concat", "values": [ { "op": "faker", "name": "person.fullName", "seedParts": [ { "op": "value", "name": "eventNumber" }, "profileName" ] }, " ", { "op": "sizedText", "length": 12, "seedParts": [ { "op": "value", "name": "eventNumber" }, "profileSuffix" ] } ] },
+                "else": { "op": "faker", "name": "person.fullName", "seedParts": [ { "op": "value", "name": "eventNumber" }, "profileName" ] }
+              },
+              "email": { "op": "faker", "name": "internet.email", "seedParts": [ { "op": "value", "name": "eventNumber" }, "profileEmail" ] },
+              "segment": { "op": "pick", "values": [ "starter", "growth", "enterprise", "trial" ], "seedParts": [ { "op": "value", "name": "eventNumber" }, "segment" ] },
+              "loyaltyScore": { "op": "int", "min": 0, "max": 100, "seedParts": [ { "op": "value", "name": "eventNumber" }, "loyalty" ] }
+            }
+          },
+          "preferences": {
+            "op": "chance",
+            "probability": { "op": "multiply", "values": [ { "op": "option", "name": "nullRate" }, 3 ] },
+            "then": null,
+            "else": {
+              "language": { "op": "chance", "probability": 0.2, "then": "fr-FR", "else": "en-US" },
+              "marketingOptIn": { "op": "bool", "probability": 0.65, "seedParts": [ { "op": "value", "name": "eventNumber" }, "marketing" ] },
+              "quietHours": { "op": "chance", "probability": 0.35, "then": "22:00-06:00", "else": null, "seedParts": [ { "op": "value", "name": "eventNumber" }, "quietHours" ] }
+            }
+          },
+          "addresses": {
+            "op": "chance",
+            "probability": 0.25,
+            "then": null,
+            "else": {
+              "op": "repeat",
+              "count": { "op": "int", "min": 1, "max": 3, "seedParts": [ { "op": "value", "name": "eventNumber" }, "addressCount" ] },
+              "as": "addressIndex",
+              "value": {
+                "kind": { "op": "if", "condition": { "op": "eq", "left": { "op": "value", "name": "addressIndex" }, "right": 0 }, "then": "primary", "else": "secondary" },
+                "line1": { "op": "faker", "name": "address.streetAddress", "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "addressIndex" }, "line1" ] },
+                "city": { "op": "faker", "name": "address.city", "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "addressIndex" }, "city" ] },
+                "region": { "op": "faker", "name": "address.stateAbbr", "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "addressIndex" }, "region" ] },
+                "postalCode": { "op": "faker", "name": "address.zipCode", "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "addressIndex" }, "postal" ] },
+                "country": { "op": "faker", "name": "address.countryCode", "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "addressIndex" }, "country" ] }
+              }
+            }
+          },
+          "tags": {
+            "op": "repeat",
+            "count": { "op": "int", "min": 1, "max": 5, "seedParts": [ { "op": "value", "name": "eventNumber" }, "tagCount" ] },
+            "as": "tagIndex",
+            "value": { "op": "pick", "values": [ "vip", "trial", "renewal", "north", "south", "ops", "finance", "priority" ], "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "tagIndex" }, "tag" ] }
+          },
+          "metadata": {
+            "source": { "op": "pick", "values": [ "web", "mobile", "batch", "api" ], "seedParts": [ { "op": "value", "name": "eventNumber" }, "source" ] },
+            "channel": { "op": "pick", "values": [ "email", "push", "sms", "inbox" ], "seedParts": [ { "op": "value", "name": "eventNumber" }, "channel" ] },
+            "priority": { "op": "int", "min": 1, "max": 5, "seedParts": [ { "op": "value", "name": "eventNumber" }, "priority" ] },
+            "region": { "op": "format", "format": "region-{0:D2}", "args": [ { "op": "int", "min": 1, "max": 24, "seedParts": [ { "op": "value", "name": "eventNumber" }, "region" ] } ] },
+            "correlationId": { "op": "guid", "seedParts": [ { "op": "value", "name": "eventNumber" }, "correlation" ] },
+            "notes": { "op": "chance", "probability": { "op": "option", "name": "nullRate" }, "then": null, "else": { "op": "faker", "name": "lorem.sentence", "seedParts": [ { "op": "value", "name": "eventNumber" }, "notes" ] } }
+          },
+          "payload": {
+            "sequence": { "op": "int", "min": 1, "max": 10000, "seedParts": [ { "op": "value", "name": "eventNumber" }, "sequence" ] },
+            "attempt": { "op": "int", "min": 0, "max": 4, "seedParts": [ { "op": "value", "name": "eventNumber" }, "attempt" ] },
+            "metrics": {
+              "latencyMs": { "op": "round", "digits": 2, "value": { "op": "double", "min": 0, "max": 1500, "seedParts": [ { "op": "value", "name": "eventNumber" }, "latency" ] } },
+              "sizeBytes": { "op": "int", "min": 64, "max": 4096, "seedParts": [ { "op": "value", "name": "eventNumber" }, "sizeBytes" ] }
+            },
+            "items": {
+              "op": "repeat",
+              "count": { "op": "int", "min": 1, "max": 4, "seedParts": [ { "op": "value", "name": "eventNumber" }, "itemCount" ] },
+              "as": "itemIndex",
+              "value": {
+                "sku": { "op": "format", "format": "sku-{0:D6}", "args": [ { "op": "int", "min": 1, "max": 50000, "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "itemIndex" }, "sku" ] } ] },
+                "qty": { "op": "int", "min": 1, "max": 4, "seedParts": [ { "op": "value", "name": "eventNumber" }, { "op": "value", "name": "itemIndex" }, "qty" ] },
+                "slot": { "op": "value", "name": "itemIndex" }
+              }
+            },
+            "message": { "op": "faker", "name": "lorem.paragraph", "seedParts": [ { "op": "value", "name": "eventNumber" }, "message" ] }
+          }
+        }
+      },
+      "indexPaths": [ "tenantId", "type", "createdUtc", "tags[]" ]
+    }
+  ]
+}

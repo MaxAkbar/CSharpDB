@@ -33,11 +33,14 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     public Task DropTableAsync(string tableName, CancellationToken ct = default) => _inner.DropTableAsync(tableName, ct);
     public Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default) => _inner.RenameTableAsync(tableName, newTableName, ct);
     public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default) => _inner.AddColumnAsync(tableName, columnName, type, notNull, ct);
+    public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, string? collation, CancellationToken ct = default) => _inner.AddColumnAsync(tableName, columnName, type, notNull, collation, ct);
     public Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default) => _inner.DropColumnAsync(tableName, columnName, ct);
     public Task RenameColumnAsync(string tableName, string oldColumnName, string newColumnName, CancellationToken ct = default) => _inner.RenameColumnAsync(tableName, oldColumnName, newColumnName, ct);
     public Task<IReadOnlyList<IndexSchema>> GetIndexesAsync(CancellationToken ct = default) => _inner.GetIndexesAsync(ct);
     public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default) => _inner.CreateIndexAsync(indexName, tableName, columnName, isUnique, ct);
+    public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default) => _inner.CreateIndexAsync(indexName, tableName, columnName, isUnique, collation, ct);
     public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default) => _inner.UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, ct);
+    public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default) => _inner.UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation, ct);
     public Task DropIndexAsync(string indexName, CancellationToken ct = default) => _inner.DropIndexAsync(indexName, ct);
     public Task<IReadOnlyList<string>> GetViewNamesAsync(CancellationToken ct = default) => _inner.GetViewNamesAsync(ct);
     public Task<IReadOnlyList<ViewDefinition>> GetViewsAsync(CancellationToken ct = default) => _inner.GetViewsAsync(ct);

@@ -61,7 +61,13 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         => ExecuteEmptyAsync(context, ct => client.RenameTableAsync(request.TableName, request.NewTableName, ct));
 
     public override Task<Empty> AddColumn(AddColumnRequest request, ServerCallContext context)
-        => ExecuteEmptyAsync(context, ct => client.AddColumnAsync(request.TableName, request.ColumnName, GrpcModelMapper.ToModel(request.Type), request.NotNull, ct));
+        => ExecuteEmptyAsync(context, ct => client.AddColumnAsync(
+            request.TableName,
+            request.ColumnName,
+            GrpcModelMapper.ToModel(request.Type),
+            request.NotNull,
+            NullIfEmpty(request.Collation),
+            ct));
 
     public override Task<Empty> DropColumn(DropColumnRequest request, ServerCallContext context)
         => ExecuteEmptyAsync(context, ct => client.DropColumnAsync(request.TableName, request.ColumnName, ct));
@@ -78,7 +84,13 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         });
 
     public override Task<Empty> CreateIndex(CreateIndexRequest request, ServerCallContext context)
-        => ExecuteEmptyAsync(context, ct => client.CreateIndexAsync(request.IndexName, request.TableName, request.ColumnName, request.IsUnique, ct));
+        => ExecuteEmptyAsync(context, ct => client.CreateIndexAsync(
+            request.IndexName,
+            request.TableName,
+            request.ColumnName,
+            request.IsUnique,
+            NullIfEmpty(request.Collation),
+            ct));
 
     public override Task<Empty> UpdateIndex(UpdateIndexRequest request, ServerCallContext context)
         => ExecuteEmptyAsync(context, ct => client.UpdateIndexAsync(
@@ -87,6 +99,7 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
             request.TableName,
             request.ColumnName,
             request.IsUnique,
+            NullIfEmpty(request.Collation),
             ct));
 
     public override Task<Empty> DropIndex(NameRequest request, ServerCallContext context)

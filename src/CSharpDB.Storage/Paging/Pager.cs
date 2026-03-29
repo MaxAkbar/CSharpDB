@@ -616,7 +616,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
 
         if (shouldRunForegroundCheckpoint)
+            await RunPostCommitForegroundCheckpointAsync(ct);
+    }
+
+    private async ValueTask RunPostCommitForegroundCheckpointAsync(CancellationToken ct)
+    {
+        try
+        {
             await CheckpointAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // The WAL commit is already durable and visible once we reach post-commit
+            // checkpointing. Keep the checkpoint request pending so maintenance can
+            // retry later, but do not fault the committed write.
+            _checkpoints?.RequestDeferredCheckpoint();
+        }
     }
 
     public async ValueTask RollbackAsync(CancellationToken ct = default)

@@ -1,0 +1,74 @@
+{
+  "dataset": "timeseries",
+  "tables": [
+    {
+      "generatorKey": "sensorPoints",
+      "name": "SensorPoints",
+      "outputFileName": "sensor-points.csv",
+      "rowCount": { "op": "option", "name": "rowCount" },
+      "locals": [
+        {
+          "name": "effectiveDeviceCount",
+          "value": {
+            "op": "max",
+            "values": [
+              32,
+              {
+                "op": "min",
+                "values": [
+                  { "op": "option", "name": "deviceCount" },
+                  {
+                    "op": "max",
+                    "values": [
+                      32,
+                      { "op": "floorDivide", "left": { "op": "option", "name": "rowCount" }, "right": 50 }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        { "name": "metric", "value": { "op": "pick", "values": [ "temperature", "pressure", "humidity", "throughput", "latency" ], "seedParts": [ { "op": "rowIndex" }, "metric" ] } },
+        { "name": "deviceId", "value": { "op": "format", "format": "device-{0:D6}", "args": [ { "op": "pickSkewedId", "max": { "op": "value", "name": "effectiveDeviceCount" }, "hotKeyRate": { "op": "option", "name": "hotKeyRate" }, "seedParts": [ { "op": "rowIndex" }, "device" ] } ] } },
+        { "name": "timestampUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 7, "fullWindowDays": 730, "recentRate": { "op": "option", "name": "recentRate" }, "seedParts": [ { "op": "rowIndex" }, "timestamp" ] } },
+        {
+          "name": "value",
+          "value": {
+            "op": "switch",
+            "value": { "op": "value", "name": "metric" },
+            "cases": [
+              { "when": "temperature", "value": { "op": "round", "digits": 2, "value": { "op": "double", "min": 15, "max": 35, "seedParts": [ { "op": "rowIndex" }, "value" ] } } },
+              { "when": "pressure", "value": { "op": "round", "digits": 2, "value": { "op": "double", "min": 980, "max": 1040, "seedParts": [ { "op": "rowIndex" }, "value" ] } } },
+              { "when": "humidity", "value": { "op": "round", "digits": 2, "value": { "op": "double", "min": 20, "max": 90, "seedParts": [ { "op": "rowIndex" }, "value" ] } } },
+              { "when": "throughput", "value": { "op": "round", "digits": 2, "value": { "op": "double", "min": 100, "max": 9100, "seedParts": [ { "op": "rowIndex" }, "value" ] } } },
+              { "when": "latency", "value": { "op": "round", "digits": 2, "value": { "op": "double", "min": 1, "max": 251, "seedParts": [ { "op": "rowIndex" }, "value" ] } } }
+            ],
+            "default": { "op": "round", "digits": 2, "value": { "op": "double", "min": 0, "max": 100, "seedParts": [ { "op": "rowIndex" }, "value" ] } }
+          }
+        },
+        { "name": "status", "value": { "op": "chance", "probability": 0.94, "then": "ok", "else": { "op": "pick", "values": [ "warn", "fault" ], "seedParts": [ { "op": "rowIndex" }, "status" ] } } },
+        {
+          "name": "tags",
+          "value": [
+            { "op": "format", "format": "site:{0:D4}", "args": [ { "op": "int", "min": 1, "max": 2048, "seedParts": [ { "op": "rowIndex" }, "site" ] } ] },
+            { "op": "format", "format": "region:{0}", "args": [ { "op": "pick", "values": [ "na", "emea", "apac", "latam" ], "seedParts": [ { "op": "rowIndex" }, "region" ] } ] },
+            { "op": "format", "format": "cluster:{0:D3}", "args": [ { "op": "int", "min": 1, "max": 128, "seedParts": [ { "op": "rowIndex" }, "cluster" ] } ] }
+          ]
+        }
+      ],
+      "columns": [
+        { "name": "DeviceId", "sourceField": "deviceId", "type": "TEXT", "nullable": false },
+        { "name": "Metric", "sourceField": "metric", "type": "TEXT", "nullable": false },
+        { "name": "TimestampUtc", "sourceField": "timestampUtc", "type": "TEXT", "nullable": false },
+        { "name": "Value", "sourceField": "value", "type": "REAL", "nullable": false },
+        { "name": "Status", "sourceField": "status", "type": "TEXT", "nullable": false },
+        { "name": "Tags", "sourceField": "tags", "type": "TEXT", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "idx_sensorpoints_device_ts", "columns": [ "DeviceId", "TimestampUtc" ] },
+        { "name": "idx_sensorpoints_metric_ts", "columns": [ "Metric", "TimestampUtc" ] }
+      ]
+    }
+  ]
+}

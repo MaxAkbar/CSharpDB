@@ -20,6 +20,7 @@ public sealed class ColumnDef
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
     public bool IsNullable { get; init; } = true;
+    public string? Collation { get; init; }
 }
 
 public sealed class DropTableStatement : Statement
@@ -161,6 +162,7 @@ public sealed class CreateIndexStatement : Statement
     public required string IndexName { get; init; }
     public required string TableName { get; init; }
     public required List<string> Columns { get; init; }
+    public List<string?> ColumnCollations { get; init; } = [];
     public bool IsUnique { get; init; }
     public bool IfNotExists { get; init; }
 }
@@ -264,6 +266,12 @@ public sealed class UnaryExpression : Expression
 {
     public required TokenType Op { get; init; } // Not, Minus
     public required Expression Operand { get; init; }
+}
+
+public sealed class CollateExpression : Expression
+{
+    public required Expression Operand { get; init; }
+    public required string Collation { get; init; }
 }
 
 public sealed class LikeExpression : Expression

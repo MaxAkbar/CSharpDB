@@ -360,7 +360,7 @@ internal sealed class CatalogService
                 var indexSchema = _schemaSerializer.DeserializeIndex(data.Span[4..]);
                 _indexCache[indexSchema.IndexName] = indexSchema;
                 _indexRootPages[indexSchema.IndexName] = rootPage;
-                _indexStores[indexSchema.IndexName] = _indexProvider.CreateIndexStore(_pager, rootPage);
+                _indexStores[indexSchema.IndexName] = CreateIndexStore(_pager, indexSchema, rootPage);
                 AddIndexToTableCache(indexSchema);
             }
         }
@@ -949,9 +949,10 @@ internal sealed class CatalogService
         if (_indexStores.TryGetValue(indexName, out var store))
             return store;
 
-        if (_indexRootPages.TryGetValue(indexName, out uint rootPage))
+        if (_indexRootPages.TryGetValue(indexName, out uint rootPage) &&
+            _indexCache.TryGetValue(indexName, out var schema))
         {
-            store = _indexProvider.CreateIndexStore(_pager, rootPage);
+            store = CreateIndexStore(_pager, schema, rootPage);
             _indexStores[indexName] = store;
             return store;
         }
@@ -967,8 +968,12 @@ internal sealed class CatalogService
         if (ReferenceEquals(pager, _pager))
             return GetIndexStore(indexName);
 
-        if (_indexRootPages.TryGetValue(indexName, out uint rootPage))
-            return _indexProvider.CreateIndexStore(pager, rootPage);
+        if (_indexRootPages.TryGetValue(indexName, out uint rootPage) &&
+            _indexCache.TryGetValue(indexName, out var schema))
+        {
+            return CreateIndexStore(pager, schema, rootPage);
+        }
+
         throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
     }
 
@@ -991,16 +996,23 @@ internal sealed class CatalogService
 
         _indexCache[schema.IndexName] = schema;
         _indexRootPages[schema.IndexName] = indexRootPage;
-        _indexStores[schema.IndexName] = _indexProvider.CreateIndexStore(_pager, indexRootPage);
+        _indexStores[schema.IndexName] = CreateIndexStore(_pager, schema, indexRootPage);
         AddIndexToTableCache(schema);
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
     }
 
     public async ValueTask DropIndexAsync(string indexName, CancellationToken ct = default)
-        => await DropIndexAsync(indexName, allowOwnedFullTextDrop: false, ct);
+        => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct);
 
-    private async ValueTask DropIndexAsync(string indexName, bool allowOwnedFullTextDrop, CancellationToken ct)
+    public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default)
+        => DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: true, ct);
+
+    private async ValueTask<bool> DropIndexAsyncCoreAsync(
+        string indexName,
+        bool allowOwnedFullTextDrop,
+        bool ignoreCorruptReclaim,
+        CancellationToken ct)
     {
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
@@ -1024,20 +1036,47 @@ internal sealed class CatalogService
                 .Select(static idx => idx.IndexName)
                 .ToArray();
 
+            bool skippedOwnedReclaim = false;
             for (int i = 0; i < ownedIndexes.Length; i++)
             {
                 if (_indexCache.ContainsKey(ownedIndexes[i]))
-                    await DropIndexAsync(ownedIndexes[i], allowOwnedFullTextDrop: true, ct);
+                    skippedOwnedReclaim |= await DropIndexAsyncCoreAsync(
+                        ownedIndexes[i],
+                        allowOwnedFullTextDrop: true,
+                        ignoreCorruptReclaim,
+                        ct);
             }
+
+            return await DropIndexCoreAsync(indexName, schema, ignoreCorruptReclaim, skippedOwnedReclaim, ct);
         }
 
+        return await DropIndexCoreAsync(indexName, schema, ignoreCorruptReclaim, skippedOwnedReclaim: false, ct);
+    }
+
+    private async ValueTask<bool> DropIndexCoreAsync(
+        string indexName,
+        IndexSchema schema,
+        bool ignoreCorruptReclaim,
+        bool skippedOwnedReclaim,
+        CancellationToken ct)
+    {
         if (!_indexStores.TryGetValue(indexName, out var store))
-            store = _indexProvider.CreateIndexStore(_pager, _indexRootPages[indexName]);
+            store = CreateIndexStore(_pager, _indexCache[indexName], _indexRootPages[indexName]);
 
         long key = _schemaSerializer.IndexNameToKey(indexName);
         await _indexCatalogTree!.DeleteAsync(key, ct);
+        bool skippedCorruptReclaim = skippedOwnedReclaim;
         if (store is IReclaimableIndexStore reclaimable)
-            await reclaimable.ReclaimAsync(ct);
+        {
+            try
+            {
+                await reclaimable.ReclaimAsync(ct);
+            }
+            catch (CSharpDbException ex) when (ignoreCorruptReclaim && ex.Code == ErrorCode.CorruptDatabase)
+            {
+                skippedCorruptReclaim = true;
+            }
+        }
 
         _indexCache.Remove(indexName);
         _indexRootPages.Remove(indexName);
@@ -1045,6 +1084,25 @@ internal sealed class CatalogService
         RemoveIndexFromTableCache(schema);
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
+        return skippedCorruptReclaim;
+    }
+
+    private IIndexStore CreateIndexStore(Pager pager, IndexSchema schema, uint rootPageId)
+    {
+        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId);
+        return ShouldUseOverflowingIndexStore(schema)
+            ? new OverflowingIndexStore(store, pager)
+            : store;
+    }
+
+    private static bool ShouldUseOverflowingIndexStore(IndexSchema schema)
+    {
+        if (schema.Kind == IndexKind.Collection)
+            return true;
+
+        return schema.Kind == IndexKind.Sql &&
+               schema.Columns.Count == 1 &&
+               schema.OptionsJson?.IndexOf("\"storage\":\"ordered_text\"", StringComparison.Ordinal) >= 0;
     }
 
     // ============ VIEW operations ============
@@ -1483,6 +1541,14 @@ internal sealed class CatalogService
 
     private void ReconcileLoadedStatisticsFreshness()
     {
+        if (_advisoryStatisticsPersistenceMode != AdvisoryStatisticsPersistenceMode.Deferred)
+        {
+            foreach (string tableName in _tableStatsCache.Keys)
+                _exactTableRowCounts.Add(tableName);
+
+            return;
+        }
+
         foreach (var stats in _tableStatsCache.Values.ToArray())
         {
             bool isExact = stats.LastPersistedChangeCounter == _pager.ChangeCounter;

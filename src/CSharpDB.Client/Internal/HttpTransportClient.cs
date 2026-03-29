@@ -171,12 +171,15 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         await EnsureSuccessAsync(response, ct);
     }
 
-    public async Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default)
+    public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default)
+        => AddColumnAsync(tableName, columnName, type, notNull, collation: null, ct);
+
+    public async Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, string? collation, CancellationToken ct = default)
     {
         using var response = await SendAsync(
             HttpMethod.Post,
             BuildUri($"api/tables/{Escape(tableName)}/columns"),
-            new { ColumnName = columnName, Type = type.ToString(), NotNull = notNull },
+            new { ColumnName = columnName, Type = type.ToString(), NotNull = notNull, Collation = collation },
             ct);
         await EnsureSuccessAsync(response, ct);
     }
@@ -204,22 +207,28 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         return payload.Select(MapIndex).ToList();
     }
 
-    public async Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+    public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => CreateIndexAsync(indexName, tableName, columnName, isUnique, collation: null, ct);
+
+    public async Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
     {
         using var response = await SendAsync(
             HttpMethod.Post,
             BuildUri("api/indexes"),
-            new { IndexName = indexName, TableName = tableName, ColumnName = columnName, IsUnique = isUnique },
+            new { IndexName = indexName, TableName = tableName, ColumnName = columnName, IsUnique = isUnique, Collation = collation },
             ct);
         await EnsureSuccessAsync(response, ct);
     }
 
-    public async Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+    public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
+        => UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation: null, ct);
+
+    public async Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
     {
         using var response = await SendAsync(
             HttpMethod.Put,
             BuildUri($"api/indexes/{Escape(existingIndexName)}"),
-            new { NewIndexName = newIndexName, TableName = tableName, ColumnName = columnName, IsUnique = isUnique },
+            new { NewIndexName = newIndexName, TableName = tableName, ColumnName = columnName, IsUnique = isUnique, Collation = collation },
             ct);
         await EnsureSuccessAsync(response, ct);
     }
@@ -779,6 +788,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
             Nullable = payload.Nullable,
             IsPrimaryKey = payload.IsPrimaryKey,
             IsIdentity = payload.IsIdentity,
+            Collation = payload.Collation,
         };
 
     private static IndexSchema MapIndex(ApiIndexResponse payload)
@@ -787,6 +797,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
             IndexName = payload.IndexName,
             TableName = payload.TableName,
             Columns = payload.Columns,
+            ColumnCollations = payload.ColumnCollations,
             IsUnique = payload.IsUnique,
         };
 
@@ -954,12 +965,12 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         int SavedQueryCount);
 
     private sealed record ApiTableSchemaResponse(string TableName, List<ApiColumnResponse> Columns);
-    private sealed record ApiColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity);
+    private sealed record ApiColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
     private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);
     private sealed record ApiRowCountResponse(string TableName, int Count);
     private sealed record ApiMutationResponse(int RowsAffected);
     private sealed record ApiCollectionCountResponse(string CollectionName, int Count);
-    private sealed record ApiIndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique);
+    private sealed record ApiIndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique, IReadOnlyList<string?> ColumnCollations);
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
     private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);

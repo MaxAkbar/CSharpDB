@@ -69,6 +69,7 @@ public sealed class Tokenizer
         ["ALTER"] = TokenType.Alter,
         ["ADD"] = TokenType.Add,
         ["COLUMN"] = TokenType.Column,
+        ["COLLATE"] = TokenType.Collate,
         ["RENAME"] = TokenType.Rename,
         ["TO"] = TokenType.To,
         ["INDEX"] = TokenType.Index,
@@ -253,6 +254,7 @@ public sealed class Tokenizer
             case '*': return new Token(TokenType.Star, "*", start);
             case '/': return new Token(TokenType.Slash, "/", start);
             case ',': return new Token(TokenType.Comma, ",", start);
+            case ':': return new Token(TokenType.Colon, ":", start);
             case '.': return new Token(TokenType.Dot, ".", start);
             case '(': return new Token(TokenType.LeftParen, "(", start);
             case ')': return new Token(TokenType.RightParen, ")", start);

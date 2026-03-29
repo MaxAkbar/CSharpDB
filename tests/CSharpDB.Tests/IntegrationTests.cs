@@ -2196,6 +2196,52 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IndexedTextEqualitySelectStar_UsesIndexScanOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_text_eq_root (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_text_eq_root_name ON batch_text_eq_root(name)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_eq_root VALUES (1, 'Alpha')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_eq_root VALUES (2, 'beta')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_eq_root VALUES (3, 'BETA')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_eq_root VALUES (4, 'carrot')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_text_eq_root WHERE name = 'BeTa'") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexScanOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal([2L, 3L], rows.Select(static row => row[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task IndexedTextRangeSelectStar_UsesIndexOrderedScanOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_text_range_root (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_text_range_root_name ON batch_text_range_root(name)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_range_root VALUES (1, 'aardvark')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_range_root VALUES (2, 'Beta')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_range_root VALUES (3, 'carrot')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_range_root VALUES (4, 'delta')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_text_range_root VALUES (5, 'echo')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_text_range_root WHERE name >= 'b' COLLATE NOCASE AND name < 'e' COLLATE NOCASE") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.IsType<IndexOrderedScanOperator>(GetRootOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(["Beta", "carrot", "delta"], rows.Select(static row => row[1].AsText).ToArray());
+    }
+
+    [Fact]
     public async Task IndexedOrderedSelectStar_UsesIndexOrderedScanOperator()
     {
         var ct = TestContext.Current.CancellationToken;

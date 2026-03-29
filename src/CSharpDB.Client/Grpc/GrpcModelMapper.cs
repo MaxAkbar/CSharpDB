@@ -124,6 +124,7 @@ public static class GrpcModelMapper
             Nullable = value.Nullable,
             IsPrimaryKey = value.IsPrimaryKey,
             IsIdentity = value.IsIdentity,
+            Collation = value.Collation ?? string.Empty,
         };
 
     public static ColumnDefinition ToModel(ColumnDefinitionMessage value)
@@ -134,6 +135,7 @@ public static class GrpcModelMapper
             Nullable = value.Nullable,
             IsPrimaryKey = value.IsPrimaryKey,
             IsIdentity = value.IsIdentity,
+            Collation = string.IsNullOrEmpty(value.Collation) ? null : value.Collation,
         };
 
     public static TableSchemaMessage ToMessage(TableSchema value)
@@ -162,6 +164,7 @@ public static class GrpcModelMapper
             IsUnique = value.IsUnique,
         };
         message.Columns.Add(value.Columns);
+        message.ColumnCollations.Add(value.ColumnCollations.Select(static collation => collation ?? string.Empty));
         return message;
     }
 
@@ -171,6 +174,9 @@ public static class GrpcModelMapper
             IndexName = value.IndexName,
             TableName = value.TableName,
             Columns = value.Columns.ToList(),
+            ColumnCollations = value.ColumnCollations
+                .Select(static collation => string.IsNullOrEmpty(collation) ? null : collation)
+                .ToList(),
             IsUnique = value.IsUnique,
         };
 
@@ -478,6 +484,7 @@ public static class GrpcModelMapper
         {
             Scope = ToMessage(value.Scope),
             Name = value.Name,
+            AllowCorruptIndexRecovery = value.AllowCorruptIndexRecovery,
         };
 
     public static ReindexRequest ToModel(ReindexRequestMessage value)
@@ -485,6 +492,7 @@ public static class GrpcModelMapper
         {
             Scope = ToModel(value.Scope),
             Name = value.Name,
+            AllowCorruptIndexRecovery = value.AllowCorruptIndexRecovery,
         };
 
     public static BackupRequestMessage ToMessage(BackupRequest value)
@@ -589,6 +597,7 @@ public static class GrpcModelMapper
             Scope = ToMessage(value.Scope),
             Name = value.Name,
             RebuiltIndexCount = value.RebuiltIndexCount,
+            RecoveredCorruptIndexCount = value.RecoveredCorruptIndexCount,
         };
 
     public static ReindexResult ToModel(ReindexResultMessage value)
@@ -597,6 +606,7 @@ public static class GrpcModelMapper
             Scope = ToModel(value.Scope),
             Name = value.Name,
             RebuiltIndexCount = value.RebuiltIndexCount,
+            RecoveredCorruptIndexCount = value.RecoveredCorruptIndexCount,
         };
 
     public static VacuumResultMessage ToMessage(VacuumResult value)
