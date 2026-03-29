@@ -85,8 +85,13 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<int> GetRowCountAsync(string tableName, CancellationToken ct = default)
     {
-        var browse = await BrowseTableInternalAsync(await GetDatabaseAsync(ct), tableName, ct);
-        return browse.Rows.Count;
+        var db = await GetDatabaseAsync(ct);
+        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        var schema = db.GetTableSchema(normalizedTableName);
+        if (schema is null || IsInternalTable(normalizedTableName))
+            throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
+
+        return await CountRowsViaScalarAsync(db, normalizedTableName, ct);
     }
 
     public async Task<TableBrowseResult> BrowseTableAsync(string tableName, int page = 1, int pageSize = 50, CancellationToken ct = default)
@@ -718,6 +723,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
                 _ => throw new ArgumentOutOfRangeException(nameof(request.Scope), request.Scope, null),
             },
             Name = request.Name,
+            AllowCorruptIndexRecovery = request.AllowCorruptIndexRecovery,
         };
 
     private static ReindexResult MapReindexResult(DatabaseReindexResult result)
@@ -732,6 +738,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             },
             Name = result.Name,
             RebuiltIndexCount = result.RebuiltIndexCount,
+            RecoveredCorruptIndexCount = result.RecoveredCorruptIndexCount,
         };
 
     private static VacuumResult MapVacuumResult(DatabaseVacuumResult result)

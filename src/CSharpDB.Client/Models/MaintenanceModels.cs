@@ -11,6 +11,7 @@ public sealed class ReindexRequest
 {
     public ReindexScope Scope { get; init; } = ReindexScope.All;
     public string? Name { get; init; }
+    public bool AllowCorruptIndexRecovery { get; init; }
 }
 
 public sealed class BackupRequest
@@ -86,6 +87,7 @@ public sealed class ReindexResult
     public required ReindexScope Scope { get; init; }
     public string? Name { get; init; }
     public int RebuiltIndexCount { get; init; }
+    public int RecoveredCorruptIndexCount { get; init; }
 }
 
 public sealed class VacuumResult

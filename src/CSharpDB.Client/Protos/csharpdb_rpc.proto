@@ -341,6 +341,7 @@ message CheckIndexesRequest {
 message ReindexRequestMessage {
   ReindexScopeEnum scope = 1;
   google.protobuf.StringValue name = 2;
+  bool allow_corrupt_index_recovery = 3;
 }
 
 message BackupRequestMessage {
@@ -566,6 +567,7 @@ message ReindexResultMessage {
   ReindexScopeEnum scope = 1;
   google.protobuf.StringValue name = 2;
   int32 rebuilt_index_count = 3;
+  int32 recovered_corrupt_index_count = 4;
 }
 
 message VacuumResultMessage {

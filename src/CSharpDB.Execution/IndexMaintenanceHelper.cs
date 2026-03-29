@@ -99,7 +99,11 @@ internal static class IndexMaintenanceHelper
                 }
 
                 foreach (var entry in groupedTextPayloads)
-                    await indexStore.InsertAsync(entry.Key, OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value), ct);
+                {
+                    byte[] payload = OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value);
+                    EnsureOrderedTextLeafCellFits(indexSchema.IndexName, entry.Key, payload.Length);
+                    await indexStore.InsertAsync(entry.Key, payload, ct);
+                }
 
                 return;
             }
@@ -388,6 +392,17 @@ internal static class IndexMaintenanceHelper
     public static bool UsesOrderedTextIndexKey(IndexSchema index, TableSchema schema)
         => ResolveSqlIndexStorageMode(index, schema) == SqlIndexStorageMode.OrderedText;
 
+    private static void EnsureOrderedTextLeafCellFits(string indexName, long indexKey, int payloadLength)
+    {
+        int payloadPart = 8 + payloadLength;
+        int leafCellLength = checked(Varint.SizeOf((ulong)payloadPart) + payloadPart);
+        int maxLeafCellLength = PageConstants.PageSize - PageConstants.SlottedPageHeaderSize - PageConstants.CellPointerSize;
+        if (leafCellLength > maxLeafCellLength)
+        {
+            throw new OrderedTextIndexOverflowException(indexName, indexKey, leafCellLength, maxLeafCellLength);
+        }
+    }
+
     public static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
     {
         if (ReferenceEquals(left, right))
@@ -599,4 +614,24 @@ internal static class IndexMaintenanceHelper
                 throw new InvalidOperationException($"Cannot hash index component of type '{value.Type}'.");
         }
     }
+}
+
+public sealed class OrderedTextIndexOverflowException : Exception
+{
+    public OrderedTextIndexOverflowException(string indexName, long indexKey, int cellLength, int maxCellLength)
+        : base($"Ordered text index '{indexName}' produced leaf cell length {cellLength} for key {indexKey}, exceeding max leaf cell length {maxCellLength}.")
+    {
+        IndexName = indexName;
+        IndexKey = indexKey;
+        CellLength = cellLength;
+        MaxCellLength = maxCellLength;
+    }
+
+    public string IndexName { get; }
+
+    public long IndexKey { get; }
+
+    public int CellLength { get; }
+
+    public int MaxCellLength { get; }
 }

@@ -141,6 +141,11 @@
                             </select>
                         }
 
+                        <label class="storage-check">
+                            <input type="checkbox" @bind="_allowCorruptIndexRecovery" disabled="@_maintenanceBusy" />
+                            Force rebuild corrupt indexes
+                        </label>
+
                         <button class="toolbar-btn" @onclick="RunReindexAsync" disabled="@_maintenanceBusy">
                             <i class="bi bi-arrow-repeat"></i> Reindex
                         </button>
@@ -378,6 +383,7 @@
     private bool _includeHex;
     private ReindexScope _reindexScope = ReindexScope.All;
     private string? _reindexName;
+    private bool _allowCorruptIndexRecovery;
     private bool _vacuumConfirmArmed;
     private bool _restoreConfirmArmed;
     private bool _backupWithManifest = true;
@@ -534,16 +540,23 @@
             {
                 Scope = _reindexScope,
                 Name = _reindexScope == ReindexScope.All ? null : _reindexName,
+                AllowCorruptIndexRecovery = _allowCorruptIndexRecovery,
             };
 
             var result = await DbClient.ReindexAsync(request);
             _maintenanceStatus = $"Reindexed {result.RebuiltIndexCount} index(es).";
+            if (result.RecoveredCorruptIndexCount > 0)
+            {
+                _maintenanceStatus += $" Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run vacuum afterward.";
+            }
+
             Toast.Success(_maintenanceStatus);
             await RefreshAllAsync();
         }
         catch (Exception ex)
         {
-            Toast.Error($"Reindex failed: {ex.Message}");
+            _maintenanceStatus = FormatMaintenanceError("Reindex", ex);
+            Toast.Error(_maintenanceStatus);
         }
         finally
         {
@@ -565,7 +578,8 @@
         }
         catch (Exception ex)
         {
-            Toast.Error($"Vacuum failed: {ex.Message}");
+            _maintenanceStatus = FormatMaintenanceError("Vacuum", ex);
+            Toast.Error(_maintenanceStatus);
         }
         finally
         {
@@ -599,12 +613,25 @@
     private void RebuildIssueList()
     {
         _combinedIssues.Clear();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddIssues(IEnumerable<IntegrityIssue> issues)
+        {
+            foreach (var issue in issues)
+            {
+                string key = $"{issue.Severity}|{issue.Code}|{issue.Message}|{issue.PageId}|{issue.Offset}";
+
+                if (seen.Add(key))
+                    _combinedIssues.Add(issue);
+            }
+        }
+
         if (_dbReport is not null)
-            _combinedIssues.AddRange(_dbReport.Issues);
+            AddIssues(_dbReport.Issues);
         if (_walReport is not null)
-            _combinedIssues.AddRange(_walReport.Issues);
+            AddIssues(_walReport.Issues);
         if (_indexReport is not null)
-            _combinedIssues.AddRange(_indexReport.Issues);
+            AddIssues(_indexReport.Issues);
 
         _combinedIssues.Sort((a, b) =>
         {
@@ -676,6 +703,19 @@
 
         string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fullPath);
         return Path.Combine(directory, $"{fileNameWithoutExtension}.backup{extension}");
+    }
+
+    private string FormatMaintenanceError(string operation, Exception ex)
+    {
+        string databasePath = _dbReport?.DatabasePath ?? DbClient.DataSource;
+        string message = ex.Message;
+
+        if (message.Contains("exclusive access", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{operation} failed for {databasePath}: {message} Close open data/query tabs and commit or rollback active transactions, then retry.";
+        }
+
+        return $"{operation} failed for {databasePath}: {message}";
     }
 
     private static string SeverityClass(InspectSeverity severity) => severity switch

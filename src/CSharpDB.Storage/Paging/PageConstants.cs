@@ -20,6 +20,7 @@ public static class PageConstants
 
     // Slotted page header layout (within each B+tree page)
     public const int PageTypeOffset = 0;         // 1 byte
+    public const int FreelistNextOffset = 1;     // 4 bytes (uint32) — next freelist page; byte 0 remains the page type
     public const int CellCountOffset = 1;        // 2 bytes (ushort)
     public const int FreeSpaceStartOffset = 3;   // 2 bytes (ushort) — start of cell content area
     public const int RightChildOffset = 5;       // 4 bytes (uint32) — rightmost child for interior pages

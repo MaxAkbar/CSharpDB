@@ -1,11 +1,13 @@
 using System.Text;
 using System.Globalization;
+using System.Buffers.Binary;
 using CSharpDB.Client;
 using ClientModels = CSharpDB.Client.Models;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Catalog;
+using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
@@ -447,6 +449,54 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task ReindexAsync_AllowCorruptIndexRecovery_RebuildsBrokenIndexWithoutReclaim()
+    {
+        const string indexName = "idx_customers_customer_id";
+
+        await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, name TEXT NOT NULL);", Ct);
+        for (int i = 1; i <= 5000; i++)
+            await _client.ExecuteSqlAsync($"INSERT INTO customers VALUES ({i}, {i}, 'Customer {i}');", Ct);
+        await _client.CreateIndexAsync(indexName, "customers", "customer_id", isUnique: false, Ct);
+        await _client.ExecuteSqlAsync("CREATE TABLE junk (id INTEGER PRIMARY KEY, payload TEXT);", Ct);
+        for (int i = 1; i <= 200; i++)
+            await _client.ExecuteSqlAsync($"INSERT INTO junk VALUES ({i}, '{new string('x', 64)}');", Ct);
+        await _client.DropTableAsync("junk", Ct);
+
+        await _client.DisposeAsync();
+        await CorruptIndexChildReferenceAsync(_dbPath, indexName, Ct);
+
+        _client = CreateClient();
+        var brokenReport = await _client.CheckIndexesAsync(indexName: indexName, ct: Ct);
+        Assert.Contains(brokenReport.Issues, issue => issue.Severity == CSharpDB.Storage.Diagnostics.InspectSeverity.Error);
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            _client.ReindexAsync(new ClientModels.ReindexRequest
+            {
+                Scope = ClientModels.ReindexScope.Index,
+                Name = indexName,
+            }, Ct));
+        Assert.Contains("Cannot reclaim B+tree page", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var repaired = await _client.ReindexAsync(new ClientModels.ReindexRequest
+        {
+            Scope = ClientModels.ReindexScope.Index,
+            Name = indexName,
+            AllowCorruptIndexRecovery = true,
+        }, Ct);
+
+        var indexReport = await _client.CheckIndexesAsync(indexName: indexName, ct: Ct);
+        var query = await _client.ExecuteSqlAsync("SELECT COUNT(*) FROM customers WHERE customer_id = 1405;", Ct);
+
+        Assert.Equal(1, repaired.RebuiltIndexCount);
+        Assert.Equal(1, repaired.RecoveredCorruptIndexCount);
+        Assert.DoesNotContain(indexReport.Issues, issue => issue.Severity == CSharpDB.Storage.Diagnostics.InspectSeverity.Error);
+        Assert.Null(query.Error);
+        Assert.True(query.IsQuery);
+        Assert.NotNull(query.Rows);
+        Assert.Equal(1L, Convert.ToInt64(Assert.Single(query.Rows)[0]));
+    }
+
     private ICSharpDbClient CreateClient()
         => CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = _dbPath });
 
@@ -524,6 +574,42 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
         Span<byte> buffer = stackalloc byte[10];
         int length = Varint.Write(buffer, value);
         stream.Write(buffer[..length]);
+    }
+
+    private static async ValueTask CorruptIndexChildReferenceAsync(string dbPath, string indexName, CancellationToken ct)
+    {
+        var factory = new DefaultStorageEngineFactory();
+        var context = await factory.OpenAsync(dbPath, new StorageEngineOptions(), ct);
+        try
+        {
+            var store = context.Catalog.GetIndexStore(indexName);
+            uint rootPageId = store.RootPageId;
+
+            await context.Pager.BeginTransactionAsync(ct);
+            try
+            {
+                byte[] rootPage = await context.Pager.GetPageAsync(rootPageId, ct);
+                int baseOffset = rootPageId == 0 ? PageConstants.FileHeaderSize : 0;
+                Assert.Equal(PageConstants.PageTypeInterior, rootPage[baseOffset]);
+                Assert.NotEqual(PageConstants.NullPageId, context.Pager.FreelistHead);
+
+                BinaryPrimitives.WriteUInt32LittleEndian(
+                    rootPage.AsSpan(baseOffset + PageConstants.RightChildOffset, sizeof(uint)),
+                    context.Pager.FreelistHead);
+                await context.Pager.MarkDirtyAsync(rootPageId, ct);
+
+                await context.Pager.CommitAsync(ct);
+            }
+            catch
+            {
+                await context.Pager.RollbackAsync(ct);
+                throw;
+            }
+        }
+        finally
+        {
+            await context.Pager.DisposeAsync();
+        }
     }
 
     private sealed record UserDoc(string Name, int Age);

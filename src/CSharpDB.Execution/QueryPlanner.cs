@@ -558,16 +558,10 @@ public sealed class QueryPlanner
             ColumnCollations = indexColumnCollations,
             IsUnique = stmt.IsUnique,
             Kind = IndexKind.Sql,
-            OptionsJson = SqlIndexOptionsCodec.CreateDefaultOptionsJson(tableSchema, indexColumnIndices),
+            OptionsJson = SqlIndexOptionsCodec.CreateDefaultOptionsJson(tableSchema, indexColumnIndices, indexColumnCollations),
         };
 
-        await _catalog.CreateIndexAsync(indexSchema, ct);
-        await IndexMaintenanceHelper.BackfillIndexAsync(
-            _catalog,
-            tableSchema,
-            indexSchema,
-            GetReadSerializer(tableSchema),
-            ct);
+        await CreateAndBackfillIndexWithOrderedTextFallbackAsync(indexSchema, tableSchema, ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -584,6 +578,57 @@ public sealed class QueryPlanner
     }
 
     #endregion
+
+    private async ValueTask CreateAndBackfillIndexWithOrderedTextFallbackAsync(
+        IndexSchema indexSchema,
+        TableSchema tableSchema,
+        CancellationToken ct)
+    {
+        await _catalog.CreateIndexAsync(indexSchema, ct);
+        try
+        {
+            await IndexMaintenanceHelper.BackfillIndexAsync(
+                _catalog,
+                tableSchema,
+                indexSchema,
+                GetReadSerializer(tableSchema),
+                ct);
+        }
+        catch (OrderedTextIndexOverflowException) when (CanFallbackToHashedSqlIndex(indexSchema, tableSchema))
+        {
+            await _catalog.DropIndexAsync(indexSchema.IndexName, ct);
+            var fallbackSchema = CreateHashedSqlIndexSchema(indexSchema);
+            await _catalog.CreateIndexAsync(fallbackSchema, ct);
+            await IndexMaintenanceHelper.BackfillIndexAsync(
+                _catalog,
+                tableSchema,
+                fallbackSchema,
+                GetReadSerializer(tableSchema),
+                ct);
+        }
+    }
+
+    private static bool CanFallbackToHashedSqlIndex(IndexSchema indexSchema, TableSchema tableSchema)
+        => indexSchema.Kind == IndexKind.Sql &&
+           indexSchema.Columns.Count == 1 &&
+           tableSchema.GetColumnIndex(indexSchema.Columns[0]) is int columnIndex &&
+           columnIndex >= 0 &&
+           columnIndex < tableSchema.Columns.Count &&
+           tableSchema.Columns[columnIndex].Type == DbType.Text;
+
+    private static IndexSchema CreateHashedSqlIndexSchema(IndexSchema indexSchema) =>
+        new()
+        {
+            IndexName = indexSchema.IndexName,
+            TableName = indexSchema.TableName,
+            Columns = indexSchema.Columns,
+            ColumnCollations = indexSchema.ColumnCollations,
+            IsUnique = indexSchema.IsUnique,
+            Kind = indexSchema.Kind,
+            State = indexSchema.State,
+            OwnerIndexName = indexSchema.OwnerIndexName,
+            OptionsJson = null,
+        };
 
     #region DDL — Views
 

@@ -484,6 +484,7 @@ public static class GrpcModelMapper
         {
             Scope = ToMessage(value.Scope),
             Name = value.Name,
+            AllowCorruptIndexRecovery = value.AllowCorruptIndexRecovery,
         };
 
     public static ReindexRequest ToModel(ReindexRequestMessage value)
@@ -491,6 +492,7 @@ public static class GrpcModelMapper
         {
             Scope = ToModel(value.Scope),
             Name = value.Name,
+            AllowCorruptIndexRecovery = value.AllowCorruptIndexRecovery,
         };
 
     public static BackupRequestMessage ToMessage(BackupRequest value)
@@ -595,6 +597,7 @@ public static class GrpcModelMapper
             Scope = ToMessage(value.Scope),
             Name = value.Name,
             RebuiltIndexCount = value.RebuiltIndexCount,
+            RecoveredCorruptIndexCount = value.RecoveredCorruptIndexCount,
         };
 
     public static ReindexResult ToModel(ReindexResultMessage value)
@@ -603,6 +606,7 @@ public static class GrpcModelMapper
             Scope = ToModel(value.Scope),
             Name = value.Name,
             RebuiltIndexCount = value.RebuiltIndexCount,
+            RecoveredCorruptIndexCount = value.RecoveredCorruptIndexCount,
         };
 
     public static VacuumResultMessage ToMessage(VacuumResult value)

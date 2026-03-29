@@ -71,10 +71,22 @@ public sealed class CollationMetadataTests
     }
 
     [Fact]
-    public async Task CreateIndex_OnSingleTextColumn_PersistsOrderedTextStorageMetadata()
+    public async Task CreateIndex_OnBinaryTextColumn_DoesNotPersistOrderedTextStorageMetadata()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);
         await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", Ct);
+
+        await db.ExecuteAsync("CREATE INDEX idx_users_name_text ON users (name)", Ct);
+
+        var index = Assert.Single(db.GetIndexes(), static item => string.Equals(item.IndexName, "idx_users_name_text", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(index.OptionsJson);
+    }
+
+    [Fact]
+    public async Task CreateIndex_OnNoCaseTextColumn_PersistsOrderedTextStorageMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)", Ct);
 
         await db.ExecuteAsync("CREATE INDEX idx_users_name_text ON users (name)", Ct);
 

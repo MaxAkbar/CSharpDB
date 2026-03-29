@@ -26,11 +26,11 @@ internal static class SqlIndexOptionsCodec
 
     private static readonly SqlIndexOptionsJsonContext JsonContext = new(SerializerOptions);
 
-    public static string? CreateDefaultOptionsJson(TableSchema schema, ReadOnlySpan<int> indexColumnIndices)
-        => indexColumnIndices.Length == 1 &&
-           indexColumnIndices[0] >= 0 &&
-           indexColumnIndices[0] < schema.Columns.Count &&
-           schema.Columns[indexColumnIndices[0]].Type == DbType.Text
+    public static string? CreateDefaultOptionsJson(
+        TableSchema schema,
+        ReadOnlySpan<int> indexColumnIndices,
+        ReadOnlySpan<string?> indexColumnCollations = default)
+        => ShouldDefaultToOrderedTextStorage(schema, indexColumnIndices, indexColumnCollations)
             ? Serialize(new SqlIndexOptions { Storage = OrderedTextStorage })
             : null;
 
@@ -58,6 +58,28 @@ internal static class SqlIndexOptionsCodec
 
     private static string Serialize(SqlIndexOptions options)
         => JsonSerializer.Serialize(options, JsonContext.SqlIndexOptions);
+
+    private static bool ShouldDefaultToOrderedTextStorage(
+        TableSchema schema,
+        ReadOnlySpan<int> indexColumnIndices,
+        ReadOnlySpan<string?> indexColumnCollations)
+    {
+        if (indexColumnIndices.Length != 1)
+            return false;
+
+        int columnIndex = indexColumnIndices[0];
+        if (columnIndex < 0 ||
+            columnIndex >= schema.Columns.Count ||
+            schema.Columns[columnIndex].Type != DbType.Text)
+        {
+            return false;
+        }
+
+        string? effectiveCollation = indexColumnCollations.IsEmpty || indexColumnCollations[0] == null
+            ? schema.Columns[columnIndex].Collation
+            : indexColumnCollations[0];
+        return !CollationSupport.IsBinaryOrDefault(effectiveCollation);
+    }
 
     private static SqlIndexOptions Deserialize(string? payload)
     {

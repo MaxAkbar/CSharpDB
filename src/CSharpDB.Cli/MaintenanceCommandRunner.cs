@@ -95,7 +95,7 @@ internal static class MaintenanceCommandRunner
     {
         if (args.Length < 2)
         {
-            await error.WriteLineAsync("Usage: csharpdb reindex <dbfile> [--all|--table <name>|--index <name>] [--json]");
+            await error.WriteLineAsync("Usage: csharpdb reindex <dbfile> [--all|--table <name>|--index <name>] [--force-corrupt-rebuild] [--json]");
             return InspectorCommandRunner.ExitUsage;
         }
 
@@ -166,6 +166,7 @@ internal static class MaintenanceCommandRunner
     {
         var scope = ReindexScope.All;
         string? name = null;
+        bool allowCorruptIndexRecovery = false;
         asJson = false;
 
         for (int i = startIndex; i < args.Length; i++)
@@ -174,6 +175,9 @@ internal static class MaintenanceCommandRunner
             {
                 case "--json":
                     asJson = true;
+                    break;
+                case "--force-corrupt-rebuild":
+                    allowCorruptIndexRecovery = true;
                     break;
                 case "--all":
                     scope = ReindexScope.All;
@@ -212,6 +216,7 @@ internal static class MaintenanceCommandRunner
         {
             Scope = scope,
             Name = name,
+            AllowCorruptIndexRecovery = allowCorruptIndexRecovery,
         };
 
         return true;
@@ -233,6 +238,8 @@ internal static class MaintenanceCommandRunner
             ? result.Scope.ToString().ToLowerInvariant()
             : $"{result.Scope.ToString().ToLowerInvariant()}:{result.Name}";
         output.WriteLine($"Reindexed {result.RebuiltIndexCount} index(es) for {target}.");
+        if (result.RecoveredCorruptIndexCount > 0)
+            output.WriteLine($"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run vacuum to reclaim orphaned pages.");
     }
 
     private static void WriteVacuumSummary(VacuumResult result, TextWriter output)

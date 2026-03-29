@@ -87,6 +87,7 @@ public static class DatabaseMaintenanceCoordinator
             context = await OpenStorageContextAsync(fullPath, ct);
             var indexes = ResolveTargetIndexes(context.Catalog, request).ToArray();
             var affectedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int recoveredCorruptIndexCount = 0;
 
             await context.Pager.BeginTransactionAsync(ct);
             try
@@ -95,9 +96,16 @@ public static class DatabaseMaintenanceCoordinator
                 {
                     affectedTables.Add(indexSchema.TableName);
 
-                    await context.Catalog.DropIndexAsync(indexSchema.IndexName, ct);
-                    await context.Catalog.CreateIndexAsync(indexSchema, ct);
-                    await BackfillIndexAsync(context, indexSchema, ct);
+                    bool recoveredCorruptIndex = request.AllowCorruptIndexRecovery
+                        ? await context.Catalog.DropIndexAllowCorruptReclaimAsync(indexSchema.IndexName, ct)
+                        : false;
+                    if (!request.AllowCorruptIndexRecovery)
+                        await context.Catalog.DropIndexAsync(indexSchema.IndexName, ct);
+
+                    await CreateAndBackfillIndexWithOrderedTextFallbackAsync(context, indexSchema, ct);
+
+                    if (recoveredCorruptIndex)
+                        recoveredCorruptIndexCount++;
                 }
 
                 foreach (string tableName in affectedTables)
@@ -116,6 +124,7 @@ public static class DatabaseMaintenanceCoordinator
                 Scope = request.Scope,
                 Name = request.Name,
                 RebuiltIndexCount = indexes.Length,
+                RecoveredCorruptIndexCount = recoveredCorruptIndexCount,
             };
         }
         finally
@@ -341,6 +350,56 @@ public static class DatabaseMaintenanceCoordinator
             indexSchema,
             GetReadSerializer(context.RecordSerializer, tableSchema),
             ct);
+    }
+
+    private static async ValueTask CreateAndBackfillIndexWithOrderedTextFallbackAsync(
+        StorageEngineContext context,
+        IndexSchema indexSchema,
+        CancellationToken ct)
+    {
+        await context.Catalog.CreateIndexAsync(indexSchema, ct);
+        try
+        {
+            await BackfillIndexAsync(context, indexSchema, ct);
+        }
+        catch (OrderedTextIndexOverflowException) when (TryCreateHashedFallbackSchema(context.Catalog, indexSchema, out IndexSchema? fallbackSchema))
+        {
+            await context.Catalog.DropIndexAsync(indexSchema.IndexName, ct);
+            await context.Catalog.CreateIndexAsync(fallbackSchema!, ct);
+            await BackfillIndexAsync(context, fallbackSchema!, ct);
+        }
+    }
+
+    private static bool TryCreateHashedFallbackSchema(
+        SchemaCatalog catalog,
+        IndexSchema indexSchema,
+        out IndexSchema? fallbackSchema)
+    {
+        fallbackSchema = null;
+        if (indexSchema.Kind != IndexKind.Sql || indexSchema.Columns.Count != 1)
+            return false;
+
+        TableSchema? tableSchema = catalog.GetTable(indexSchema.TableName);
+        if (tableSchema == null)
+            return false;
+
+        int columnIndex = tableSchema.GetColumnIndex(indexSchema.Columns[0]);
+        if (columnIndex < 0 || columnIndex >= tableSchema.Columns.Count || tableSchema.Columns[columnIndex].Type != DbType.Text)
+            return false;
+
+        fallbackSchema = new IndexSchema
+        {
+            IndexName = indexSchema.IndexName,
+            TableName = indexSchema.TableName,
+            Columns = indexSchema.Columns,
+            ColumnCollations = indexSchema.ColumnCollations,
+            IsUnique = indexSchema.IsUnique,
+            Kind = indexSchema.Kind,
+            State = indexSchema.State,
+            OwnerIndexName = indexSchema.OwnerIndexName,
+            OptionsJson = null,
+        };
+        return true;
     }
 
     private static async ValueTask BackfillCollectionIndexAsync(

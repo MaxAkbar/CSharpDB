@@ -118,17 +118,16 @@ internal sealed class CollectionIndexBinding<
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
         string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        if (typeof(T) == typeof(JsonElement))
+        {
+            _ = ResolveJsonElementValueKind(fieldPath, targetsArrayElements);
+            return BuildCanonicalFieldPath(segments, arraySegments);
+        }
+
         MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
 
-        string[] canonicalSegments = Array.ConvertAll(memberPath, static member => member.Name);
-        for (int i = 0; i < canonicalSegments.Length; i++)
-        {
-            if (arraySegments[i])
-                canonicalSegments[i] += "[]";
-        }
-
-        return string.Join(".", canonicalSegments);
+        return BuildCanonicalFieldPath(Array.ConvertAll(memberPath, static member => member.Name), arraySegments);
     }
 
     internal static CollectionIndexBinding<T> Create(
@@ -142,6 +141,21 @@ internal sealed class CollectionIndexBinding<
         ArgumentNullException.ThrowIfNull(indexStore);
 
         string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        if (typeof(T) == typeof(JsonElement))
+        {
+            var jsonAccessor = BuildJsonElementAccessor(segments, arraySegments);
+            var jsonValueKind = ResolveJsonElementValueKind(fieldPath, targetsArrayElements);
+            var jsonPayloadAccessor = CollectionFieldAccessor.FromFieldPath(fieldPath);
+            return new CollectionIndexBinding<T>(
+                fieldPath,
+                indexName,
+                indexStore,
+                jsonAccessor,
+                jsonPayloadAccessor,
+                jsonValueKind,
+                collation);
+        }
+
         MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         var accessor = BuildAccessor(memberPath, arraySegments);
         var valueKind = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
@@ -160,6 +174,9 @@ internal sealed class CollectionIndexBinding<
     {
         fieldPath = NormalizeFieldPath(fieldPath);
         string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out _);
+        if (typeof(T) == typeof(JsonElement))
+            return BuildJsonElementAccessor(segments, arraySegments);
+
         MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         return BuildAccessor(memberPath, arraySegments);
     }
@@ -168,6 +185,12 @@ internal sealed class CollectionIndexBinding<
     {
         fieldPath = NormalizeFieldPath(fieldPath);
         string[] segments = ParseFieldPathSegments(fieldPath, out bool[] arraySegments, out bool targetsArrayElements);
+        if (typeof(T) == typeof(JsonElement))
+        {
+            _ = ResolveJsonElementValueKind(fieldPath, targetsArrayElements);
+            return;
+        }
+
         MemberInfo[] memberPath = ResolveMemberPath(segments, arraySegments, fieldPath);
         _ = ResolveValueKind(GetMemberType(memberPath[^1]), fieldPath, targetsArrayElements);
     }
@@ -653,6 +676,9 @@ internal sealed class CollectionIndexBinding<
             $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must be string, Guid, DateOnly, TimeOnly, or integer typed.");
     }
 
+    private static CollectionIndexValueKind ResolveJsonElementValueKind(string fieldPath, bool targetsArrayElements)
+        => CollectionIndexValueKind.Text;
+
     private static bool TryGetCollectionElementType(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         Type memberType,
@@ -735,6 +761,13 @@ internal sealed class CollectionIndexBinding<
         return expression;
     }
 
+    private static Func<T, object?> BuildJsonElementAccessor(string[] segments, bool[] arraySegments)
+    {
+        string[] capturedSegments = segments.ToArray();
+        bool[] capturedArraySegments = arraySegments.ToArray();
+        return document => ReadJsonElementPathValue((JsonElement)(object)document!, capturedSegments, capturedArraySegments, 0);
+    }
+
     private static object? ReadMemberPathValue(
         object? current,
         IReadOnlyList<MemberInfo> memberPath,
@@ -781,6 +814,38 @@ internal sealed class CollectionIndexBinding<
 
         foreach (object? element in enumerable)
             AddFlattenedValue(values, element);
+    }
+
+    private static object? ReadJsonElementPathValue(
+        JsonElement current,
+        IReadOnlyList<string> segments,
+        IReadOnlyList<bool> arraySegments,
+        int pathIndex)
+    {
+        if (!TryGetJsonProperty(current, segments[pathIndex], out JsonElement property))
+            return null;
+
+        if (arraySegments[pathIndex])
+        {
+            if (property.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var flattened = new List<object?>();
+            foreach (JsonElement element in property.EnumerateArray())
+            {
+                object? nestedValue = pathIndex == segments.Count - 1
+                    ? ConvertJsonElementValue(element)
+                    : ReadJsonElementPathValue(element, segments, arraySegments, pathIndex + 1);
+                AddFlattenedValue(flattened, nestedValue);
+            }
+
+            return flattened.Count == 0 ? null : flattened;
+        }
+
+        if (pathIndex == segments.Count - 1)
+            return ConvertJsonElementValue(property);
+
+        return ReadJsonElementPathValue(property, segments, arraySegments, pathIndex + 1);
     }
 
     private static object? ReadMemberValue(object source, MemberInfo member)
@@ -887,6 +952,56 @@ internal sealed class CollectionIndexBinding<
         }
 
         return normalized;
+    }
+
+    private static string BuildCanonicalFieldPath(IReadOnlyList<string> segments, IReadOnlyList<bool> arraySegments)
+    {
+        string[] canonicalSegments = segments.ToArray();
+        for (int i = 0; i < canonicalSegments.Length; i++)
+        {
+            if (arraySegments[i])
+                canonicalSegments[i] += "[]";
+        }
+
+        return string.Join(".", canonicalSegments);
+    }
+
+    private static bool TryGetJsonProperty(JsonElement current, string propertyName, out JsonElement property)
+    {
+        if (current.ValueKind != JsonValueKind.Object)
+        {
+            property = default;
+            return false;
+        }
+
+        foreach (JsonProperty candidate in current.EnumerateObject())
+        {
+            if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                property = candidate.Value;
+                return true;
+            }
+        }
+
+        property = default;
+        return false;
+    }
+
+    private static object? ConvertJsonElementValue(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.False => false,
+            JsonValueKind.True => true,
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out long integerValue) ? integerValue : element.GetDouble(),
+            JsonValueKind.Array => element.EnumerateArray().Select(ConvertJsonElementValue).ToList(),
+            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
+                static property => property.Name,
+                static property => ConvertJsonElementValue(property.Value)),
+            _ => null,
+        };
     }
 
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)

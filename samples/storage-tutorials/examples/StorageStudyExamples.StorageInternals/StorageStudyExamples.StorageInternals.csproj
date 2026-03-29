@@ -8,8 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\StorageStudyExamples.Core\StorageStudyExamples.Core.csproj" />
-    <ProjectReference Include="..\..\..\..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
-    <ProjectReference Include="..\..\..\..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
+    <ProjectReference Include="..\..\..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\..\..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
   </ItemGroup>
 
 </Project>

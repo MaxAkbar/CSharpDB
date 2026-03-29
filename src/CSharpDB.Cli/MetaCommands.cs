@@ -451,14 +451,14 @@ internal sealed class RestoreCommand : IMetaCommand
 internal sealed class ReindexCommand : IMetaCommand
 {
     public IReadOnlyList<string> Aliases => [".reindex"];
-    public string Name => ".reindex [--all|--table <name>|--index <name>]";
+    public string Name => ".reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]";
     public string Description => "Rebuild indexes for the database, one table, or one index";
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
         if (!MetaCommandHelpers.TryParseReindexArgument(argument, out var request, out string? error))
         {
-            output.WriteLine(Ansi.Colorize(error ?? "Usage: .reindex [--all|--table <name>|--index <name>]", Ansi.Yellow));
+            output.WriteLine(Ansi.Colorize(error ?? "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]", Ansi.Yellow));
             return;
         }
 
@@ -468,6 +468,12 @@ internal sealed class ReindexCommand : IMetaCommand
             : $"{result.Scope.ToString().ToLowerInvariant()} '{result.Name}'";
 
         output.WriteLine(Ansi.Colorize($"Reindexed {result.RebuiltIndexCount} index(es) for {target}.", Ansi.Green));
+        if (result.RecoveredCorruptIndexCount > 0)
+        {
+            output.WriteLine(Ansi.Colorize(
+                $"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run .vacuum to reclaim orphaned pages.",
+                Ansi.Yellow));
+        }
     }
 }
 
@@ -691,33 +697,57 @@ internal static class MetaCommandHelpers
     {
         error = null;
         string[] tokens = argument.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (tokens.Length == 0)
+        var scope = ReindexScope.All;
+        string? name = null;
+        bool allowCorruptIndexRecovery = false;
+
+        for (int i = 0; i < tokens.Length; i++)
         {
-            request = new ReindexRequest { Scope = ReindexScope.All };
-            return true;
+            switch (tokens[i].ToLowerInvariant())
+            {
+                case "--all":
+                    scope = ReindexScope.All;
+                    name = null;
+                    break;
+                case "--table":
+                    if (i + 1 >= tokens.Length)
+                    {
+                        request = new ReindexRequest();
+                        error = "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]";
+                        return false;
+                    }
+
+                    scope = ReindexScope.Table;
+                    name = tokens[++i];
+                    break;
+                case "--index":
+                    if (i + 1 >= tokens.Length)
+                    {
+                        request = new ReindexRequest();
+                        error = "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]";
+                        return false;
+                    }
+
+                    scope = ReindexScope.Index;
+                    name = tokens[++i];
+                    break;
+                case "--force-corrupt-rebuild":
+                    allowCorruptIndexRecovery = true;
+                    break;
+                default:
+                    request = new ReindexRequest();
+                    error = "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]";
+                    return false;
+            }
         }
 
-        if (tokens.Length == 1 && tokens[0].Equals("--all", StringComparison.OrdinalIgnoreCase))
+        request = new ReindexRequest
         {
-            request = new ReindexRequest { Scope = ReindexScope.All };
-            return true;
-        }
-
-        if (tokens.Length == 2 && tokens[0].Equals("--table", StringComparison.OrdinalIgnoreCase))
-        {
-            request = new ReindexRequest { Scope = ReindexScope.Table, Name = tokens[1] };
-            return true;
-        }
-
-        if (tokens.Length == 2 && tokens[0].Equals("--index", StringComparison.OrdinalIgnoreCase))
-        {
-            request = new ReindexRequest { Scope = ReindexScope.Index, Name = tokens[1] };
-            return true;
-        }
-
-        request = new ReindexRequest();
-        error = "Usage: .reindex [--all|--table <name>|--index <name>]";
-        return false;
+            Scope = scope,
+            Name = name,
+            AllowCorruptIndexRecovery = allowCorruptIndexRecovery,
+        };
+        return true;
     }
 
     internal static bool TryParseBackupArgument(

@@ -1,0 +1,179 @@
+{
+  "dataset": "relational",
+  "tables": [
+    {
+      "generatorKey": "customers",
+      "name": "Customers",
+      "outputFileName": "customers.csv",
+      "rowCount": { "op": "option", "name": "rowCount" },
+      "locals": [
+        { "name": "id", "value": { "op": "rowIndex" } },
+        { "name": "tenantId", "value": { "op": "format", "format": "tenant-{0:D4}", "args": [ { "op": "int", "min": 1, "max": { "op": "option", "name": "tenantCount" } } ] } },
+        { "name": "firstName", "value": { "op": "faker", "name": "name.firstName" } },
+        { "name": "lastName", "value": { "op": "faker", "name": "name.lastName" } },
+        { "name": "email", "value": { "op": "lower", "value": { "op": "concat", "values": [ { "op": "sanitizeEmail", "value": { "op": "value", "name": "firstName" } }, ".", { "op": "sanitizeEmail", "value": { "op": "value", "name": "lastName" } }, ".", { "op": "value", "name": "id" }, "@example.com" ] } } },
+        { "name": "phone", "value": { "op": "faker", "name": "phone.phoneNumber" } },
+        { "name": "createdUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 365, "fullWindowDays": 1825, "recentRate": 0.0 } },
+        { "name": "status", "value": { "op": "pick", "values": [ "Active", "Inactive", "Prospect", "Blocked" ] } }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "TenantId", "sourceField": "tenantId", "type": "TEXT", "nullable": false },
+        { "name": "FirstName", "sourceField": "firstName", "type": "TEXT", "nullable": false },
+        { "name": "LastName", "sourceField": "lastName", "type": "TEXT", "nullable": false },
+        { "name": "Email", "sourceField": "email", "type": "TEXT", "nullable": false },
+        { "name": "Phone", "sourceField": "phone", "type": "TEXT", "nullable": false },
+        { "name": "CreatedUtc", "sourceField": "createdUtc", "type": "TEXT", "nullable": false },
+        { "name": "Status", "sourceField": "status", "type": "TEXT", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "idx_customers_email", "columns": [ "Email" ] }
+      ]
+    },
+    {
+      "generatorKey": "addresses",
+      "name": "Addresses",
+      "outputFileName": "addresses.csv",
+      "rowCount": { "op": "count", "name": "customers" },
+      "locals": [
+        { "name": "id", "value": { "op": "rowIndex" } },
+        { "name": "customerId", "value": { "op": "value", "name": "id" } },
+        { "name": "line1", "value": { "op": "faker", "name": "address.streetAddress" } },
+        { "name": "line2", "value": { "op": "chance", "probability": { "op": "option", "name": "nullRate" }, "then": null, "else": { "op": "faker", "name": "address.secondaryAddress" } } },
+        { "name": "city", "value": { "op": "faker", "name": "address.city" } },
+        { "name": "region", "value": { "op": "faker", "name": "address.stateAbbr" } },
+        { "name": "postalCode", "value": { "op": "faker", "name": "address.zipCode" } },
+        { "name": "country", "value": { "op": "faker", "name": "address.countryCode" } },
+        { "name": "kind", "value": { "op": "pick", "values": [ "Billing", "Shipping", "Branch" ] } },
+        { "name": "isPrimary", "value": true }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "CustomerId", "sourceField": "customerId", "type": "INTEGER", "nullable": false },
+        { "name": "Line1", "sourceField": "line1", "type": "TEXT", "nullable": false },
+        { "name": "Line2", "sourceField": "line2", "type": "TEXT", "nullable": true },
+        { "name": "City", "sourceField": "city", "type": "TEXT", "nullable": false },
+        { "name": "Region", "sourceField": "region", "type": "TEXT", "nullable": false },
+        { "name": "PostalCode", "sourceField": "postalCode", "type": "TEXT", "nullable": false },
+        { "name": "Country", "sourceField": "country", "type": "TEXT", "nullable": false },
+        { "name": "Kind", "sourceField": "kind", "type": "TEXT", "nullable": false },
+        { "name": "IsPrimary", "sourceField": "isPrimary", "type": "INTEGER", "nullable": false }
+      ]
+    },
+    {
+      "generatorKey": "products",
+      "name": "Products",
+      "outputFileName": "products.csv",
+      "rowCount": { "op": "max", "values": [ 1000, { "op": "min", "values": [ 250000, { "op": "floorDivide", "left": { "op": "count", "name": "customers" }, "right": 10 } ] } ] },
+      "locals": [
+        { "name": "id", "value": { "op": "rowIndex" } },
+        { "name": "sku", "value": { "op": "format", "format": "SKU-{0:D8}", "args": [ { "op": "value", "name": "id" } ] } },
+        { "name": "name", "value": { "op": "faker", "name": "commerce.productName" } },
+        { "name": "category", "value": { "op": "pick", "values": [ "Hardware", "Software", "Office", "Home", "Outdoor", "Accessories" ] } },
+        { "name": "unitPrice", "value": { "op": "money", "min": 5, "max": 750 } },
+        { "name": "active", "value": { "op": "bool", "probability": 0.96 } },
+        { "name": "createdUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 180, "fullWindowDays": 1095, "recentRate": 0.0 } }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "Sku", "sourceField": "sku", "type": "TEXT", "nullable": false },
+        { "name": "Name", "sourceField": "name", "type": "TEXT", "nullable": false },
+        { "name": "Category", "sourceField": "category", "type": "TEXT", "nullable": false },
+        { "name": "UnitPrice", "sourceField": "unitPrice", "type": "REAL", "nullable": false },
+        { "name": "Active", "sourceField": "active", "type": "INTEGER", "nullable": false },
+        { "name": "CreatedUtc", "sourceField": "createdUtc", "type": "TEXT", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "idx_products_sku", "columns": [ "Sku" ] }
+      ]
+    },
+    {
+      "generatorKey": "orders",
+      "name": "Orders",
+      "outputFileName": "orders.csv",
+      "rowCount": { "op": "multiply", "values": [ { "op": "count", "name": "customers" }, { "op": "option", "name": "ordersPerCustomer" } ] },
+      "locals": [
+        { "name": "orderId", "value": { "op": "rowIndex" } },
+        { "name": "customerId", "value": { "op": "pickSkewedId", "max": { "op": "count", "name": "customers" }, "hotKeyRate": { "op": "option", "name": "hotKeyRate" }, "seedParts": [ { "op": "value", "name": "orderId" }, "customer" ] } },
+        { "name": "createdUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 30, "fullWindowDays": 1095, "recentRate": { "op": "option", "name": "recentRate" }, "seedParts": [ { "op": "value", "name": "orderId" }, "created" ] } },
+        { "name": "status", "value": { "op": "pick", "values": [ "Pending", "Processing", "Shipped", "Delivered", "Cancelled", "Refunded" ], "seedParts": [ { "op": "value", "name": "orderId" }, "status" ] } },
+        { "name": "currency", "value": { "op": "pick", "values": [ "USD", "EUR", "GBP" ], "seedParts": [ { "op": "value", "name": "orderId" }, "currency" ] } },
+        { "name": "subtotal", "value": { "op": "round", "digits": 2, "value": { "op": "sum", "values": { "op": "repeat", "count": { "op": "option", "name": "itemsPerOrder" }, "as": "itemIndex", "value": { "op": "multiply", "values": [ { "op": "int", "min": 1, "max": 5, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "qty" ] }, { "op": "money", "min": 5, "max": 750, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "price" ] } ] } } } } },
+        { "name": "tax", "value": { "op": "round", "digits": 2, "value": { "op": "multiply", "values": [ { "op": "value", "name": "subtotal" }, 0.0825 ] } } },
+        { "name": "total", "value": { "op": "round", "digits": 2, "value": { "op": "add", "values": [ { "op": "value", "name": "subtotal" }, { "op": "value", "name": "tax" } ] } } }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "orderId", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "CustomerId", "sourceField": "customerId", "type": "INTEGER", "nullable": false },
+        { "name": "CreatedUtc", "sourceField": "createdUtc", "type": "TEXT", "nullable": false },
+        { "name": "Status", "sourceField": "status", "type": "TEXT", "nullable": false },
+        { "name": "Subtotal", "sourceField": "subtotal", "type": "REAL", "nullable": false },
+        { "name": "Tax", "sourceField": "tax", "type": "REAL", "nullable": false },
+        { "name": "Total", "sourceField": "total", "type": "REAL", "nullable": false },
+        { "name": "Currency", "sourceField": "currency", "type": "TEXT", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "idx_orders_customer_created", "columns": [ "CustomerId", "CreatedUtc" ] },
+        { "name": "idx_orders_status_created", "columns": [ "Status", "CreatedUtc" ] }
+      ]
+    },
+    {
+      "generatorKey": "orderItems",
+      "name": "OrderItems",
+      "outputFileName": "order-items.csv",
+      "rowCount": { "op": "multiply", "values": [ { "op": "count", "name": "orders" }, { "op": "option", "name": "itemsPerOrder" } ] },
+      "locals": [
+        { "name": "id", "value": { "op": "rowIndex" } },
+        { "name": "zeroBased", "value": { "op": "subtract", "left": { "op": "rowIndex" }, "right": 1 } },
+        { "name": "orderId", "value": { "op": "add", "values": [ { "op": "floorDivide", "left": { "op": "value", "name": "zeroBased" }, "right": { "op": "option", "name": "itemsPerOrder" } }, 1 ] } },
+        { "name": "itemIndex", "value": { "op": "mod", "left": { "op": "value", "name": "zeroBased" }, "right": { "op": "option", "name": "itemsPerOrder" } } },
+        { "name": "productId", "value": { "op": "int", "min": 1, "max": { "op": "count", "name": "products" }, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "product" ] } },
+        { "name": "qty", "value": { "op": "int", "min": 1, "max": 5, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "qty" ] } },
+        { "name": "unitPrice", "value": { "op": "money", "min": 5, "max": 750, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "price" ] } },
+        { "name": "lineTotal", "value": { "op": "round", "digits": 2, "value": { "op": "multiply", "values": [ { "op": "value", "name": "qty" }, { "op": "value", "name": "unitPrice" } ] } } }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "OrderId", "sourceField": "orderId", "type": "INTEGER", "nullable": false },
+        { "name": "ProductId", "sourceField": "productId", "type": "INTEGER", "nullable": false },
+        { "name": "Qty", "sourceField": "qty", "type": "INTEGER", "nullable": false },
+        { "name": "UnitPrice", "sourceField": "unitPrice", "type": "REAL", "nullable": false },
+        { "name": "LineTotal", "sourceField": "lineTotal", "type": "REAL", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "idx_orderitems_orderid", "columns": [ "OrderId" ] }
+      ]
+    },
+    {
+      "generatorKey": "payments",
+      "name": "Payments",
+      "outputFileName": "payments.csv",
+      "rowCount": { "op": "count", "name": "orders" },
+      "locals": [
+        { "name": "id", "value": { "op": "rowIndex" } },
+        { "name": "orderId", "value": { "op": "rowIndex" } },
+        { "name": "customerId", "value": { "op": "pickSkewedId", "max": { "op": "count", "name": "customers" }, "hotKeyRate": { "op": "option", "name": "hotKeyRate" }, "seedParts": [ { "op": "value", "name": "orderId" }, "customer" ] } },
+        { "name": "createdUtc", "value": { "op": "skewedTimestamp", "recentWindowDays": 30, "fullWindowDays": 1095, "recentRate": { "op": "option", "name": "recentRate" }, "seedParts": [ { "op": "value", "name": "orderId" }, "created" ] } },
+        { "name": "orderStatus", "value": { "op": "pick", "values": [ "Pending", "Processing", "Shipped", "Delivered", "Cancelled", "Refunded" ], "seedParts": [ { "op": "value", "name": "orderId" }, "status" ] } },
+        { "name": "currency", "value": { "op": "pick", "values": [ "USD", "EUR", "GBP" ], "seedParts": [ { "op": "value", "name": "orderId" }, "currency" ] } },
+        { "name": "subtotal", "value": { "op": "round", "digits": 2, "value": { "op": "sum", "values": { "op": "repeat", "count": { "op": "option", "name": "itemsPerOrder" }, "as": "itemIndex", "value": { "op": "multiply", "values": [ { "op": "int", "min": 1, "max": 5, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "qty" ] }, { "op": "money", "min": 5, "max": 750, "seedParts": [ { "op": "value", "name": "orderId" }, { "op": "value", "name": "itemIndex" }, "price" ] } ] } } } } },
+        { "name": "tax", "value": { "op": "round", "digits": 2, "value": { "op": "multiply", "values": [ { "op": "value", "name": "subtotal" }, 0.0825 ] } } },
+        { "name": "total", "value": { "op": "round", "digits": 2, "value": { "op": "add", "values": [ { "op": "value", "name": "subtotal" }, { "op": "value", "name": "tax" } ] } } },
+        { "name": "paidUtc", "value": { "op": "dateAdd", "value": { "op": "value", "name": "createdUtc" }, "minutes": { "op": "int", "min": 5, "max": 4320, "seedParts": [ { "op": "value", "name": "orderId" }, "paidOffset" ] } } },
+        { "name": "method", "value": { "op": "pick", "values": [ "Card", "ACH", "Wallet", "Wire" ], "seedParts": [ { "op": "value", "name": "orderId" }, "method" ] } },
+        { "name": "status", "value": { "op": "if", "condition": { "op": "eq", "left": { "op": "value", "name": "orderStatus" }, "right": "Cancelled" }, "then": "Voided", "else": { "op": "pick", "values": [ "Captured", "Settled", "Pending" ], "seedParts": [ { "op": "value", "name": "orderId" }, "paymentStatus" ] } } },
+        { "name": "amount", "value": { "op": "value", "name": "total" } }
+      ],
+      "columns": [
+        { "name": "Id", "sourceField": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+        { "name": "OrderId", "sourceField": "orderId", "type": "INTEGER", "nullable": false },
+        { "name": "CustomerId", "sourceField": "customerId", "type": "INTEGER", "nullable": false },
+        { "name": "PaidUtc", "sourceField": "paidUtc", "type": "TEXT", "nullable": false },
+        { "name": "Method", "sourceField": "method", "type": "TEXT", "nullable": false },
+        { "name": "Status", "sourceField": "status", "type": "TEXT", "nullable": false },
+        { "name": "Amount", "sourceField": "amount", "type": "REAL", "nullable": false },
+        { "name": "Currency", "sourceField": "currency", "type": "TEXT", "nullable": false }
+      ]
+    }
+  ]
+}

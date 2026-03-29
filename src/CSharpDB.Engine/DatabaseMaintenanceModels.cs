@@ -11,6 +11,7 @@ public sealed class DatabaseReindexRequest
 {
     public DatabaseReindexScope Scope { get; init; } = DatabaseReindexScope.All;
     public string? Name { get; init; }
+    public bool AllowCorruptIndexRecovery { get; init; }
 }
 
 public sealed class DatabaseMaintenanceReport
@@ -46,6 +47,7 @@ public sealed class DatabaseReindexResult
     public required DatabaseReindexScope Scope { get; init; }
     public string? Name { get; init; }
     public int RebuiltIndexCount { get; init; }
+    public int RecoveredCorruptIndexCount { get; init; }
 }
 
 public sealed class DatabaseVacuumResult

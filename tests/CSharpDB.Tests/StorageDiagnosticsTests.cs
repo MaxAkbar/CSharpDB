@@ -143,6 +143,42 @@ public sealed class StorageDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task StorageInspectors_LiveDatabaseWithCommittedWal_ReportCommittedView()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var db = await Database.OpenAsync(dbPath, ct);
+            await db.ExecuteAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+            await db.ExecuteAsync("INSERT INTO customers VALUES (1, 10)", ct);
+            await db.ExecuteAsync("INSERT INTO customers VALUES (2, 20)", ct);
+            await db.ExecuteAsync("CREATE INDEX idx_customers_score ON customers (score)", ct);
+
+            DatabaseInspectReport dbReport = await DatabaseInspector.InspectAsync(dbPath, ct: ct);
+            IndexInspectReport indexReport = await IndexInspector.CheckAsync(dbPath, ct: ct);
+
+            Assert.DoesNotContain(dbReport.Issues, static issue => issue.Code == "DB_PAGE_COUNT_MISMATCH");
+            Assert.DoesNotContain(dbReport.Issues, static issue => issue.Code == "BTREE_CHILD_OUT_OF_RANGE");
+            Assert.DoesNotContain(indexReport.Issues, static issue => issue.Code == "DB_PAGE_COUNT_MISMATCH");
+            Assert.DoesNotContain(indexReport.Issues, static issue => issue.Code == "BTREE_CHILD_OUT_OF_RANGE");
+
+            IndexCheckItem item = Assert.Single(indexReport.Indexes);
+            Assert.Equal("idx_customers_score", item.IndexName);
+            Assert.True(item.RootPageValid);
+            Assert.True(item.TableExists);
+            Assert.True(item.ColumnsExistInTable);
+            Assert.True(item.RootTreeReachable);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static string NewTempDbPath()
     {
         return Path.Combine(Path.GetTempPath(), $"csharpdb_diag_test_{Guid.NewGuid():N}.db");

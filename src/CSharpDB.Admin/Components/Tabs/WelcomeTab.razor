@@ -32,7 +32,14 @@
     @if (_tableNames is not null && _tableNames.Count > 0)
     {
         <div class="welcome-tables">
-            <h3>Tables</h3>
+            <div class="d-flex align-items-center justify-content-between gap-2 mb-3">
+                <h3 class="mb-0">Tables</h3>
+                <button class="btn btn-sm btn-outline-secondary"
+                        @onclick="LoadRowCountsAsync"
+                        disabled="@(_loadingRowCounts || _tableNames.Count == 0)">
+                    @(_loadingRowCounts ? "Loading counts..." : "Load row counts")
+                </button>
+            </div>
             <div class="welcome-table-grid">
                 @foreach (var name in _tableNames)
                 {
@@ -53,6 +60,8 @@
 @code {
     private IReadOnlyCollection<string>? _tableNames;
     private readonly Dictionary<string, int> _rowCounts = new();
+    private CancellationTokenSource? _countLoadCts;
+    private bool _loadingRowCounts;
 
     protected override async Task OnInitializedAsync()
     {
@@ -68,23 +77,64 @@
 
     private async Task LoadTablesAsync()
     {
+        CancelCountLoad();
+
         try
         {
             _tableNames = (await DbClient.GetTableNamesAsync())
                 .Where(n => !n.StartsWith("_", StringComparison.Ordinal))
                 .OrderBy(n => n).ToList();
             _rowCounts.Clear();
-            foreach (var name in _tableNames)
-            {
-                try
-                {
-                    _rowCounts[name] = await DbClient.GetRowCountAsync(name);
-                }
-                catch { /* ignore */ }
-            }
+            _loadingRowCounts = false;
         }
         catch { /* ignore */ }
     }
 
-    public void Dispose() => Changes.Changed -= OnChanged;
+    private async Task LoadRowCountsAsync()
+    {
+        if (_loadingRowCounts || _tableNames is not { Count: > 0 } tableNames)
+            return;
+
+        CancelCountLoad();
+        _countLoadCts = new CancellationTokenSource();
+        _loadingRowCounts = true;
+
+        try
+        {
+            foreach (var name in tableNames)
+            {
+                try
+                {
+                    _rowCounts[name] = await DbClient.GetRowCountAsync(name, _countLoadCts.Token);
+                    await InvokeAsync(StateHasChanged);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch
+                {
+                    // Ignore per-table count failures so one bad object does not block the rest.
+                }
+            }
+        }
+        finally
+        {
+            _loadingRowCounts = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelCountLoad()
+    {
+        _countLoadCts?.Cancel();
+        _countLoadCts?.Dispose();
+        _countLoadCts = null;
+    }
+
+    public void Dispose()
+    {
+        Changes.Changed -= OnChanged;
+        CancelCountLoad();
+    }
 }

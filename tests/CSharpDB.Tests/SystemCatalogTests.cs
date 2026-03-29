@@ -1,6 +1,7 @@
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Catalog;
+using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Device;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
@@ -666,6 +667,56 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.DoesNotContain("failed_create", _db.GetTableNames());
     }
 
+    [Fact]
+    public async Task AutoCommitCheckpointFailure_DoesNotFaultCommittedIndexCreate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var factory = new CheckpointFailureStorageEngineFactory();
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(
+            _dbPath,
+            new DatabaseOptions
+            {
+                StorageEngineFactory = factory,
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        CheckpointPolicy = new FrameCountCheckpointPolicy(1),
+                        AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Foreground,
+                    },
+                },
+            },
+            ct);
+
+        await _db.ExecuteAsync("CREATE TABLE checkpointed_index (id INTEGER PRIMARY KEY, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO checkpointed_index VALUES (1, 'alpha')", ct);
+        await _db.ExecuteAsync("INSERT INTO checkpointed_index VALUES (2, 'beta')", ct);
+
+        factory.Device!.ArmFlushFailure();
+        await _db.ExecuteAsync("CREATE INDEX idx_checkpointed_index_name ON checkpointed_index(name)", ct);
+
+        Assert.Contains(
+            _db.GetIndexes(),
+            static index => string.Equals(index.IndexName, "idx_checkpointed_index_name", StringComparison.OrdinalIgnoreCase));
+
+        factory.Device.DisarmFlushFailure();
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        Assert.Contains(
+            _db.GetIndexes(),
+            static index => string.Equals(index.IndexName, "idx_checkpointed_index_name", StringComparison.OrdinalIgnoreCase));
+
+        await using var reopenedCount = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.indexes WHERE index_name = 'idx_checkpointed_index_name'",
+            ct);
+        var row = Assert.Single(await reopenedCount.ToListAsync(ct));
+        Assert.Equal(1L, row[0].AsInteger);
+    }
+
     private sealed class FailFirstCommitStorageEngineFactory : IStorageEngineFactory
     {
         private readonly IWalFlushPolicy _flushPolicy;
@@ -735,6 +786,119 @@ public sealed class SystemCatalogTests : IAsyncLifetime
                 throw;
             }
         }
+    }
+
+    private sealed class CheckpointFailureStorageEngineFactory : IStorageEngineFactory
+    {
+        public ArmableCheckpointFailingStorageDevice? Device { get; private set; }
+
+        public async ValueTask<StorageEngineContext> OpenAsync(
+            string filePath,
+            StorageEngineOptions options,
+            CancellationToken ct = default)
+        {
+            bool isNew = !File.Exists(filePath);
+            ArmableCheckpointFailingStorageDevice? device = null;
+            Pager? pager = null;
+
+            try
+            {
+                device = new ArmableCheckpointFailingStorageDevice(new FileStorageDevice(filePath));
+                Device = device;
+
+                var walIndex = new WalIndex();
+                var wal = new WriteAheadLog(
+                    filePath,
+                    walIndex,
+                    options.ChecksumProvider,
+                    options.DurabilityMode,
+                    options.DurableCommitBatchWindow,
+                    options.WalPreallocationChunkBytes);
+                pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+
+                if (isNew)
+                {
+                    await pager.InitializeNewDatabaseAsync(ct);
+                    await wal.OpenAsync(pager.PageCount, ct);
+                }
+                else
+                {
+                    await pager.RecoverAsync(ct);
+                }
+
+                var schemaSerializer = options.SerializerProvider.SchemaSerializer;
+                return new StorageEngineContext
+                {
+                    Pager = pager,
+                    Catalog = await SchemaCatalog.CreateAsync(
+                        pager,
+                        schemaSerializer,
+                        options.IndexProvider,
+                        options.CatalogStore,
+                        options.AdvisoryStatisticsPersistenceMode,
+                        ct),
+                    RecordSerializer = options.SerializerProvider.RecordSerializer,
+                    SchemaSerializer = schemaSerializer,
+                    IndexProvider = options.IndexProvider,
+                    ChecksumProvider = options.ChecksumProvider,
+                    AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
+                };
+            }
+            catch
+            {
+                if (pager != null)
+                    await pager.DisposeAsync();
+                if (device != null)
+                    await device.DisposeAsync();
+
+                throw;
+            }
+        }
+    }
+
+    private sealed class ArmableCheckpointFailingStorageDevice : IStorageDevice
+    {
+        private readonly IStorageDevice _inner;
+        private int _failFlush;
+
+        public ArmableCheckpointFailingStorageDevice(IStorageDevice inner)
+        {
+            _inner = inner;
+        }
+
+        public long Length => _inner.Length;
+
+        public void ArmFlushFailure()
+        {
+            Interlocked.Exchange(ref _failFlush, 1);
+        }
+
+        public void DisarmFlushFailure()
+        {
+            Interlocked.Exchange(ref _failFlush, 0);
+        }
+
+        public ValueTask<int> ReadAsync(long offset, Memory<byte> buffer, CancellationToken ct = default) =>
+            _inner.ReadAsync(offset, buffer, ct);
+
+        public ValueTask WriteAsync(long offset, ReadOnlyMemory<byte> buffer, CancellationToken ct = default) =>
+            _inner.WriteAsync(offset, buffer, ct);
+
+        public ValueTask FlushAsync(CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _failFlush) != 0)
+                return ValueTask.FromException(new IOException("Injected checkpoint device flush failure."));
+
+            return _inner.FlushAsync(ct);
+        }
+
+        public ValueTask SetLengthAsync(long length, CancellationToken ct = default) =>
+            _inner.SetLengthAsync(length, ct);
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+        public void Dispose() => _inner.Dispose();
     }
 
     private sealed class FailFirstCommitWalFlushPolicy : IWalFlushPolicy

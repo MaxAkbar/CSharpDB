@@ -998,9 +998,16 @@ internal sealed class CatalogService
     }
 
     public async ValueTask DropIndexAsync(string indexName, CancellationToken ct = default)
-        => await DropIndexAsync(indexName, allowOwnedFullTextDrop: false, ct);
+        => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct);
 
-    private async ValueTask DropIndexAsync(string indexName, bool allowOwnedFullTextDrop, CancellationToken ct)
+    public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default)
+        => DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: true, ct);
+
+    private async ValueTask<bool> DropIndexAsyncCoreAsync(
+        string indexName,
+        bool allowOwnedFullTextDrop,
+        bool ignoreCorruptReclaim,
+        CancellationToken ct)
     {
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
@@ -1024,20 +1031,47 @@ internal sealed class CatalogService
                 .Select(static idx => idx.IndexName)
                 .ToArray();
 
+            bool skippedOwnedReclaim = false;
             for (int i = 0; i < ownedIndexes.Length; i++)
             {
                 if (_indexCache.ContainsKey(ownedIndexes[i]))
-                    await DropIndexAsync(ownedIndexes[i], allowOwnedFullTextDrop: true, ct);
+                    skippedOwnedReclaim |= await DropIndexAsyncCoreAsync(
+                        ownedIndexes[i],
+                        allowOwnedFullTextDrop: true,
+                        ignoreCorruptReclaim,
+                        ct);
             }
+
+            return await DropIndexCoreAsync(indexName, schema, ignoreCorruptReclaim, skippedOwnedReclaim, ct);
         }
 
+        return await DropIndexCoreAsync(indexName, schema, ignoreCorruptReclaim, skippedOwnedReclaim: false, ct);
+    }
+
+    private async ValueTask<bool> DropIndexCoreAsync(
+        string indexName,
+        IndexSchema schema,
+        bool ignoreCorruptReclaim,
+        bool skippedOwnedReclaim,
+        CancellationToken ct)
+    {
         if (!_indexStores.TryGetValue(indexName, out var store))
             store = _indexProvider.CreateIndexStore(_pager, _indexRootPages[indexName]);
 
         long key = _schemaSerializer.IndexNameToKey(indexName);
         await _indexCatalogTree!.DeleteAsync(key, ct);
+        bool skippedCorruptReclaim = skippedOwnedReclaim;
         if (store is IReclaimableIndexStore reclaimable)
-            await reclaimable.ReclaimAsync(ct);
+        {
+            try
+            {
+                await reclaimable.ReclaimAsync(ct);
+            }
+            catch (CSharpDbException ex) when (ignoreCorruptReclaim && ex.Code == ErrorCode.CorruptDatabase)
+            {
+                skippedCorruptReclaim = true;
+            }
+        }
 
         _indexCache.Remove(indexName);
         _indexRootPages.Remove(indexName);
@@ -1045,6 +1079,7 @@ internal sealed class CatalogService
         RemoveIndexFromTableCache(schema);
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
+        return skippedCorruptReclaim;
     }
 
     // ============ VIEW operations ============
