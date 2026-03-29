@@ -48,7 +48,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 - `v2.0` application code should target `CSharpDB.Client`.
 - `v2.0` low-level/shared-type usage should target `CSharpDB.Primitives`.
 - The legacy `CSharpDB.Service` compatibility package is removed from the `v2.0` repo surface.
-- The permanent primitives rename migration guide is [docs/migrations/core-to-primitives.md](docs/migrations/core-to-primitives.md).
+- The permanent primitives rename migration guide is [available on csharpdb.com](https://csharpdb.com/docs/migrations.html).
 
 ## Thread Safety
 
@@ -117,7 +117,7 @@ await foreach (var kvp in users.FindAsync(u => u.Age > 25))
 record User(string Name, int Age, string Email);
 ```
 
-For indexed collection queries, including nested object paths, array-element paths, nested array-object paths, and range lookups, see [docs/collection-indexing/README.md](docs/collection-indexing/README.md).
+For indexed collection queries, including nested object paths, array-element paths, nested array-object paths, and range lookups, see the [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html).
 
 ### ADO.NET Provider
 
@@ -499,7 +499,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | Document | Description |
 |----------|-------------|
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
-| [Primitives Migration Guide](docs/migrations/core-to-primitives.md) | Permanent breaking rename guidance for the primitives surface |
+| [Primitives Migration Guide](https://csharpdb.com/docs/migrations.html) | Permanent breaking rename guidance for the primitives surface |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |

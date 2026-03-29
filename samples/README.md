@@ -70,7 +70,7 @@ Root-level helpers:
 
 - Project: [CollectionIndexingSample.csproj](collection-indexing/CollectionIndexingSample.csproj)
 - Code: [Program.cs](collection-indexing/Program.cs)
-- Docs: [README.md](collection-indexing/README.md)
+- Docs: [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html)
 - Domain: typed user documents with nested address, tags, and orders
 - Good for: `GetCollectionAsync<T>()`, `EnsureIndexAsync(...)`, `FindByIndexAsync(...)`, `FindByPathAsync(...)`, and `FindByPathRangeAsync(...)`
 
@@ -156,7 +156,7 @@ The SQL samples above cover the relational surface. The following snippets show 
 
 Collection path indexes and queries are engine-level APIs on `Database` and `Collection<T>`:
 
-For a complete walkthrough with seed data, index creation, and equality/range query examples, see [docs/collection-indexing/README.md](../docs/collection-indexing/README.md).
+For a complete walkthrough with seed data, index creation, and equality/range query examples, see the [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html).
 
 ```csharp
 using CSharpDB.Engine;

@@ -25,5 +25,5 @@ The sample creates a small demo database next to the compiled output, writes a f
 
 ## Related Docs
 
-- [Collection Indexing Guide](../../docs/collection-indexing/README.md)
+- [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html)
 - [Samples Overview](../README.md)
