@@ -14,6 +14,7 @@ public static class ExpressionEvaluator
             ColumnRefExpression col => EvalColumn(col, row, schema),
             BinaryExpression bin => EvalBinary(bin, row, schema),
             UnaryExpression un => EvalUnary(un, row, schema),
+            CollateExpression collate => Evaluate(collate.Operand, row, schema),
             FunctionCallExpression func => EvalFunction(func, row, schema),
             LikeExpression like => EvalLike(like, row, schema),
             InExpression inExpr => EvalIn(inExpr, row, schema),
@@ -62,15 +63,16 @@ public static class ExpressionEvaluator
     {
         var left = Evaluate(bin.Left, row, schema);
         var right = Evaluate(bin.Right, row, schema);
+        string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
 
         return bin.Op switch
         {
-            BinaryOp.Equals => BoolToDb(DbValue.Compare(left, right) == 0),
-            BinaryOp.NotEquals => BoolToDb(DbValue.Compare(left, right) != 0),
-            BinaryOp.LessThan => BoolToDb(DbValue.Compare(left, right) < 0),
-            BinaryOp.GreaterThan => BoolToDb(DbValue.Compare(left, right) > 0),
-            BinaryOp.LessOrEqual => BoolToDb(DbValue.Compare(left, right) <= 0),
-            BinaryOp.GreaterOrEqual => BoolToDb(DbValue.Compare(left, right) >= 0),
+            BinaryOp.Equals => BoolToDb(CollationSupport.Compare(left, right, collation) == 0),
+            BinaryOp.NotEquals => BoolToDb(CollationSupport.Compare(left, right, collation) != 0),
+            BinaryOp.LessThan => BoolToDb(CollationSupport.Compare(left, right, collation) < 0),
+            BinaryOp.GreaterThan => BoolToDb(CollationSupport.Compare(left, right, collation) > 0),
+            BinaryOp.LessOrEqual => BoolToDb(CollationSupport.Compare(left, right, collation) <= 0),
+            BinaryOp.GreaterOrEqual => BoolToDb(CollationSupport.Compare(left, right, collation) >= 0),
             BinaryOp.And => BoolToDb(left.IsTruthy && right.IsTruthy),
             BinaryOp.Or => BoolToDb(left.IsTruthy || right.IsTruthy),
             BinaryOp.Plus => ArithmeticOp(left, right, (a, b) => a + b, (a, b) => a + b),
@@ -150,13 +152,14 @@ public static class ExpressionEvaluator
         var operand = Evaluate(inExpr.Operand, row, schema);
         if (operand.IsNull) return DbValue.Null;
 
+        string? collation = CollationSupport.ResolveExpressionCollation(inExpr.Operand, schema);
         bool found = false;
         bool hasNull = false;
         foreach (var valExpr in inExpr.Values)
         {
             var val = Evaluate(valExpr, row, schema);
             if (val.IsNull) { hasNull = true; continue; }
-            if (DbValue.Compare(operand, val) == 0) { found = true; break; }
+            if (CollationSupport.Compare(operand, val, collation) == 0) { found = true; break; }
         }
 
         if (found) return BoolToDb(!inExpr.Negated);
@@ -171,7 +174,9 @@ public static class ExpressionEvaluator
         var high = Evaluate(bet.High, row, schema);
         if (operand.IsNull || low.IsNull || high.IsNull) return DbValue.Null;
 
-        bool inRange = DbValue.Compare(operand, low) >= 0 && DbValue.Compare(operand, high) <= 0;
+        string? collation = CollationSupport.ResolveExpressionCollation(bet.Operand, schema);
+        bool inRange = CollationSupport.Compare(operand, low, collation) >= 0 &&
+            CollationSupport.Compare(operand, high, collation) <= 0;
         return BoolToDb(bet.Negated ? !inRange : inRange);
     }
 

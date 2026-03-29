@@ -17,7 +17,7 @@
 
     @* ─── Sub-toolbar ─── *@
     <div class="toolbar designer-toolbar">
-        <button class="toolbar-btn primary" @onclick="RunQueryAsync" disabled="@_running" title="Run generated SQL">
+        <button class="toolbar-btn primary" @onclick="RunQueryAsync" title="Run generated SQL">
             <i class="bi bi-play-fill"></i> Run
         </button>
         <div class="toolbar-separator"></div>
@@ -343,56 +343,28 @@
     </div>
 
     @* ─── Results section ─── *@
-    @if (_running || _runError is not null || (_resultColumns is not null && _resultRows is not null))
+    @if (_runError is not null || _lastRunSql is not null)
     {
         <div class="designer-section-header" @onclick="() => _resultsCollapsed = !_resultsCollapsed">
             <i class="bi @(_resultsCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
             <span>Results</span>
-            @if (_resultRows is not null)
+            @if (_resultStatus.TotalRows > 0)
             {
-                <span class="designer-section-badge">@_resultRows.Count rows</span>
+                <span class="designer-section-badge">@_resultStatus.TotalRows rows</span>
             }
         </div>
         @if (!_resultsCollapsed)
         {
-            @if (_running)
-            {
-                <div class="loading-overlay"><div class="spinner"></div></div>
-            }
-            else if (_runError is not null)
+            @if (_runError is not null)
             {
                 <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_runError</div>
             }
-            else if (_resultColumns is not null && _resultRows is not null)
+            else if (_lastRunSql is not null)
             {
-                <div class="grid-container" style="flex:none;max-height:240px">
-                    <table class="data-grid query-results">
-                        <thead>
-                            <tr>
-                                <th class="row-num-header">#</th>
-                                @foreach (var col in _resultColumns) { <th>@col</th> }
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @for (int r = 0; r < _resultRows.Count; r++)
-                            {
-                                var row = _resultRows[r];
-                                var rowNum = r + 1;
-                                <tr>
-                                    <td class="row-num">@rowNum</td>
-                                    @foreach (var val in row)
-                                    {
-                                        <td>
-                                            @if (val is null) { <span class="null-val">NULL</span> }
-                                            else if (val is byte[] bytes) { <span class="blob-val">[@bytes.Length bytes]</span> }
-                                            else { @val.ToString() }
-                                        </td>
-                                    }
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
+                <DataGrid QuerySql="@_lastRunSql"
+                          ReloadVersion="_runVersion"
+                          IsReadOnly="true"
+                          OnQueryStatusChanged="OnResultsStatusChanged" />
             }
         }
     }
@@ -437,11 +409,10 @@
     // Canvas splitter
     private int _canvasHeightPx = 300;
 
-    // Run results
-    private bool _running;
     private string? _runError;
-    private string[]? _resultColumns;
-    private List<object?[]>? _resultRows;
+    private string? _lastRunSql;
+    private int _runVersion;
+    private QueryResultsStatus _resultStatus = new();
 
     // JS interop
     private DotNetObjectReference<QueryDesignerPanel>? _dotNetRef;
@@ -683,33 +654,12 @@
         string sql = GeneratedSql;
         if (sql == "-- Add tables to begin") return;
 
-        _running = true;
         _runError = null;
-        _resultColumns = null;
-        _resultRows = null;
-        StateHasChanged();
-
-        try
-        {
-            var result = await DbClient.ExecuteSqlAsync(sql);
-            if (result.Error is not null)
-            {
-                _runError = result.Error;
-            }
-            else if (result.IsQuery)
-            {
-                _resultColumns = result.ColumnNames;
-                _resultRows = result.Rows;
-            }
-        }
-        catch (Exception ex)
-        {
-            _runError = ex.Message;
-        }
-        finally
-        {
-            _running = false;
-        }
+        _resultStatus = new QueryResultsStatus();
+        _lastRunSql = sql;
+        _runVersion++;
+        _resultsCollapsed = false;
+        await InvokeAsync(StateHasChanged);
     }
 
     // ── Save / Load layouts ────────────────────────────────────────
@@ -775,8 +725,8 @@
     {
         _state = new QueryDesignerState();
         _selectedJoinIndex = null;
-        _resultColumns = null;
-        _resultRows = null;
+        _lastRunSql = null;
+        _resultStatus = new QueryResultsStatus();
         _runError = null;
         SaveState();
     }
@@ -881,5 +831,11 @@
     {
         SaveState();
         StateHasChanged();
+    }
+
+    private Task OnResultsStatusChanged(QueryResultsStatus status)
+    {
+        _resultStatus = status;
+        return InvokeAsync(StateHasChanged);
     }
 }

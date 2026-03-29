@@ -11,45 +11,58 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
         CancellationToken ct = default)
     {
         bool isNew = !File.Exists(filePath);
-        var device = new FileStorageDevice(filePath);
-        var walIndex = new WalIndex();
-        var wal = new WriteAheadLog(
-            filePath,
-            walIndex,
-            options.ChecksumProvider,
-            options.DurabilityMode,
-            options.DurableCommitBatchWindow,
-            options.WalPreallocationChunkBytes);
-        var pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+        FileStorageDevice? device = null;
+        Pager? pager = null;
 
-        if (isNew)
+        try
         {
-            await pager.InitializeNewDatabaseAsync(ct);
-            await wal.OpenAsync(pager.PageCount, ct);
+            device = new FileStorageDevice(filePath);
+            var walIndex = new WalIndex();
+            var wal = new WriteAheadLog(
+                filePath,
+                walIndex,
+                options.ChecksumProvider,
+                options.DurabilityMode,
+                options.DurableCommitBatchWindow,
+                options.WalPreallocationChunkBytes);
+            pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+
+            if (isNew)
+            {
+                await pager.InitializeNewDatabaseAsync(ct);
+                await wal.OpenAsync(pager.PageCount, ct);
+            }
+            else
+            {
+                await pager.RecoverAsync(ct);
+            }
+
+            var schemaSerializer = options.SerializerProvider.SchemaSerializer;
+            return new StorageEngineContext
+            {
+                Pager = pager,
+                Catalog = await SchemaCatalog.CreateAsync(
+                    pager,
+                    schemaSerializer,
+                    options.IndexProvider,
+                    options.CatalogStore,
+                    options.AdvisoryStatisticsPersistenceMode,
+                    ct),
+                RecordSerializer = options.SerializerProvider.RecordSerializer,
+                SchemaSerializer = schemaSerializer,
+                IndexProvider = options.IndexProvider,
+                ChecksumProvider = options.ChecksumProvider,
+                AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
+            };
         }
-        else
+        catch
         {
-            await pager.RecoverAsync(ct);
+            if (pager != null)
+                await pager.DisposeAsync();
+            if (device != null)
+                await device.DisposeAsync();
+
+            throw;
         }
-
-        var schemaSerializer = options.SerializerProvider.SchemaSerializer;
-        var catalog = await SchemaCatalog.CreateAsync(
-            pager,
-            schemaSerializer,
-            options.IndexProvider,
-            options.CatalogStore,
-            options.AdvisoryStatisticsPersistenceMode,
-            ct);
-
-        return new StorageEngineContext
-        {
-            Pager = pager,
-            Catalog = catalog,
-            RecordSerializer = options.SerializerProvider.RecordSerializer,
-            SchemaSerializer = schemaSerializer,
-            IndexProvider = options.IndexProvider,
-            ChecksumProvider = options.ChecksumProvider,
-            AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
-        };
     }
 }

@@ -5,7 +5,7 @@
     <PackageProjectUrl>https://csharpdb.com/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/MaxAkbar/CSharpDB.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>database;embedded;sql;dotnet;btree;wal</PackageTags>
+    <PackageTags>csharp;dotnet;embedded-database;sql;nosql;in-memory;file-database;ado.net;c# database;database;embedded;btree;wal</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <Version>2.0.0</Version>

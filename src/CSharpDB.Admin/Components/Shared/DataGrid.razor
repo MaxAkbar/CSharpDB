@@ -1,3 +1,6 @@
+@using System.Diagnostics
+@using CSharpDB.Admin.Helpers
+@using CSharpDB.Admin.Models
 @inject ICSharpDbClient DbClient
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
@@ -8,6 +11,12 @@
     {
         <div class="loading-overlay">
             <div class="spinner"></div>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="query-error">
+            <i class="bi bi-exclamation-triangle"></i> @_loadError
         </div>
     }
     else if (Columns is null || Columns.Length == 0)
@@ -50,8 +59,9 @@
                             var colIdx = c;
                             <td>
                                 <input type="text" class="filter-input" placeholder="Filter..."
-                                       value="@GetFilter(colIdx)"
-                                       @oninput="e => SetFilter(colIdx, e.Value?.ToString())" />
+                                       value="@GetFilterInput(colIdx)"
+                                       @oninput="e => UpdateFilterDraft(colIdx, e.Value?.ToString())"
+                                       @onkeydown="e => HandleFilterKeyDown(e, colIdx)" />
                             </td>
                         }
                     </tr>
@@ -158,6 +168,8 @@
 @code {
     [Parameter] public string? TableName { get; set; }
     [Parameter] public string? ViewName { get; set; }
+    [Parameter] public string? QuerySql { get; set; }
+    [Parameter] public int ReloadVersion { get; set; }
     [Parameter] public string[]? Columns { get; set; }
     [Parameter] public string[]? ColumnTypes { get; set; }
     [Parameter] public string? PrimaryKeyColumn { get; set; }
@@ -165,16 +177,19 @@
     [Parameter] public bool ShowFilters { get; set; } = true;
     [Parameter] public EventCallback<string> OnStatusMessage { get; set; }
     [Parameter] public EventCallback<int> OnSelectionChanged { get; set; }
+    [Parameter] public EventCallback<QueryResultsStatus> OnQueryStatusChanged { get; set; }
 
     private List<DataGridRow> _allRows = new();
     private List<DataGridRow> _rows = new();
     private bool _loading;
+    private string? _loadError;
     private int _page = 1;
     private int _pageSize = 25;
     private int _totalRows;
     private int? _sortCol;
     private bool _sortAsc = true;
     private readonly Dictionary<int, string> _filters = new();
+    private readonly Dictionary<int, string> _filterInputs = new();
     private readonly HashSet<DataGridRow> _selectedRows = new();
     private EditingCell? _editingCell;
     private ContextMenu? _contextMenu;
@@ -182,7 +197,11 @@
     private bool _loadedAllRows;
     private string? _lastTableName;
     private string? _lastViewName;
+    private string? _lastQuerySql;
+    private int _lastReloadVersion;
     private bool _sourceInitialized;
+    private QueryPagingPlan? _queryPagingPlan;
+    private TimeSpan? _lastQueryElapsed;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
     private bool HasActiveFilters => _filters.Values.Any(value => !string.IsNullOrWhiteSpace(value));
@@ -191,22 +210,34 @@
     {
         bool sourceChanged = !_sourceInitialized
             || !string.Equals(_lastTableName, TableName, StringComparison.Ordinal)
-            || !string.Equals(_lastViewName, ViewName, StringComparison.Ordinal);
+            || !string.Equals(_lastViewName, ViewName, StringComparison.Ordinal)
+            || !string.Equals(_lastQuerySql, QuerySql, StringComparison.Ordinal);
+        bool queryReloadRequested = QuerySql is not null && _lastReloadVersion != ReloadVersion;
 
-        if (!sourceChanged)
+        if (!sourceChanged && !queryReloadRequested)
             return;
 
         _sourceInitialized = true;
         _lastTableName = TableName;
         _lastViewName = ViewName;
-        _page = 1;
-        _sortCol = null;
-        _sortAsc = true;
-        _loadedAllRows = false;
-        _filters.Clear();
-        Columns = null;
-        ColumnTypes = null;
-        PrimaryKeyColumn = null;
+        _lastQuerySql = QuerySql;
+        _lastReloadVersion = ReloadVersion;
+
+        if (sourceChanged)
+        {
+            _page = 1;
+            _sortCol = null;
+            _sortAsc = true;
+            _loadedAllRows = false;
+            _filters.Clear();
+            _filterInputs.Clear();
+            Columns = null;
+            ColumnTypes = null;
+            PrimaryKeyColumn = null;
+            _queryPagingPlan = null;
+            _loadError = null;
+            _lastQueryElapsed = null;
+        }
 
         await LoadDataAsync();
     }
@@ -214,6 +245,7 @@
     public async Task LoadDataAsync()
     {
         _loading = true;
+        _loadError = null;
         _editingCell = null;
         _selectedRows.Clear();
         await NotifySelectionChangedAsync();
@@ -230,11 +262,18 @@
         }
         catch (Exception ex)
         {
-            Toast.Error($"Failed to load data: {ex.Message}");
+            _allRows = new();
+            _rows = new();
+            _totalRows = 0;
+            _loadError = ex.Message;
+
+            if (QuerySql is null)
+                Toast.Error($"Failed to load data: {ex.Message}");
         }
         finally
         {
             _loading = false;
+            await NotifyQueryStatusChangedAsync();
             StateHasChanged();
         }
     }
@@ -270,14 +309,49 @@
     }
 
     // ─── Filtering ──────────────────
-    private string GetFilter(int colIdx) => _filters.TryGetValue(colIdx, out var v) ? v : string.Empty;
+    private string GetFilterInput(int colIdx)
+        => _filterInputs.TryGetValue(colIdx, out var value)
+            ? value
+            : _filters.TryGetValue(colIdx, out var activeValue)
+                ? activeValue
+                : string.Empty;
 
-    private async Task SetFilter(int colIdx, string? value)
+    private void UpdateFilterDraft(int colIdx, string? value)
     {
         if (string.IsNullOrEmpty(value))
-            _filters.Remove(colIdx);
+            _filterInputs.Remove(colIdx);
         else
+            _filterInputs[colIdx] = value;
+    }
+
+    private async Task HandleFilterKeyDown(KeyboardEventArgs e, int colIdx)
+    {
+        if (e.Key == "Enter")
+        {
+            await ApplyFilterDraftAsync(colIdx);
+            return;
+        }
+
+        if (e.Key == "Escape")
+        {
+            ResetFilterDraft(colIdx);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ApplyFilterDraftAsync(int colIdx)
+    {
+        string value = GetFilterInput(colIdx);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            _filters.Remove(colIdx);
+            _filterInputs.Remove(colIdx);
+        }
+        else
+        {
             _filters[colIdx] = value;
+            _filterInputs[colIdx] = value;
+        }
 
         _page = 1;
 
@@ -296,6 +370,14 @@
         }
 
         await LoadDataAsync();
+    }
+
+    private void ResetFilterDraft(int colIdx)
+    {
+        if (_filters.TryGetValue(colIdx, out var activeValue))
+            _filterInputs[colIdx] = activeValue;
+        else
+            _filterInputs.Remove(colIdx);
     }
 
     // ─── Row Selection ──────────────
@@ -627,11 +709,18 @@
         await LoadDataAsync();
     }
 
-    private bool ShouldLoadAllRows() => HasPendingChanges;
+    private bool ShouldLoadAllRows() => QuerySql is null && HasPendingChanges;
 
     private async Task LoadCurrentPageAsync()
     {
         _loadedAllRows = false;
+        _lastQueryElapsed = null;
+
+        if (QuerySql is not null)
+        {
+            await LoadQueryPageAsync(QuerySql);
+            return;
+        }
 
         if (TableName is not null)
         {
@@ -652,7 +741,12 @@
             Columns ??= Array.Empty<string>();
             ColumnTypes = null;
             PrimaryKeyColumn = null;
+            return;
         }
+
+        _allRows = new();
+        _rows = new();
+        _totalRows = 0;
     }
 
     private async Task LoadServerPageAsync(string sourceName)
@@ -661,15 +755,56 @@
         if (countResult.Error is not null)
             throw new InvalidOperationException(countResult.Error);
 
+        _totalRows = ReadCount(countResult);
+        ClampPageToAvailableRows();
+
         var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName));
         if (queryResult.Error is not null)
             throw new InvalidOperationException(queryResult.Error);
 
-        _totalRows = ReadCount(countResult);
         _allRows = (queryResult.Rows ?? []).Select(r => new DataGridRow(r)).ToList();
 
         if (ViewName is not null)
             Columns = queryResult.ColumnNames ?? Array.Empty<string>();
+    }
+
+    private async Task LoadQueryPageAsync(string querySql)
+    {
+        _queryPagingPlan ??= QueryPagingPlan.Parse(querySql);
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            string[] displayColumns = Columns ?? Array.Empty<string>();
+            QueryCountPlan countPlan = _queryPagingPlan.BuildCountPlan(_filters, displayColumns);
+
+            var countResult = await DbClient.ExecuteSqlAsync(countPlan.Sql);
+            if (countResult.Error is not null)
+                throw new InvalidOperationException(countResult.Error);
+
+            int rawCount = ReadCount(countResult);
+            _totalRows = countPlan.ApplyBasePagination
+                ? _queryPagingPlan.ApplyBasePaginationToCount(rawCount)
+                : rawCount;
+
+            ClampPageToAvailableRows();
+
+            var pageResult = await DbClient.ExecuteSqlAsync(
+                _queryPagingPlan.BuildPageSql(_filters, _sortCol, _sortAsc, _pageSize, _page, displayColumns));
+            if (pageResult.Error is not null)
+                throw new InvalidOperationException(pageResult.Error);
+
+            if (Columns is null || Columns.Length == 0)
+                Columns = pageResult.ColumnNames ?? Array.Empty<string>();
+            ColumnTypes = null;
+            PrimaryKeyColumn = null;
+            _allRows = (pageResult.Rows ?? []).Select(row => new DataGridRow(row)).ToList();
+        }
+        finally
+        {
+            stopwatch.Stop();
+            _lastQueryElapsed = stopwatch.Elapsed;
+        }
     }
 
     private async Task LoadAllRowsAsync()
@@ -717,6 +852,13 @@
         _loadedAllRows = true;
     }
 
+    private void ClampPageToAvailableRows()
+    {
+        int totalPages = TotalPages;
+        if (_page > totalPages)
+            _page = totalPages;
+    }
+
     private string BuildSelectSql(string sourceName)
     {
         string whereClause = BuildWhereClause();
@@ -761,6 +903,22 @@
         string columnName = RequireIdentifier(Columns[sortCol]);
         string direction = _sortAsc ? "ASC" : "DESC";
         return $" ORDER BY {columnName} {direction}";
+    }
+
+    private async Task NotifyQueryStatusChangedAsync()
+    {
+        if (!OnQueryStatusChanged.HasDelegate)
+            return;
+
+        await OnQueryStatusChanged.InvokeAsync(new QueryResultsStatus
+        {
+            TotalRows = _totalRows,
+            VisibleRows = _rows.Count,
+            Page = _page,
+            PageSize = _pageSize,
+            Elapsed = _lastQueryElapsed,
+            Error = _loadError,
+        });
     }
 
     private static int ReadCount(CSharpDB.Client.Models.SqlExecutionResult result)

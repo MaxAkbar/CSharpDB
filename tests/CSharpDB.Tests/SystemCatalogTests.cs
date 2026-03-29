@@ -1,6 +1,7 @@
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Catalog;
+using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Device;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
@@ -35,8 +36,8 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     public async Task SystemCatalog_ExposesTablesColumnsAndIndexes()
     {
         var ct = TestContext.Current.CancellationToken;
-        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)", ct);
-        await _db.ExecuteAsync("CREATE INDEX idx_users_age ON users(age)", ct);
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE NOT NULL, age INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_name_binary ON users(name COLLATE BINARY)", ct);
 
         await using var tables = await _db.ExecuteAsync(
             "SELECT table_name, column_count, primary_key_column FROM sys.tables WHERE table_name = 'users'", ct);
@@ -47,7 +48,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("id", tableRow[2].AsText);
 
         await using var columns = await _db.ExecuteAsync(
-            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity " +
+            "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity, collation " +
             "FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position", ct);
         var columnRows = await columns.ToListAsync(ct);
         Assert.Equal(3, columnRows.Count);
@@ -56,22 +57,40 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("INTEGER", columnRows[0][2].AsText);
         Assert.Equal(1L, columnRows[0][4].AsInteger);
         Assert.Equal(1L, columnRows[0][5].AsInteger);
+        Assert.True(columnRows[0][6].IsNull);
         Assert.Equal("name", columnRows[1][0].AsText);
         Assert.Equal("TEXT", columnRows[1][2].AsText);
         Assert.Equal(0L, columnRows[1][3].AsInteger);
         Assert.Equal(0L, columnRows[1][4].AsInteger);
         Assert.Equal(0L, columnRows[1][5].AsInteger);
+        Assert.Equal("NOCASE", columnRows[1][6].AsText);
 
         await using var indexes = await _db.ExecuteAsync(
-            "SELECT index_name, table_name, column_name, ordinal_position, is_unique " +
-            "FROM sys.indexes WHERE index_name = 'idx_users_age'", ct);
+            "SELECT index_name, table_name, column_name, ordinal_position, is_unique, collation " +
+            "FROM sys.indexes WHERE index_name = 'idx_users_name_binary'", ct);
         var indexRows = await indexes.ToListAsync(ct);
         var indexRow = Assert.Single(indexRows);
-        Assert.Equal("idx_users_age", indexRow[0].AsText);
+        Assert.Equal("idx_users_name_binary", indexRow[0].AsText);
         Assert.Equal("users", indexRow[1].AsText);
-        Assert.Equal("age", indexRow[2].AsText);
+        Assert.Equal("name", indexRow[2].AsText);
         Assert.Equal(1L, indexRow[3].AsInteger);
         Assert.Equal(0L, indexRow[4].AsInteger);
+        Assert.Equal("BINARY", indexRow[5].AsText);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_IndexCollation_UsesEffectiveColumnCollationWhenInherited()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_name ON users(name)", ct);
+
+        await using var indexes = await _db.ExecuteAsync(
+            "SELECT collation FROM sys.indexes WHERE index_name = 'idx_users_name'",
+            ct);
+        var indexRow = Assert.Single(await indexes.ToListAsync(ct));
+
+        Assert.Equal("NOCASE", indexRow[0].AsText);
     }
 
     [Fact]
@@ -541,6 +560,51 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ImmediateStats_RemainFreshAcrossReopen_AfterUnrelatedWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE primary_stats (id INTEGER PRIMARY KEY, score INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO primary_stats VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO primary_stats VALUES (2, 30)", ct);
+        await _db.ExecuteAsync("ANALYZE primary_stats", ct);
+
+        await _db.ExecuteAsync("CREATE TABLE unrelated_stats_churn (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO unrelated_stats_churn VALUES (1, 'noise')", ct);
+
+        await using (var inSessionStats = await _db.ExecuteAsync(
+            "SELECT is_stale FROM sys.column_stats WHERE table_name = 'primary_stats' AND column_name = 'score'",
+            ct))
+        {
+            Assert.Equal(0L, Assert.Single(await inSessionStats.ToListAsync(ct))[0].AsInteger);
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using var tableStats = await _db.ExecuteAsync(
+            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'primary_stats'",
+            ct);
+        var tableStatsRow = Assert.Single(await tableStats.ToListAsync(ct));
+        Assert.Equal(2L, tableStatsRow[0].AsInteger);
+        Assert.Equal(0L, tableStatsRow[1].AsInteger);
+
+        await using var columnStats = await _db.ExecuteAsync(
+            """
+            SELECT distinct_count, non_null_count, min_value, max_value, is_stale
+            FROM sys.column_stats
+            WHERE table_name = 'primary_stats' AND column_name = 'score'
+            """,
+            ct);
+        var columnStatsRow = Assert.Single(await columnStats.ToListAsync(ct));
+        Assert.Equal(2L, columnStatsRow[0].AsInteger);
+        Assert.Equal(2L, columnStatsRow[1].AsInteger);
+        Assert.Equal(10L, columnStatsRow[2].AsInteger);
+        Assert.Equal(30L, columnStatsRow[3].AsInteger);
+        Assert.Equal(0L, columnStatsRow[4].AsInteger);
+    }
+
+    [Fact]
     public async Task SystemCatalog_DeferredAdvisoryStatistics_ArePersistedOnCleanDispose()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -603,6 +667,56 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.DoesNotContain("failed_create", _db.GetTableNames());
     }
 
+    [Fact]
+    public async Task AutoCommitCheckpointFailure_DoesNotFaultCommittedIndexCreate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var factory = new CheckpointFailureStorageEngineFactory();
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(
+            _dbPath,
+            new DatabaseOptions
+            {
+                StorageEngineFactory = factory,
+                StorageEngineOptions = new StorageEngineOptions
+                {
+                    PagerOptions = new PagerOptions
+                    {
+                        CheckpointPolicy = new FrameCountCheckpointPolicy(1),
+                        AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Foreground,
+                    },
+                },
+            },
+            ct);
+
+        await _db.ExecuteAsync("CREATE TABLE checkpointed_index (id INTEGER PRIMARY KEY, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO checkpointed_index VALUES (1, 'alpha')", ct);
+        await _db.ExecuteAsync("INSERT INTO checkpointed_index VALUES (2, 'beta')", ct);
+
+        factory.Device!.ArmFlushFailure();
+        await _db.ExecuteAsync("CREATE INDEX idx_checkpointed_index_name ON checkpointed_index(name)", ct);
+
+        Assert.Contains(
+            _db.GetIndexes(),
+            static index => string.Equals(index.IndexName, "idx_checkpointed_index_name", StringComparison.OrdinalIgnoreCase));
+
+        factory.Device.DisarmFlushFailure();
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        Assert.Contains(
+            _db.GetIndexes(),
+            static index => string.Equals(index.IndexName, "idx_checkpointed_index_name", StringComparison.OrdinalIgnoreCase));
+
+        await using var reopenedCount = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.indexes WHERE index_name = 'idx_checkpointed_index_name'",
+            ct);
+        var row = Assert.Single(await reopenedCount.ToListAsync(ct));
+        Assert.Equal(1L, row[0].AsInteger);
+    }
+
     private sealed class FailFirstCommitStorageEngineFactory : IStorageEngineFactory
     {
         private readonly IWalFlushPolicy _flushPolicy;
@@ -618,47 +732,173 @@ public sealed class SystemCatalogTests : IAsyncLifetime
             CancellationToken ct = default)
         {
             bool isNew = !File.Exists(filePath);
-            var device = new FileStorageDevice(filePath);
-            var walIndex = new WalIndex();
-            var wal = new WriteAheadLog(
-                filePath,
-                walIndex,
-                options.ChecksumProvider,
-                _flushPolicy,
-                options.DurableCommitBatchWindow,
-                options.WalPreallocationChunkBytes);
-            var pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+            FileStorageDevice? device = null;
+            Pager? pager = null;
 
-            if (isNew)
+            try
             {
-                await pager.InitializeNewDatabaseAsync(ct);
-                await wal.OpenAsync(pager.PageCount, ct);
+                device = new FileStorageDevice(filePath);
+                var walIndex = new WalIndex();
+                var wal = new WriteAheadLog(
+                    filePath,
+                    walIndex,
+                    options.ChecksumProvider,
+                    _flushPolicy,
+                    options.DurableCommitBatchWindow,
+                    options.WalPreallocationChunkBytes);
+                pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+
+                if (isNew)
+                {
+                    await pager.InitializeNewDatabaseAsync(ct);
+                    await wal.OpenAsync(pager.PageCount, ct);
+                }
+                else
+                {
+                    await pager.RecoverAsync(ct);
+                }
+
+                var schemaSerializer = options.SerializerProvider.SchemaSerializer;
+                return new StorageEngineContext
+                {
+                    Pager = pager,
+                    Catalog = await SchemaCatalog.CreateAsync(
+                        pager,
+                        schemaSerializer,
+                        options.IndexProvider,
+                        options.CatalogStore,
+                        options.AdvisoryStatisticsPersistenceMode,
+                        ct),
+                    RecordSerializer = options.SerializerProvider.RecordSerializer,
+                    SchemaSerializer = schemaSerializer,
+                    IndexProvider = options.IndexProvider,
+                    ChecksumProvider = options.ChecksumProvider,
+                    AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
+                };
             }
-            else
+            catch
             {
-                await pager.RecoverAsync(ct);
+                if (pager != null)
+                    await pager.DisposeAsync();
+                if (device != null)
+                    await device.DisposeAsync();
+
+                throw;
             }
-
-            var schemaSerializer = options.SerializerProvider.SchemaSerializer;
-            var catalog = await SchemaCatalog.CreateAsync(
-                pager,
-                schemaSerializer,
-                options.IndexProvider,
-                options.CatalogStore,
-                options.AdvisoryStatisticsPersistenceMode,
-                ct);
-
-            return new StorageEngineContext
-            {
-                Pager = pager,
-                Catalog = catalog,
-                RecordSerializer = options.SerializerProvider.RecordSerializer,
-                SchemaSerializer = schemaSerializer,
-                IndexProvider = options.IndexProvider,
-                ChecksumProvider = options.ChecksumProvider,
-                AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
-            };
         }
+    }
+
+    private sealed class CheckpointFailureStorageEngineFactory : IStorageEngineFactory
+    {
+        public ArmableCheckpointFailingStorageDevice? Device { get; private set; }
+
+        public async ValueTask<StorageEngineContext> OpenAsync(
+            string filePath,
+            StorageEngineOptions options,
+            CancellationToken ct = default)
+        {
+            bool isNew = !File.Exists(filePath);
+            ArmableCheckpointFailingStorageDevice? device = null;
+            Pager? pager = null;
+
+            try
+            {
+                device = new ArmableCheckpointFailingStorageDevice(new FileStorageDevice(filePath));
+                Device = device;
+
+                var walIndex = new WalIndex();
+                var wal = new WriteAheadLog(
+                    filePath,
+                    walIndex,
+                    options.ChecksumProvider,
+                    options.DurabilityMode,
+                    options.DurableCommitBatchWindow,
+                    options.WalPreallocationChunkBytes);
+                pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+
+                if (isNew)
+                {
+                    await pager.InitializeNewDatabaseAsync(ct);
+                    await wal.OpenAsync(pager.PageCount, ct);
+                }
+                else
+                {
+                    await pager.RecoverAsync(ct);
+                }
+
+                var schemaSerializer = options.SerializerProvider.SchemaSerializer;
+                return new StorageEngineContext
+                {
+                    Pager = pager,
+                    Catalog = await SchemaCatalog.CreateAsync(
+                        pager,
+                        schemaSerializer,
+                        options.IndexProvider,
+                        options.CatalogStore,
+                        options.AdvisoryStatisticsPersistenceMode,
+                        ct),
+                    RecordSerializer = options.SerializerProvider.RecordSerializer,
+                    SchemaSerializer = schemaSerializer,
+                    IndexProvider = options.IndexProvider,
+                    ChecksumProvider = options.ChecksumProvider,
+                    AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
+                };
+            }
+            catch
+            {
+                if (pager != null)
+                    await pager.DisposeAsync();
+                if (device != null)
+                    await device.DisposeAsync();
+
+                throw;
+            }
+        }
+    }
+
+    private sealed class ArmableCheckpointFailingStorageDevice : IStorageDevice
+    {
+        private readonly IStorageDevice _inner;
+        private int _failFlush;
+
+        public ArmableCheckpointFailingStorageDevice(IStorageDevice inner)
+        {
+            _inner = inner;
+        }
+
+        public long Length => _inner.Length;
+
+        public void ArmFlushFailure()
+        {
+            Interlocked.Exchange(ref _failFlush, 1);
+        }
+
+        public void DisarmFlushFailure()
+        {
+            Interlocked.Exchange(ref _failFlush, 0);
+        }
+
+        public ValueTask<int> ReadAsync(long offset, Memory<byte> buffer, CancellationToken ct = default) =>
+            _inner.ReadAsync(offset, buffer, ct);
+
+        public ValueTask WriteAsync(long offset, ReadOnlyMemory<byte> buffer, CancellationToken ct = default) =>
+            _inner.WriteAsync(offset, buffer, ct);
+
+        public ValueTask FlushAsync(CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _failFlush) != 0)
+                return ValueTask.FromException(new IOException("Injected checkpoint device flush failure."));
+
+            return _inner.FlushAsync(ct);
+        }
+
+        public ValueTask SetLengthAsync(long length, CancellationToken ct = default) =>
+            _inner.SetLengthAsync(length, ct);
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+        public void Dispose() => _inner.Dispose();
     }
 
     private sealed class FailFirstCommitWalFlushPolicy : IWalFlushPolicy
@@ -676,6 +916,9 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (stream.Position <= PageConstants.WalHeaderSize)
+                return ValueTask.CompletedTask;
+
             if (Interlocked.Increment(ref _flushCount) == 1)
                 return ValueTask.FromException(new IOException("Injected first commit flush failure."));
 

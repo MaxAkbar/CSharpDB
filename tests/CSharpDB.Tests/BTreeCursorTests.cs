@@ -40,6 +40,50 @@ public sealed class BTreeCursorTests
         Assert.Equal(new long[] { 7, 8, 9, 10, 11, 12, 13, 14 }, keys);
     }
 
+    [Fact]
+    public async Task VariablePayloadLeafSplits_PreserveAllKeys()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+        var tree = new BTree(pager, rootPageId);
+
+        for (int key = 1; key <= 20; key++)
+        {
+            int payloadLength = key % 7 == 0
+                ? 3000
+                : key % 5 == 0
+                    ? 1800
+                    : 120;
+            byte[] payload = new byte[payloadLength];
+            payload[0] = (byte)key;
+            await tree.InsertAsync(key, payload, ct);
+        }
+
+        await pager.CommitAsync(ct);
+
+        Assert.Equal(20L, await tree.CountEntriesAsync(ct));
+
+        for (int key = 1; key <= 20; key++)
+        {
+            byte[]? payload = await tree.FindAsync(key, ct);
+            Assert.NotNull(payload);
+            Assert.Equal((byte)key, payload![0]);
+        }
+
+        var cursor = tree.CreateCursor();
+        var keys = new List<long>();
+        while (await cursor.MoveNextAsync(ct))
+            keys.Add(cursor.CurrentKey);
+
+        Assert.Equal(Enumerable.Range(1, 20).Select(static value => (long)value).ToArray(), keys);
+    }
+
     private static async ValueTask<Pager> CreatePagerAsync(CancellationToken ct)
     {
         var device = new MemoryStorageDevice();

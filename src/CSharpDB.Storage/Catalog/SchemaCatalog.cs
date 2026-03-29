@@ -163,6 +163,9 @@ public sealed class SchemaCatalog
     public ValueTask DropIndexAsync(string indexName, CancellationToken ct = default) =>
         _service.DropIndexAsync(indexName, ct);
 
+    public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default) =>
+        _service.DropIndexAllowCorruptReclaimAsync(indexName, ct);
+
     public string? GetViewSql(string viewName) => _service.GetViewSql(viewName);
 
     public IReadOnlyCollection<string> GetViewNames() => _service.GetViewNames();

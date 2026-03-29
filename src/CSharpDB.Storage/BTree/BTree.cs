@@ -797,13 +797,19 @@ public sealed class BTree
                 cellOffsets,
                 out int totalCellBytes);
             cellOffsets[totalCellCount] = totalCellBytes;
-            int mid = totalCellCount / 2;
 
             // Allocate new right sibling
             uint newPageId = await _pager.AllocatePageAsync(ct);
             var newPage = await _pager.GetPageAsync(newPageId, ct);
             var newSp = new SlottedPage(newPage, newPageId);
             newSp.Initialize(PageConstants.PageTypeLeaf);
+
+            int mid = SelectLeafSplitIndex(
+                cellOffsets,
+                totalCellCount,
+                totalCellBytes,
+                pageId,
+                newPageId);
 
             // Link leaves
             newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
@@ -815,14 +821,24 @@ public sealed class BTree
             {
                 int offset = cellOffsets[i];
                 int length = cellOffsets[i + 1] - offset;
-                sp.InsertCell(i, splitCellBuffer.AsSpan(offset, length));
+                if (!sp.InsertCell(i, splitCellBuffer.AsSpan(offset, length)))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Leaf split redistribution overflowed left page {pageId} while inserting key {ReadLeafCellKey(splitCellBuffer.AsSpan(offset, length))}.");
+                }
             }
 
             for (int i = mid; i < totalCellCount; i++)
             {
                 int offset = cellOffsets[i];
                 int length = cellOffsets[i + 1] - offset;
-                newSp.InsertCell(i - mid, splitCellBuffer.AsSpan(offset, length));
+                if (!newSp.InsertCell(i - mid, splitCellBuffer.AsSpan(offset, length)))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Leaf split redistribution overflowed right page {newPageId} while inserting key {ReadLeafCellKey(splitCellBuffer.AsSpan(offset, length))}.");
+                }
             }
 
             await _pager.MarkDirtyAsync(pageId, ct);
@@ -840,6 +856,45 @@ public sealed class BTree
             if (splitCellBuffer != null)
                 ArrayPool<byte>.Shared.Return(splitCellBuffer, clearArray: false);
         }
+    }
+
+    private static int SelectLeafSplitIndex(
+        int[] cellOffsets,
+        int totalCellCount,
+        int totalCellBytes,
+        uint leftPageId,
+        uint rightPageId)
+    {
+        int leftCapacity = PageConstants.UsableSpace(leftPageId) - PageConstants.SlottedPageHeaderSize;
+        int rightCapacity = PageConstants.UsableSpace(rightPageId) - PageConstants.SlottedPageHeaderSize;
+        int bestIndex = -1;
+        long bestOccupancySkew = long.MaxValue;
+
+        for (int splitIndex = 1; splitIndex < totalCellCount; splitIndex++)
+        {
+            int leftCellBytes = cellOffsets[splitIndex];
+            int rightCellBytes = totalCellBytes - leftCellBytes;
+            int leftUsedBytes = leftCellBytes + splitIndex * PageConstants.CellPointerSize;
+            int rightCellCount = totalCellCount - splitIndex;
+            int rightUsedBytes = rightCellBytes + rightCellCount * PageConstants.CellPointerSize;
+
+            if (leftUsedBytes > leftCapacity || rightUsedBytes > rightCapacity)
+                continue;
+
+            long occupancySkew = Math.Abs((long)leftUsedBytes * rightCapacity - (long)rightUsedBytes * leftCapacity);
+            if (occupancySkew < bestOccupancySkew)
+            {
+                bestOccupancySkew = occupancySkew;
+                bestIndex = splitIndex;
+            }
+        }
+
+        if (bestIndex > 0)
+            return bestIndex;
+
+        throw new CSharpDbException(
+            ErrorCode.CorruptDatabase,
+            $"Unable to split leaf page {leftPageId}: no byte-balanced redistribution fits within page capacity.");
     }
 
     private async ValueTask<InsertResult> InsertIntoInteriorAsync(uint pageId, byte[] page, SlottedPage sp, long key, uint newChildPageId, int afterChildIdx, CancellationToken ct)

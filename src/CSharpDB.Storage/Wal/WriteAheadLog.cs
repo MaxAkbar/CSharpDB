@@ -250,10 +250,31 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         }
         catch (Exception ex) when (ex is not CSharpDbException && ex is not OperationCanceledException)
         {
+            await CleanupFailedCreateAsync();
             throw new CSharpDbException(
                 ErrorCode.WalError,
                 $"Failed to create WAL file '{_walPath}' for dbPageCount={dbPageCount}.",
                 ex);
+        }
+    }
+
+    private async ValueTask CleanupFailedCreateAsync()
+    {
+        try
+        {
+            CloseReadHandle();
+            if (_stream != null)
+            {
+                await _stream.DisposeAsync();
+                _stream = null;
+            }
+
+            if (File.Exists(_walPath))
+                File.Delete(_walPath);
+        }
+        catch
+        {
+            // Best-effort cleanup only. The original create failure should remain the surfaced error.
         }
     }
 

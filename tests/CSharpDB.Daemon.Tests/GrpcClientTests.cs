@@ -210,6 +210,31 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_MutatingSchemaEndpoints_AcceptCollationMetadata()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            "CREATE TABLE grpc_mutation_collation (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.Null(createResult.Error);
+
+        await client.AddColumnAsync("grpc_mutation_collation", "name", DbType.Text, notNull: false, collation: "NOCASE", ct: Ct);
+        await client.CreateIndexAsync("idx_grpc_mutation_collation_name_binary", "grpc_mutation_collation", "name", isUnique: false, collation: "BINARY", ct: Ct);
+        await client.UpdateIndexAsync("idx_grpc_mutation_collation_name_binary", "idx_grpc_mutation_collation_name_nocase", "grpc_mutation_collation", "name", isUnique: false, collation: "NOCASE", ct: Ct);
+
+        TableSchema? schema = await client.GetTableSchemaAsync("grpc_mutation_collation", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("NOCASE", Assert.Single(schema!.Columns, column => column.Name == "name").Collation);
+
+        IReadOnlyList<IndexSchema> indexes = await client.GetIndexesAsync(Ct);
+        IndexSchema index = Assert.Single(indexes, item => item.IndexName == "idx_grpc_mutation_collation_name_nocase");
+        Assert.Equal(["name"], index.Columns);
+        Assert.Equal(["NOCASE"], index.ColumnCollations);
+    }
+
+    [Fact]
     public async Task GrpcContract_ExposesExplicitRpcMethods()
     {
         using var transportClient = CreateGrpcHttpClient();

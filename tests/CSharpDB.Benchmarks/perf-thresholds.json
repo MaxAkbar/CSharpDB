@@ -7,6 +7,86 @@
   },
   "checks": [
     {
+      "csv": "CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv",
+      "baselineSnapshot": "focused-validation/20260326-123705",
+      "keyColumns": [
+        "Method",
+        "RowCount",
+        "Collation"
+      ],
+      "requiredRows": [
+        {
+          "Method": "'WHERE text eq (collated text index)'",
+          "RowCount": "10000",
+          "Collation": "BINARY"
+        },
+        {
+          "Method": "'WHERE text eq (collated text index)'",
+          "RowCount": "100000",
+          "Collation": "ICU:en-US"
+        },
+        {
+          "Method": "'WHERE text range (ordered text index)'",
+          "RowCount": "100000",
+          "Collation": "BINARY"
+        },
+        {
+          "Method": "'WHERE text range (ordered text index)'",
+          "RowCount": "100000",
+          "Collation": "NOCASE_AI"
+        },
+        {
+          "Method": "'WHERE text range (ordered text index)'",
+          "RowCount": "100000",
+          "Collation": "ICU:en-US"
+        },
+        {
+          "Method": "'ORDER BY text + LIMIT 100 (ordered text index)'",
+          "RowCount": "100000",
+          "Collation": "BINARY"
+        },
+        {
+          "Method": "'ORDER BY text + LIMIT 100 (ordered text index)'",
+          "RowCount": "100000",
+          "Collation": "NOCASE_AI"
+        },
+        {
+          "Method": "'INSERT with collated text index (tx rollback)'",
+          "RowCount": "100000",
+          "Collation": "BINARY"
+        },
+        {
+          "Method": "'INSERT with collated text index (tx rollback)'",
+          "RowCount": "100000",
+          "Collation": "NOCASE_AI"
+        },
+        {
+          "Method": "'INSERT with collated text index (tx rollback)'",
+          "RowCount": "100000",
+          "Collation": "ICU:en-US"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 8192.0,
+      "overrides": [
+        {
+          "match": {
+            "Method": "'WHERE text range (ordered text index)'"
+          },
+          "maxMeanRegressionPercent": 35.0,
+          "maxAllocRegressionPercent": 35.0,
+          "maxAllocRegressionBytes": 16384.0
+        },
+        {
+          "match": {
+            "Method": "'ORDER BY text + LIMIT 100 (ordered text index)'"
+          },
+          "maxMeanRegressionPercent": 35.0
+        }
+      ]
+    },
+    {
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260326-123705",
       "keyColumns": [

@@ -27,7 +27,7 @@
                 <p class="lead">Built-in pipeline runtime for Extract-Transform-Load workflows. Define packages in JSON, validate them, serialize them, execute them in batches, and inspect run metrics.</p>
 
                 <h2>Overview</h2>
-                <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>. The built-in runtime currently supports CSV and JSON file connectors; table and SQL source contracts exist in the model but are not yet implemented by the default runtime factory.</p>
+                <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>. The built-in runtime supports CSV and JSON file connectors.</p>
 
                 <div class="flow-container">
                     <div class="flow-column">
@@ -50,8 +50,6 @@
                     <tbody>
                         <tr><td><code>CsvFile</code></td><td>Built-in file source with configurable header handling</td></tr>
                         <tr><td><code>JsonFile</code></td><td>Built-in file source for JSON documents and arrays</td></tr>
-                        <tr><td><code>SqlQuery</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
-                        <tr><td><code>CSharpDbTable</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
                     </tbody>
                 </table>
 
@@ -74,7 +72,6 @@
                     <tbody>
                         <tr><td><code>CsvFile</code></td><td>Built-in file destination for CSV output</td></tr>
                         <tr><td><code>JsonFile</code></td><td>Built-in file destination for JSON output</td></tr>
-                        <tr><td><code>CSharpDbTable</code></td><td>Modeled in the package contract; not implemented by <code>DefaultPipelineComponentFactory</code> yet</td></tr>
                     </tbody>
                 </table>
 

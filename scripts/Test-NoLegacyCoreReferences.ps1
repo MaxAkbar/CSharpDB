@@ -5,7 +5,6 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).ProviderPath
 Set-Location $root
 
 $allowList = @(
-    'docs/migrations/core-to-primitives.md',
     'RELEASE_NOTES.md',
     'docs/releases/v2.0.0-pr-notes.md',
     'www/docs/migrations.html',

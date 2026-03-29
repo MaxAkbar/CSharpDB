@@ -3,6 +3,7 @@ using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Benchmarks.Macro;
 using CSharpDB.Benchmarks.Stress;
 using CSharpDB.Benchmarks.Scaling;
+using System.Text.Json;
 
 namespace CSharpDB.Benchmarks;
 
@@ -92,9 +93,13 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("hybrid-post-checkpoint", RunHybridPostCheckpointOnceAsync, repeatCount);
                 return;
 
+            case "--release":
+                await RunReleaseBenchmarksAsync();
+                return;
+
             case "--all":
                 Console.WriteLine("=== Micro-Benchmarks (BenchmarkDotNet) ===");
-                RunMicroBenchmarks(StripCustomArgs(RemoveFirstToken(args, "--all")));
+                RunMicroBenchmarks(["--filter", "*"]);
                 Console.WriteLine();
                 Console.WriteLine("=== Macro-Benchmarks ===");
                 EnsureReproConfigured();
@@ -241,6 +246,60 @@ public static class Program
         switcher.Run(args);
     }
 
+    private static async Task RunReleaseBenchmarksAsync()
+    {
+        var plan = LoadReleaseBenchmarkPlan();
+
+        if (plan.MicroFilters.Count == 0 && plan.Suites.Count == 0)
+            throw new InvalidOperationException("Release benchmark plan is empty.");
+
+        if (plan.MicroFilters.Count > 0)
+        {
+            Console.WriteLine("=== Release Micro Guardrails ===");
+            foreach (string filter in plan.MicroFilters)
+            {
+                Console.WriteLine($"--- Micro ({filter}) ---");
+                RunMicroBenchmarks(["--filter", filter]);
+                Console.WriteLine();
+            }
+        }
+
+        if (plan.Suites.Count == 0)
+            return;
+
+        bool reproConfigured = false;
+        int? configuredCpuThreads = null;
+
+        void EnsureReleaseReproConfigured(bool enableRepro, int? requestedCpuThreads)
+        {
+            if (!enableRepro || reproConfigured)
+                return;
+
+            configuredCpuThreads = requestedCpuThreads;
+            BenchmarkProcessTuner.ConfigureIfRequested(enableRepro, requestedCpuThreads);
+            reproConfigured = true;
+        }
+
+        Console.WriteLine("=== Release Non-Micro Guardrails ===");
+        foreach (var suite in plan.Suites)
+        {
+            int repeatCount = ParseRepeatCount(suite.Arguments);
+            bool enableRepro = HasFlag(suite.Arguments, "--repro");
+            int? requestedCpuThreads = ParseCpuThreads(suite.Arguments);
+
+            if (reproConfigured && requestedCpuThreads != configuredCpuThreads)
+            {
+                throw new InvalidOperationException(
+                    $"Release suite '{suite.Key}' requested cpu threads '{requestedCpuThreads}', but release mode was already configured with '{configuredCpuThreads}'.");
+            }
+
+            EnsureReleaseReproConfigured(enableRepro, requestedCpuThreads);
+            Console.WriteLine($"--- {suite.Label} ---");
+            await RunSuiteByKeyAsync(suite.Key, repeatCount);
+            Console.WriteLine();
+        }
+    }
+
     private static async Task<List<BenchmarkResult>> RunMacroBenchmarksOnceAsync()
     {
         var results = new List<BenchmarkResult>();
@@ -355,6 +414,26 @@ public static class Program
         return results;
     }
 
+    private static Task RunSuiteByKeyAsync(string suiteKey, int repeatCount)
+    {
+        return suiteKey switch
+        {
+            "macro" => RunSuiteWithRepeatsAsync("macro", RunMacroBenchmarksOnceAsync, repeatCount),
+            "macro-batch-memory" => RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount),
+            "write-diagnostics" => RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount),
+            "durable-sql-batching" => RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount),
+            "concurrent-write-diagnostics" => RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount),
+            "direct-file-cache-transport" => RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount),
+            "hybrid-storage-mode" => RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount),
+            "hybrid-cold-open" => RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount),
+            "hybrid-hot-set-read" => RunSuiteWithRepeatsAsync("hybrid-hot-set-read", RunHybridHotSetReadOnceAsync, repeatCount),
+            "hybrid-post-checkpoint" => RunSuiteWithRepeatsAsync("hybrid-post-checkpoint", RunHybridPostCheckpointOnceAsync, repeatCount),
+            "stress" => RunSuiteWithRepeatsAsync("stress", RunStressTestsOnceAsync, repeatCount),
+            "scaling" => RunSuiteWithRepeatsAsync("scaling", RunScalingExperimentsOnceAsync, repeatCount),
+            _ => throw new ArgumentException($"Unknown release suite key '{suiteKey}'.", nameof(suiteKey)),
+        };
+    }
+
     private static async Task RunSuiteWithRepeatsAsync(
         string suiteName,
         Func<Task<List<BenchmarkResult>>> runOnceAsync,
@@ -424,6 +503,92 @@ public static class Program
         }
 
         return filtered.ToArray();
+    }
+
+    private static ReleaseBenchmarkPlan LoadReleaseBenchmarkPlan()
+    {
+        string thresholdsPath = ResolvePerfThresholdsPath();
+        using var document = JsonDocument.Parse(File.ReadAllText(thresholdsPath));
+
+        if (!document.RootElement.TryGetProperty("checks", out JsonElement checksElement) ||
+            checksElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException($"Benchmark threshold file '{thresholdsPath}' does not define a 'checks' array.");
+        }
+
+        var microFilters = new SortedSet<string>(StringComparer.Ordinal);
+        var suites = new List<ReleaseSuite>();
+        var seenSuites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (JsonElement check in checksElement.EnumerateArray())
+        {
+            if (check.TryGetProperty("csv", out JsonElement csvElement))
+            {
+                string? filter = TryGetMicroFilterFromCsv(csvElement.GetString());
+                if (!string.IsNullOrWhiteSpace(filter))
+                    microFilters.Add(filter);
+            }
+
+            if (!check.TryGetProperty("suiteKey", out JsonElement suiteKeyElement) ||
+                suiteKeyElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            string suiteKey = suiteKeyElement.GetString()!;
+            if (!seenSuites.Add(suiteKey))
+                continue;
+
+            string label = check.TryGetProperty("suiteLabel", out JsonElement labelElement) && labelElement.ValueKind == JsonValueKind.String
+                ? labelElement.GetString()!
+                : suiteKey;
+            string[] suiteArgs = check.TryGetProperty("suiteArgs", out JsonElement argsElement) && argsElement.ValueKind == JsonValueKind.Array
+                ? argsElement.EnumerateArray()
+                    .Where(static item => item.ValueKind == JsonValueKind.String)
+                    .Select(static item => item.GetString()!)
+                    .ToArray()
+                : [];
+
+            if (suiteArgs.Length == 0)
+                throw new InvalidOperationException($"Release suite '{suiteKey}' in '{thresholdsPath}' is missing 'suiteArgs'.");
+
+            suites.Add(new ReleaseSuite(suiteKey, label, suiteArgs));
+        }
+
+        return new ReleaseBenchmarkPlan(microFilters.ToArray(), suites);
+    }
+
+    private static string ResolvePerfThresholdsPath()
+    {
+        DirectoryInfo? current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current != null)
+        {
+            string candidate = Path.Combine(current.FullName, "perf-thresholds.json");
+            if (File.Exists(candidate))
+                return candidate;
+
+            current = current.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate perf-thresholds.json from the benchmark runner base directory.", "perf-thresholds.json");
+    }
+
+    private static string? TryGetMicroFilterFromCsv(string? csvName)
+    {
+        const string prefix = "CSharpDB.Benchmarks.Micro.";
+        const string suffix = "-report.csv";
+
+        if (string.IsNullOrWhiteSpace(csvName) ||
+            !csvName.StartsWith(prefix, StringComparison.Ordinal) ||
+            !csvName.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        string benchmarkName = csvName[prefix.Length..^suffix.Length];
+        return benchmarkName.Length == 0
+            ? null
+            : $"*{benchmarkName}*";
     }
 
     private static int ParseRepeatCount(string[] args)
@@ -522,6 +687,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-cold-open  Run focused engine-cold open + first read benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-hot-set-read  Run focused post-open hot-set read benchmark including hybrid warm-set mode");
         Console.WriteLine("  dotnet run -- --hybrid-post-checkpoint  Run focused post-checkpoint hot reread benchmark");
+        Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
         Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
@@ -529,6 +695,10 @@ public static class Program
         Console.WriteLine("  dotnet run -- --scaling --repro    Run non-micro suite with high-priority + pinned CPU affinity");
         Console.WriteLine("  dotnet run -- --scaling --repro --cpu-threads 8   Pin to first 8 logical CPUs");
         Console.WriteLine("  --repro applies to non-micro suites only (micro remains BenchmarkDotNet-managed)");
-        Console.WriteLine("  dotnet run -- --all                Run everything in sequence");
+        Console.WriteLine("  dotnet run -- --all                Run everything in sequence (full micro sweep, very slow)");
     }
+
+    private sealed record ReleaseBenchmarkPlan(IReadOnlyList<string> MicroFilters, IReadOnlyList<ReleaseSuite> Suites);
+
+    private sealed record ReleaseSuite(string Key, string Label, string[] Arguments);
 }

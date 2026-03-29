@@ -425,7 +425,7 @@ app.Run();</code></pre>
                 <hr style="border-color: var(--border); margin: 64px 0;">
 
                 <h2 id="storage-tutorials">Storage Engine Tutorials</h2>
-                <p class="lead">The <a href="https://github.com/maxakbar/csharpdb/tree/main/docs/tutorials/storage">storage tutorial track</a> is a guided path for learning <code>CSharpDB.Storage</code> — from architecture to extensibility to runnable code.</p>
+                <p class="lead">The <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/storage-tutorials">storage tutorial track</a> is a guided path for learning <code>CSharpDB.Storage</code> — from architecture to extensibility to runnable code.</p>
 
                 <div class="callout callout-info">
                     <strong>Prerequisites:</strong> Familiarity with .NET async patterns and clean architecture concepts. Read the <a href="database-modes.html">Database Modes</a> guide first for the high-level picture.
@@ -437,7 +437,7 @@ app.Run();</code></pre>
                         <h4>Architecture Deep Dive</h4>
                         <p>How Pager, WAL, B+tree, and SchemaCatalog fit together. File format, transaction flow, and recovery walkthroughs.</p>
                     </a>
-                    <a href="https://github.com/maxakbar/csharpdb/blob/main/docs/tutorials/storage/extensibility.md" class="next-step-card" style="text-decoration: none;">
+                    <a href="https://github.com/maxakbar/csharpdb/blob/main/samples/storage-tutorials/extensibility.md" class="next-step-card" style="text-decoration: none;">
                         <h4>Usage &amp; Extensibility</h4>
                         <p>Current extension points — custom storage devices, page caches, checkpoint policies, index providers, and more.</p>
                     </a>
@@ -507,11 +507,11 @@ app.Run();</code></pre>
 
                 <div class="code-block" data-title="Running the study examples">
                     <pre><code><span class="cm"># Clone and run the interactive REPL</span>
-<span class="kw">cd</span> docs/tutorials/storage/examples
+<span class="kw">cd</span> samples/storage-tutorials/examples
 <span class="kw">dotnet run</span> --project StorageStudyExamples.Repl
 
 <span class="cm"># Or run any advanced example directly</span>
-<span class="kw">cd</span> docs/tutorials/storage/examples/CSharpDB.GraphDB
+<span class="kw">cd</span> samples/storage-tutorials/examples/CSharpDB.GraphDB
 <span class="kw">dotnet run</span></code></pre>
                 </div>
 

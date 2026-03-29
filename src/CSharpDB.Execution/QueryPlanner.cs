@@ -44,6 +44,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "is_nullable", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_primary_key", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_identity", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -53,6 +54,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_unique", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemViewsColumns =
@@ -355,6 +357,7 @@ public sealed class QueryPlanner
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
             Nullable = c.IsNullable,
+            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
         }).ToArray();
 
         var schema = new TableSchema { TableName = stmt.TableName, Columns = columns, NextRowId = 1 };
@@ -393,9 +396,10 @@ public sealed class QueryPlanner
                     IsPrimaryKey = add.Column.IsPrimaryKey,
                     IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
                     Nullable = add.Column.IsNullable,
+                    Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.TypeToken, add.Column.Collation),
                 });
 
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols.ToArray() };
+                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols.ToArray(), NextRowId = schema.NextRowId };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
                 break;
             }
@@ -445,7 +449,7 @@ public sealed class QueryPlanner
 
                 await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols };
+                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols, NextRowId = schema.NextRowId };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
                 break;
             }
@@ -456,7 +460,7 @@ public sealed class QueryPlanner
                 if (_catalog.GetTable(rename.NewTableName) != null)
                     throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{rename.NewTableName}' already exists.");
 
-                var newSchema = new TableSchema { TableName = rename.NewTableName, Columns = schema.Columns };
+                var newSchema = new TableSchema { TableName = rename.NewTableName, Columns = schema.Columns, NextRowId = schema.NextRowId };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
@@ -482,11 +486,12 @@ public sealed class QueryPlanner
                             IsPrimaryKey = col.IsPrimaryKey,
                             IsIdentity = col.IsIdentity,
                             Nullable = col.Nullable,
+                            Collation = col.Collation,
                         }
                         : col
                 ).ToArray();
 
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols };
+                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols, NextRowId = schema.NextRowId };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
                 break;
             }
@@ -512,8 +517,12 @@ public sealed class QueryPlanner
         if (stmt.Columns.Count == 0)
             throw new CSharpDbException(ErrorCode.SyntaxError, "Index must reference at least one column.");
 
+        if (stmt.ColumnCollations.Count != 0 && stmt.ColumnCollations.Count != stmt.Columns.Count)
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Index collation metadata must align with index columns.");
+
         // Validate columns exist, are supported index types, and are not duplicated.
         var indexColumnIndices = new int[stmt.Columns.Count];
+        var indexColumnCollations = new string?[stmt.Columns.Count];
         for (int i = 0; i < stmt.Columns.Count; i++)
         {
             string columnName = stmt.Columns[i];
@@ -525,6 +534,12 @@ public sealed class QueryPlanner
             if (columnType is not (DbType.Integer or DbType.Text))
                 throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
 
+            string? columnCollation = i < stmt.ColumnCollations.Count
+                ? NormalizeCollationName(stmt.ColumnCollations[i])
+                : null;
+            if (columnCollation != null && columnType != DbType.Text)
+                throw new CSharpDbException(ErrorCode.TypeMismatch, $"COLLATE is only supported for TEXT index columns. Column '{columnName}' uses type '{columnType}'.");
+
             for (int j = 0; j < i; j++)
             {
                 if (indexColumnIndices[j] == colIdx)
@@ -532,6 +547,7 @@ public sealed class QueryPlanner
             }
 
             indexColumnIndices[i] = colIdx;
+            indexColumnCollations[i] = columnCollation;
         }
 
         var indexSchema = new IndexSchema
@@ -539,17 +555,13 @@ public sealed class QueryPlanner
             IndexName = stmt.IndexName,
             TableName = stmt.TableName,
             Columns = stmt.Columns,
+            ColumnCollations = indexColumnCollations,
             IsUnique = stmt.IsUnique,
             Kind = IndexKind.Sql,
+            OptionsJson = SqlIndexOptionsCodec.CreateDefaultOptionsJson(tableSchema, indexColumnIndices, indexColumnCollations),
         };
 
-        await _catalog.CreateIndexAsync(indexSchema, ct);
-        await IndexMaintenanceHelper.BackfillIndexAsync(
-            _catalog,
-            tableSchema,
-            indexSchema,
-            GetReadSerializer(tableSchema),
-            ct);
+        await CreateAndBackfillIndexWithOrderedTextFallbackAsync(indexSchema, tableSchema, ct);
 
         await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
@@ -566,6 +578,57 @@ public sealed class QueryPlanner
     }
 
     #endregion
+
+    private async ValueTask CreateAndBackfillIndexWithOrderedTextFallbackAsync(
+        IndexSchema indexSchema,
+        TableSchema tableSchema,
+        CancellationToken ct)
+    {
+        await _catalog.CreateIndexAsync(indexSchema, ct);
+        try
+        {
+            await IndexMaintenanceHelper.BackfillIndexAsync(
+                _catalog,
+                tableSchema,
+                indexSchema,
+                GetReadSerializer(tableSchema),
+                ct);
+        }
+        catch (OrderedTextIndexOverflowException) when (CanFallbackToHashedSqlIndex(indexSchema, tableSchema))
+        {
+            await _catalog.DropIndexAsync(indexSchema.IndexName, ct);
+            var fallbackSchema = CreateHashedSqlIndexSchema(indexSchema);
+            await _catalog.CreateIndexAsync(fallbackSchema, ct);
+            await IndexMaintenanceHelper.BackfillIndexAsync(
+                _catalog,
+                tableSchema,
+                fallbackSchema,
+                GetReadSerializer(tableSchema),
+                ct);
+        }
+    }
+
+    private static bool CanFallbackToHashedSqlIndex(IndexSchema indexSchema, TableSchema tableSchema)
+        => indexSchema.Kind == IndexKind.Sql &&
+           indexSchema.Columns.Count == 1 &&
+           tableSchema.GetColumnIndex(indexSchema.Columns[0]) is int columnIndex &&
+           columnIndex >= 0 &&
+           columnIndex < tableSchema.Columns.Count &&
+           tableSchema.Columns[columnIndex].Type == DbType.Text;
+
+    private static IndexSchema CreateHashedSqlIndexSchema(IndexSchema indexSchema) =>
+        new()
+        {
+            IndexName = indexSchema.IndexName,
+            TableName = indexSchema.TableName,
+            Columns = indexSchema.Columns,
+            ColumnCollations = indexSchema.ColumnCollations,
+            IsUnique = indexSchema.IsUnique,
+            Kind = indexSchema.Kind,
+            State = indexSchema.State,
+            OwnerIndexName = indexSchema.OwnerIndexName,
+            OptionsJson = null,
+        };
 
     #region DDL — Views
 
@@ -717,6 +780,7 @@ public sealed class QueryPlanner
         ColumnRefExpression col => col.TableAlias != null ? $"{col.TableAlias}.{col.ColumnName}" : col.ColumnName,
         BinaryExpression bin => $"({ExprToSql(bin.Left)} {BinaryOpToSql(bin.Op)} {ExprToSql(bin.Right)})",
         UnaryExpression un => un.Op == TokenType.Not ? $"NOT {ExprToSql(un.Operand)}" : $"-{ExprToSql(un.Operand)}",
+        CollateExpression collate => $"{ExprToSql(collate.Operand)} COLLATE {collate.Collation}",
         FunctionCallExpression func => func.IsStarArg ? $"{func.FunctionName}(*)"
             : $"{func.FunctionName}({(func.IsDistinct ? "DISTINCT " : "")}{string.Join(", ", func.Arguments.Select(ExprToSql))})",
         LikeExpression like => $"{ExprToSql(like.Operand)}{(like.Negated ? " NOT" : "")} LIKE {ExprToSql(like.Pattern)}",
@@ -955,6 +1019,12 @@ public sealed class QueryPlanner
                     Op = unary.Op,
                     Operand = await RewriteSubqueriesInExpressionAsync(unary.Operand, ct),
                 };
+            case CollateExpression collate:
+                return new CollateExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(collate.Operand, ct),
+                    Collation = collate.Collation,
+                };
             case LikeExpression like:
                 return new LikeExpression
                 {
@@ -1154,6 +1224,8 @@ public sealed class QueryPlanner
                     || ExpressionHasExternalReferences(binary.Right, visibleScopes);
             case UnaryExpression unary:
                 return ExpressionHasExternalReferences(unary.Operand, visibleScopes);
+            case CollateExpression collate:
+                return ExpressionHasExternalReferences(collate.Operand, visibleScopes);
             case LikeExpression like:
                 return ExpressionHasExternalReferences(like.Operand, visibleScopes)
                     || ExpressionHasExternalReferences(like.Pattern, visibleScopes)
@@ -1287,6 +1359,12 @@ public sealed class QueryPlanner
                 {
                     Op = unary.Op,
                     Operand = BindOuterScopesInExpression(unary.Operand, visibleScopes, outerScopes),
+                };
+            case CollateExpression collate:
+                return new CollateExpression
+                {
+                    Operand = BindOuterScopesInExpression(collate.Operand, visibleScopes, outerScopes),
+                    Collation = collate.Collation,
                 };
             case LikeExpression like:
                 return new LikeExpression
@@ -1558,6 +1636,7 @@ public sealed class QueryPlanner
         ExistsExpression => true,
         BinaryExpression binary => ContainsSubqueries(binary.Left) || ContainsSubqueries(binary.Right),
         UnaryExpression unary => ContainsSubqueries(unary.Operand),
+        CollateExpression collate => ContainsSubqueries(collate.Operand),
         LikeExpression like => ContainsSubqueries(like.Operand)
             || ContainsSubqueries(like.Pattern)
             || (like.EscapeChar != null && ContainsSubqueries(like.EscapeChar)),
@@ -1939,6 +2018,12 @@ public sealed class QueryPlanner
                 {
                     Op = unary.Op,
                     Operand = ResolveNewOldRefsInExpression(unary.Operand, compositeRow, compositeSchema),
+                };
+            case CollateExpression collate:
+                return new CollateExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(collate.Operand, compositeRow, compositeSchema),
+                    Collation = collate.Collation,
                 };
             case LikeExpression like:
                 return new LikeExpression
@@ -2682,6 +2767,12 @@ public sealed class QueryPlanner
                     Op = unary.Op,
                     Operand = await RewriteCorrelatedExpressionAsync(unary.Operand, outerScopes, ct),
                 };
+            case CollateExpression collate:
+                return new CollateExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(collate.Operand, outerScopes, ct),
+                    Collation = collate.Collation,
+                };
             case LikeExpression like:
                 return new LikeExpression
                 {
@@ -3415,6 +3506,7 @@ public sealed class QueryPlanner
         IndexSchema? matchedIndex = null;
         IIndexStore? indexStore = null;
         bool predicateRequiresResidual = false;
+        DbValue normalizedPredicateLiteral = predicateLiteral;
 
         if (isPrimaryKeyLookup)
         {
@@ -3424,7 +3516,7 @@ public sealed class QueryPlanner
         else
         {
             var indexes = _catalog.GetSqlIndexesForTable(lookup.TableName);
-            matchedIndex = FindLookupIndexForColumn(indexes, schema.Columns[predicateColumnIndex].Name);
+            matchedIndex = FindLookupIndexForColumn(indexes, schema, predicateColumnIndex);
             if (matchedIndex == null)
                 return false;
 
@@ -3437,10 +3529,16 @@ public sealed class QueryPlanner
                 return false;
             }
 
+            normalizedPredicateLiteral = predicateUsesDirectIntegerKey
+                ? predicateLiteral
+                : NormalizeLookupLiteralForIndex(predicateLiteral, matchedIndex, schema, 0, predicateColumnIndex);
             lookupValue = predicateUsesDirectIntegerKey
                 ? predicateLiteral.AsInteger
-                : ComputeIndexKey([predicateLiteral]);
+                : ComputeLookupKeyForIndex(matchedIndex, schema, 0, predicateColumnIndex, normalizedPredicateLiteral);
             indexStore = _catalog.GetIndexStore(matchedIndex.IndexName, _pager);
+            string?[]? expectedKeyCollations = predicateUsesDirectIntegerKey
+                ? null
+                : [CollationSupport.GetEffectiveIndexColumnCollation(matchedIndex, schema, 0, predicateColumnIndex)];
             lookupOp = matchedIndex.IsUnique && predicateUsesDirectIntegerKey
                 ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
                 : new IndexScanOperator(
@@ -3450,7 +3548,9 @@ public sealed class QueryPlanner
                     lookupValue,
                     GetReadSerializer(schema),
                     predicateUsesDirectIntegerKey ? null : [predicateColumnIndex],
-                    predicateUsesDirectIntegerKey ? null : [predicateLiteral]);
+                    predicateUsesDirectIntegerKey ? null : [normalizedPredicateLiteral],
+                    expectedKeyCollations,
+                    IndexMaintenanceHelper.UsesOrderedTextIndexKey(matchedIndex, schema));
         }
 
         if (predicateRequiresResidual && lookup.HasResidualPredicate)
@@ -3476,6 +3576,9 @@ public sealed class QueryPlanner
             }
 
             if (lookupOp is not IPreDecodeFilterSupport preDecodeFilterTarget)
+                return false;
+
+            if (!CanPushDownPredicate(schema, residualColumnIndex, residualLiteral))
                 return false;
 
             preDecodeFilterTarget.SetPreDecodeFilter(
@@ -3561,6 +3664,8 @@ public sealed class QueryPlanner
             }
 
             if (!predicateUsesDirectIntegerKey &&
+                matchedIndex != null &&
+                !IndexMaintenanceHelper.UsesOrderedTextIndexKey(matchedIndex, schema) &&
                 CanProjectPrimaryKeyOrKeyColumns(
                     projectionColumnIndices,
                     schema,
@@ -3575,7 +3680,7 @@ public sealed class QueryPlanner
                         outputColumns,
                         projectionColumnIndices,
                         [predicateColumnIndex],
-                        [predicateLiteral],
+                        [normalizedPredicateLiteral],
                         GetReadSerializer(schema)));
                 return true;
             }
@@ -4212,7 +4317,10 @@ public sealed class QueryPlanner
 
         indexedSource ??= TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
         if (indexedSource == null)
-            indexedSource = TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
+        {
+            indexedSource = TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere)
+                ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
+        }
 
         if (indexedSource is IEncodedPayloadSource &&
             ShouldUseIndexedPayloadAggregateFastPath(simpleRef.TableName, schema, indexedSource))
@@ -5909,6 +6017,8 @@ public sealed class QueryPlanner
 
             case UnaryExpression unary:
                 return TryCollectReferencedJoinTables(unary.Operand, leaves, referencedTables);
+            case CollateExpression collate:
+                return TryCollectReferencedJoinTables(collate.Operand, leaves, referencedTables);
 
             case LikeExpression like:
                 return TryCollectReferencedJoinTables(like.Operand, leaves, referencedTables) &&
@@ -6054,8 +6164,10 @@ public sealed class QueryPlanner
         bool lookupIsUnique = false;
         bool lookupIsPrimaryKey = false;
         bool usesDirectIntegerLookup = false;
+        bool usesOrderedTextLookupPayload = false;
         int[]? orderedLeftKeyIndices = null;
         int[]? orderedRightKeyIndices = null;
+        string?[]? orderedRightKeyCollations = null;
 
         int rightPkIndex = rightSchema.PrimaryKeyColumnIndex;
         bool usesPrimaryKeyLookup =
@@ -6094,11 +6206,13 @@ public sealed class QueryPlanner
                 var idx = indexes[i];
                 if (!TryMatchJoinLookupIndex(
                         idx,
+                        leftSchema,
                         rightSchema,
                         leftKeyIndices,
                         rightKeyIndices,
                         out var candidateLeftKeyIndices,
-                        out var candidateRightKeyIndices))
+                        out var candidateRightKeyIndices,
+                        out var candidateRightKeyCollations))
                 {
                     continue;
                 }
@@ -6106,6 +6220,9 @@ public sealed class QueryPlanner
                 bool candidateUsesDirectIntegerKey =
                     candidateRightKeyIndices.Length == 1 &&
                     rightSchema.Columns[candidateRightKeyIndices[0]].Type == DbType.Integer;
+                bool candidateUsesOrderedTextPayload =
+                    !candidateUsesDirectIntegerKey &&
+                    IndexMaintenanceHelper.UsesOrderedTextIndexKey(idx, rightSchema);
 
                 if (selected == null ||
                     (idx.IsUnique && !selected.IsUnique) ||
@@ -6114,7 +6231,9 @@ public sealed class QueryPlanner
                     selected = idx;
                     selectedLeftKeyIndices = candidateLeftKeyIndices;
                     selectedRightKeyIndices = candidateRightKeyIndices;
+                    orderedRightKeyCollations = candidateRightKeyCollations;
                     selectedUsesDirectIntegerKey = candidateUsesDirectIntegerKey;
+                    usesOrderedTextLookupPayload = candidateUsesOrderedTextPayload;
                 }
             }
 
@@ -6188,13 +6307,15 @@ public sealed class QueryPlanner
                 join.JoinType,
                 orderedLeftKeyIndices,
                 orderedRightKeyIndices,
+                orderedRightKeyCollations ?? Array.Empty<string?>(),
                 leftSchema.Columns.Count,
                 rightSchema.Columns.Count,
                 rightSchema.PrimaryKeyColumnIndex,
                 residualCondition,
                 compositeSchema,
-                GetReadSerializer(rightSchema),
-                estimatedOutputRowCount);
+                usesOrderedTextPayload: usesOrderedTextLookupPayload,
+                recordSerializer: GetReadSerializer(rightSchema),
+                estimatedOutputRowCount: estimatedOutputRowCount);
         }
 
         return true;
@@ -6202,14 +6323,17 @@ public sealed class QueryPlanner
 
     private static bool TryMatchJoinLookupIndex(
         IndexSchema indexSchema,
+        TableSchema leftSchema,
         TableSchema rightSchema,
         ReadOnlySpan<int> leftKeyIndices,
         ReadOnlySpan<int> rightKeyIndices,
         out int[] orderedLeftKeyIndices,
-        out int[] orderedRightKeyIndices)
+        out int[] orderedRightKeyIndices,
+        out string?[] orderedRightKeyCollations)
     {
         orderedLeftKeyIndices = Array.Empty<int>();
         orderedRightKeyIndices = Array.Empty<int>();
+        orderedRightKeyCollations = Array.Empty<string?>();
 
         if (indexSchema.Columns.Count != rightKeyIndices.Length)
             return false;
@@ -6217,6 +6341,7 @@ public sealed class QueryPlanner
         var consumed = new bool[rightKeyIndices.Length];
         orderedLeftKeyIndices = new int[indexSchema.Columns.Count];
         orderedRightKeyIndices = new int[indexSchema.Columns.Count];
+        orderedRightKeyCollations = new string?[indexSchema.Columns.Count];
 
         for (int indexColumn = 0; indexColumn < indexSchema.Columns.Count; indexColumn++)
         {
@@ -6230,6 +6355,9 @@ public sealed class QueryPlanner
                 int rightKeyIndex = rightKeyIndices[candidate];
                 if (rightKeyIndex < 0 || rightKeyIndex >= rightSchema.Columns.Count)
                     return false;
+                int leftKeyIndex = leftKeyIndices[candidate];
+                if (leftKeyIndex < 0 || leftKeyIndex >= leftSchema.Columns.Count)
+                    return false;
 
                 if (!string.Equals(
                         rightSchema.Columns[rightKeyIndex].Name,
@@ -6238,6 +6366,22 @@ public sealed class QueryPlanner
                 {
                     continue;
                 }
+
+                DbType rightType = rightSchema.Columns[rightKeyIndex].Type;
+                DbType leftType = leftSchema.Columns[leftKeyIndex].Type;
+                if (leftType != rightType)
+                    return false;
+                if (rightType is not (DbType.Integer or DbType.Text))
+                    return false;
+
+                string? effectiveIndexCollation = rightType == DbType.Text
+                    ? CollationSupport.GetEffectiveIndexColumnCollation(indexSchema, rightSchema, indexColumn, rightKeyIndex)
+                    : null;
+                string? leftCollation = leftType == DbType.Text
+                    ? CollationSupport.NormalizeMetadataName(leftSchema.Columns[leftKeyIndex].Collation)
+                    : null;
+                if (!CollationSupport.SemanticallyEquals(leftCollation, effectiveIndexCollation))
+                    return false;
 
                 match = candidate;
                 break;
@@ -6249,6 +6393,9 @@ public sealed class QueryPlanner
             consumed[match] = true;
             orderedLeftKeyIndices[indexColumn] = leftKeyIndices[match];
             orderedRightKeyIndices[indexColumn] = rightKeyIndices[match];
+            orderedRightKeyCollations[indexColumn] = rightSchema.Columns[rightKeyIndices[match]].Type == DbType.Text
+                ? CollationSupport.GetEffectiveIndexColumnCollation(indexSchema, rightSchema, indexColumn, rightKeyIndices[match])
+                : null;
         }
 
         return true;
@@ -6793,8 +6940,15 @@ public sealed class QueryPlanner
     {
         candidate = default;
 
-        if (!TryExtractIndexEqualityLookupTerm(expression, schema, out int columnIndex, out DbValue lookupLiteral))
+        if (!TryExtractIndexEqualityLookupTerm(
+                expression,
+                schema,
+                out int columnIndex,
+                out DbValue lookupLiteral,
+                out string? queryCollation))
+        {
             return false;
+        }
 
         if (hasIntegerPk &&
             columnIndex == pkIdx &&
@@ -6814,16 +6968,19 @@ public sealed class QueryPlanner
         }
 
         string columnName = schema.Columns[columnIndex].Name;
-        var matchedIndex = FindLookupIndexForColumn(indexes, columnName);
+        var matchedIndex = FindLookupIndexForColumn(indexes, schema, columnIndex, queryCollation);
         if (matchedIndex == null)
             return false;
 
         bool usesDirectIntegerKey =
             lookupLiteral.Type == DbType.Integer &&
             schema.Columns[columnIndex].Type == DbType.Integer;
+        DbValue normalizedLookupLiteral = usesDirectIntegerKey
+            ? lookupLiteral
+            : NormalizeLookupLiteralForIndex(lookupLiteral, matchedIndex, schema, 0, columnIndex);
         long lookupValue = usesDirectIntegerKey
             ? lookupLiteral.AsInteger
-            : ComputeIndexKey(new[] { lookupLiteral });
+            : ComputeLookupKeyForIndex(matchedIndex, schema, 0, columnIndex, normalizedLookupLiteral);
         long estimatedRows = 0;
         long tableRowCount = 0;
         bool hasEstimatedRows = !matchedIndex.IsUnique &&
@@ -6842,7 +6999,7 @@ public sealed class QueryPlanner
                 ? 1
                 : hasEstimatedRows ? tableRowCount : null,
             KeyColumnIndices: usesDirectIntegerKey ? null : [columnIndex],
-            KeyComponents: usesDirectIntegerKey ? null : [lookupLiteral]);
+            KeyComponents: usesDirectIntegerKey ? null : [normalizedLookupLiteral]);
         return true;
     }
 
@@ -6929,21 +7086,35 @@ public sealed class QueryPlanner
             return false;
 
         Dictionary<int, DbValue>? equalityLiteralsByColumn = null;
+        Dictionary<int, string?>? equalityCollationsByColumn = null;
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (!TryExtractIndexEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out DbValue literal))
+            if (!TryExtractIndexEqualityLookupTerm(
+                    conjuncts[i],
+                    schema,
+                    out int columnIndex,
+                    out DbValue literal,
+                    out string? queryCollation))
+            {
                 continue;
+            }
 
             equalityLiteralsByColumn ??= new Dictionary<int, DbValue>();
+            equalityCollationsByColumn ??= new Dictionary<int, string?>();
             if (equalityLiteralsByColumn.TryGetValue(columnIndex, out DbValue existing))
             {
-                if (DbValue.Compare(existing, literal) != 0)
+                string? existingCollation = equalityCollationsByColumn[columnIndex];
+                if (!CollationSupport.SemanticallyEquals(existingCollation, queryCollation) ||
+                    CollationSupport.Compare(existing, literal, queryCollation) != 0)
+                {
                     return false;
+                }
 
                 continue;
             }
 
             equalityLiteralsByColumn[columnIndex] = literal;
+            equalityCollationsByColumn[columnIndex] = queryCollation;
         }
 
         if (equalityLiteralsByColumn == null || equalityLiteralsByColumn.Count < 2)
@@ -6999,10 +7170,17 @@ public sealed class QueryPlanner
                 }
 
                 candidateColumnIndices[i] = colIndex;
-                candidateKeyComponents[i] = literal;
+                candidateKeyComponents[i] = NormalizeLookupLiteralForIndex(literal, idx, schema, i, colIndex);
             }
 
             if (!matches)
+                continue;
+
+            string?[] candidateQueryCollations = new string?[idx.Columns.Count];
+            for (int i = 0; i < idx.Columns.Count; i++)
+                candidateQueryCollations[i] = equalityCollationsByColumn![candidateColumnIndices[i]];
+
+            if (!CollationSupport.CanUseIndexForLookup(idx, schema, candidateColumnIndices, candidateQueryCollations))
                 continue;
 
             long key = ComputeIndexKey(candidateKeyComponents);
@@ -7063,6 +7241,10 @@ public sealed class QueryPlanner
             return new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
 
         var indexStore = _catalog.GetIndexStore(index!.IndexName, _pager);
+        string?[]? expectedKeyCollations = expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 }
+            ? CollationSupport.GetEffectiveIndexColumnCollations(index, schema, expectedKeyColumnIndices)
+            : null;
+        bool usesOrderedTextPayload = IndexMaintenanceHelper.UsesOrderedTextIndexKey(index, schema);
         return index.IsUnique && UsesDirectIntegerIndexKey(index, schema)
             ? new UniqueIndexLookupOperator(indexStore, tableTree, schema, lookupValue, GetReadSerializer(schema))
             : new IndexScanOperator(
@@ -7072,7 +7254,9 @@ public sealed class QueryPlanner
                 lookupValue,
                 GetReadSerializer(schema),
                 expectedKeyColumnIndices,
-                expectedKeyComponents);
+                expectedKeyComponents,
+                expectedKeyCollations,
+                usesOrderedTextPayload);
     }
 
     private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)
@@ -7135,18 +7319,34 @@ public sealed class QueryPlanner
         Expression expression,
         TableSchema schema,
         out int columnIndex,
-        out DbValue lookupLiteral)
+        out DbValue lookupLiteral,
+        out string? queryCollation)
     {
         columnIndex = -1;
         lookupLiteral = DbValue.Null;
+        queryCollation = null;
 
         if (expression is not BinaryExpression { Op: BinaryOp.Equals } eq)
             return false;
 
-        if (TryExtractColumnIndexLiteralPair(eq.Left, eq.Right, schema, out columnIndex, out lookupLiteral))
+        if (TryExtractColumnIndexLiteralPair(
+                eq.Left,
+                eq.Right,
+                schema,
+                out columnIndex,
+                out lookupLiteral,
+                out queryCollation))
+        {
             return true;
+        }
 
-        return TryExtractColumnIndexLiteralPair(eq.Right, eq.Left, schema, out columnIndex, out lookupLiteral);
+        return TryExtractColumnIndexLiteralPair(
+            eq.Right,
+            eq.Left,
+            schema,
+            out columnIndex,
+            out lookupLiteral,
+            out queryCollation);
     }
 
     private static bool TryExtractColumnIndexLiteralPair(
@@ -7154,10 +7354,17 @@ public sealed class QueryPlanner
         Expression literalSide,
         TableSchema schema,
         out int columnIndex,
-        out DbValue lookupLiteral)
+        out DbValue lookupLiteral,
+        out string? queryCollation)
     {
         columnIndex = -1;
         lookupLiteral = DbValue.Null;
+        queryCollation = null;
+
+        queryCollation = CollationSupport.ResolveComparisonCollation(columnSide, literalSide, schema);
+
+        columnSide = CollationSupport.StripCollation(columnSide);
+        literalSide = CollationSupport.StripCollation(literalSide);
 
         if (columnSide is not ColumnRefExpression col || literalSide is not LiteralExpression lit)
             return false;
@@ -7184,8 +7391,11 @@ public sealed class QueryPlanner
 
     private static IndexSchema? FindLookupIndexForColumn(
         IReadOnlyList<IndexSchema> indexes,
-        string columnName)
+        TableSchema schema,
+        int columnIndex,
+        string? queryCollation = null)
     {
+        string columnName = schema.Columns[columnIndex].Name;
         IndexSchema? firstNonUnique = null;
 
         for (int i = 0; i < indexes.Count; i++)
@@ -7197,6 +7407,9 @@ public sealed class QueryPlanner
                 continue;
             }
 
+            if (!CollationSupport.CanUseIndexForLookup(idx, schema, [columnIndex], [queryCollation]))
+                continue;
+
             if (idx.IsUnique)
                 return idx;
 
@@ -7204,6 +7417,22 @@ public sealed class QueryPlanner
         }
 
         return firstNonUnique;
+    }
+
+    private static DbValue NormalizeLookupLiteralForIndex(
+        DbValue literal,
+        IndexSchema index,
+        TableSchema schema,
+        int indexColumnPosition,
+        int schemaColumnIndex)
+    {
+        string? effectiveCollation = CollationSupport.GetEffectiveIndexColumnCollation(
+            index,
+            schema,
+            indexColumnPosition,
+            schemaColumnIndex);
+
+        return CollationSupport.NormalizeIndexValue(literal, effectiveCollation);
     }
 
     private bool TryFindDirectIntegerIndexForColumn(
@@ -7223,7 +7452,8 @@ public sealed class QueryPlanner
 
         var matchedIndex = FindLookupIndexForColumn(
             _catalog.GetSqlIndexesForTable(tableName),
-            schema.Columns[columnIndex].Name);
+            schema,
+            columnIndex);
         if (matchedIndex == null || !UsesDirectIntegerIndexKey(matchedIndex, schema))
             return false;
 
@@ -7233,6 +7463,24 @@ public sealed class QueryPlanner
 
     private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
         => IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+
+    private static long ComputeLookupKeyForIndex(
+        IndexSchema index,
+        TableSchema schema,
+        int indexColumnPosition,
+        int schemaColumnIndex,
+        DbValue normalizedLiteral)
+    {
+        if (normalizedLiteral.Type == DbType.Text &&
+            index.Columns.Count == 1 &&
+            indexColumnPosition == 0 &&
+            IndexMaintenanceHelper.UsesOrderedTextIndexKey(index, schema))
+        {
+            return OrderedTextIndexKeyCodec.ComputeKey(normalizedLiteral.AsText);
+        }
+
+        return ComputeIndexKey([normalizedLiteral]);
+    }
 
     /// <summary>
     /// Attempts to satisfy ORDER BY with natural/index order for a simple single-table query.
@@ -7264,7 +7512,9 @@ public sealed class QueryPlanner
         if (orderBy.Descending)
             return false;
 
-        if (orderBy.Expression is not ColumnRefExpression columnRef)
+        string? orderQueryCollation = CollationSupport.ResolveExpressionCollation(orderBy.Expression, schema);
+        Expression orderExpression = CollationSupport.StripCollation(orderBy.Expression);
+        if (orderExpression is not ColumnRefExpression columnRef)
             return false;
 
         if (columnRef.TableAlias != null)
@@ -7281,13 +7531,17 @@ public sealed class QueryPlanner
             return false;
 
         var orderColumn = schema.Columns[orderColumnIndex];
-        if (orderColumn.Type != DbType.Integer)
+        if (orderColumn.Type is not (DbType.Integer or DbType.Text))
             return false;
 
         // INTEGER PRIMARY KEY is physically the table B+tree key, and table scan is key-ordered.
         int pkIdx = schema.PrimaryKeyColumnIndex;
-        if (pkIdx == orderColumnIndex && currentSource is TableScanOperator)
+        if (orderColumn.Type == DbType.Integer &&
+            pkIdx == orderColumnIndex &&
+            currentSource is TableScanOperator)
+        {
             return true;
+        }
 
         if (!stmt.Limit.HasValue &&
             !CanUseCoveredOrderedIndexScanWithoutLimit(stmt, schema, orderColumnIndex))
@@ -7300,7 +7554,26 @@ public sealed class QueryPlanner
         if (orderColumn.Nullable)
             return false;
 
-        ExtractOrderedIndexRange(where, schema, orderColumnIndex, out var scanRange, out remainingWhere, out _);
+        IndexScanRange scanRange;
+        string? orderedTextLowerBound = null;
+        string? orderedTextUpperBound = null;
+        if (orderColumn.Type == DbType.Integer)
+        {
+            ExtractOrderedIndexRange(where, schema, orderColumnIndex, out scanRange, out remainingWhere, out _);
+        }
+        else
+        {
+            ExtractOrderedTextIndexRange(
+                where,
+                schema,
+                orderColumnIndex,
+                orderQueryCollation ?? orderColumn.Collation,
+                out scanRange,
+                out orderedTextLowerBound,
+                out orderedTextUpperBound,
+                out remainingWhere,
+                out _);
+        }
 
         var indexes = _catalog.GetSqlIndexesForTable(tableRef.TableName);
         foreach (var idx in indexes)
@@ -7311,6 +7584,13 @@ public sealed class QueryPlanner
                 continue;
             }
 
+            bool isSupportedOrderedIndex = orderColumn.Type == DbType.Integer
+                ? UsesDirectIntegerIndexKey(idx, schema)
+                : IndexMaintenanceHelper.UsesOrderedTextIndexKey(idx, schema) &&
+                  CollationSupport.CanUseIndexForLookup(idx, schema, [orderColumnIndex], [orderQueryCollation]);
+            if (!isSupportedOrderedIndex)
+                continue;
+
             var indexStore = _catalog.GetIndexStore(idx.IndexName, _pager);
             var tableTree = _catalog.GetTableTree(tableRef.TableName, _pager);
             replacementSource = new IndexOrderedScanOperator(
@@ -7319,7 +7599,12 @@ public sealed class QueryPlanner
                 schema,
                 orderColumnIndex,
                 scanRange,
-                GetReadSerializer(schema));
+                usesOrderedTextPayload: orderColumn.Type == DbType.Text,
+                orderedTextLowerBound: orderedTextLowerBound,
+                orderedTextLowerInclusive: scanRange.LowerInclusive,
+                orderedTextUpperBound: orderedTextUpperBound,
+                orderedTextUpperInclusive: scanRange.UpperInclusive,
+                recordSerializer: GetReadSerializer(schema));
             return true;
         }
 
@@ -7362,7 +7647,8 @@ public sealed class QueryPlanner
         var serializer = GetReadSerializer(baseSchema);
 
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
-            ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
+            ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere)
+            ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
         if (indexOp == null)
             return false;
 
@@ -7692,7 +7978,85 @@ public sealed class QueryPlanner
             schema,
             keyColumnIndex,
             selectedRange,
-            GetReadSerializer(schema));
+            usesOrderedTextPayload: false,
+            recordSerializer: GetReadSerializer(schema));
+    }
+
+    private IOperator? TryBuildOrderedTextIndexRangeScan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out Expression? remaining)
+    {
+        remaining = where;
+        var indexes = _catalog.GetSqlIndexesForTable(tableName);
+        if (indexes.Count == 0)
+            return null;
+
+        IndexSchema? selectedIndex = null;
+        IndexScanRange selectedRange = default;
+        string? selectedLowerBound = null;
+        string? selectedUpperBound = null;
+        Expression? selectedRemaining = where;
+        int selectedScore = int.MinValue;
+        int selectedColumnIndex = -1;
+
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var idx = indexes[i];
+            if (!IndexMaintenanceHelper.UsesOrderedTextIndexKey(idx, schema))
+                continue;
+
+            int columnIndex = schema.GetColumnIndex(idx.Columns[0]);
+            if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
+                continue;
+
+            string? effectiveCollation = CollationSupport.GetEffectiveIndexColumnCollation(idx, schema, 0, columnIndex);
+            ExtractOrderedTextIndexRange(
+                where,
+                schema,
+                columnIndex,
+                effectiveCollation,
+                out var scanRange,
+                out var normalizedLowerBound,
+                out var normalizedUpperBound,
+                out var residualWhere,
+                out int consumedTermCount);
+
+            if (consumedTermCount == 0)
+                continue;
+
+            int score = consumedTermCount * 10 + (idx.IsUnique ? 1 : 0);
+            if (score <= selectedScore)
+                continue;
+
+            selectedScore = score;
+            selectedIndex = idx;
+            selectedRange = scanRange;
+            selectedLowerBound = normalizedLowerBound;
+            selectedUpperBound = normalizedUpperBound;
+            selectedRemaining = residualWhere;
+            selectedColumnIndex = columnIndex;
+        }
+
+        if (selectedIndex == null || selectedColumnIndex < 0)
+            return null;
+
+        remaining = selectedRemaining;
+        var indexStore = _catalog.GetIndexStore(selectedIndex.IndexName, _pager);
+        var tableTree = _catalog.GetTableTree(tableName, _pager);
+        return new IndexOrderedScanOperator(
+            indexStore,
+            tableTree,
+            schema,
+            selectedColumnIndex,
+            selectedRange,
+            usesOrderedTextPayload: true,
+            orderedTextLowerBound: selectedLowerBound,
+            orderedTextUpperBound: selectedUpperBound,
+            orderedTextLowerInclusive: selectedRange.LowerInclusive,
+            orderedTextUpperInclusive: selectedRange.UpperInclusive,
+            recordSerializer: GetReadSerializer(schema));
     }
 
     private static void ExtractOrderedIndexRange(
@@ -7923,6 +8287,326 @@ public sealed class QueryPlanner
         return lowerInclusive && upperInclusive;
     }
 
+    private static void ExtractOrderedTextIndexRange(
+        Expression? where,
+        TableSchema schema,
+        int orderColumnIndex,
+        string? expectedCollation,
+        out IndexScanRange range,
+        out string? normalizedLowerBound,
+        out string? normalizedUpperBound,
+        out Expression? remaining,
+        out int consumedTermCount)
+    {
+        consumedTermCount = 0;
+        normalizedLowerBound = null;
+        normalizedUpperBound = null;
+
+        if (where == null)
+        {
+            range = IndexScanRange.All;
+            remaining = null;
+            return;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(where, conjuncts);
+
+        var residualTerms = new List<Expression>(conjuncts.Count);
+        bool lowerInclusive = true;
+        bool upperInclusive = true;
+
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (TryExtractOrderedTextIndexBetweenRange(
+                    conjuncts[i],
+                    schema,
+                    orderColumnIndex,
+                    expectedCollation,
+                    out string betweenLow,
+                    out string betweenHigh))
+            {
+                consumedTermCount++;
+                ApplyLowerTextBound(ref normalizedLowerBound, ref lowerInclusive, betweenLow, inclusive: true);
+                ApplyUpperTextBound(ref normalizedUpperBound, ref upperInclusive, betweenHigh, inclusive: true);
+                continue;
+            }
+
+            if (!TryExtractOrderedTextIndexRangeTerm(
+                    conjuncts[i],
+                    schema,
+                    orderColumnIndex,
+                    expectedCollation,
+                    out var term))
+            {
+                residualTerms.Add(conjuncts[i]);
+                continue;
+            }
+
+            consumedTermCount++;
+            switch (term.Kind)
+            {
+                case TextRangeTermKind.Equal:
+                    ApplyLowerTextBound(ref normalizedLowerBound, ref lowerInclusive, term.Value, inclusive: true);
+                    ApplyUpperTextBound(ref normalizedUpperBound, ref upperInclusive, term.Value, inclusive: true);
+                    break;
+                case TextRangeTermKind.Lower:
+                    ApplyLowerTextBound(ref normalizedLowerBound, ref lowerInclusive, term.Value, term.Inclusive);
+                    break;
+                case TextRangeTermKind.Upper:
+                    ApplyUpperTextBound(ref normalizedUpperBound, ref upperInclusive, term.Value, term.Inclusive);
+                    break;
+            }
+        }
+
+        if (!IsTextRangeSatisfiable(normalizedLowerBound, lowerInclusive, normalizedUpperBound, upperInclusive))
+        {
+            range = new IndexScanRange(long.MaxValue, true, long.MinValue, true);
+            normalizedLowerBound = null;
+            normalizedUpperBound = null;
+            remaining = null;
+            return;
+        }
+
+        long? lowerKey = normalizedLowerBound != null
+            ? OrderedTextIndexKeyCodec.ComputeKey(normalizedLowerBound)
+            : null;
+        long? upperKey = normalizedUpperBound != null
+            ? OrderedTextIndexKeyCodec.ComputeKey(normalizedUpperBound)
+            : null;
+        range = new IndexScanRange(lowerKey, lowerInclusive, upperKey, upperInclusive);
+        remaining = CombineConjuncts(residualTerms);
+    }
+
+    private static bool TryExtractOrderedTextIndexBetweenRange(
+        Expression expression,
+        TableSchema schema,
+        int orderColumnIndex,
+        string? expectedCollation,
+        out string lowValue,
+        out string highValue)
+    {
+        lowValue = string.Empty;
+        highValue = string.Empty;
+
+        if (expression is not BetweenExpression { Negated: false } between)
+            return false;
+
+        if (!TryExtractColumnTextLiteralPair(
+                between.Operand,
+                between.Low,
+                schema,
+                expectedCollation,
+                out int lowColumnIndex,
+                out lowValue))
+        {
+            return false;
+        }
+
+        if (lowColumnIndex != orderColumnIndex)
+            return false;
+
+        if (!TryExtractColumnTextLiteralPair(
+                between.Operand,
+                between.High,
+                schema,
+                expectedCollation,
+                out int highColumnIndex,
+                out highValue))
+        {
+            return false;
+        }
+
+        return highColumnIndex == orderColumnIndex;
+    }
+
+    private enum TextRangeTermKind
+    {
+        Lower,
+        Upper,
+        Equal,
+    }
+
+    private readonly record struct TextIndexRangeTerm(
+        TextRangeTermKind Kind,
+        string Value,
+        bool Inclusive);
+
+    private static bool TryExtractOrderedTextIndexRangeTerm(
+        Expression expression,
+        TableSchema schema,
+        int orderColumnIndex,
+        string? expectedCollation,
+        out TextIndexRangeTerm term)
+    {
+        term = default;
+
+        if (expression is not BinaryExpression bin)
+            return false;
+
+        BinaryOp op = bin.Op;
+        if (op is not BinaryOp.Equals and
+            not BinaryOp.LessThan and
+            not BinaryOp.LessOrEqual and
+            not BinaryOp.GreaterThan and
+            not BinaryOp.GreaterOrEqual)
+        {
+            return false;
+        }
+
+        if (TryExtractColumnTextLiteralPair(
+                bin.Left,
+                bin.Right,
+                schema,
+                expectedCollation,
+                out int leftColumnIndex,
+                out string leftValue))
+        {
+            if (leftColumnIndex != orderColumnIndex)
+                return false;
+
+            return TryClassifyTextRangeTerm(op, leftValue, out term);
+        }
+
+        if (TryExtractColumnTextLiteralPair(
+                bin.Right,
+                bin.Left,
+                schema,
+                expectedCollation,
+                out int rightColumnIndex,
+                out string rightValue))
+        {
+            if (rightColumnIndex != orderColumnIndex)
+                return false;
+
+            return TryClassifyTextRangeTerm(ReverseComparison(op), rightValue, out term);
+        }
+
+        return false;
+    }
+
+    private static bool TryClassifyTextRangeTerm(BinaryOp op, string value, out TextIndexRangeTerm term)
+    {
+        term = op switch
+        {
+            BinaryOp.Equals => new TextIndexRangeTerm(TextRangeTermKind.Equal, value, Inclusive: true),
+            BinaryOp.GreaterThan => new TextIndexRangeTerm(TextRangeTermKind.Lower, value, Inclusive: false),
+            BinaryOp.GreaterOrEqual => new TextIndexRangeTerm(TextRangeTermKind.Lower, value, Inclusive: true),
+            BinaryOp.LessThan => new TextIndexRangeTerm(TextRangeTermKind.Upper, value, Inclusive: false),
+            BinaryOp.LessOrEqual => new TextIndexRangeTerm(TextRangeTermKind.Upper, value, Inclusive: true),
+            _ => default,
+        };
+
+        return op is BinaryOp.Equals or
+            BinaryOp.GreaterThan or
+            BinaryOp.GreaterOrEqual or
+            BinaryOp.LessThan or
+            BinaryOp.LessOrEqual;
+    }
+
+    private static bool TryExtractColumnTextLiteralPair(
+        Expression columnSide,
+        Expression literalSide,
+        TableSchema schema,
+        string? expectedCollation,
+        out int columnIndex,
+        out string normalizedText)
+    {
+        columnIndex = -1;
+        normalizedText = string.Empty;
+
+        string? queryCollation = CollationSupport.ResolveComparisonCollation(columnSide, literalSide, schema);
+        if (!CollationSupport.SemanticallyEquals(queryCollation, expectedCollation))
+            return false;
+
+        columnSide = CollationSupport.StripCollation(columnSide);
+        literalSide = CollationSupport.StripCollation(literalSide);
+
+        if (columnSide is not ColumnRefExpression col || literalSide is not LiteralExpression lit)
+            return false;
+
+        if (!TryConvertLiteral(lit, out DbValue literal) ||
+            literal.IsNull ||
+            literal.Type != DbType.Text)
+        {
+            return false;
+        }
+
+        int resolvedIndex = col.TableAlias != null
+            ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
+            : schema.GetColumnIndex(col.ColumnName);
+        if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
+            return false;
+
+        if (schema.Columns[resolvedIndex].Type != DbType.Text)
+            return false;
+
+        columnIndex = resolvedIndex;
+        normalizedText = CollationSupport.NormalizeText(literal.AsText, expectedCollation);
+        return true;
+    }
+
+    private static void ApplyLowerTextBound(ref string? existingBound, ref bool existingInclusive, string candidateValue, bool inclusive)
+    {
+        if (existingBound == null)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        int comparison = string.Compare(existingBound, candidateValue, StringComparison.Ordinal);
+        if (comparison < 0)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        if (comparison == 0)
+            existingInclusive &= inclusive;
+    }
+
+    private static void ApplyUpperTextBound(ref string? existingBound, ref bool existingInclusive, string candidateValue, bool inclusive)
+    {
+        if (existingBound == null)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        int comparison = string.Compare(existingBound, candidateValue, StringComparison.Ordinal);
+        if (comparison > 0)
+        {
+            existingBound = candidateValue;
+            existingInclusive = inclusive;
+            return;
+        }
+
+        if (comparison == 0)
+            existingInclusive &= inclusive;
+    }
+
+    private static bool IsTextRangeSatisfiable(
+        string? lowerBound,
+        bool lowerInclusive,
+        string? upperBound,
+        bool upperInclusive)
+    {
+        if (lowerBound == null || upperBound == null)
+            return true;
+
+        int comparison = string.Compare(lowerBound, upperBound, StringComparison.Ordinal);
+        if (comparison < 0)
+            return true;
+
+        if (comparison > 0)
+            return false;
+
+        return lowerInclusive && upperInclusive;
+    }
+
     private static bool TryPushDownSimplePreDecodeFilter(
         IOperator op,
         Expression where,
@@ -8044,25 +8728,36 @@ public sealed class QueryPlanner
         op = bin.Op;
         literal = DbValue.Null;
 
-        if (bin.Left is ColumnRefExpression leftCol && bin.Right is LiteralExpression rightLit)
-            return TryResolvePushdownOperand(leftCol, rightLit, schema, out columnIndex, out literal);
+        if (TryResolvePushdownOperand(bin.Left, bin.Right, schema, out columnIndex, out literal))
+            return true;
 
-        if (bin.Right is ColumnRefExpression rightCol && bin.Left is LiteralExpression leftLit)
+        if (TryResolvePushdownOperand(bin.Right, bin.Left, schema, out columnIndex, out literal))
         {
             op = ReverseComparison(bin.Op);
-            return TryResolvePushdownOperand(rightCol, leftLit, schema, out columnIndex, out literal);
+            return true;
         }
 
         return false;
     }
 
     private static bool TryResolvePushdownOperand(
-        ColumnRefExpression col,
-        LiteralExpression lit,
+        Expression columnExpression,
+        Expression literalExpression,
         TableSchema schema,
         out int columnIndex,
         out DbValue literal)
     {
+        string? queryCollation = CollationSupport.ResolveComparisonCollation(columnExpression, literalExpression, schema);
+        columnExpression = CollationSupport.StripCollation(columnExpression);
+        literalExpression = CollationSupport.StripCollation(literalExpression);
+
+        if (columnExpression is not ColumnRefExpression col || literalExpression is not LiteralExpression lit)
+        {
+            columnIndex = -1;
+            literal = DbValue.Null;
+            return false;
+        }
+
         columnIndex = col.TableAlias != null
             ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
             : schema.GetColumnIndex(col.ColumnName);
@@ -8076,7 +8771,22 @@ public sealed class QueryPlanner
         if (!TryConvertLiteral(lit, out literal))
             return false;
 
+        if (!CanPushDownPredicate(schema, columnIndex, literal, queryCollation))
+            return false;
+
         return true;
+    }
+
+    private static bool CanPushDownPredicate(TableSchema schema, int columnIndex, DbValue literal, string? queryCollation = null)
+    {
+        if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
+            return false;
+
+        if (schema.Columns[columnIndex].Type != DbType.Text || literal.Type != DbType.Text)
+            return true;
+
+        string? effectiveCollation = queryCollation ?? schema.Columns[columnIndex].Collation;
+        return CollationSupport.IsBinaryOrDefault(effectiveCollation);
     }
 
     private static BinaryOp ReverseComparison(BinaryOp op)
@@ -8135,8 +8845,19 @@ public sealed class QueryPlanner
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out DbValue[]? keyComponents))
+            string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
+            SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
+            if (!IndexMaintenanceHelper.TryBuildIndexKey(
+                    row,
+                    columnIndices,
+                    indexColumnCollations,
+                    usesDirectIntegerKey,
+                    storageMode,
+                    out long indexKey,
+                    out DbValue[]? keyComponents))
+            {
                 continue; // Don't index entries that include NULL.
+            }
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
 
@@ -8155,22 +8876,25 @@ public sealed class QueryPlanner
                 }
                 else
                 {
-                        await EnsureHashedUniqueConstraintAsync(
-                            indexStore,
-                            tableTree,
-                            schema,
-                            columnIndices,
-                            keyComponents!,
-                            indexKey,
-                            idx.IndexName,
+                    await IndexMaintenanceHelper.EnsureUniqueConstraintAsync(
+                        indexStore,
+                        tableTree,
+                        schema,
+                        GetReadSerializer(schema),
+                        columnIndices,
+                        indexColumnCollations,
+                        keyComponents!,
+                        indexKey,
+                        storageMode,
+                        idx.IndexName,
                         ct);
 
-                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
                 }
             }
             else
             {
-                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, ct);
+                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
             }
         }
     }
@@ -8191,11 +8915,22 @@ public sealed class QueryPlanner
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            if (!IndexMaintenanceHelper.TryBuildIndexKey(row, columnIndices, usesDirectIntegerKey, out long indexKey, out _))
+            string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
+            SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
+            if (!IndexMaintenanceHelper.TryBuildIndexKey(
+                    row,
+                    columnIndices,
+                    indexColumnCollations,
+                    usesDirectIntegerKey,
+                    storageMode,
+                    out long indexKey,
+                    out DbValue[]? keyComponents))
+            {
                 continue;
+            }
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
-            await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, indexKey, rowId, null, ct);
+            await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
         }
     }
 
@@ -8218,9 +8953,25 @@ public sealed class QueryPlanner
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
                 continue;
+            string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
+            SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
 
-            bool hasOldKey = IndexMaintenanceHelper.TryBuildIndexKey(oldRow, columnIndices, usesDirectIntegerKey, out long oldKey, out DbValue[]? oldComponents);
-            bool hasNewKey = IndexMaintenanceHelper.TryBuildIndexKey(newRow, columnIndices, usesDirectIntegerKey, out long newKey, out DbValue[]? newComponents);
+            bool hasOldKey = IndexMaintenanceHelper.TryBuildIndexKey(
+                oldRow,
+                columnIndices,
+                indexColumnCollations,
+                usesDirectIntegerKey,
+                storageMode,
+                out long oldKey,
+                out DbValue[]? oldComponents);
+            bool hasNewKey = IndexMaintenanceHelper.TryBuildIndexKey(
+                newRow,
+                columnIndices,
+                indexColumnCollations,
+                usesDirectIntegerKey,
+                storageMode,
+                out long newKey,
+                out DbValue[]? newComponents);
 
             // If neither index presence, key value, nor rowid changed, no maintenance needed.
             if (hasOldKey == hasNewKey &&
@@ -8235,7 +8986,7 @@ public sealed class QueryPlanner
             // Remove old entry.
             if (hasOldKey)
             {
-                await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, oldKey, oldRowId, oldComponents, ct);
+                await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, oldKey, oldRowId, oldComponents, storageMode, ct);
             }
 
             // Add new entry.
@@ -8256,112 +9007,28 @@ public sealed class QueryPlanner
                     }
                     else
                     {
-                        await EnsureHashedUniqueConstraintAsync(
+                        await IndexMaintenanceHelper.EnsureUniqueConstraintAsync(
                             indexStore,
                             tableTree,
                             schema,
+                            GetReadSerializer(schema),
                             columnIndices,
+                            indexColumnCollations,
                             newComponents!,
                             newKey,
+                            storageMode,
                             idx.IndexName,
                             ct);
 
-                        await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, ct);
+                        await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, storageMode, ct);
                     }
                 }
                 else
                 {
-                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, storageMode, ct);
                 }
             }
         }
-    }
-
-    private async ValueTask EnsureHashedUniqueConstraintAsync(
-        IIndexStore indexStore,
-        BTree tableTree,
-        TableSchema schema,
-        int[] indexColumnIndices,
-        DbValue[] keyComponents,
-        long indexKey,
-        string indexName,
-        CancellationToken ct)
-    {
-        var existing = await indexStore.FindAsync(indexKey, ct);
-        if (existing == null || existing.Length < 8)
-            return;
-
-        if (HashedIndexPayloadCodec.TryGetMatchingRowIds(existing, keyComponents, out var matchingPayload))
-        {
-            if (matchingPayload is { Length: > 0 })
-            {
-                throw new CSharpDbException(
-                    ErrorCode.ConstraintViolation,
-                    $"Duplicate key value in unique index '{indexName}'.");
-            }
-
-            return;
-        }
-
-        int entryCount = existing.Length / 8;
-        int maxIndexedColumn = indexColumnIndices.Max();
-
-        for (int i = 0; i < entryCount; i++)
-        {
-            long existingRowId = BitConverter.ToInt64(existing, i * 8);
-            var existingRowPayload = await tableTree.FindMemoryAsync(existingRowId, ct);
-            if (existingRowPayload is not { } existingRowPayloadMemory)
-                continue;
-
-            var existingRow = GetReadSerializer(schema).DecodeUpTo(existingRowPayloadMemory.Span, maxIndexedColumn);
-            if (IndexRowMatchesKeyComponents(existingRow, indexColumnIndices, keyComponents))
-            {
-                throw new CSharpDbException(
-                    ErrorCode.ConstraintViolation,
-                    $"Duplicate key value in unique index '{indexName}'.");
-            }
-        }
-    }
-
-    private static bool IndexRowMatchesKeyComponents(
-        DbValue[] row,
-        int[] indexColumnIndices,
-        DbValue[] keyComponents)
-    {
-        if (indexColumnIndices.Length != keyComponents.Length)
-            return false;
-
-        for (int i = 0; i < indexColumnIndices.Length; i++)
-        {
-            int colIdx = indexColumnIndices[i];
-            if (colIdx < 0 || colIdx >= row.Length)
-                return false;
-
-            var value = row[colIdx];
-            if (value.IsNull)
-                return false;
-
-            if (DbValue.Compare(value, keyComponents[i]) != 0)
-                return false;
-        }
-
-        return true;
-    }
-
-    private static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
-    {
-        if (ReferenceEquals(left, right))
-            return true;
-        if (left == null || right == null)
-            return false;
-        if (left.Length != right.Length)
-            return false;
-
-        for (int i = 0; i < left.Length; i++)
-            if (DbValue.Compare(left[i], right[i]) != 0)
-                return false;
-
-        return true;
     }
 
     /// <summary>
@@ -8428,6 +9095,7 @@ public sealed class QueryPlanner
                 || func.Arguments.Any(ContainsAggregate),
             BinaryExpression bin => ContainsAggregate(bin.Left) || ContainsAggregate(bin.Right),
             UnaryExpression un => ContainsAggregate(un.Operand),
+            CollateExpression collate => ContainsAggregate(collate.Operand),
             _ => false,
         };
     }
@@ -8752,6 +9420,8 @@ public sealed class QueryPlanner
                     && TryAccumulateMaxReferencedColumn(bin.Right, schema, ref maxColumnIndex);
             case UnaryExpression un:
                 return TryAccumulateMaxReferencedColumn(un.Operand, schema, ref maxColumnIndex);
+            case CollateExpression collate:
+                return TryAccumulateMaxReferencedColumn(collate.Operand, schema, ref maxColumnIndex);
             case LikeExpression like:
                 return TryAccumulateMaxReferencedColumn(like.Operand, schema, ref maxColumnIndex)
                     && TryAccumulateMaxReferencedColumn(like.Pattern, schema, ref maxColumnIndex)
@@ -8792,6 +9462,9 @@ public sealed class QueryPlanner
     {
         if (alias != null)
             return new ColumnDefinition { Name = alias, Type = DbType.Null, Nullable = true };
+
+        if (expr is CollateExpression collate)
+            return InferColumnDef(collate.Operand, alias, schema, index);
 
         if (expr is ColumnRefExpression colRef)
         {
@@ -8898,6 +9571,8 @@ public sealed class QueryPlanner
                     && TryAccumulateReferencedColumns(bin.Right, schema, referencedColumns);
             case UnaryExpression un:
                 return TryAccumulateReferencedColumns(un.Operand, schema, referencedColumns);
+            case CollateExpression collate:
+                return TryAccumulateReferencedColumns(collate.Operand, schema, referencedColumns);
             case LikeExpression like:
                 return TryAccumulateReferencedColumns(like.Operand, schema, referencedColumns)
                     && TryAccumulateReferencedColumns(like.Pattern, schema, referencedColumns)
@@ -9044,7 +9719,12 @@ public sealed class QueryPlanner
         var residualTerms = new List<Expression>(conjuncts.Count);
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (TryExtractIndexEqualityLookupTerm(conjuncts[i], schema, out int columnIndex, out DbValue literal))
+            if (TryExtractIndexEqualityLookupTerm(
+                    conjuncts[i],
+                    schema,
+                    out int columnIndex,
+                    out DbValue literal,
+                    out string? queryCollation))
             {
                 bool matchesLookupKey = false;
                 for (int componentIndex = 0; componentIndex < keyColumnIndices.Length; componentIndex++)
@@ -9052,7 +9732,7 @@ public sealed class QueryPlanner
                     if (keyColumnIndices[componentIndex] != columnIndex)
                         continue;
 
-                    if (DbValue.Compare(keyComponents[componentIndex], literal) == 0)
+                    if (CollationSupport.Compare(keyComponents[componentIndex], literal, queryCollation) == 0)
                     {
                         matchesLookupKey = true;
                         break;
@@ -9114,6 +9794,9 @@ public sealed class QueryPlanner
     {
         projectionOperator = null!;
 
+        if (indexScan.UsesOrderedTextPayload)
+            return false;
+
         if (indexScan.ExpectedKeyColumnIndices is not { Length: > 0 } keyColumnIndices ||
             indexScan.ExpectedKeyComponents is not { Length: > 0 } keyComponents)
         {
@@ -9141,6 +9824,13 @@ public sealed class QueryPlanner
         TableSchema schema,
         int keyColumnIndex)
     {
+        if (keyColumnIndex < 0 ||
+            keyColumnIndex >= schema.Columns.Count ||
+            schema.Columns[keyColumnIndex].Type != DbType.Integer)
+        {
+            return false;
+        }
+
         int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
         bool canProjectPrimaryKey = primaryKeyIndex >= 0 &&
             primaryKeyIndex < schema.Columns.Count &&
@@ -9276,6 +9966,7 @@ public sealed class QueryPlanner
             ColumnRefExpression col => col.TableAlias != null,
             BinaryExpression bin => ComputeRequiresQualifiedMappings(bin.Left) || ComputeRequiresQualifiedMappings(bin.Right),
             UnaryExpression un => ComputeRequiresQualifiedMappings(un.Operand),
+            CollateExpression collate => ComputeRequiresQualifiedMappings(collate.Operand),
             LikeExpression like => ComputeRequiresQualifiedMappings(like.Operand)
                 || ComputeRequiresQualifiedMappings(like.Pattern)
                 || (like.EscapeChar != null && ComputeRequiresQualifiedMappings(like.EscapeChar)),
@@ -9545,6 +10236,7 @@ public sealed class QueryPlanner
                     DbValue.FromInteger(col.Nullable ? 1 : 0),
                     DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
+                    col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                 ]);
             }
         }
@@ -9564,8 +10256,20 @@ public sealed class QueryPlanner
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
+            var tableSchema = _catalog.GetTable(index.TableName);
             for (int i = 0; i < index.Columns.Count; i++)
             {
+                string? collation = index.ColumnCollations.Count > i
+                    ? index.ColumnCollations[i]
+                    : null;
+
+                if (collation is null && tableSchema != null)
+                {
+                    int columnIndex = tableSchema.GetColumnIndex(index.Columns[i]);
+                    if (columnIndex >= 0 && columnIndex < tableSchema.Columns.Count)
+                        collation = tableSchema.Columns[columnIndex].Collation;
+                }
+
                 rows.Add(
                 [
                     DbValue.FromText(index.IndexName),
@@ -9573,6 +10277,7 @@ public sealed class QueryPlanner
                     DbValue.FromText(index.Columns[i]),
                     DbValue.FromInteger(i + 1),
                     DbValue.FromInteger(index.IsUnique ? 1 : 0),
+                    collation is null ? DbValue.Null : DbValue.FromText(collation),
                 ]);
             }
         }
@@ -9780,6 +10485,29 @@ public sealed class QueryPlanner
         TokenType.Blob => DbType.Blob,
         _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown type token: {token}"),
     };
+
+    private static string? NormalizeCollationName(string? collation)
+    {
+        string? normalized = CollationSupport.NormalizeMetadataName(collation);
+        if (!CollationSupport.IsSupported(normalized))
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Unsupported collation '{collation}'. Supported collations are {CollationSupport.DescribeSupportedCollations()}.");
+
+        return normalized;
+    }
+
+    private static string? ValidateAndNormalizeColumnCollation(string columnName, TokenType typeToken, string? collation)
+    {
+        string? normalized = NormalizeCollationName(collation);
+        if (normalized == null)
+            return null;
+
+        if (typeToken != TokenType.Text)
+            throw new CSharpDbException(ErrorCode.TypeMismatch, $"COLLATE is only supported for TEXT columns. Column '{columnName}' uses type '{typeToken}'.");
+
+        return normalized;
+    }
 
     private DbValue[] ResolveInsertRow(TableSchema schema, List<string>? columnNames, List<Expression> values)
     {

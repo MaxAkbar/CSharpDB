@@ -2,7 +2,7 @@
 
 A low-level, high-performance storage engine for .NET 10 built on top of `RandomAccess` and `SafeFileHandle`. It provides random-access async I/O, page caching, write-ahead logging (WAL), crash recovery, and the B+tree/index primitives that power the SQL engine and collection API.
 
-For the guided storage tutorial track, including the new advanced standalone examples, start with [docs/tutorials/storage/README.md](../tutorials/storage/README.md). For the package-oriented storage API overview and tuning presets, see [src/CSharpDB.Storage/README.md](../../src/CSharpDB.Storage/README.md).
+For the guided storage tutorial track, including the new advanced standalone examples, start with [samples/storage-tutorials/README.md](../../samples/storage-tutorials/README.md). For the package-oriented storage API overview and tuning presets, see [src/CSharpDB.Storage/README.md](../../src/CSharpDB.Storage/README.md).
 
 ---
 

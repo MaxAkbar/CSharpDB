@@ -5,7 +5,7 @@ namespace CSharpDB.Api.Dtos;
 // ─── Table / Column ─────────────────────────────────────────
 
 public sealed record RenameTableRequest(string NewName);
-public sealed record AddColumnRequest(string ColumnName, string Type, bool NotNull = false);
+public sealed record AddColumnRequest(string ColumnName, string Type, bool NotNull = false, string? Collation = null);
 public sealed record RenameColumnRequest(string NewName);
 
 // ─── Rows ───────────────────────────────────────────────────
@@ -15,8 +15,8 @@ public sealed record UpdateRowRequest(Dictionary<string, object?> Values);
 
 // ─── Indexes ────────────────────────────────────────────────
 
-public sealed record CreateIndexRequest(string IndexName, string TableName, string ColumnName, bool IsUnique = false);
-public sealed record UpdateIndexRequest(string NewIndexName, string TableName, string ColumnName, bool IsUnique = false);
+public sealed record CreateIndexRequest(string IndexName, string TableName, string ColumnName, bool IsUnique = false, string? Collation = null);
+public sealed record UpdateIndexRequest(string NewIndexName, string TableName, string ColumnName, bool IsUnique = false, string? Collation = null);
 
 // ─── Views ──────────────────────────────────────────────────
 

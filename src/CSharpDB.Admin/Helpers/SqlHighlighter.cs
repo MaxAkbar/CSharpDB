@@ -16,7 +16,7 @@ public static partial class SqlHighlighter
         "CREATE", "ALTER", "DROP", "TABLE", "INDEX", "VIEW", "TRIGGER",
         "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS", "ON",
         "ORDER", "BY", "ASC", "DESC", "GROUP", "HAVING", "LIMIT", "OFFSET",
-        "AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "UNION",
+        "AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "COLLATE", "UNION",
         "BEGIN", "END", "COMMIT", "ROLLBACK", "TRANSACTION",
         "PRIMARY", "KEY", "UNIQUE", "NOT", "DEFAULT", "CHECK", "FOREIGN", "REFERENCES",
         "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "ADD", "RENAME", "TO",

@@ -292,6 +292,14 @@ function Convert-TimeToNanoseconds
     throw "Unable to parse time value '$Value'."
 }
 
+function Test-MetricUnavailable
+{
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $text = $Value.Trim("'").Trim()
+    return [string]::IsNullOrWhiteSpace($text) -or $text -eq "NA" -or $text -eq "?"
+}
+
 function Convert-SizeToBytes
 {
     param([Parameter(Mandatory = $true)][string]$Value)
@@ -889,8 +897,26 @@ foreach ($check in $config.checks)
             continue
         }
 
-        $baselineMeanNs = Convert-TimeToNanoseconds -Value $baselineRow.Mean
-        $currentMeanNs = Convert-TimeToNanoseconds -Value $currentRow.Mean
+        $baselineMeanRaw = [string](Get-OptionalProperty -Object $baselineRow -Name "Mean" -DefaultValue "")
+        $currentMeanRaw = [string](Get-OptionalProperty -Object $currentRow -Name "Mean" -DefaultValue "")
+        if ((Test-MetricUnavailable -Value $baselineMeanRaw) -or (Test-MetricUnavailable -Value $currentMeanRaw))
+        {
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key $rowKey `
+                -BaselineMean $baselineMeanRaw `
+                -CurrentMean $currentMeanRaw `
+                -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
+                -CurrentAlloc ([string](Get-OptionalProperty -Object $currentRow -Name "Allocated" -DefaultValue "")) `
+                -Enforcement $machineCompatibility.Summary `
+                -Status "FAIL" `
+                -Notes "Benchmark did not produce a numeric Mean value"
+            $failureCount++
+            continue
+        }
+
+        $baselineMeanNs = Convert-TimeToNanoseconds -Value $baselineMeanRaw
+        $currentMeanNs = Convert-TimeToNanoseconds -Value $currentMeanRaw
         $meanDeltaPct = (($currentMeanNs - $baselineMeanNs) / $baselineMeanNs) * 100.0
 
         $skipAllocationComparison = [bool](Get-OptionalProperty -Object $check -Name "skipAllocationComparison" -DefaultValue $false)
@@ -911,6 +937,22 @@ foreach ($check in $config.checks)
                 -Enforcement $machineCompatibility.Summary `
                 -Status "FAIL" `
                 -Notes "Allocation column missing; set skipAllocationComparison=true for this check if alloc should not be compared"
+            $failureCount++
+            continue
+        }
+        if ($allocComparisonEnabled -and ((Test-MetricUnavailable -Value $baselineAlloc) -or (Test-MetricUnavailable -Value $currentAlloc)))
+        {
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key $rowKey `
+                -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
+                -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
+                -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
+                -BaselineAlloc $baselineAlloc `
+                -CurrentAlloc $currentAlloc `
+                -Enforcement $machineCompatibility.Summary `
+                -Status "FAIL" `
+                -Notes "Benchmark did not produce a numeric Allocated value; set skipAllocationComparison=true for this check if alloc should not be compared"
             $failureCount++
             continue
         }

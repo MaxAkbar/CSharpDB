@@ -109,7 +109,7 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         using var cmd = (CSharpDbCommand)conn.CreateCommand();
-        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);";
+        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE, age INTEGER);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
         var schema = conn.GetTableSchema("users");
@@ -121,6 +121,7 @@ public class ConnectionTests : IDisposable
         Assert.Equal(CSharpDB.Primitives.DbType.Integer, schema.Columns[0].Type);
         Assert.Equal("name", schema.Columns[1].Name);
         Assert.Equal(CSharpDB.Primitives.DbType.Text, schema.Columns[1].Type);
+        Assert.Equal("NOCASE", schema.Columns[1].Collation);
     }
 
     [Fact]
@@ -197,7 +198,7 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT, age INTEGER);";
+        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT COLLATE NOCASE, age INTEGER);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
         DataTable schema = conn.GetSchema("Columns");
@@ -213,10 +214,13 @@ public class ConnectionTests : IDisposable
         Assert.Equal("NO", rows[0]["IS_NULLABLE"]);
         Assert.True((bool)rows[0]["IS_PRIMARY_KEY"]);
         Assert.True((bool)rows[0]["IS_IDENTITY"]);
+        Assert.Equal(DBNull.Value, rows[0]["COLLATION_NAME"]);
+        Assert.Equal("NOCASE", rows[1]["COLLATION_NAME"]);
 
         DataTable filtered = conn.GetSchema("Columns", [null, null, "users", "name"]);
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());
         Assert.Equal("name", filteredRow["COLUMN_NAME"]);
+        Assert.Equal("NOCASE", filteredRow["COLLATION_NAME"]);
     }
 
     [Fact]
@@ -226,22 +230,27 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, age INTEGER);";
+        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT COLLATE NOCASE, age INTEGER);";
         await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "CREATE UNIQUE INDEX idx_users_email ON users(email);";
         await cmd.ExecuteNonQueryAsync(Ct);
         cmd.CommandText = "CREATE INDEX idx_users_age ON users(age);";
         await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "CREATE INDEX idx_users_email_binary ON users(email COLLATE BINARY);";
+        await cmd.ExecuteNonQueryAsync(Ct);
 
         DataTable schema = conn.GetSchema("Indexes");
-        Assert.Equal(2, schema.Rows.Count);
+        Assert.Equal(3, schema.Rows.Count);
         Assert.True(GetRequiredBoolean(schema, "idx_users_email", "IS_UNIQUE"));
         Assert.Equal("email", GetRequiredString(schema, "idx_users_email", "COLUMN_LIST"));
         Assert.Equal("Sql", GetRequiredString(schema, "idx_users_email", "INDEX_TYPE"));
+        Assert.Equal("NOCASE", GetRequiredString(schema, "idx_users_email", "COLLATION_LIST"));
+        Assert.Equal("BINARY", GetRequiredString(schema, "idx_users_email_binary", "COLLATION_LIST"));
 
         DataTable filtered = conn.GetSchema("Indexes", [null, null, "users", "idx_users_age"]);
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());
         Assert.Equal("idx_users_age", filteredRow["INDEX_NAME"]);
+        Assert.Equal(string.Empty, filteredRow["COLLATION_LIST"]);
     }
 
     [Fact]
@@ -295,8 +304,7 @@ public class ConnectionTests : IDisposable
                 : "TABLE_NAME";
 
         return Assert.Single(
-            table.Rows.Cast<DataRow>().Where(row =>
-                string.Equals(row[keyColumnName] as string, objectName, StringComparison.OrdinalIgnoreCase)));
+            table.Rows.Cast<DataRow>(),
+            row => string.Equals(row[keyColumnName] as string, objectName, StringComparison.OrdinalIgnoreCase));
     }
 }
-

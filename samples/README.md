@@ -1,19 +1,26 @@
-# Samples
+# Samples & Tutorials
 
-This folder contains both SQL dataset samples and runnable C# sample projects for the current CSharpDB surface area.
+This folder contains SQL dataset samples, runnable C# sample projects, and hands-on tutorials for the current CSharpDB surface area.
 
-The SQL dataset samples use a conventional layout with `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries. Runnable C# samples include a `.csproj`, `Program.cs`, and a focused `README.md`.
+The SQL dataset samples use a conventional layout with `schema.sql` for setup, `procedures.json` for API/admin procedure import, and `queries.sql` for optional read-only workbook queries. Runnable C# samples include a `.csproj`, `Program.cs`, and a focused `README.md`. Tutorials provide guided walkthroughs with runnable code.
 
 ## Available Samples
 
-| Sample Folder | Focus | Includes |
-|---------------|-------|----------|
+| Folder | Focus | Includes |
+|--------|-------|----------|
 | `ecommerce-store/` | Online retail | `schema.sql`, `procedures.json` |
 | `medical-clinic/` | Healthcare scheduling + billing | `schema.sql`, `procedures.json` |
 | `school-district/` | Education + attendance | `schema.sql`, `procedures.json` |
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
+
+## Tutorials
+
+| Folder | Focus | Contents |
+|--------|-------|----------|
+| `storage-tutorials/` | Storage engine internals | Architecture guide, extensibility patterns, runnable examples (GraphDB, SpatialIndex, TimeSeries, VirtualFS, and more) |
+| `native-ffi/` | Cross-language FFI via NativeAOT | Python (ctypes) and JavaScript (koffi/Node.js) wrappers with CRUD and transaction examples |
 
 Root-level helpers:
 
@@ -63,7 +70,7 @@ Root-level helpers:
 
 - Project: [CollectionIndexingSample.csproj](collection-indexing/CollectionIndexingSample.csproj)
 - Code: [Program.cs](collection-indexing/Program.cs)
-- Docs: [README.md](collection-indexing/README.md)
+- Docs: [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html)
 - Domain: typed user documents with nested address, tags, and orders
 - Good for: `GetCollectionAsync<T>()`, `EnsureIndexAsync(...)`, `FindByIndexAsync(...)`, `FindByPathAsync(...)`, and `FindByPathRangeAsync(...)`
 
@@ -149,7 +156,7 @@ The SQL samples above cover the relational surface. The following snippets show 
 
 Collection path indexes and queries are engine-level APIs on `Database` and `Collection<T>`:
 
-For a complete walkthrough with seed data, index creation, and equality/range query examples, see [docs/collection-indexing/README.md](../docs/collection-indexing/README.md).
+For a complete walkthrough with seed data, index creation, and equality/range query examples, see the [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html).
 
 ```csharp
 using CSharpDB.Engine;
@@ -208,6 +215,21 @@ var restoreResult = await client.RestoreAsync(new RestoreRequest
 - The API importer is idempotent for procedures (`POST`, then `PUT` on conflict).
 - `feature-tour/queries.sql` is intentionally read-only. The `EXEC ...` examples in that file are commented so you can copy them into the Admin Query tab as needed.
 - The API uses `Data Source=csharpdb.db` by default (`src/CSharpDB.Api/appsettings.json`).
+
+## Storage Engine Tutorials
+
+The `storage-tutorials/` folder contains a guided learning track for the `CSharpDB.Storage` layer:
+
+- **[architecture.md](storage-tutorials/architecture.md)** — Mental models for Pager, WAL, B+tree, SchemaCatalog
+- **[extensibility.md](storage-tutorials/extensibility.md)** — Configuration and extension points
+- **[examples/](storage-tutorials/examples/)** — Runnable C# projects covering study examples (VirtualDrive, ConfigStore, EventLog, TaskQueue, GraphStore, StorageInternals) and advanced standalone projects (GraphDB, SpatialIndex, TimeSeries, VirtualFS)
+
+## Native FFI Tutorials
+
+The `native-ffi/` folder contains wrappers and examples for calling CSharpDB from other languages via the NativeAOT C library:
+
+- **[python/](native-ffi/python/)** — ctypes-based wrapper with CRUD and transaction examples
+- **[javascript/](native-ffi/javascript/)** — koffi-based Node.js wrapper with CRUD and transaction examples
 
 ## See Also
 
