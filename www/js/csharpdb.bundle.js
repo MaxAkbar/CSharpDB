@@ -8,12 +8,7 @@
 
     const prefix = window.pagePathPrefix || '';
 
-    const logoSvg = `<svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-        <rect x="2" y="2" width="24" height="24" rx="6" stroke="currentColor" stroke-width="2"/>
-        <ellipse cx="14" cy="10" rx="8" ry="3" stroke="currentColor" stroke-width="1.5"/>
-        <path d="M6 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4" stroke="currentColor" stroke-width="1.5"/>
-        <path d="M6 14v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4" stroke="currentColor" stroke-width="1.5"/>
-    </svg>`;
+    const logoSvg = `<img src="${prefix}images/icon3.png" alt="CSharpDB" width="28" height="28">`;
 
     const sunSvg = `<svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
     const moonSvg = `<svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
