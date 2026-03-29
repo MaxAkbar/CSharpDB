@@ -237,6 +237,31 @@ public sealed class CollectionIndexTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureIndex_BackfillsLargeDuplicateBuckets_ForNestedPathString()
+    {
+        const int documentCount = 2048;
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<UserWithAddress>("users_nested_large_duplicates", ct);
+
+        for (int i = 0; i < documentCount; i++)
+        {
+            await users.PutAsync(
+                $"u:{i}",
+                new UserWithAddress(
+                    $"User {i}",
+                    new Address(i % 2 == 0 ? "Seattle" : "Portland", 98000 + (i % 100))),
+                ct);
+        }
+
+        await users.EnsureIndexAsync("$.address.city", ct);
+
+        var matches = await CollectAsync(users.FindByIndexAsync("$.address.city", "Seattle", ct), ct);
+
+        Assert.Equal(documentCount / 2, matches.Count);
+        Assert.All(matches, match => Assert.Equal("Seattle", match.Value.Address.City));
+    }
+
+    [Fact]
     public async Task EnsureIndex_BackfillsExistingDocuments_ForGuidField()
     {
         var ct = TestContext.Current.CancellationToken;

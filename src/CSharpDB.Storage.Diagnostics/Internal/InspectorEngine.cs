@@ -321,7 +321,9 @@ internal static class InspectorEngine
         ushort cellContentStart = BinaryPrimitives.ReadUInt16LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.FreeSpaceStartOffset, 2));
         uint rightChildOrNextLeaf = BinaryPrimitives.ReadUInt32LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.RightChildOffset, 4));
 
-        if (pageType != PageConstants.PageTypeLeaf && pageType != PageConstants.PageTypeInterior)
+        if (pageType != PageConstants.PageTypeLeaf &&
+            pageType != PageConstants.PageTypeInterior &&
+            pageType != PageConstants.PageTypeOverflow)
         {
             if (pageType != PageConstants.PageTypeFreelist)
             {
@@ -717,6 +719,7 @@ internal static class InspectorEngine
     {
         PageConstants.PageTypeLeaf => "leaf",
         PageConstants.PageTypeInterior => "interior",
+        PageConstants.PageTypeOverflow => "overflow",
         PageConstants.PageTypeFreelist => "freelist",
         _ => "unknown",
     };

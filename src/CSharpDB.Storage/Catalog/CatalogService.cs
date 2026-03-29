@@ -360,7 +360,7 @@ internal sealed class CatalogService
                 var indexSchema = _schemaSerializer.DeserializeIndex(data.Span[4..]);
                 _indexCache[indexSchema.IndexName] = indexSchema;
                 _indexRootPages[indexSchema.IndexName] = rootPage;
-                _indexStores[indexSchema.IndexName] = _indexProvider.CreateIndexStore(_pager, rootPage);
+                _indexStores[indexSchema.IndexName] = CreateIndexStore(_pager, indexSchema, rootPage);
                 AddIndexToTableCache(indexSchema);
             }
         }
@@ -949,9 +949,10 @@ internal sealed class CatalogService
         if (_indexStores.TryGetValue(indexName, out var store))
             return store;
 
-        if (_indexRootPages.TryGetValue(indexName, out uint rootPage))
+        if (_indexRootPages.TryGetValue(indexName, out uint rootPage) &&
+            _indexCache.TryGetValue(indexName, out var schema))
         {
-            store = _indexProvider.CreateIndexStore(_pager, rootPage);
+            store = CreateIndexStore(_pager, schema, rootPage);
             _indexStores[indexName] = store;
             return store;
         }
@@ -967,8 +968,12 @@ internal sealed class CatalogService
         if (ReferenceEquals(pager, _pager))
             return GetIndexStore(indexName);
 
-        if (_indexRootPages.TryGetValue(indexName, out uint rootPage))
-            return _indexProvider.CreateIndexStore(pager, rootPage);
+        if (_indexRootPages.TryGetValue(indexName, out uint rootPage) &&
+            _indexCache.TryGetValue(indexName, out var schema))
+        {
+            return CreateIndexStore(pager, schema, rootPage);
+        }
+
         throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
     }
 
@@ -991,7 +996,7 @@ internal sealed class CatalogService
 
         _indexCache[schema.IndexName] = schema;
         _indexRootPages[schema.IndexName] = indexRootPage;
-        _indexStores[schema.IndexName] = _indexProvider.CreateIndexStore(_pager, indexRootPage);
+        _indexStores[schema.IndexName] = CreateIndexStore(_pager, schema, indexRootPage);
         AddIndexToTableCache(schema);
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
@@ -1056,7 +1061,7 @@ internal sealed class CatalogService
         CancellationToken ct)
     {
         if (!_indexStores.TryGetValue(indexName, out var store))
-            store = _indexProvider.CreateIndexStore(_pager, _indexRootPages[indexName]);
+            store = CreateIndexStore(_pager, _indexCache[indexName], _indexRootPages[indexName]);
 
         long key = _schemaSerializer.IndexNameToKey(indexName);
         await _indexCatalogTree!.DeleteAsync(key, ct);
@@ -1080,6 +1085,24 @@ internal sealed class CatalogService
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
         return skippedCorruptReclaim;
+    }
+
+    private IIndexStore CreateIndexStore(Pager pager, IndexSchema schema, uint rootPageId)
+    {
+        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId);
+        return ShouldUseOverflowingIndexStore(schema)
+            ? new OverflowingIndexStore(store, pager)
+            : store;
+    }
+
+    private static bool ShouldUseOverflowingIndexStore(IndexSchema schema)
+    {
+        if (schema.Kind == IndexKind.Collection)
+            return true;
+
+        return schema.Kind == IndexKind.Sql &&
+               schema.Columns.Count == 1 &&
+               schema.OptionsJson?.IndexOf("\"storage\":\"ordered_text\"", StringComparison.Ordinal) >= 0;
     }
 
     // ============ VIEW operations ============

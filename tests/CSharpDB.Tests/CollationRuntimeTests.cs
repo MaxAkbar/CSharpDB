@@ -143,6 +143,50 @@ public sealed class CollationRuntimeTests
         Assert.Equal([2L], rows.Select(static row => row[0].AsInteger).ToArray());
     }
 
+    [Theory]
+    [InlineData("NOCASE_AI", "rEsUmE_000123")]
+    [InlineData("ICU:en-US", "résumé_000123")]
+    public async Task OrderedTextSqlIndex_RemainsWritable_AfterSeedAndIndexBuild(
+        string collation,
+        string probe)
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync(
+            $"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT COLLATE {collation} NOT NULL, payload TEXT NOT NULL)",
+            Ct);
+
+        for (int i = 0; i < 1024; i++)
+        {
+            await db.ExecuteAsync(
+                $"INSERT INTO users VALUES ({i}, 'résumé_{i:D6}', 'payload_{i:D6}')",
+                Ct);
+        }
+
+        await db.ExecuteAsync($"CREATE INDEX idx_users_name ON users (name COLLATE {collation})", Ct);
+
+        await db.BeginTransactionAsync(Ct);
+        try
+        {
+            await db.ExecuteAsync(
+                "INSERT INTO users VALUES (1000000, 'résumé_1000000', 'payload_1000000')",
+                Ct);
+            await db.RollbackAsync(Ct);
+        }
+        catch
+        {
+            await db.RollbackAsync(Ct);
+            throw;
+        }
+
+        await using var result = await db.ExecuteAsync(
+            $"SELECT id FROM users WHERE name = '{probe}' ORDER BY id",
+            Ct);
+        var rows = await result.ToListAsync(Ct);
+
+        Assert.Single(rows);
+        Assert.Equal(123L, rows[0][0].AsInteger);
+    }
+
     [Fact]
     public async Task UniqueNoCaseIndex_RejectsCaseVariants()
     {

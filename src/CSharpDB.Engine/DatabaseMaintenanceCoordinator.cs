@@ -33,7 +33,9 @@ public static class DatabaseMaintenanceCoordinator
             : 0;
         int pageSizeBytes = dbReport.Header.PageSizeValid ? dbReport.Header.PageSize : PageConstants.PageSize;
         IReadOnlyList<PageReport> pages = dbReport.Pages ?? [];
-        var btreePages = pages.Where(page => !string.Equals(page.PageTypeName, "freelist", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var btreePages = pages.Where(page =>
+            !string.Equals(page.PageTypeName, "freelist", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(page.PageTypeName, "overflow", StringComparison.OrdinalIgnoreCase)).ToArray();
 
         long btreeFreeBytes = 0;
         int pagesWithFreeSpace = 0;

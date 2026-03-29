@@ -101,7 +101,6 @@ internal static class IndexMaintenanceHelper
                 foreach (var entry in groupedTextPayloads)
                 {
                     byte[] payload = OrderedTextIndexPayloadCodec.CreateFromSorted(entry.Value);
-                    EnsureOrderedTextLeafCellFits(indexSchema.IndexName, entry.Key, payload.Length);
                     await indexStore.InsertAsync(entry.Key, payload, ct);
                 }
 
@@ -391,17 +390,6 @@ internal static class IndexMaintenanceHelper
 
     public static bool UsesOrderedTextIndexKey(IndexSchema index, TableSchema schema)
         => ResolveSqlIndexStorageMode(index, schema) == SqlIndexStorageMode.OrderedText;
-
-    private static void EnsureOrderedTextLeafCellFits(string indexName, long indexKey, int payloadLength)
-    {
-        int payloadPart = 8 + payloadLength;
-        int leafCellLength = checked(Varint.SizeOf((ulong)payloadPart) + payloadPart);
-        int maxLeafCellLength = PageConstants.PageSize - PageConstants.SlottedPageHeaderSize - PageConstants.CellPointerSize;
-        if (leafCellLength > maxLeafCellLength)
-        {
-            throw new OrderedTextIndexOverflowException(indexName, indexKey, leafCellLength, maxLeafCellLength);
-        }
-    }
 
     public static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
     {
