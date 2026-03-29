@@ -499,7 +499,8 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 | Document | Description |
 |----------|-------------|
 | [Getting Started Tutorial](docs/getting-started.md) | Step-by-step walkthrough from opening a database to transactions |
-| [Primitives Migration Guide](docs/migrations/core-to-primitives.md) | Permanent breaking rename guidance for the primitives surface |
+| [Performance Guide](docs/performance.md) | Scenario-based tuning guide grounded in the current benchmark suite |
+| [Primitives Migration Guide](https://csharpdb.com/docs/migrations.html) | Permanent breaking rename guidance for the primitives surface |
 | [Architecture Guide](docs/architecture.md) | Layer-by-layer deep dive into the engine design |
 | [Internals & Contributing](docs/internals.md) | How to extend the engine, testing strategy, project layout |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API, transport model, and DI integration |
