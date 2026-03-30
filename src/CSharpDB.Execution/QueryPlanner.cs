@@ -3564,6 +3564,108 @@ public sealed class QueryPlanner
         public int GetHashCode(RowSetKey obj) => obj.HashCode;
     }
 
+    internal async ValueTask<QueryResult?> TryExecuteSimplePrimaryKeyLookupDirectAsync(
+        SimplePrimaryKeyLookupSql lookup,
+        CancellationToken ct = default)
+    {
+        if (_catalog.IsView(lookup.TableName))
+            return null;
+        if (IsSystemCatalogTable(lookup.TableName))
+            return null;
+        if (_cteData != null && _cteData.ContainsKey(lookup.TableName))
+            return null;
+
+        var schema = _catalog.GetTable(lookup.TableName);
+        if (schema == null)
+            return null;
+
+        int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
+        if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
+            return null;
+
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        if (pkIdx < 0 ||
+            pkIdx >= schema.Columns.Count ||
+            predicateColumnIndex != pkIdx ||
+            schema.Columns[pkIdx].Type != DbType.Integer)
+        {
+            return null;
+        }
+
+        DbValue predicateLiteral = lookup.PredicateLiteral;
+        if (predicateLiteral.Type == DbType.Null)
+            predicateLiteral = DbValue.FromInteger(lookup.LookupValue);
+        if (predicateLiteral.Type != DbType.Integer)
+            return null;
+
+        ColumnDefinition[] outputColumns;
+        int[] projectionColumnIndices;
+        if (lookup.SelectStar)
+        {
+            outputColumns = GetSchemaColumnsArray(schema);
+            projectionColumnIndices = Array.Empty<int>();
+        }
+        else if (!TryBuildSimpleLookupProjection(lookup.ProjectionColumns, schema, out projectionColumnIndices, out outputColumns))
+        {
+            return null;
+        }
+
+        long lookupValue = predicateLiteral.AsInteger;
+        var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
+        ReadOnlyMemory<byte>? payload = tableTree.TryFindCachedMemory(lookupValue, out var cachedPayload)
+            ? cachedPayload
+            : await tableTree.FindMemoryAsync(lookupValue, ct);
+
+        if (payload is not { } payloadMemory)
+            return QueryResult.FromSyncLookup(null, outputColumns);
+
+        var serializer = GetReadSerializer(schema);
+        if (lookup.HasResidualPredicate)
+        {
+            int residualColumnIndex = schema.GetColumnIndex(lookup.ResidualPredicateColumn);
+            if (residualColumnIndex < 0 || residualColumnIndex >= schema.Columns.Count)
+                return null;
+
+            byte[]? residualTextBytes = lookup.ResidualPredicateLiteral.Type == DbType.Text &&
+                                        CanPushDownPredicate(schema, residualColumnIndex, lookup.ResidualPredicateLiteral)
+                ? Encoding.UTF8.GetBytes(lookup.ResidualPredicateLiteral.AsText)
+                : null;
+
+            if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                    payloadMemory.Span,
+                    serializer,
+                    BoundColumnAccessHelper.TryCreate(serializer, residualColumnIndex),
+                    residualColumnIndex,
+                    residualTextBytes,
+                    BinaryOp.Equals,
+                    lookup.ResidualPredicateLiteral))
+            {
+                return QueryResult.FromSyncLookup(null, outputColumns);
+            }
+        }
+
+        if (lookup.SelectStar)
+            return QueryResult.FromSyncLookup(serializer.Decode(payloadMemory.Span), outputColumns);
+
+        if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
+        {
+            var row = outputColumns.Length == 0 ? Array.Empty<DbValue>() : new DbValue[outputColumns.Length];
+            if (row.Length > 0)
+            {
+                var keyValue = DbValue.FromInteger(lookupValue);
+                Array.Fill(row, keyValue);
+            }
+
+            return QueryResult.FromSyncLookup(row, outputColumns);
+        }
+
+        var projectedRow = new DbValue[projectionColumnIndices.Length];
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+            projectedRow[i] = serializer.DecodeColumn(payloadMemory.Span, projectionColumnIndices[i]);
+
+        return QueryResult.FromSyncLookup(projectedRow, outputColumns);
+    }
+
     public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)
     {
         result = null!;
@@ -10128,7 +10230,14 @@ public sealed class QueryPlanner
         => BatchPlanCompiler.TryCreate(predicate, projections, schema);
 
     private static bool IsBatchPlanEligibleSource(IOperator source)
-        => source is TableScanOperator or IndexScanOperator or IndexOrderedScanOperator;
+        => source is
+            TableScanOperator or
+            IndexScanOperator or
+            IndexOrderedScanOperator or
+            HashJoinOperator or
+            IndexNestedLoopJoinOperator or
+            HashedIndexNestedLoopJoinOperator or
+            NestedLoopJoinOperator;
 
     private string GetQualifiedMappingsFingerprint(TableSchema schema)
     {
