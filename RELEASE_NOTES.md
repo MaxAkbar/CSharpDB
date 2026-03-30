@@ -1,5 +1,14 @@
 # What's New
 
+## v2.7.0
+
+### Foreign Key Constraints v1
+
+- Added single-column, column-level `REFERENCES` support with optional `ON DELETE CASCADE`.
+- Foreign keys are enforced immediately on `INSERT`, `UPDATE`, and parent-row `DELETE` paths, with internal child-side support indexes to keep parent checks bounded.
+- Added `ALTER TABLE ... DROP CONSTRAINT <name>` for foreign key removal without requiring a full child-table rebuild.
+- Added foreign-key metadata across SQL and client tooling, including `sys.foreign_keys`, richer `sys.objects`, CLI `.schema`, MCP schema inspection, and ADO.NET `GetSchema("ForeignKeys")`.
+
 ## v2.6.0
 
 ### Multilingual Collations and Ordered Text Indexes

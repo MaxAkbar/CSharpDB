@@ -548,6 +548,34 @@ public sealed class QueryPlanner
                 break;
             }
 
+            case DropConstraintAction dropConstraint:
+            {
+                ForeignKeyDefinition? foreignKey = schema.ForeignKeys.FirstOrDefault(fk =>
+                    string.Equals(fk.ConstraintName, dropConstraint.ConstraintName, StringComparison.OrdinalIgnoreCase));
+                if (foreignKey is null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Constraint '{dropConstraint.ConstraintName}' not found on table '{stmt.TableName}'.");
+                }
+
+                ForeignKeyDefinition[] remainingForeignKeys = schema.ForeignKeys
+                    .Where(fk => !string.Equals(fk.ConstraintName, dropConstraint.ConstraintName, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = schema.Columns,
+                    ForeignKeys = remainingForeignKeys,
+                    NextRowId = schema.NextRowId,
+                };
+
+                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                await _catalog.DropForeignKeyOwnedIndexAsync(foreignKey.SupportingIndexName, ct);
+                break;
+            }
+
             case RenameTableAction rename:
             {
                 // Check new name doesn't already exist

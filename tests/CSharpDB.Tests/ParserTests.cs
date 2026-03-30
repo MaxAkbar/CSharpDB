@@ -830,6 +830,16 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_AlterTable_DropConstraint()
+    {
+        var stmt = Parser.Parse("ALTER TABLE users DROP CONSTRAINT fk_users_parent_id_abcd1234");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        Assert.Equal("users", alter.TableName);
+        var drop = Assert.IsType<DropConstraintAction>(alter.Action);
+        Assert.Equal("fk_users_parent_id_abcd1234", drop.ConstraintName);
+    }
+
+    [Fact]
     public void Parse_AlterTable_RenameTable()
     {
         var stmt = Parser.Parse("ALTER TABLE users RENAME TO people");

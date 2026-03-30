@@ -71,6 +71,7 @@
                 <h3>ALTER TABLE &amp; DROP</h3>
                 <div class="code-block" data-title="SQL">
                     <pre><code><span class="kw">ALTER TABLE</span> Employees <span class="kw">ADD COLUMN</span> Title <span class="tp">TEXT</span>;
+<span class="kw">ALTER TABLE</span> Employees <span class="kw">DROP CONSTRAINT</span> fk_employees_deptid_a1b2c3d4;
 <span class="kw">DROP TABLE</span> Employees;
 <span class="kw">DROP INDEX</span> idx_emp_dept;
 <span class="kw">DROP VIEW</span> HighEarners;</code></pre>
@@ -197,6 +198,7 @@
                         <tr><td><code>sys.tables</code></td><td>All tables and their root page numbers</td></tr>
                         <tr><td><code>sys.columns</code></td><td>Column definitions for all tables</td></tr>
                         <tr><td><code>sys.indexes</code></td><td>Index definitions and backing B+tree info</td></tr>
+                        <tr><td><code>sys.foreign_keys</code></td><td>Foreign key constraints, referenced targets, delete actions, and support-index ownership</td></tr>
                         <tr><td><code>sys.views</code></td><td>View definitions and SQL</td></tr>
                         <tr><td><code>sys.triggers</code></td><td>Trigger metadata</td></tr>
                         <tr><td><code>sys.table_stats</code></td><td>Row count and page usage per table</td></tr>

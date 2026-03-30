@@ -1065,11 +1065,15 @@ internal sealed class CatalogService
     public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default)
         => DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: true, ct);
 
+    public async ValueTask DropForeignKeyOwnedIndexAsync(string indexName, CancellationToken ct = default)
+        => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct, allowOwnedForeignKeyDrop: true);
+
     private async ValueTask<bool> DropIndexAsyncCoreAsync(
         string indexName,
         bool allowOwnedFullTextDrop,
         bool ignoreCorruptReclaim,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool allowOwnedForeignKeyDrop = false)
     {
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
@@ -1085,7 +1089,7 @@ internal sealed class CatalogService
                 $"Full-text owned index '{indexName}' cannot be dropped directly; drop {ownerIndexName} instead.");
         }
 
-        if (schema.Kind == IndexKind.ForeignKeyInternal)
+        if (schema.Kind == IndexKind.ForeignKeyInternal && !allowOwnedForeignKeyDrop)
         {
             string ownerConstraintName = string.IsNullOrWhiteSpace(schema.OwnerIndexName)
                 ? "its owning foreign key constraint"

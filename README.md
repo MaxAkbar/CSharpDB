@@ -28,7 +28,7 @@ CSharpDB is a fully self-contained database engine that runs inside your .NET ap
 | **Storage** | Single `.db` file, 4 KB page-oriented, B+tree-backed tables and indexes |
 | **Durability** | Write-Ahead Log (WAL) with fsync-on-commit, automatic crash recovery |
 | **Concurrency** | Single writer + concurrent snapshot-isolated readers via WAL-based MVCC |
-| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, views, triggers, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries including `sys.table_stats` and `sys.column_stats` |
+| **SQL** | DDL, DML, JOINs, aggregates, `DISTINCT`, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, views, triggers, column-level `REFERENCES` with optional `ON DELETE CASCADE`, composite indexes, scalar `TEXT(...)`, and `sys.*` catalog queries including `sys.foreign_keys`, `sys.table_stats`, and `sys.column_stats` |
 | **NoSQL** | Typed `Collection<T>` with Put/Get/Delete/Scan/Find — up to 1.99M point gets/sec |
 | **ADO.NET** | Standard `DbConnection`/`DbCommand`/`DbDataReader` provider |
 | **Client SDK** | `CSharpDB.Client` — unified API with pluggable transports (Direct, HTTP, gRPC; Named Pipes planned), with gRPC hosted by `CSharpDB.Daemon` |
@@ -374,7 +374,7 @@ CSharpDB.slnx
 
 | Category | Syntax |
 |----------|--------|
-| **DDL** | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, RENAME TO) |
+| **DDL** | `CREATE TABLE` (including column-level `REFERENCES ... [ON DELETE CASCADE]`), `DROP TABLE`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, DROP CONSTRAINT, RENAME TO) |
 | **DML** | `INSERT INTO ... VALUES`, `SELECT`, `UPDATE ... SET`, `DELETE FROM` |
 | **Indexes** | `CREATE [UNIQUE] INDEX`, `DROP INDEX` |
 | **Views** | `CREATE VIEW ... AS`, `DROP VIEW` |
@@ -395,6 +395,7 @@ Current boundary:
 - Correlated subqueries are supported in `WHERE`, non-aggregate projection expressions, and `UPDATE` / `DELETE` expressions.
 - Correlated subqueries in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections remain unsupported.
 - `UNION ALL` remains planned.
+- Foreign keys are currently v1 only: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`. Table-level/composite foreign keys, `ON UPDATE` actions, `SET NULL` / `SET DEFAULT`, and deferred constraints are not implemented.
 
 ### System Catalog Queries
 
@@ -404,6 +405,7 @@ Use SQL to inspect schema metadata:
 SELECT * FROM sys.tables ORDER BY table_name;
 SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
 SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.foreign_keys ORDER BY table_name, column_name;
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
@@ -472,6 +474,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - `SELECT DISTINCT`, composite indexes, prepared statement caching
 - `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
 - `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
+- Foreign key constraints with optional `ON DELETE CASCADE`, plus `sys.foreign_keys` and ADO.NET `GetSchema("ForeignKeys")`
 - Phase-1 cost-based planner work: stats-driven non-unique lookup choice, join method selection, hash build-side choice, and limited greedy inner-join reordering for selective filters
 
 **In progress**
@@ -480,7 +483,6 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - Named Pipes transport work for `CSharpDB.Client`
 
 **Still planned**
-- B+tree delete rebalancing
 - Python and Go client packages
 
 **Mid-term**

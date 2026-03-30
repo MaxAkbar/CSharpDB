@@ -27,6 +27,7 @@ Yes. Query virtual catalog sources:
 - `sys.tables`
 - `sys.columns`
 - `sys.indexes`
+- `sys.foreign_keys`
 - `sys.views`
 - `sys.triggers`
 - `sys.objects`
@@ -39,11 +40,18 @@ No. They are virtual system catalog sources, so use the Query tab to query them.
 
 ### Why does index creation fail on some column types?
 
-Current index support is limited to `INTEGER` columns.
+Current SQL secondary indexes support `INTEGER` and `TEXT` columns. `COLLATE` is only valid on `TEXT` index columns.
 
 ### Are foreign keys enforced?
 
-Not currently. Define relationship columns in schema and enforce integrity in application logic for now.
+Yes. CSharpDB currently supports single-column, column-level `REFERENCES` constraints with optional `ON DELETE CASCADE`.
+
+Current v1 boundary:
+
+- Constraints are enforced immediately.
+- `NULL` child values are allowed.
+- Table-level/composite foreign keys are not implemented yet.
+- `ON UPDATE`, `SET NULL`, `SET DEFAULT`, and deferred constraints are not implemented yet.
 
 ## Admin, CLI, and API
 

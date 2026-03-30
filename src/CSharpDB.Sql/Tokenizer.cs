@@ -72,6 +72,7 @@ public sealed class Tokenizer
         ["ALTER"] = TokenType.Alter,
         ["ADD"] = TokenType.Add,
         ["COLUMN"] = TokenType.Column,
+        ["CONSTRAINT"] = TokenType.Constraint,
         ["COLLATE"] = TokenType.Collate,
         ["RENAME"] = TokenType.Rename,
         ["TO"] = TokenType.To,

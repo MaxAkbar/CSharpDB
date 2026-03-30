@@ -165,12 +165,13 @@ csdb&gt; .quit</code></pre></div>
                 <div class="code-block" data-title="SQL"><pre><code>SELECT * FROM sys.tables ORDER BY table_name;
 SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
 SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.foreign_keys ORDER BY table_name, column_name;
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
 SELECT * FROM sys.saved_queries ORDER BY name;</code></pre></div>
 
-                <p>Underscored aliases are supported: <code>sys_tables</code>, <code>sys_columns</code>, <code>sys_indexes</code>, <code>sys_views</code>, <code>sys_triggers</code>, <code>sys_objects</code>, <code>sys_saved_queries</code>.</p>
+                <p>Underscored aliases are supported: <code>sys_tables</code>, <code>sys_columns</code>, <code>sys_indexes</code>, <code>sys_foreign_keys</code>, <code>sys_views</code>, <code>sys_triggers</code>, <code>sys_objects</code>, <code>sys_saved_queries</code>.</p>
                 <p><code>sys.columns</code> includes <code>is_identity</code> (0/1) in addition to <code>is_primary_key</code>.</p>
 
                 <h2 id="storage-inspector-commands">Storage Inspector Commands</h2>

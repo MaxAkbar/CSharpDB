@@ -184,7 +184,7 @@ await using var result = await db.ExecuteAsync(
 
 ### System catalog metadata (`sys.*`)
 
-You can inspect tables, columns, indexes, views, triggers, and object inventory with SQL:
+You can inspect tables, columns, indexes, foreign keys, views, triggers, and object inventory with SQL:
 
 ```csharp
 await using var tables = await db.ExecuteAsync(
@@ -202,6 +202,7 @@ Catalog sources:
 - `sys.tables`
 - `sys.columns`
 - `sys.indexes`
+- `sys.foreign_keys`
 - `sys.views`
 - `sys.triggers`
 - `sys.objects`
@@ -375,11 +376,21 @@ await db.ExecuteAsync("ALTER TABLE products ADD COLUMN weight REAL");
 // Drop a column
 await db.ExecuteAsync("ALTER TABLE products DROP COLUMN weight");
 
+// Drop a foreign key constraint by name
+await db.ExecuteAsync("ALTER TABLE child_orders DROP CONSTRAINT fk_child_orders_parent_id_abcd1234");
+
 // Rename a column
 await db.ExecuteAsync("ALTER TABLE products RENAME COLUMN category TO department");
 
 // Rename a table
 await db.ExecuteAsync("ALTER TABLE products RENAME TO inventory");
+```
+
+Use `sys.foreign_keys` to discover generated foreign key names before dropping one:
+
+```csharp
+await using var foreignKeys = await db.ExecuteAsync(
+    "SELECT constraint_name, table_name, column_name FROM sys.foreign_keys ORDER BY table_name, column_name");
 ```
 
 ### Schema migration pattern (PRIMARY KEY / IDENTITY changes)

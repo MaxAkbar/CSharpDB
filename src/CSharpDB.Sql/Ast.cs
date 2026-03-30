@@ -153,6 +153,11 @@ public sealed class DropColumnAction : AlterAction
     public required string ColumnName { get; init; }
 }
 
+public sealed class DropConstraintAction : AlterAction
+{
+    public required string ConstraintName { get; init; }
+}
+
 public sealed class RenameTableAction : AlterAction
 {
     public required string NewTableName { get; init; }

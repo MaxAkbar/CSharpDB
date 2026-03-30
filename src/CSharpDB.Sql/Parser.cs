@@ -1517,10 +1517,21 @@ public sealed class Parser
         else if (t == TokenType.Drop)
         {
             Advance();
-            // Optional COLUMN keyword
-            TryConsume(TokenType.Column);
-            string colName = ExpectIdentifier();
-            action = new DropColumnAction { ColumnName = colName };
+            if (TryConsume(TokenType.Column))
+            {
+                string colName = ExpectIdentifier();
+                action = new DropColumnAction { ColumnName = colName };
+            }
+            else if (TryConsume(TokenType.Constraint))
+            {
+                string constraintName = ExpectIdentifier();
+                action = new DropConstraintAction { ConstraintName = constraintName };
+            }
+            else
+            {
+                string colName = ExpectIdentifier();
+                action = new DropColumnAction { ColumnName = colName };
+            }
         }
         else if (t == TokenType.Rename)
         {

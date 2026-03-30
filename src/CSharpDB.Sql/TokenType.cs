@@ -74,6 +74,7 @@ public enum TokenType
     Alter,
     Add,
     Column,
+    Constraint,
     Collate,
     Rename,
     To,

@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.4.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.7.0` state of the repo.
 
 ---
 
@@ -47,7 +47,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
-| **Foreign key constraints** | `REFERENCES` with optional `ON DELETE CASCADE` | Planned |
+| **Foreign key constraints** | v1 support for single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`, plus `sys.foreign_keys` and metadata/tooling surfaces | Done |
 | **Remote host consolidation** | Fold the current `CSharpDB.Api` REST/HTTP surface into `CSharpDB.Daemon` so one long-running server host can serve REST, gRPC, and future local transports from a shared warm `Database` instance | Planned |
 | **Remote host security** | Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support | Planned |
 | **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Planned |
@@ -58,7 +58,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
-| **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views) to support ORMs and tooling that discover schema through ADO.NET | Done |
+| **ADO.NET `GetSchema` collections** | Implement `DbConnection.GetSchema()` for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views, ForeignKeys) to support ORMs and tooling that discover schema through ADO.NET | Done |
 | **Multilingual text support** | `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` collation now work across SQL schema/query semantics, metadata surfaces, and collection path indexes; dedicated ordered SQL text index optimization remains planned | Done |
 
 ---
@@ -96,7 +96,7 @@ These are known simplifications in the current implementation:
 | **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
 | **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
-| **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
+| **Schema** | No SQL `DEFAULT` column values or `CHECK` constraints yet. Foreign keys are currently v1 only: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`; table-level/composite/deferred foreign keys and `ON UPDATE` actions are not implemented |
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
@@ -134,8 +134,9 @@ Major features already implemented:
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
 - Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)
+- Foreign key constraints: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
-- ADO.NET `GetSchema()` metadata collections for `MetaDataCollections`, `Tables`, `Columns`, `Indexes`, and `Views`
+- ADO.NET `GetSchema()` metadata collections for `MetaDataCollections`, `Tables`, `Columns`, `Indexes`, `Views`, and `ForeignKeys`
 - ADO.NET connection pooling with `ClearPool` / `ClearAllPools`
 - In-memory database mode with explicit load-from-disk and save-to-disk APIs
 - Shared/private in-memory ADO.NET connections with named shared-memory hosts

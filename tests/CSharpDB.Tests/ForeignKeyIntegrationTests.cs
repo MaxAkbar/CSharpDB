@@ -157,6 +157,45 @@ public sealed class ForeignKeyIntegrationTests : IAsyncLifetime
         Assert.Equal(ErrorCode.SyntaxError, error.Code);
     }
 
+    [Fact]
+    public async Task ForeignKeys_DropConstraint_RemovesEnforcement_AndSupportIndex()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY, code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_parents_code ON parents(code)", ct);
+        await _db.ExecuteAsync("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_code TEXT REFERENCES parents(code))", ct);
+
+        TableSchema schema = _db.GetTableSchema("children")!;
+        ForeignKeyDefinition foreignKey = Assert.Single(schema.ForeignKeys);
+
+        await _db.ExecuteAsync($"ALTER TABLE children DROP CONSTRAINT {foreignKey.ConstraintName}", ct);
+
+        schema = _db.GetTableSchema("children")!;
+        Assert.Empty(schema.ForeignKeys);
+        Assert.DoesNotContain(
+            _db.GetIndexes(),
+            index => string.Equals(index.IndexName, foreignKey.SupportingIndexName, StringComparison.OrdinalIgnoreCase));
+
+        await _db.ExecuteAsync("INSERT INTO children VALUES (1, 'missing-parent')", ct);
+        await _db.ExecuteAsync("DROP INDEX idx_parents_code", ct);
+        await _db.ExecuteAsync("DROP TABLE parents", ct);
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM children", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM sys.foreign_keys", ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DropConstraint_MissingConstraintIsRejected()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id))", ct);
+
+        var error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync("ALTER TABLE children DROP CONSTRAINT fk_missing", ct).AsTask());
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+    }
+
     private async Task<long> ScalarIntAsync(string sql, CancellationToken ct)
     {
         await using var result = await _db.ExecuteAsync(sql, ct);

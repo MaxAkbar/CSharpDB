@@ -107,13 +107,14 @@ You can query metadata with SQL in addition to dot-commands:
 SELECT * FROM sys.tables ORDER BY table_name;
 SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
 SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.foreign_keys ORDER BY table_name, column_name;
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
 SELECT * FROM sys.saved_queries ORDER BY name;
 ```
 
-Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_saved_queries`.
+Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_foreign_keys`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_saved_queries`.
 `sys.columns` includes `is_identity` (0/1) in addition to `is_primary_key`.
 
 ---
