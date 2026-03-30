@@ -253,6 +253,20 @@
         document.querySelectorAll('.stats-grid').forEach(g => statsObserver.observe(g));
     });
 
+    // ─── API tab switcher ───
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('.api-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const target = tab.dataset.tab;
+                document.querySelectorAll('.api-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.api-panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                const panel = document.querySelector(`.api-panel[data-panel="${target}"]`);
+                if (panel) panel.classList.add('active');
+            });
+        });
+    });
+
     // ─── Handle hash-based doc section navigation ───
     document.addEventListener('DOMContentLoaded', () => {
         const hash = window.location.hash.replace('#', '');
