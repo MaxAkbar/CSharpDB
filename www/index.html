@@ -169,13 +169,45 @@
     }
 
     /* ─── Quick Start Section ─── */
-    .quick-start-block {
-        max-width: 600px;
-        margin: 0 auto 48px;
+    .api-tabs {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 24px;
     }
 
-    .quick-start-block .code-block {
+    .api-tab {
+        padding: 8px 20px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.25s;
+    }
+
+    .api-tab:hover {
+        border-color: var(--accent);
+        color: var(--text-primary);
+    }
+
+    .api-tab.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+    }
+
+    .api-panel {
+        display: none;
+        max-width: 680px;
+        margin: 0 auto 48px;
         text-align: left;
+    }
+
+    .api-panel.active {
+        display: block;
     }
 
     /* ─── Ecosystem Cards ─── */
@@ -470,18 +502,94 @@
         <section class="section section-alt" id="quickstart">
             <div class="container">
                 <h2 class="section-title">Ship in 30 Seconds</h2>
-                <p class="section-subtitle">Five lines. One file. Full database.</p>
+                <p class="section-subtitle">Use SQL, the Collection API, or low-level storage — all powered by one engine.</p>
 
-                <div class="quick-start-block">
-                    <div class="code-block" data-title="Program.cs">
+                <div class="api-tabs">
+                    <button type="button" class="api-tab active" data-tab="sql">SQL</button>
+                    <button type="button" class="api-tab" data-tab="collection">Collection</button>
+                    <button type="button" class="api-tab" data-tab="storage">Storage</button>
+                </div>
+
+                <!-- SQL Panel -->
+                <div class="api-panel active" data-panel="sql">
+                    <div class="code-block" data-title="SQL via ADO.NET">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">@"
+    CREATE TABLE IF NOT EXISTS Users (
+        Id   INTEGER PRIMARY KEY,
+        Name TEXT NOT NULL,
+        Email TEXT
+    )"</span>;
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+
+cmd.CommandText = <span class="str">"INSERT INTO Users VALUES (@id, @name, @email)"</span>;
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@email"</span>, <span class="str">"alice@example.com"</span>));
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();</code></pre>
+                    </div>
+                </div>
+
+                <!-- Collection Panel -->
+                <div class="api-panel" data-panel="collection">
+                    <div class="code-block" data-title="Collection API">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
-<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"app.db"</span>);
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
 <span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;(<span class="str">"users"</span>);
-<span class="kw">await</span> users.PutAsync(<span class="str">"alice"</span>, <span class="kw">new</span> <span class="tp">User</span>(<span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>));
+
+<span class="cm">// Put and get by string key</span>
+<span class="kw">await</span> users.PutAsync(<span class="str">"alice"</span>, <span class="kw">new</span> <span class="tp">User</span>(<span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>, <span class="num">30</span>));
 <span class="kw">var</span> alice = <span class="kw">await</span> users.GetAsync(<span class="str">"alice"</span>);
 
-<span class="kw">public record</span> <span class="tp">User</span>(<span class="kw">string</span> Name, <span class="kw">string</span> Email);</code></pre>
+<span class="cm">// Create an index and query through it</span>
+<span class="kw">await</span> users.EnsureIndexAsync(u =&gt; u.Email);
+<span class="kw">await foreach</span> (<span class="kw">var</span> match <span class="kw">in</span> users.FindByIndexAsync(
+    u =&gt; u.Email, <span class="str">"alice@example.com"</span>))
+    Console.WriteLine(match.Value.Name);
+
+<span class="kw">public record</span> <span class="tp">User</span>(<span class="kw">string</span> Name, <span class="kw">string</span> Email, <span class="kw">int</span> Age);</code></pre>
+                    </div>
+                </div>
+
+                <!-- Storage Panel -->
+                <div class="api-panel" data-panel="storage">
+                    <div class="code-block" data-title="B+Tree Storage">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> tree = <span class="kw">await</span> db.GetBTreeAsync(<span class="str">"cache"</span>);
+
+<span class="cm">// Write key-value pairs directly</span>
+<span class="kw">await</span> tree.PutAsync(<span class="str">"session:abc"</span>, payload);
+<span class="kw">var</span> value = <span class="kw">await</span> tree.GetAsync(<span class="str">"session:abc"</span>);
+
+<span class="cm">// Range scan with cursor</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> tree.ScanAsync(
+    <span class="str">"session:a"</span>, <span class="str">"session:z"</span>))
+{
+    Console.WriteLine(<span class="str">$"</span>{kv.Key} = {kv.Value.Length} bytes<span class="str">"</span>);
+}
+
+<span class="cm">// Delete with transactional guarantee</span>
+<span class="kw">await</span> tree.DeleteAsync(<span class="str">"session:abc"</span>);</code></pre>
                     </div>
                 </div>
 
