@@ -2285,7 +2285,10 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         int inserted = 0;
-        var mutationContext = new ForeignKeyMutationContext();
+        ForeignKeyMutationContext? mutationContext =
+            _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
+                ? new ForeignKeyMutationContext()
+                : null;
         foreach (var valueRow in stmt.ValueRows)
         {
             var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
@@ -3822,7 +3825,10 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(insert.TableName);
 
         int inserted = 0;
-        var mutationContext = new ForeignKeyMutationContext();
+        ForeignKeyMutationContext? mutationContext =
+            _catalog.GetForeignKeysForTable(insert.TableName).Count > 0
+                ? new ForeignKeyMutationContext()
+                : null;
         for (int i = 0; i < insert.RowCount; i++)
         {
             var row = insert.ValueRows[i];
@@ -5327,6 +5333,32 @@ public sealed class QueryPlanner
             rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
         }
 
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
+        if (!hasIncomingForeignKeys)
+        {
+            foreach (var (rowId, row) in rowsToDelete)
+            {
+                // BEFORE DELETE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Delete, row, null, schema, ct);
+
+                await tree.DeleteAsync(rowId, ct);
+
+                // Maintain indexes
+                await DeleteFromAllIndexesAsync(indexes, schema, row, rowId, ct);
+                await _catalog.AdjustTableRowCountAsync(stmt.TableName, -1, ct);
+
+                // AFTER DELETE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null, schema, ct);
+            }
+
+            if (rowsToDelete.Count > 0)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
+            await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+
+            return new QueryResult(rowsToDelete.Count);
+        }
+
         int deleted = 0;
         var mutationContext = new ForeignKeyMutationContext();
         foreach (var (rowId, _) in rowsToDelete)
@@ -5361,6 +5393,8 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
+        bool hasOutgoingForeignKeys = _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0;
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
 
         // Collect rows to update
         int? updateCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
@@ -5401,6 +5435,46 @@ public sealed class QueryPlanner
                     : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema);
             }
             updates.Add((scan.CurrentRowId, oldRow, newRow));
+        }
+
+        if (!hasOutgoingForeignKeys && !hasIncomingForeignKeys)
+        {
+            foreach (var (rowId, oldRow, newRow) in updates)
+            {
+                // BEFORE UPDATE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+
+                long newRowId = rowId;
+                if (hasIntegerPrimaryKey)
+                {
+                    if (newRow[pkIdx].IsNull)
+                    {
+                        // INTEGER PRIMARY KEY aliases the physical row key.
+                        newRow[pkIdx] = DbValue.FromInteger(rowId);
+                    }
+
+                    if (newRow[pkIdx].Type != DbType.Integer)
+                        throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+
+                    newRowId = newRow[pkIdx].AsInteger;
+                }
+
+                await tree.DeleteAsync(rowId, ct);
+                await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+
+                // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
+                await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
+
+                // AFTER UPDATE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            }
+
+            if (updates.Count > 0)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
+            await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+
+            return new QueryResult(updates.Count);
         }
 
         var mutationContext = new ForeignKeyMutationContext();
@@ -11281,7 +11355,7 @@ public sealed class QueryPlanner
     }
 
     private async ValueTask PersistForeignKeyMutationContextAsync(
-        ForeignKeyMutationContext mutationContext,
+        ForeignKeyMutationContext? mutationContext,
         string tableName,
         bool hasMutations,
         bool persistRootChanges,
@@ -11289,6 +11363,15 @@ public sealed class QueryPlanner
     {
         if (!hasMutations)
             return;
+
+        if (mutationContext is null)
+        {
+            await _catalog.MarkTableColumnStatisticsStaleAsync(tableName, ct);
+            if (persistRootChanges)
+                await _catalog.PersistRootPageChangesAsync(tableName, ct);
+
+            return;
+        }
 
         if (mutationContext.TouchedTables.Count == 0)
             mutationContext.TouchedTables.Add(tableName);
@@ -11715,14 +11798,15 @@ public sealed class QueryPlanner
         BTree tree,
         IReadOnlyList<IndexSchema> indexes,
         DbValue[] row,
-        ForeignKeyMutationContext mutationContext,
+        ForeignKeyMutationContext? mutationContext,
         CancellationToken ct)
     {
         // BEFORE INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Insert, null, row, schema, ct);
 
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
-        await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow: null, row, ct);
+        if (mutationContext is not null)
+            await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow: null, row, ct);
         while (true)
         {
             try
@@ -11741,8 +11825,11 @@ public sealed class QueryPlanner
         // Maintain indexes
         await InsertIntoAllIndexesAsync(indexes, schema, row, rowId, ct);
         await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
-        mutationContext.TouchedTables.Add(tableName);
-        mutationContext.StaleTables.Add(tableName);
+        if (mutationContext is not null)
+        {
+            mutationContext.TouchedTables.Add(tableName);
+            mutationContext.StaleTables.Add(tableName);
+        }
 
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);
