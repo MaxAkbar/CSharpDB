@@ -202,6 +202,30 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_MapsForeignKeyMetadata()
+    {
+        var create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE http_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES http_parents(id) ON DELETE CASCADE
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        var schema = await _client.GetTableSchemaAsync("http_children", Ct);
+        Assert.NotNull(schema);
+        var foreignKey = Assert.Single(schema!.ForeignKeys);
+        Assert.Equal("parent_id", foreignKey.ColumnName);
+        Assert.Equal("http_parents", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.StartsWith("__fk_http_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HttpTransport_MutatingSchemaEndpoints_AcceptCollationMetadata()
     {
         var createTable = await _client.ExecuteSqlAsync(

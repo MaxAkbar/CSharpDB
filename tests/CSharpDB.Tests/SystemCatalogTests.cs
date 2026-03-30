@@ -128,6 +128,40 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ExposesForeignKeys_AndHidesSupportIndexes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE)",
+            ct);
+
+        await using var foreignKeys = await _db.ExecuteAsync(
+            "SELECT constraint_name, table_name, column_name, referenced_table_name, referenced_column_name, on_delete, supporting_index_name FROM sys.foreign_keys",
+            ct);
+        var foreignKeyRow = Assert.Single(await foreignKeys.ToListAsync(ct));
+        string supportingIndexName = foreignKeyRow[6].AsText;
+
+        Assert.Equal("children", foreignKeyRow[1].AsText);
+        Assert.Equal("parent_id", foreignKeyRow[2].AsText);
+        Assert.Equal("parents", foreignKeyRow[3].AsText);
+        Assert.Equal("id", foreignKeyRow[4].AsText);
+        Assert.Equal("CASCADE", foreignKeyRow[5].AsText);
+
+        await using var systemIndexes = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.indexes WHERE index_name = '" + supportingIndexName + "'",
+            ct);
+        Assert.Equal(0L, Assert.Single(await systemIndexes.ToListAsync(ct))[0].AsInteger);
+
+        await using var objects = await _db.ExecuteAsync(
+            "SELECT object_name, object_type, parent_table_name FROM sys.objects WHERE object_type = 'FOREIGN KEY'",
+            ct);
+        var objectRow = Assert.Single(await objects.ToListAsync(ct));
+        Assert.Equal(foreignKeyRow[0].AsText, objectRow[0].AsText);
+        Assert.Equal("children", objectRow[2].AsText);
+    }
+
+    [Fact]
     public async Task SystemCatalog_ExposesObjects()
     {
         var ct = TestContext.Current.CancellationToken;

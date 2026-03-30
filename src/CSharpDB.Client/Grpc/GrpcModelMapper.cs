@@ -46,6 +46,23 @@ public static class GrpcModelMapper
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported database type enum."),
         };
 
+    public static ForeignKeyOnDeleteActionEnum ToMessage(ForeignKeyOnDeleteAction value)
+        => value switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict,
+            ForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action."),
+        };
+
+    public static ForeignKeyOnDeleteAction ToModel(ForeignKeyOnDeleteActionEnum value)
+        => value switch
+        {
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict => ForeignKeyOnDeleteAction.Restrict,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade => ForeignKeyOnDeleteAction.Cascade,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionUnspecified => ForeignKeyOnDeleteAction.Restrict,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action enum."),
+        };
+
     public static TriggerTimingEnum ToMessage(TriggerTiming value)
         => value switch
         {
@@ -138,6 +155,28 @@ public static class GrpcModelMapper
             Collation = string.IsNullOrEmpty(value.Collation) ? null : value.Collation,
         };
 
+    public static ForeignKeyDefinitionMessage ToMessage(ForeignKeyDefinition value)
+        => new()
+        {
+            ConstraintName = value.ConstraintName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            OnDelete = ToMessage(value.OnDelete),
+            SupportingIndexName = value.SupportingIndexName,
+        };
+
+    public static ForeignKeyDefinition ToModel(ForeignKeyDefinitionMessage value)
+        => new()
+        {
+            ConstraintName = value.ConstraintName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            OnDelete = ToModel(value.OnDelete),
+            SupportingIndexName = value.SupportingIndexName,
+        };
+
     public static TableSchemaMessage ToMessage(TableSchema value)
     {
         var message = new TableSchemaMessage
@@ -145,6 +184,7 @@ public static class GrpcModelMapper
             TableName = value.TableName,
         };
         message.Columns.Add(value.Columns.Select(ToMessage));
+        message.ForeignKeys.Add(value.ForeignKeys.Select(ToMessage));
         return message;
     }
 
@@ -153,6 +193,7 @@ public static class GrpcModelMapper
         {
             TableName = value.TableName,
             Columns = value.Columns.Select(ToModel).ToList(),
+            ForeignKeys = value.ForeignKeys.Select(ToModel).ToList(),
         };
 
     public static IndexSchemaMessage ToMessage(IndexSchema value)

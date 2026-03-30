@@ -13,6 +13,14 @@ public sealed class CreateTableStatement : Statement
     public bool IfNotExists { get; init; }
 }
 
+public sealed class ForeignKeyClause
+{
+    public required string ReferencedTableName { get; init; }
+    public string? ReferencedColumnName { get; init; }
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+}
+
 public sealed class ColumnDef
 {
     public required string Name { get; init; }
@@ -21,6 +29,7 @@ public sealed class ColumnDef
     public bool IsIdentity { get; init; }
     public bool IsNullable { get; init; } = true;
     public string? Collation { get; init; }
+    public ForeignKeyClause? ForeignKey { get; init; }
 }
 
 public sealed class DropTableStatement : Statement

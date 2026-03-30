@@ -69,6 +69,40 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateTable_WithForeignKeyClause()
+    {
+        var stmt = Parser.Parse(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+        Assert.NotNull(create.Columns[1].ForeignKey);
+        var foreignKey = create.Columns[1].ForeignKey!;
+
+        Assert.Equal("customers", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_TableLevelForeignKey_Throws()
+    {
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES customers(id))"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("Table-level FOREIGN KEY constraints are not supported", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_OnlyOnDeleteCascadeIsSupported()
+    {
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON UPDATE CASCADE)"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("Only ON DELETE is supported", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parse_Insert()
     {
         var stmt = Parser.Parse("INSERT INTO users (name, age) VALUES ('Alice', 30)");
@@ -760,6 +794,20 @@ public class ParserTests
         Assert.Equal("email", add.Column.Name);
         Assert.Equal(TokenType.Text, add.Column.TypeToken);
         Assert.Equal("NOCASE", add.Column.Collation);
+    }
+
+    [Fact]
+    public void Parse_AlterTable_AddColumn_WithForeignKeyClause()
+    {
+        var stmt = Parser.Parse("ALTER TABLE orders ADD COLUMN customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        var add = Assert.IsType<AddColumnAction>(alter.Action);
+        Assert.NotNull(add.Column.ForeignKey);
+        var foreignKey = add.Column.ForeignKey!;
+
+        Assert.Equal("customers", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
     }
 
     [Fact]

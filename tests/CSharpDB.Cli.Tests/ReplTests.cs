@@ -198,6 +198,35 @@ public sealed class ReplTests
     }
 
     [Fact]
+    public async Task Repl_SchemaCommand_ShowsForeignKeyClause()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE parents (id INTEGER PRIMARY KEY);",
+                "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE);",
+                ".schema children",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
+            Assert.Contains("REFERENCES parents(id)", plainOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("ON DELETE CASCADE", plainOutput, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task Repl_InfoCommand_DoesNotFailWhenLocalDirectFeaturesAreEnabled()
     {
         var ct = TestContext.Current.CancellationToken;

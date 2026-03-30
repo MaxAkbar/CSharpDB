@@ -63,6 +63,12 @@ public sealed class SchemaCatalog
 
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
 
+    public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysForTable(string tableName) =>
+        _service.GetForeignKeysForTable(tableName);
+
+    public IReadOnlyList<TableForeignKeyReference> GetReferencingForeignKeys(string parentTableName) =>
+        _service.GetReferencingForeignKeys(parentTableName);
+
     public TableStatistics? GetTableStatistics(string tableName) => _service.GetTableStatistics(tableName);
 
     public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
@@ -159,6 +165,9 @@ public sealed class SchemaCatalog
 
     public ValueTask CreateIndexAsync(IndexSchema schema, CancellationToken ct = default) =>
         _service.CreateIndexAsync(schema, ct);
+
+    public ValueTask UpdateIndexSchemaAsync(string oldIndexName, IndexSchema newSchema, CancellationToken ct = default) =>
+        _service.UpdateIndexSchemaAsync(oldIndexName, newSchema, ct);
 
     public ValueTask DropIndexAsync(string indexName, CancellationToken ct = default) =>
         _service.DropIndexAsync(indexName, ct);

@@ -10,10 +10,33 @@ public sealed class ColumnDefinition
     public string? Collation { get; init; }
 }
 
+public enum ForeignKeyOnDeleteAction
+{
+    Restrict = 0,
+    Cascade = 1,
+}
+
+public sealed class ForeignKeyDefinition
+{
+    public required string ConstraintName { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public required string ReferencedColumnName { get; init; }
+    public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+    public required string SupportingIndexName { get; init; }
+}
+
+public sealed class TableForeignKeyReference
+{
+    public required string TableName { get; init; }
+    public required ForeignKeyDefinition ForeignKey { get; init; }
+}
+
 public sealed class TableSchema
 {
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
+    public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();
     
     /// <summary>
     /// Persisted next auto rowid high-water mark for INSERT allocation.
@@ -97,6 +120,7 @@ public sealed class TableSchema
         {
             TableName = "joined",
             Columns = columns.ToArray(),
+            ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
             QualifiedMappings = qualified,
         };
     }
@@ -152,6 +176,7 @@ public enum IndexKind
     Collection = 1,
     FullText = 2,
     FullTextInternal = 3,
+    ForeignKeyInternal = 4,
 }
 
 public enum IndexState

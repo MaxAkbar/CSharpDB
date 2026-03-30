@@ -235,6 +235,33 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_MapsForeignKeyMetadata()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE grpc_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES grpc_parents(id) ON DELETE CASCADE
+            );
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        TableSchema? schema = await client.GetTableSchemaAsync("grpc_children", Ct);
+        Assert.NotNull(schema);
+        var foreignKey = Assert.Single(schema!.ForeignKeys);
+        Assert.Equal("parent_id", foreignKey.ColumnName);
+        Assert.Equal("grpc_parents", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.StartsWith("__fk_grpc_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GrpcContract_ExposesExplicitRpcMethods()
     {
         using var transportClient = CreateGrpcHttpClient();

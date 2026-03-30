@@ -13,7 +13,8 @@ public static class SchemaSerializer
     private const byte NullableFlag = 0x01;
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
-    private const ulong TableMetadataVersion = 1;
+    private const ulong TableMetadataVersion = 2;
+    private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong IndexMetadataVersion = 1;
 
     public static byte[] Serialize(TableSchema schema)
@@ -45,6 +46,16 @@ public static class SchemaSerializer
         WriteVarint(ms, (ulong)schema.Columns.Count);
         foreach (var col in schema.Columns)
             WriteNullableString(ms, col.Collation);
+        WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
+        foreach (var foreignKey in schema.ForeignKeys)
+        {
+            WriteString(ms, foreignKey.ConstraintName);
+            WriteString(ms, foreignKey.ColumnName);
+            WriteString(ms, foreignKey.ReferencedTableName);
+            WriteString(ms, foreignKey.ReferencedColumnName);
+            WriteVarint(ms, (ulong)foreignKey.OnDelete);
+            WriteString(ms, foreignKey.SupportingIndexName);
+        }
 
         return ms.ToArray();
     }
@@ -75,6 +86,7 @@ public static class SchemaSerializer
 
         long nextRowId = 0;
         var columnCollations = new string?[colCount];
+        ForeignKeyDefinition[] foreignKeys = Array.Empty<ForeignKeyDefinition>();
         if (pos < data.Length)
         {
             ulong storedNextRowId = Varint.Read(data[pos..], out int nextRowIdBytesRead);
@@ -88,7 +100,7 @@ public static class SchemaSerializer
             ulong metadataVersion = Varint.Read(data[pos..], out int metadataBytesRead);
             pos += metadataBytesRead;
 
-            if (metadataVersion != TableMetadataVersion)
+            if (metadataVersion is not (TableMetadataVersionWithCollations or TableMetadataVersion))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
             int metadataColumnCount = (int)Varint.Read(data[pos..], out int metadataCountBytesRead);
@@ -98,6 +110,37 @@ public static class SchemaSerializer
 
             for (int i = 0; i < metadataColumnCount; i++)
                 columnCollations[i] = ReadNullableString(data, ref pos);
+
+            if (metadataVersion >= TableMetadataVersion && pos < data.Length)
+            {
+                int foreignKeyCount = (int)Varint.Read(data[pos..], out int foreignKeyCountBytesRead);
+                pos += foreignKeyCountBytesRead;
+
+                foreignKeys = new ForeignKeyDefinition[foreignKeyCount];
+                for (int i = 0; i < foreignKeyCount; i++)
+                {
+                    string constraintName = ReadString(data, ref pos);
+                    string columnName = ReadString(data, ref pos);
+                    string referencedTableName = ReadString(data, ref pos);
+                    string referencedColumnName = ReadString(data, ref pos);
+                    ulong onDeleteRaw = Varint.Read(data[pos..], out int onDeleteBytesRead);
+                    pos += onDeleteBytesRead;
+                    string supportingIndexName = ReadString(data, ref pos);
+
+                    if (!Enum.IsDefined(typeof(ForeignKeyOnDeleteAction), (int)onDeleteRaw))
+                        throw new InvalidDataException($"Unsupported foreign key ON DELETE action '{onDeleteRaw}'.");
+
+                    foreignKeys[i] = new ForeignKeyDefinition
+                    {
+                        ConstraintName = constraintName,
+                        ColumnName = columnName,
+                        ReferencedTableName = referencedTableName,
+                        ReferencedColumnName = referencedColumnName,
+                        OnDelete = (ForeignKeyOnDeleteAction)onDeleteRaw,
+                        SupportingIndexName = supportingIndexName,
+                    };
+                }
+            }
         }
 
         var columns = new ColumnDefinition[colCount];
@@ -125,6 +168,7 @@ public static class SchemaSerializer
             TableName = tableName,
             Columns = columns,
             NextRowId = nextRowId,
+            ForeignKeys = foreignKeys,
         };
     }
 
@@ -376,6 +420,13 @@ public static class SchemaSerializer
         ms.Write(bytes);
     }
 
+    private static void WriteString(MemoryStream ms, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        WriteVarint(ms, (ulong)bytes.Length);
+        ms.Write(bytes);
+    }
+
     private static string? ReadNullableString(ReadOnlySpan<byte> data, ref int pos)
     {
         ulong encodedLength = Varint.Read(data[pos..], out int bytesRead);
@@ -385,6 +436,15 @@ public static class SchemaSerializer
             return null;
 
         int length = checked((int)encodedLength - 1);
+        string value = Encoding.UTF8.GetString(data.Slice(pos, length));
+        pos += length;
+        return value;
+    }
+
+    private static string ReadString(ReadOnlySpan<byte> data, ref int pos)
+    {
+        int length = checked((int)Varint.Read(data[pos..], out int bytesRead));
+        pos += bytesRead;
         string value = Encoding.UTF8.GetString(data.Slice(pos, length));
         pos += length;
         return value;

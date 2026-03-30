@@ -38,6 +38,8 @@ internal sealed class CatalogService
     private Dictionary<string, TableSchema> _cache => _cacheState.Tables;
     private Dictionary<string, uint> _tableRootPages => _cacheState.TableRootPages;
     private Dictionary<string, BTree> _tableTrees => _cacheState.TableTrees;
+    private Dictionary<string, ForeignKeyDefinition[]> _foreignKeysByTable => _cacheState.ForeignKeysByTable;
+    private Dictionary<string, TableForeignKeyReference[]> _referencingForeignKeysByParentTable => _cacheState.ReferencingForeignKeysByParentTable;
     private readonly Dictionary<string, long> _persistedTableNextRowIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableStatistics> _tableStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyTableStatistics = new(StringComparer.OrdinalIgnoreCase);
@@ -349,6 +351,8 @@ internal sealed class CatalogService
             _persistedTableNextRowIds[schema.TableName] = schema.NextRowId;
         }
 
+        RebuildForeignKeyCaches();
+
         // Load index entries
         if (_indexCatalogTree != null)
         {
@@ -418,6 +422,22 @@ internal sealed class CatalogService
     {
         _cache.TryGetValue(tableName, out var schema);
         return schema;
+    }
+
+    public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysForTable(string tableName)
+    {
+        if (_foreignKeysByTable.TryGetValue(tableName, out var foreignKeys))
+            return foreignKeys;
+
+        return Array.Empty<ForeignKeyDefinition>();
+    }
+
+    public IReadOnlyList<TableForeignKeyReference> GetReferencingForeignKeys(string parentTableName)
+    {
+        if (_referencingForeignKeysByParentTable.TryGetValue(parentTableName, out var references))
+            return references;
+
+        return Array.Empty<TableForeignKeyReference>();
     }
 
     public TableStatistics? GetTableStatistics(string tableName)
@@ -593,6 +613,7 @@ internal sealed class CatalogService
         _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage);
         _tableTrees[storedSchema.TableName].SetCachedEntryCount(0);
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
+        RebuildForeignKeyCaches();
         await UpsertTableStatisticsAsync(
             new TableStatistics
             {
@@ -634,6 +655,7 @@ internal sealed class CatalogService
         _tableRootPages.Remove(tableName);
         _tableTrees.Remove(tableName);
         _persistedTableNextRowIds.Remove(tableName);
+        RebuildForeignKeyCaches();
         IncrementSchemaVersion();
     }
 
@@ -669,6 +691,7 @@ internal sealed class CatalogService
         _cache[storedSchema.TableName] = storedSchema;
         _tableRootPages[storedSchema.TableName] = rootPage;
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
+        RebuildForeignKeyCaches();
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
             _tableTrees[storedSchema.TableName] = existingTree;
@@ -1002,6 +1025,40 @@ internal sealed class CatalogService
         IncrementSchemaVersion();
     }
 
+    public async ValueTask UpdateIndexSchemaAsync(string oldIndexName, IndexSchema newSchema, CancellationToken ct = default)
+    {
+        if (!_indexRootPages.TryGetValue(oldIndexName, out uint rootPage))
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{oldIndexName}' not found.");
+
+        if (!_indexCache.TryGetValue(oldIndexName, out var oldSchema))
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{oldIndexName}' not found.");
+
+        if (!string.Equals(oldIndexName, newSchema.IndexName, StringComparison.OrdinalIgnoreCase) &&
+            _indexCache.ContainsKey(newSchema.IndexName))
+        {
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Index '{newSchema.IndexName}' already exists.");
+        }
+
+        long oldKey = _schemaSerializer.IndexNameToKey(oldIndexName);
+        await _indexCatalogTree!.DeleteAsync(oldKey, ct);
+        _indexCache.Remove(oldIndexName);
+        _indexRootPages.Remove(oldIndexName);
+        _indexStores.Remove(oldIndexName);
+        RemoveIndexFromTableCache(oldSchema);
+
+        byte[] indexBytes = _schemaSerializer.SerializeIndex(newSchema);
+        var payload = _catalogStore.WriteRootPayload(rootPage, indexBytes);
+        long newKey = _schemaSerializer.IndexNameToKey(newSchema.IndexName);
+        await _indexCatalogTree.InsertAsync(newKey, payload, ct);
+
+        _indexCache[newSchema.IndexName] = newSchema;
+        _indexRootPages[newSchema.IndexName] = rootPage;
+        _indexStores[newSchema.IndexName] = CreateIndexStore(_pager, newSchema, rootPage);
+        AddIndexToTableCache(newSchema);
+        _indexesSnapshotDirty = true;
+        IncrementSchemaVersion();
+    }
+
     public async ValueTask DropIndexAsync(string indexName, CancellationToken ct = default)
         => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct);
 
@@ -1026,6 +1083,17 @@ internal sealed class CatalogService
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
                 $"Full-text owned index '{indexName}' cannot be dropped directly; drop {ownerIndexName} instead.");
+        }
+
+        if (schema.Kind == IndexKind.ForeignKeyInternal)
+        {
+            string ownerConstraintName = string.IsNullOrWhiteSpace(schema.OwnerIndexName)
+                ? "its owning foreign key constraint"
+                : $"foreign key '{schema.OwnerIndexName}'";
+
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Foreign key support index '{indexName}' cannot be dropped directly; drop {ownerConstraintName} instead.");
         }
 
         if (schema.Kind == IndexKind.FullText)
@@ -1240,6 +1308,42 @@ internal sealed class CatalogService
         _cacheState.RemoveTriggerFromTable(schema);
     }
 
+    private void RebuildForeignKeyCaches()
+    {
+        _foreignKeysByTable.Clear();
+        _referencingForeignKeysByParentTable.Clear();
+
+        foreach (TableSchema schema in _cache.Values)
+        {
+            ForeignKeyDefinition[] foreignKeys = schema.ForeignKeys.ToArray();
+            if (foreignKeys.Length > 0)
+                _foreignKeysByTable[schema.TableName] = foreignKeys;
+
+            for (int i = 0; i < foreignKeys.Length; i++)
+                AddReferencingForeignKey(schema.TableName, foreignKeys[i]);
+        }
+    }
+
+    private void AddReferencingForeignKey(string tableName, ForeignKeyDefinition foreignKey)
+    {
+        var reference = new TableForeignKeyReference
+        {
+            TableName = tableName,
+            ForeignKey = foreignKey,
+        };
+
+        if (_referencingForeignKeysByParentTable.TryGetValue(foreignKey.ReferencedTableName, out var existing))
+        {
+            var updated = new TableForeignKeyReference[existing.Length + 1];
+            Array.Copy(existing, updated, existing.Length);
+            updated[^1] = reference;
+            _referencingForeignKeysByParentTable[foreignKey.ReferencedTableName] = updated;
+            return;
+        }
+
+        _referencingForeignKeysByParentTable[foreignKey.ReferencedTableName] = new[] { reference };
+    }
+
     private static TableSchema NormalizeNewTableSchema(TableSchema schema)
     {
         long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : 1;
@@ -1270,6 +1374,7 @@ internal sealed class CatalogService
         {
             TableName = schema.TableName,
             Columns = schema.Columns,
+            ForeignKeys = schema.ForeignKeys,
             QualifiedMappings = schema.QualifiedMappings,
             NextRowId = normalizedNextRowId,
         };

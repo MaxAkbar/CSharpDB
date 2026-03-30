@@ -10,6 +10,8 @@ internal sealed class CatalogCache
     public Dictionary<string, TableSchema> Tables { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, uint> TableRootPages { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, BTree> TableTrees { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, ForeignKeyDefinition[]> ForeignKeysByTable { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, TableForeignKeyReference[]> ReferencingForeignKeysByParentTable { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, IndexSchema> Indexes { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, uint> IndexRootPages { get; } = new(StringComparer.OrdinalIgnoreCase);

@@ -7,6 +7,8 @@ using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
 using CoreDbType = CSharpDB.Primitives.DbType;
+using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
+using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
@@ -178,6 +180,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     {
         var db = await GetDatabaseAsync(ct);
         return db.GetIndexes()
+            .Where(index => index.Kind != CSharpDB.Primitives.IndexKind.ForeignKeyInternal)
             .Select(MapIndexSchema)
             .OrderBy(index => index.IndexName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -641,6 +644,23 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         {
             TableName = schema.TableName,
             Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
+            ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
+        };
+
+    private static ForeignKeyDefinition MapForeignKeyDefinition(CoreForeignKeyDefinition foreignKey)
+        => new()
+        {
+            ConstraintName = foreignKey.ConstraintName,
+            ColumnName = foreignKey.ColumnName,
+            ReferencedTableName = foreignKey.ReferencedTableName,
+            ReferencedColumnName = foreignKey.ReferencedColumnName,
+            OnDelete = foreignKey.OnDelete switch
+            {
+                CoreForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteAction.Restrict,
+                CoreForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteAction.Cascade,
+                _ => throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{foreignKey.OnDelete}'."),
+            },
+            SupportingIndexName = foreignKey.SupportingIndexName,
         };
 
     private static ColumnDefinition MapColumnDefinition(CoreColumnDefinition column)

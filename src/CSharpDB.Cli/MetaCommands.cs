@@ -2,6 +2,8 @@ using CSharpDB.Client.Models;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
+using ClientForeignKeyDefinition = CSharpDB.Client.Models.ForeignKeyDefinition;
+using ClientForeignKeyOnDeleteAction = CSharpDB.Client.Models.ForeignKeyOnDeleteAction;
 using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
 using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
 using ClientTriggerSchema = CSharpDB.Client.Models.TriggerSchema;
@@ -163,14 +165,25 @@ internal sealed class SchemaCommand : IMetaCommand
         for (int i = 0; i < schema.Columns.Count; i++)
         {
             var col = schema.Columns[i];
-            string comma = i < schema.Columns.Count - 1 ? "," : string.Empty;
+            bool hasTrailingItems = i < schema.Columns.Count - 1 || schema.ForeignKeys.Count > 0;
+            string comma = hasTrailingItems ? "," : string.Empty;
 
             string type = Ansi.Colorize(col.Type.ToString().ToUpperInvariant(), Ansi.Yellow);
             string pk = col.IsPrimaryKey ? Ansi.Colorize(" PRIMARY KEY", Ansi.Magenta) : string.Empty;
             string identity = col.IsIdentity ? Ansi.Colorize(" IDENTITY", Ansi.Magenta) : string.Empty;
             string nn = !col.Nullable ? Ansi.Colorize(" NOT NULL", Ansi.Magenta) : string.Empty;
+            string foreignKey = string.Empty;
+            ClientForeignKeyDefinition? columnForeignKey = schema.ForeignKeys.FirstOrDefault(fk =>
+                fk.ColumnName.Equals(col.Name, StringComparison.OrdinalIgnoreCase));
+            if (columnForeignKey is not null)
+            {
+                foreignKey =
+                    $" {Ansi.Colorize("REFERENCES", Ansi.Magenta)} {Ansi.Cyan}{columnForeignKey.ReferencedTableName}{Ansi.Reset}({columnForeignKey.ReferencedColumnName})";
+                if (columnForeignKey.OnDelete == ClientForeignKeyOnDeleteAction.Cascade)
+                    foreignKey += $" {Ansi.Colorize("ON DELETE CASCADE", Ansi.Magenta)}";
+            }
 
-            output.WriteLine($"  {col.Name} {type}{pk}{identity}{nn}{comma}");
+            output.WriteLine($"  {col.Name} {type}{pk}{identity}{nn}{foreignKey}{comma}");
         }
 
         output.WriteLine(");");
@@ -899,6 +912,22 @@ internal static class MetaCommandHelpers
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
+                })
+                .ToArray(),
+            ForeignKeys = schema.ForeignKeys
+                .Select(foreignKey => new ClientForeignKeyDefinition
+                {
+                    ConstraintName = foreignKey.ConstraintName,
+                    ColumnName = foreignKey.ColumnName,
+                    ReferencedTableName = foreignKey.ReferencedTableName,
+                    ReferencedColumnName = foreignKey.ReferencedColumnName,
+                    OnDelete = foreignKey.OnDelete switch
+                    {
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                        _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                    },
+                    SupportingIndexName = foreignKey.SupportingIndexName,
                 })
                 .ToArray(),
         };

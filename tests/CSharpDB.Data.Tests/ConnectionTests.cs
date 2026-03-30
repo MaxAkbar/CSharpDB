@@ -139,11 +139,12 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         DataTable schema = conn.GetSchema();
-        Assert.Equal(5, schema.Rows.Count);
+        Assert.Equal(6, schema.Rows.Count);
         Assert.Equal(0, GetRequiredInt(schema, DbMetaDataCollectionNames.MetaDataCollections, "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Tables", "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Columns", "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Indexes", "NumberOfRestrictions"));
+        Assert.Equal(4, GetRequiredInt(schema, "ForeignKeys", "NumberOfRestrictions"));
         Assert.Equal(3, GetRequiredInt(schema, "Views", "NumberOfRestrictions"));
     }
 
@@ -251,6 +252,28 @@ public class ConnectionTests : IDisposable
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());
         Assert.Equal("idx_users_age", filteredRow["INDEX_NAME"]);
         Assert.Equal(string.Empty, filteredRow["COLLATION_LIST"]);
+    }
+
+    [Fact]
+    public async Task GetSchema_ForeignKeys_ReturnsConstraintMetadata()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE parents (id INTEGER PRIMARY KEY);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        DataTable schema = conn.GetSchema("ForeignKeys");
+        DataRow row = Assert.Single(schema.Rows.Cast<DataRow>());
+        Assert.Equal("children", row["TABLE_NAME"]);
+        Assert.Equal("parent_id", row["COLUMN_NAME"]);
+        Assert.Equal("parents", row["REFERENCED_TABLE_NAME"]);
+        Assert.Equal("id", row["REFERENCED_COLUMN_NAME"]);
+        Assert.Equal("CASCADE", row["DELETE_RULE"]);
+        Assert.NotEqual(DBNull.Value, row["SUPPORTING_INDEX_NAME"]);
     }
 
     [Fact]
