@@ -226,6 +226,84 @@
         display: block;
     }
 
+    /* ─── AOT Cross-Language Section ─── */
+    .lang-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        max-width: 900px;
+        margin: 0 auto;
+    }
+
+    .lang-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        transition: border-color 0.25s, box-shadow 0.25s;
+    }
+
+    .lang-card:hover {
+        border-color: var(--accent);
+        box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .lang-card-header {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.75rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .lang-card-header .lang-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .lang-dot-python  { background: #3572A5; }
+    .lang-dot-rust    { background: #DEA584; }
+    .lang-dot-go      { background: #00ADD8; }
+    .lang-dot-node    { background: #F7DF1E; }
+
+    .lang-card pre {
+        padding: 1rem 1.25rem;
+        margin: 0;
+        overflow-x: auto;
+        font-size: 0.82rem;
+        line-height: 1.7;
+        background: transparent;
+    }
+
+    .lang-card pre code {
+        background: none;
+        padding: 0;
+        font-size: inherit;
+        color: var(--text-primary);
+    }
+
+    .aot-note {
+        text-align: center;
+        margin-top: 2rem;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+
+    .aot-note code {
+        font-size: 0.82rem;
+    }
+
+    @media (max-width: 768px) {
+        .lang-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
     /* ─── Ecosystem Cards ─── */
     .ecosystem-grid {
         display: grid;
@@ -838,6 +916,91 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
                         <p>C-compatible shared library for Python, JavaScript, and other languages</p>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════
+             NativeAOT — Use from Any Language
+             ═══════════════════════════════════════════════════════ -->
+        <section class="section" id="polyglot">
+            <div class="container">
+                <h2 class="section-title">Use from Any Language</h2>
+                <p class="section-subtitle">Compile to a native shared library with NativeAOT. Call CSharpDB from Python, Rust, Go, Node.js, or anything that speaks C.</p>
+
+                <div class="lang-grid">
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-python"></span>
+                            Python
+                        </div>
+                        <pre><code><span class="kw">import</span> ctypes
+
+db = ctypes.CDLL(<span class="str">"./libcsharpdb.so"</span>)
+
+db.csharpdb_open(<span class="str">b"app.db"</span>)
+db.csharpdb_exec(<span class="str">b"INSERT INTO Users VALUES (1, 'Alice')"</span>)
+result = db.csharpdb_query(<span class="str">b"SELECT * FROM Users"</span>)
+db.csharpdb_close()</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-rust"></span>
+                            Rust
+                        </div>
+                        <pre><code><span class="kw">extern</span> <span class="str">"C"</span> {
+    <span class="kw">fn</span> <span class="tp">csharpdb_open</span>(path: *<span class="kw">const</span> c_char);
+    <span class="kw">fn</span> <span class="tp">csharpdb_exec</span>(sql: *<span class="kw">const</span> c_char);
+    <span class="kw">fn</span> <span class="tp">csharpdb_query</span>(sql: *<span class="kw">const</span> c_char) -&gt; *<span class="kw">const</span> c_char;
+    <span class="kw">fn</span> <span class="tp">csharpdb_close</span>();
+}
+
+<span class="kw">unsafe</span> {
+    <span class="tp">csharpdb_open</span>(c<span class="str">"app.db"</span>.as_ptr());
+    <span class="tp">csharpdb_exec</span>(c<span class="str">"SELECT * FROM Users"</span>.as_ptr());
+    <span class="tp">csharpdb_close</span>();
+}</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-go"></span>
+                            Go
+                        </div>
+                        <pre><code><span class="cm">// #cgo LDFLAGS: -L. -lcsharpdb</span>
+<span class="cm">// #include "csharpdb.h"</span>
+<span class="kw">import</span> <span class="str">"C"</span>
+
+<span class="kw">func</span> main() {
+    C.csharpdb_open(C.CString(<span class="str">"app.db"</span>))
+    C.csharpdb_exec(C.CString(<span class="str">"SELECT * FROM Users"</span>))
+    C.csharpdb_close()
+}</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-node"></span>
+                            Node.js
+                        </div>
+                        <pre><code><span class="kw">const</span> ffi = require(<span class="str">'ffi-napi'</span>);
+
+<span class="kw">const</span> db = ffi.Library(<span class="str">'./libcsharpdb'</span>, {
+    <span class="str">'csharpdb_open'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_exec'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_query'</span>: [<span class="str">'string'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_close'</span>: [<span class="str">'void'</span>, []],
+});
+
+db.csharpdb_open(<span class="str">"app.db"</span>);
+db.csharpdb_exec(<span class="str">"SELECT * FROM Users"</span>);
+db.csharpdb_close();</code></pre>
+                    </div>
+                </div>
+
+                <p class="aot-note">
+                    Built with <code>dotnet publish -r linux-x64 /p:NativeLib=Shared</code> — produces a standard <code>.so</code> / <code>.dll</code> / <code>.dylib</code> with no runtime required.
+                </p>
             </div>
         </section>
 
