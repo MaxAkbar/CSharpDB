@@ -35,6 +35,7 @@
                     ${navLink('docs/index.html', 'docs', 'Docs')}
                     ${navLink('architecture.html', 'architecture', 'Architecture')}
                     ${navLink('benchmarks.html', 'benchmarks', 'Benchmarks')}
+                    ${navLink('performance.html', 'performance', 'Performance')}
                     ${navLink('api-reference.html', 'api-reference', 'API Reference')}
                     ${navLink('roadmap.html', 'roadmap', 'Roadmap')}
                 </div>
@@ -68,6 +69,7 @@
                         <a href="${prefix}docs/index.html">Documentation</a>
                         <a href="${prefix}architecture.html">Architecture</a>
                         <a href="${prefix}api-reference.html">API Reference</a>
+                        <a href="${prefix}performance.html">Performance Guide</a>
                         <a href="${prefix}roadmap.html">Roadmap</a>
                     </div>
                     <div class="footer-col">
