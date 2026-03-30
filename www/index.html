@@ -23,30 +23,118 @@
     <link rel="icon" type="image/png" href="favicon.png">
     <style>
     /* ═══════════════════════════════════════════════════════════
-       Visual Architecture Hero — Page-Specific Styles
+       Code-First Hero — Scrolling Code Background
        ═══════════════════════════════════════════════════════════ */
 
-    /* ─── Hero Architecture Diagram ─── */
-    .hero-arch {
-        padding: 80px 0 60px;
-        text-align: center;
+    .hero-code-first {
         position: relative;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         overflow: hidden;
     }
 
-    .hero-arch .hero-bg-grid {
+    .hero-code-bg {
         position: absolute;
         inset: 0;
-        background-image:
-            linear-gradient(var(--border) 1px, transparent 1px),
-            linear-gradient(90deg, var(--border) 1px, transparent 1px);
-        background-size: 60px 60px;
-        opacity: 0.3;
-        -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 70%);
-        mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 70%);
+        z-index: 0;
+        overflow: hidden;
+        background: var(--bg-primary);
     }
 
-    .hero-arch .hero-title {
+    .hero-code-bg::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+            180deg,
+            rgba(10, 14, 23, 0.3) 0%,
+            rgba(10, 14, 23, 0.15) 30%,
+            rgba(10, 14, 23, 0.15) 70%,
+            rgba(10, 14, 23, 0.6) 100%
+        );
+        z-index: 1;
+        pointer-events: none;
+    }
+
+    [data-theme="light"] .hero-code-bg::after {
+        background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.3) 0%,
+            rgba(255, 255, 255, 0.15) 30%,
+            rgba(255, 255, 255, 0.15) 70%,
+            rgba(255, 255, 255, 0.6) 100%
+        );
+    }
+
+    .hero-code-scroll {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: max(100%, 900px);
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        font-size: 0.82rem;
+        line-height: 1.8;
+        color: var(--text-muted);
+        opacity: 0.45;
+        white-space: pre;
+        padding: 2rem 4rem;
+        animation: scrollCode 60s linear infinite;
+        -webkit-user-select: none;
+        user-select: none;
+        pointer-events: none;
+    }
+
+    @keyframes scrollCode {
+        0%   { transform: translateX(-50%) translateY(0); }
+        100% { transform: translateX(-50%) translateY(-50%); }
+    }
+
+    .hero-code-scroll .kw  { color: var(--code-keyword); }
+    .hero-code-scroll .tp  { color: var(--code-type); }
+    .hero-code-scroll .str { color: var(--code-string); }
+    .hero-code-scroll .cm  { color: var(--code-comment); }
+    .hero-code-scroll .num { color: var(--code-number); }
+
+    /* ─── Frosted glass panel ─── */
+    .hero-glass {
+        position: relative;
+        z-index: 2;
+        max-width: 680px;
+        width: 90%;
+        padding: 3.5rem 3rem;
+        background: rgba(10, 14, 23, 0.55);
+        -webkit-backdrop-filter: blur(24px) saturate(1.2);
+        backdrop-filter: blur(24px) saturate(1.2);
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-xl);
+        text-align: center;
+        box-shadow:
+            0 0 80px rgba(99, 102, 241, 0.08),
+            var(--shadow-lg);
+    }
+
+    [data-theme="light"] .hero-glass {
+        background: rgba(255, 255, 255, 0.6);
+    }
+
+    .hero-glass .hero-badge {
+        display: inline-block;
+        padding: 0.3rem 1rem;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 999px;
+        margin-bottom: 1.5rem;
+        background: var(--accent-soft);
+    }
+
+    .hero-glass h1 {
         font-size: clamp(2.2rem, 5vw, 3.4rem);
         font-weight: 800;
         line-height: 1.15;
@@ -54,118 +142,46 @@
         letter-spacing: -0.02em;
     }
 
-    .hero-arch .hero-subtitle {
+    .hero-glass .hero-subtitle {
         font-size: 1.1rem;
         color: var(--text-secondary);
-        max-width: 580px;
-        margin: 0 auto 40px;
+        max-width: 540px;
+        margin: 0 auto 2rem;
         line-height: 1.7;
     }
 
-    /* ─── Architecture SVG Diagram ─── */
-    .arch-hero-diagram {
-        max-width: 700px;
-        margin: 0 auto 48px;
-        position: relative;
+    .hero-glass .hero-actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 1.75rem;
     }
 
-    .arch-hero-diagram svg {
-        width: 100%;
-        height: auto;
+    .hero-glass .hero-install {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 1.25rem;
+        background: var(--bg-code);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        font-size: 0.88rem;
+        color: var(--text-primary);
     }
 
-    /* Layer boxes */
-    .arch-svg-layer {
-        stroke-width: 1.5;
-        transition: all 0.3s;
+    .hero-glass .hero-install .copy-btn {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 2px;
+        transition: color 0.2s;
     }
 
-    .arch-svg-layer-sql {
-        fill: rgba(168, 85, 247, 0.08);
-        stroke: rgba(168, 85, 247, 0.4);
-    }
-    .arch-svg-layer-exec {
-        fill: rgba(99, 102, 241, 0.08);
-        stroke: rgba(99, 102, 241, 0.4);
-    }
-    .arch-svg-layer-storage {
-        fill: rgba(6, 182, 212, 0.08);
-        stroke: rgba(6, 182, 212, 0.4);
-    }
-    .arch-svg-layer-disk {
-        fill: rgba(34, 197, 94, 0.08);
-        stroke: rgba(34, 197, 94, 0.4);
-    }
-
-    /* Glow connection lines */
-    .arch-connection {
-        stroke-width: 2;
-        fill: none;
-        stroke-dasharray: 8 4;
-        animation: archFlowDown 1.5s linear infinite;
-    }
-    .arch-connection-1 { stroke: rgba(168, 85, 247, 0.6); animation-delay: 0s; }
-    .arch-connection-2 { stroke: rgba(99, 102, 241, 0.6); animation-delay: 0.4s; }
-    .arch-connection-3 { stroke: rgba(6, 182, 212, 0.6); animation-delay: 0.8s; }
-
-    @keyframes archFlowDown {
-        0% { stroke-dashoffset: 24; }
-        100% { stroke-dashoffset: 0; }
-    }
-
-    /* Floating particles */
-    .arch-particle {
-        r: 3;
-        opacity: 0;
-        animation: particleFlow 3s ease-in-out infinite;
-    }
-    .arch-particle-1 { fill: #a855f7; animation-delay: 0s; }
-    .arch-particle-2 { fill: #6366f1; animation-delay: 1s; }
-    .arch-particle-3 { fill: #06b6d4; animation-delay: 2s; }
-    .arch-particle-4 { fill: #a855f7; animation-delay: 0.5s; }
-    .arch-particle-5 { fill: #22c55e; animation-delay: 1.5s; }
-    .arch-particle-6 { fill: #6366f1; animation-delay: 2.5s; }
-
-    @keyframes particleFlow {
-        0%   { opacity: 0; transform: translateY(0); }
-        15%  { opacity: 0.9; }
-        85%  { opacity: 0.9; }
-        100% { opacity: 0; transform: translateY(60px); }
-    }
-
-    /* Glow pulse on layer borders */
-    .arch-glow-pulse {
-        animation: glowPulse 3s ease-in-out infinite;
-    }
-    .arch-glow-pulse-1 { animation-delay: 0s; }
-    .arch-glow-pulse-2 { animation-delay: 0.75s; }
-    .arch-glow-pulse-3 { animation-delay: 1.5s; }
-    .arch-glow-pulse-4 { animation-delay: 2.25s; }
-
-    @keyframes glowPulse {
-        0%, 100% { opacity: 0.4; }
-        50% { opacity: 1; }
-    }
-
-    /* SVG text */
-    .arch-svg-title {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        font-weight: 700;
-        font-size: 15px;
-        fill: var(--text-primary);
-    }
-    .arch-svg-desc {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        font-weight: 400;
-        font-size: 11px;
-        fill: var(--text-muted);
-    }
-    .arch-svg-sub {
-        font-family: 'JetBrains Mono', 'Fira Code', monospace;
-        font-weight: 400;
-        font-size: 10px;
-        fill: var(--text-muted);
-        opacity: 0.7;
+    .hero-glass .hero-install .copy-btn:hover {
+        color: var(--accent);
     }
 
     /* ─── Quick Start Section ─── */
@@ -329,8 +345,12 @@
     }
 
     @media (max-width: 768px) {
-        .hero-arch {
-            padding: 60px 0 40px;
+        .hero-glass {
+            padding: 2.5rem 1.75rem;
+        }
+        .hero-code-scroll {
+            font-size: 0.65rem;
+            padding: 1rem;
         }
         .ecosystem-grid {
             grid-template-columns: 1fr 1fr;
@@ -338,9 +358,6 @@
         }
         .eco-card {
             padding: 18px 14px;
-        }
-        .arch-hero-diagram {
-            margin-bottom: 32px;
         }
     }
 
@@ -377,13 +394,220 @@
 
     <main class="page">
         <!-- ═══════════════════════════════════════════════════════
-             Hero — Visual Architecture Diagram
+             Hero — Scrolling Code Background
              ═══════════════════════════════════════════════════════ -->
-        <section class="hero-arch">
-            <div class="hero-bg-grid"></div>
-            <div class="container">
+        <section class="hero-code-first">
+            <div class="hero-code-bg">
+                <pre class="hero-code-scroll"><span class="cm">// CSharpDB &mdash; Embedded Database Engine for .NET</span>
+<span class="cm">// Zero dependencies. ACID-compliant. Production-grade.</span>
+
+<span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Threading.Channels</span>;
+
+<span class="kw">namespace</span> <span class="tp">MyApp.DataLayer</span>;
+
+<span class="kw">public sealed class</span> <span class="tp">AppDatabase</span> : <span class="tp">IAsyncDisposable</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private readonly</span> <span class="tp">Channel</span>&lt;<span class="tp">WriteOp</span>&gt; _writes;
+
+    <span class="kw">public static async</span> <span class="tp">Task</span>&lt;<span class="tp">AppDatabase</span>&gt; OpenAsync(<span class="kw">string</span> path)
+    {
+        <span class="kw">var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(path);
+        <span class="kw">return new</span> <span class="tp">AppDatabase</span>(db);
+    }
+
+    <span class="kw">private</span> <span class="tp">AppDatabase</span>(<span class="tp">Database</span> db)
+    {
+        _db = db;
+        _writes = <span class="tp">Channel</span>.CreateBounded&lt;<span class="tp">WriteOp</span>&gt;(<span class="num">1024</span>);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> CreateSchemaAsync()
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            CREATE TABLE IF NOT EXISTS Products (
+                Id       INTEGER PRIMARY KEY,
+                Name     TEXT NOT NULL,
+                Price    REAL NOT NULL,
+                Category TEXT,
+                Created  TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_products_category
+                ON Products(Category);
+
+            CREATE TABLE IF NOT EXISTS Orders (
+                Id         INTEGER PRIMARY KEY,
+                ProductId  INTEGER REFERENCES Products(Id),
+                Quantity   INTEGER NOT NULL,
+                Total      REAL NOT NULL,
+                OrderDate  TEXT DEFAULT CURRENT_TIMESTAMP
+            );"</span>;
+        <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">IReadOnlyList</span>&lt;<span class="tp">Product</span>&gt;&gt; GetTopProductsAsync(<span class="kw">int</span> limit)
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            SELECT p.Id, p.Name, p.Price, SUM(o.Quantity) AS TotalSold
+            FROM Products p
+            JOIN Orders o ON o.ProductId = p.Id
+            GROUP BY p.Id, p.Name, p.Price
+            ORDER BY TotalSold DESC
+            LIMIT @limit"</span>;
+        cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@limit"</span>, limit));
+
+        <span class="kw">var</span> results = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">Product</span>&gt;();
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+        {
+            results.Add(<span class="kw">new</span> <span class="tp">Product</span>(
+                reader.GetInt32(<span class="num">0</span>),
+                reader.GetString(<span class="num">1</span>),
+                reader.GetDouble(<span class="num">2</span>),
+                reader.GetInt32(<span class="num">3</span>)
+            ));
+        }
+        <span class="kw">return</span> results;
+    }
+
+    <span class="cm">// Collection API for flexible document storage</span>
+    <span class="kw">public async</span> <span class="tp">Task</span> StoreSessionAsync(<span class="tp">UserSession</span> session)
+    {
+        <span class="kw">var</span> sessions = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">UserSession</span>&gt;(<span class="str">"sessions"</span>);
+        <span class="kw">await</span> sessions.PutAsync(session.Id, session);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">UserSession</span>?&gt; GetSessionAsync(<span class="kw">string</span> id)
+    {
+        <span class="kw">var</span> sessions = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">UserSession</span>&gt;(<span class="str">"sessions"</span>);
+        <span class="kw">return await</span> sessions.GetAsync(id);
+    }
+
+    <span class="kw">public async</span> <span class="tp">ValueTask</span> DisposeAsync()
+    {
+        _writes.Writer.Complete();
+        <span class="kw">await</span> _db.DisposeAsync();
+    }
+}
+
+<span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">int</span> Id, <span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">int</span> TotalSold);
+<span class="kw">public record</span> <span class="tp">UserSession</span>(<span class="kw">string</span> Id, <span class="kw">string</span> UserId, <span class="tp">DateTime</span> Expires);
+
+<span class="cm">// ETL Pipeline &mdash; import CSV data into Products table</span>
+<span class="kw">var</span> pipeline = <span class="kw">new</span> <span class="tp">PipelineBuilder</span>()
+    .FromCsv(<span class="str">"products.csv"</span>)
+    .Transform(row =&gt; <span class="kw">new</span> {
+        Name     = row[<span class="str">"name"</span>].Trim(),
+        Price    = <span class="kw">decimal</span>.Parse(row[<span class="str">"price"</span>]),
+        Category = row[<span class="str">"category"</span>]
+    })
+    .ToTable(<span class="str">"Products"</span>)
+    .Build();
+
+<span class="kw">await</span> pipeline.ExecuteAsync(db);
+
+<span class="cm">// ─── End of sample ───</span>
+
+<span class="cm">// CSharpDB &mdash; Embedded Database Engine for .NET</span>
+<span class="cm">// Zero dependencies. ACID-compliant. Production-grade.</span>
+
+<span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Threading.Channels</span>;
+
+<span class="kw">namespace</span> <span class="tp">MyApp.DataLayer</span>;
+
+<span class="kw">public sealed class</span> <span class="tp">AppDatabase</span> : <span class="tp">IAsyncDisposable</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private readonly</span> <span class="tp">Channel</span>&lt;<span class="tp">WriteOp</span>&gt; _writes;
+
+    <span class="kw">public static async</span> <span class="tp">Task</span>&lt;<span class="tp">AppDatabase</span>&gt; OpenAsync(<span class="kw">string</span> path)
+    {
+        <span class="kw">var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(path);
+        <span class="kw">return new</span> <span class="tp">AppDatabase</span>(db);
+    }
+
+    <span class="kw">private</span> <span class="tp">AppDatabase</span>(<span class="tp">Database</span> db)
+    {
+        _db = db;
+        _writes = <span class="tp">Channel</span>.CreateBounded&lt;<span class="tp">WriteOp</span>&gt;(<span class="num">1024</span>);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> CreateSchemaAsync()
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            CREATE TABLE IF NOT EXISTS Products (
+                Id       INTEGER PRIMARY KEY,
+                Name     TEXT NOT NULL,
+                Price    REAL NOT NULL,
+                Category TEXT,
+                Created  TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_products_category
+                ON Products(Category);
+
+            CREATE TABLE IF NOT EXISTS Orders (
+                Id         INTEGER PRIMARY KEY,
+                ProductId  INTEGER REFERENCES Products(Id),
+                Quantity   INTEGER NOT NULL,
+                Total      REAL NOT NULL,
+                OrderDate  TEXT DEFAULT CURRENT_TIMESTAMP
+            );"</span>;
+        <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">IReadOnlyList</span>&lt;<span class="tp">Product</span>&gt;&gt; GetTopProductsAsync(<span class="kw">int</span> limit)
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            SELECT p.Id, p.Name, p.Price, SUM(o.Quantity) AS TotalSold
+            FROM Products p
+            JOIN Orders o ON o.ProductId = p.Id
+            GROUP BY p.Id, p.Name, p.Price
+            ORDER BY TotalSold DESC
+            LIMIT @limit"</span>;
+        cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@limit"</span>, limit));
+
+        <span class="kw">var</span> results = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">Product</span>&gt;();
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+        {
+            results.Add(<span class="kw">new</span> <span class="tp">Product</span>(
+                reader.GetInt32(<span class="num">0</span>),
+                reader.GetString(<span class="num">1</span>),
+                reader.GetDouble(<span class="num">2</span>),
+                reader.GetInt32(<span class="num">3</span>)
+            ));
+        }
+        <span class="kw">return</span> results;
+    }
+}</pre>
+            </div>
+
+            <!-- Frosted glass center panel -->
+            <div class="hero-glass">
                 <div class="hero-badge">Open Source Database Engine</div>
-                <h1 class="hero-title">
+                <h1>
                     The Embedded Database<br>
                     Built for <span class="gradient-text">.NET</span>
                 </h1>
@@ -391,98 +615,6 @@
                     Zero dependencies. Full SQL. ACID storage. One NuGet package gives you
                     everything from query parsing to page-level I/O.
                 </p>
-
-                <!-- Architecture Diagram SVG -->
-                <div class="arch-hero-diagram">
-                    <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg">
-                        <defs>
-                            <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-indigo" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                        </defs>
-
-                        <!-- Layer 1: SQL / Query Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-sql arch-glow-pulse arch-glow-pulse-1"
-                              x="60" y="20" width="580" height="72" rx="12" ry="12" filter="url(#glow-purple)"/>
-                        <text class="arch-svg-title" x="350" y="50" text-anchor="middle">SQL &amp; Query Engine</text>
-                        <text class="arch-svg-desc" x="350" y="68" text-anchor="middle">Parser, Planner, Cost-Based Optimizer, CTEs, JOINs, Views, Triggers</text>
-
-                        <!-- Connection line 1 -->
-                        <line class="arch-connection arch-connection-1" x1="350" y1="92" x2="350" y2="120"/>
-
-                        <!-- Layer 2: Execution Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-exec arch-glow-pulse arch-glow-pulse-2"
-                              x="60" y="120" width="580" height="72" rx="12" ry="12" filter="url(#glow-indigo)"/>
-                        <text class="arch-svg-title" x="350" y="150" text-anchor="middle">Execution Engine</text>
-                        <text class="arch-svg-desc" x="350" y="168" text-anchor="middle">Volcano Iterator, Collection API, Transactions, Snapshot Isolation, ETL Pipelines</text>
-
-                        <!-- Connection line 2 -->
-                        <line class="arch-connection arch-connection-2" x1="350" y1="192" x2="350" y2="220"/>
-
-                        <!-- Layer 3: Storage Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-storage arch-glow-pulse arch-glow-pulse-3"
-                              x="60" y="220" width="580" height="72" rx="12" ry="12" filter="url(#glow-cyan)"/>
-                        <text class="arch-svg-title" x="350" y="250" text-anchor="middle">Storage Engine</text>
-                        <text class="arch-svg-desc" x="350" y="268" text-anchor="middle">B+Tree, Slotted Pages, WAL, Freelist, Buffer Pool, Overflow Chains</text>
-
-                        <!-- Connection line 3 -->
-                        <line class="arch-connection arch-connection-3" x1="350" y1="292" x2="350" y2="320"/>
-
-                        <!-- Layer 4: Disk Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-disk arch-glow-pulse arch-glow-pulse-4"
-                              x="60" y="320" width="580" height="72" rx="12" ry="12" filter="url(#glow-green)"/>
-                        <text class="arch-svg-title" x="350" y="350" text-anchor="middle">Disk I/O</text>
-                        <text class="arch-svg-desc" x="350" y="368" text-anchor="middle">Single .db File, 4096-byte Pages, Durable Writes, In-Memory Mode</text>
-
-                        <!-- Floating particles along left path -->
-                        <circle class="arch-particle arch-particle-1" cx="180" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-2" cx="350" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" begin="1s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" begin="1s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-3" cx="520" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" begin="2s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" begin="2s" repeatCount="indefinite"/>
-                        </circle>
-
-                        <!-- Floating particles along right path (staggered) -->
-                        <circle class="arch-particle arch-particle-4" cx="250" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.15;0.85;1" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-5" cx="450" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3.5s" begin="1.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.15;0.85;1" dur="3.5s" begin="1.5s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-6" cx="140" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="4s" begin="2.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.7;0.7;0" keyTimes="0;0.15;0.85;1" dur="4s" begin="2.5s" repeatCount="indefinite"/>
-                        </circle>
-
-                        <!-- Side labels -->
-                        <text class="arch-svg-sub" x="20" y="58" text-anchor="middle" transform="rotate(-90, 20, 58)">SQL</text>
-                        <text class="arch-svg-sub" x="20" y="158" text-anchor="middle" transform="rotate(-90, 20, 158)">EXEC</text>
-                        <text class="arch-svg-sub" x="20" y="258" text-anchor="middle" transform="rotate(-90, 20, 258)">STORE</text>
-                        <text class="arch-svg-sub" x="20" y="358" text-anchor="middle" transform="rotate(-90, 20, 358)">DISK</text>
-                    </svg>
-                </div>
-
                 <div class="hero-actions">
                     <a href="getting-started.html" class="btn btn-primary btn-lg">Get Started</a>
                     <a href="docs/index.html" class="btn btn-ghost btn-lg">Read the Docs</a>
