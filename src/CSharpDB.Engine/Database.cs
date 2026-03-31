@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
@@ -254,16 +255,52 @@ public sealed class Database : IAsyncDisposable
             return ExecuteSimpleInsertAsync(simpleInsert, ct);
 
         if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
-        {
-            if (_planner.TryExecuteSimplePrimaryKeyLookup(simpleLookup, out var fastResult))
-                return ValueTask.FromResult(fastResult);
-        }
+            return ExecuteSimplePrimaryKeyLookupAsync(simpleLookup, ct);
 
         if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
             return ExecuteStatementAsync(cachedStmt, ct);
 
         var stmt = ParseCached(sql);
         return ExecuteStatementAsync(stmt, ct);
+    }
+
+    private async ValueTask<QueryResult> ExecuteSimplePrimaryKeyLookupAsync(
+        SimplePrimaryKeyLookupSql lookup,
+        CancellationToken ct)
+    {
+        var directResult = await _planner.TryExecuteSimplePrimaryKeyLookupDirectAsync(lookup, ct);
+        if (directResult != null)
+            return directResult;
+
+        if (_planner.TryExecuteSimplePrimaryKeyLookup(lookup, out var fastResult))
+            return fastResult;
+
+        var statement = Parser.Parse(SelectToSql(lookup));
+        return await ExecuteStatementAsync(statement, ct);
+    }
+
+    private static string SelectToSql(SimplePrimaryKeyLookupSql lookup)
+    {
+        var projection = lookup.SelectStar
+            ? "*"
+            : string.Join(", ", lookup.ProjectionColumns);
+
+        var predicate = $"{lookup.PredicateColumn} = {LiteralToSql(lookup.PredicateLiteral.Type == DbType.Null ? DbValue.FromInteger(lookup.LookupValue) : lookup.PredicateLiteral)}";
+        if (lookup.HasResidualPredicate)
+            predicate += $" AND {lookup.ResidualPredicateColumn} = {LiteralToSql(lookup.ResidualPredicateLiteral)}";
+
+        return $"SELECT {projection} FROM {lookup.TableName} WHERE {predicate}";
+    }
+
+    private static string LiteralToSql(DbValue value)
+    {
+        return value.Type switch
+        {
+            DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
+            DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
+            DbType.Text => $"'{value.AsText.Replace("'", "''", StringComparison.Ordinal)}'",
+            _ => "NULL",
+        };
     }
 
     /// <summary>

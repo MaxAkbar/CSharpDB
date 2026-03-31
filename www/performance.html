@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
+    <title>Performance Guide — CSharpDB</title>
+    <meta name="description" content="CSharpDB performance tuning guide — scenario-based optimization strategies with functional code examples for every workload pattern.">
+    <link rel="canonical" href="https://csharpdb.com/performance.html">
+    <meta property="og:title" content="Performance Guide — CSharpDB">
+    <meta property="og:description" content="CSharpDB performance tuning guide — scenario-based optimization strategies with functional code examples for every workload pattern.">
+    <meta property="og:url" content="https://csharpdb.com/performance.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Performance Guide",
+        "description": "CSharpDB performance tuning guide — scenario-based optimization strategies with functional code examples for every workload pattern.",
+        "url": "https://csharpdb.com/performance.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .perf-lever { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+        .perf-lever:last-child { border-bottom: none; }
+        .perf-lever-num { flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; border-radius: 50%; }
+        .perf-lever-text { color: var(--text-secondary); font-size: 15px; line-height: 1.6; }
+        .perf-scenario { margin-bottom: 56px; }
+        .perf-scenario h2 { scroll-margin-top: 80px; }
+        .perf-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+        .perf-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; text-align: center; }
+        .perf-stat .perf-big { font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+        .perf-stat .perf-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+        .perf-stat.muted .perf-big { color: var(--text-secondary); }
+        .perf-do { background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.2); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+        .perf-do h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--success); }
+        .perf-do ul { margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 14px; line-height: 1.8; }
+        .perf-dont { background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.2); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+        .perf-dont h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #ef4444; }
+        .perf-dont ul { margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 14px; line-height: 1.8; }
+        .perf-table-wrap { overflow-x: auto; margin: 16px 0 24px; }
+        .perf-table-wrap table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .perf-table-wrap th { text-align: left; padding: 10px 14px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+        .perf-table-wrap td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+        .perf-table-wrap tr:hover td { background: var(--bg-tertiary); }
+        .perf-table-wrap code { font-size: 13px; }
+        .perf-workflow { counter-reset: wf; list-style: none; padding-left: 0; }
+        .perf-workflow li { counter-increment: wf; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; color: var(--text-secondary); font-size: 15px; }
+        .perf-workflow li::before { content: counter(wf); flex-shrink: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--bg-card); border: 1px solid var(--border); color: var(--accent); font-size: 12px; font-weight: 700; border-radius: 50%; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'performance';
+    window.pageConfig = {
+        title: 'Performance Guide',
+        description: 'CSharpDB performance tuning guide — scenario-based optimization strategies with functional code examples for every workload pattern.',
+        keywords: 'CSharpDB performance, database tuning, .NET optimization, batch writes, reader session, collection indexing',
+        canonicalPath: 'performance.html',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#start-here">Start Here</a></li>
+                        <li><a href="#biggest-levers">Biggest Levers</a></li>
+                        <li><a href="#s1-point-reads">1. Hot Point Reads</a></li>
+                        <li><a href="#s2-burst-reads">2. Burst SQL Reads</a></li>
+                        <li><a href="#s3-range-queries">3. Range &amp; Ordered Queries</a></li>
+                        <li><a href="#s4-joins">4. Joins &amp; Reporting</a></li>
+                        <li><a href="#s5-write-ingest">5. Durable Write Ingest</a></li>
+                        <li><a href="#s6-multi-writer">6. Multi-Writer Contention</a></li>
+                        <li><a href="#s7-cold-reads">7. Cold File Reads</a></li>
+                        <li><a href="#s8-hot-set">8. Hot Set + Durable</a></li>
+                        <li><a href="#s9-in-memory">9. In-Memory</a></li>
+                        <li><a href="#s10-collections">10. Collection API</a></li>
+                        <li><a href="#s11-adonet">11. ADO.NET</a></li>
+                        <li><a href="#common-mistakes">Common Mistakes</a></li>
+                        <li><a href="#workflow">Recommended Workflow</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Performance Guide</h1>
+                <p class="lead">Getting real performance out of CSharpDB, not just turning knobs. Organized by workload scenario with functional code examples grounded in the current benchmark suite.</p>
+
+                <div class="callout callout-info">
+                    <strong>Benchmark basis.</strong> Numbers are from the latest passing guardrail run (184/184 checks) on an Intel Core i9-11900K, Windows 11, .NET 10, NVMe SSD. Treat them as directional &mdash; rerun on your hardware before locking in a tuning choice.
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     START HERE
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="start-here">Start Here</h2>
+                <p>Most CSharpDB performance wins come from choosing the right mode and access path <em>before</em> touching advanced settings.</p>
+
+                <div class="perf-table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Scenario</th>
+                                <th>Start With</th>
+                                <th>Why</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Durable local app, mostly point reads</td>
+                                <td><code>UseDirectLookupOptimizedPreset()</code></td>
+                                <td>Best simple baseline for hot local reads</td>
+                            </tr>
+                            <tr>
+                                <td>Known hot working set</td>
+                                <td>Hybrid + <code>HotTableNames</code></td>
+                                <td>Pay open cost once, then hammer hot objects</td>
+                            </tr>
+                            <tr>
+                                <td>Ephemeral cache / snapshot workflow</td>
+                                <td>In-memory + <code>SaveToFileAsync</code></td>
+                                <td>Biggest write throughput win by far</td>
+                            </tr>
+                            <tr>
+                                <td>Burst of related SQL reads</td>
+                                <td>Reuse one <code>ReaderSession</code></td>
+                                <td>Snapshot reuse is much cheaper than per-query creation</td>
+                            </tr>
+                            <tr>
+                                <td>Ordered / range SQL queries</td>
+                                <td>Indexes + narrow projections</td>
+                                <td>Covered and compact paths are major wins</td>
+                            </tr>
+                            <tr>
+                                <td>Join / reporting workload</td>
+                                <td>Join indexes + <code>ANALYZE</code></td>
+                                <td>Planner uses stats for build-side and join ordering</td>
+                            </tr>
+                            <tr>
+                                <td>Write-heavy ingest</td>
+                                <td><code>UseWriteOptimizedPreset()</code> + batching</td>
+                                <td>Batching is the biggest durable-write lever</td>
+                            </tr>
+                            <tr>
+                                <td>Document / path queries</td>
+                                <td><code>Collection&lt;T&gt;</code> + <code>EnsureIndexAsync</code></td>
+                                <td>Indexed paths are fast; unindexed scans are not</td>
+                            </tr>
+                            <tr>
+                                <td>ADO.NET with frequent opens</td>
+                                <td><code>Pooling=true</code></td>
+                                <td>Pooling dominates open/close overhead</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     BIGGEST LEVERS
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="biggest-levers">The Biggest Levers</h2>
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px;">
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">1</div>
+                        <div class="perf-lever-text">Choose the right storage mode first.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">2</div>
+                        <div class="perf-lever-text">Batch durable writes instead of auto-committing row-by-row.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">3</div>
+                        <div class="perf-lever-text">Reuse <code>ReaderSession</code> for bursts of related SQL reads.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">4</div>
+                        <div class="perf-lever-text">Create indexes that match filter, join, and <code>ORDER BY</code> shape.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">5</div>
+                        <div class="perf-lever-text">Prefer covered or narrow projections over <code>SELECT *</code>.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">6</div>
+                        <div class="perf-lever-text">Run <code>ANALYZE</code> after bulk loads or major data-distribution changes.</div>
+                    </div>
+                    <div class="perf-lever">
+                        <div class="perf-lever-num">7</div>
+                        <div class="perf-lever-text">Measure before enabling advanced knobs like caching indexes, batch windows, or WAL preallocation.</div>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 1: HOT POINT READS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s1-point-reads">Scenario 1: Hot Point Reads</h2>
+                    <p>The default &ldquo;application database&rdquo; scenario: the app is already open, the database is local, and the hot path is <code>GetAsync</code>, primary-key lookups, or small indexed reads.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">1.10M</div>
+                            <div class="perf-label">ops/sec &mdash; file-backed SQL point lookups</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">1.78M</div>
+                            <div class="perf-label">ops/sec &mdash; file-backed collection gets</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">4.16M</div>
+                            <div class="perf-label">ops/sec &mdash; hot-cache SQL PK lookups</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">2.63M</div>
+                            <div class="perf-label">ops/sec &mdash; hot-cache collection gets</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Start file-backed with <code>UseDirectLookupOptimizedPreset()</code></li>
+                            <li>Use <code>Collection&lt;T&gt;.GetAsync(...)</code> for pure key/document access</li>
+                            <li>Use indexed equality lookups for relational paths</li>
+                            <li>Reuse a <code>ReaderSession</code> for many related reads from the same snapshot</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-point-reads.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="cm">// Configure for hot local lookup workloads</span>
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseDirectLookupOptimizedPreset());
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"app.db"</span>, options);
+
+<span class="cm">// Create a table and seed some data</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"</span>))
+{ }
+
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">100</span>; i++)
+{
+    <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"INSERT OR IGNORE INTO users VALUES ({i}, 'User {i}', 'user{i}@example.com')"</span>))
+    { }
+}
+<span class="kw">await</span> db.CommitAsync();
+
+<span class="cm">// --- Point read via SQL (hot path) ---</span>
+<span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT id, name FROM users WHERE id = 42"</span>);
+<span class="kw">if</span> (<span class="kw">await</span> result.MoveNextAsync())
+{
+    <span class="tp">long</span> id = result.Current[<span class="num">0</span>].AsInteger;
+    <span class="tp">string</span> name = result.Current[<span class="num">1</span>].AsText;
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"Found user {id}: {name}"</span>);
+}
+
+<span class="cm">// --- Point read via Collection API (skips SQL parser entirely) ---</span>
+<span class="kw">var</span> profiles = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">UserProfile</span>&gt;(<span class="str">"profiles"</span>);
+<span class="kw">await</span> profiles.PutAsync(<span class="str">"user-42"</span>, <span class="kw">new</span> <span class="tp">UserProfile</span>(<span class="str">"User 42"</span>, <span class="str">"user42@example.com"</span>));
+
+<span class="kw">var</span> profile = <span class="kw">await</span> profiles.GetAsync(<span class="str">"user-42"</span>);
+<span class="kw">if</span> (profile <span class="kw">is not null</span>)
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"Profile: {profile.Name}, {profile.Email}"</span>);
+
+<span class="kw">public record</span> <span class="tp">UserProfile</span>(<span class="tp">string</span> Name, <span class="tp">string</span> Email);</code></pre>
+                    </div>
+
+                    <p>Use the collection API when the workload is fundamentally key-by-id, document get/put/delete, or indexed field/path equality. That path skips the SQL front door entirely.</p>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 2: BURST SQL READS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s2-burst-reads">Scenario 2: Burst SQL Reads</h2>
+                    <p>A writer is active, but readers want a stable snapshot and tend to issue several related queries together.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">3&times;</div>
+                            <div class="perf-label">faster &mdash; reused session vs per-query session</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Create one <code>ReaderSession</code> per concurrent reader</li>
+                            <li>Reuse that session for a burst of related reads</li>
+                            <li>Dispose each <code>QueryResult</code> before issuing the next query on the same session</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-burst-reads.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"service.db"</span>);
+
+<span class="cm">// Set up tables and seed data</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, tier TEXT)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer_id INTEGER, total REAL)"</span>))
+{ }
+
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO users VALUES (1, 'Alice', 'gold')"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO users VALUES (2, 'Bob', 'silver')"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO orders VALUES (1, 1, 99.95)"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO orders VALUES (2, 1, 149.50)"</span>)) { }
+<span class="kw">await</span> db.CommitAsync();
+
+<span class="cm">// --- Reuse a single ReaderSession for a burst of related reads ---</span>
+<span class="cm">// This is ~3x faster than creating a new session per query.</span>
+<span class="kw">using var</span> reader = db.CreateReaderSession();
+
+<span class="cm">// Query 1: gold-tier users</span>
+<span class="kw">await using</span> (<span class="kw">var</span> users = <span class="kw">await</span> reader.ExecuteReadAsync(
+    <span class="str">"SELECT id, name FROM users WHERE tier = 'gold'"</span>))
+{
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> users.GetRowsAsync())
+    {
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"Gold user: {row[0].AsInteger} - {row[1].AsText}"</span>);
+    }
+}
+<span class="cm">// QueryResult is disposed before the next query on the same session</span>
+
+<span class="cm">// Query 2: orders for a specific customer (same snapshot, no new session cost)</span>
+<span class="kw">await using</span> (<span class="kw">var</span> orders = <span class="kw">await</span> reader.ExecuteReadAsync(
+    <span class="str">"SELECT id, total FROM orders WHERE customer_id = 1"</span>))
+{
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> orders.GetRowsAsync())
+    {
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"Order {row[0].AsInteger}: ${row[1].AsReal:F2}"</span>);
+    }
+}
+
+<span class="cm">// Meanwhile, the writer can continue without blocking readers.</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"INSERT INTO orders VALUES (3, 2, 75.00)"</span>))
+{ }
+<span class="cm">// The reader session still sees the snapshot from before this insert.</span></code></pre>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 3: RANGE & ORDERED QUERIES
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s3-range-queries">Scenario 3: Range &amp; Ordered Queries</h2>
+                    <p>Where query shape matters most. The main question is whether the engine can stay on index data, or whether it has to keep fetching wide base rows.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">64.79 &mu;s</div>
+                            <div class="perf-label">ORDER BY LIMIT 100 &mdash; index-order scan</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">23.17 &mu;s</div>
+                            <div class="perf-label">ORDER BY LIMIT 100 &mdash; covered scan</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">59.48 ms</div>
+                            <div class="perf-label">WHERE BETWEEN &mdash; row fetch path</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">18.49 ms</div>
+                            <div class="perf-label">WHERE BETWEEN &mdash; covered projection</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">2.523 &mu;s</div>
+                            <div class="perf-label">Composite covered projection, 100K rows</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Index the filter or sort column</li>
+                            <li>Project only the indexed columns plus the row id when possible</li>
+                            <li>Prefer narrow projections over <code>SELECT *</code></li>
+                            <li>Use composite indexes matching the left-to-right predicate shape</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-range-queries.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"orders.db"</span>);
+
+<span class="cm">// Create a table with several columns (simulating a wide row)</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY,
+        customer_id INTEGER,
+        created_at INTEGER,
+        status TEXT,
+        total REAL,
+        notes TEXT,
+        shipping_address TEXT
+    )"</span>))
+{ }
+
+<span class="cm">// Build indexes that match the query shapes we care about</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)"</span>))
+{ }
+
+<span class="cm">// Seed 1000 rows</span>
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">1000</span>; i++)
+{
+    <span class="tp">string</span> status = i % <span class="num">3</span> == <span class="num">0</span> ? <span class="str">"shipped"</span> : i % <span class="num">3</span> == <span class="num">1</span> ? <span class="str">"pending"</span> : <span class="str">"delivered"</span>;
+    <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"INSERT OR IGNORE INTO orders VALUES ({i}, {i % 50}, {1700000000 + i * 3600}, '{status}', {i * 1.5}, 'Note {i}', 'Address {i}')"</span>))
+    { }
+}
+<span class="kw">await</span> db.CommitAsync();
+
+<span class="cm">// GOOD: Narrow/covered projection -- engine stays on index data</span>
+<span class="cm">// The covered index-order scan is ~2.8x faster than the full-row fetch path.</span>
+<span class="kw">await using</span> (<span class="kw">var</span> narrow = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT id, created_at
+    FROM orders
+    WHERE created_at BETWEEN 1700000000 AND 1700050000
+    ORDER BY created_at
+    LIMIT 100"</span>))
+{
+    <span class="tp">int</span> count = <span class="num">0</span>;
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> narrow.GetRowsAsync())
+        count++;
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"Narrow range query returned {count} rows"</span>);
+}
+
+<span class="cm">// GOOD: Composite index matches left-to-right predicate shape</span>
+<span class="kw">await using</span> (<span class="kw">var</span> composite = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT id, status, created_at
+    FROM orders
+    WHERE status = 'shipped' AND created_at &gt; 1700100000
+    ORDER BY created_at
+    LIMIT 50"</span>))
+{
+    <span class="kw">var</span> rows = <span class="kw">await</span> composite.ToListAsync();
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"Composite index query returned {rows.Count} rows"</span>);
+}</code></pre>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <strong>Practical rule.</strong> If the business endpoint only needs <code>id</code>, <code>status</code>, and <code>created_at</code>, do not ask CSharpDB to materialize twelve more columns.
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 4: JOINS & REPORTING
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s4-joins">Scenario 4: Joins &amp; Reporting</h2>
+                    <p>Non-trivial joins, selective predicates, and where planner choice starts to matter.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">7.16 ms</div>
+                            <div class="perf-label">INNER JOIN 1K&times;20K &mdash; planner swap build side</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">11.43 ms</div>
+                            <div class="perf-label">INNER JOIN 1K&times;20K &mdash; no swap</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">482.7 &mu;s</div>
+                            <div class="perf-label">INNER JOIN on right PK &mdash; index nested-loop</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">833.5 &mu;s</div>
+                            <div class="perf-label">INNER JOIN on right PK &mdash; forced hash</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Create indexes on join keys and selective filter columns</li>
+                            <li>Run <code>ANALYZE</code> after bulk loads and after major distribution changes</li>
+                            <li>Inspect <code>sys.table_stats</code> and <code>sys.column_stats</code> when a plan misbehaves</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-joins-reporting.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"reporting.db"</span>);
+
+<span class="cm">// Schema</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS customers (
+        id INTEGER PRIMARY KEY, name TEXT, region TEXT)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY, customer_id INTEGER, total REAL, created_at INTEGER)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS order_items (
+        id INTEGER PRIMARY KEY, order_id INTEGER, product TEXT, quantity INTEGER, price REAL)"</span>))
+{ }
+
+<span class="cm">// Indexes on join keys and selective filter columns</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_customers_region ON customers(region)"</span>))
+{ }
+
+<span class="cm">// Bulk load</span>
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">200</span>; i++)
+{
+    <span class="tp">string</span> region = i % <span class="num">4</span> == <span class="num">0</span> ? <span class="str">"West"</span> : i % <span class="num">4</span> == <span class="num">1</span> ? <span class="str">"East"</span> : i % <span class="num">4</span> == <span class="num">2</span> ? <span class="str">"North"</span> : <span class="str">"South"</span>;
+    <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"INSERT OR IGNORE INTO customers VALUES ({i}, 'Customer {i}', '{region}')"</span>))
+    { }
+}
+<span class="kw">await</span> db.CommitAsync();
+
+<span class="cm">// Run ANALYZE so the planner can make informed join-order and build-side decisions.</span>
+<span class="cm">// Skipping this leaves planner quality on the table.</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"ANALYZE"</span>)) { }
+
+<span class="cm">// Inspect the stats the planner is now using</span>
+<span class="kw">await using</span> (<span class="kw">var</span> tableStats = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT * FROM sys.table_stats ORDER BY table_name"</span>))
+{
+    <span class="tp">Console</span>.WriteLine(<span class="str">"=== Table Stats ==="</span>);
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> tableStats.GetRowsAsync())
+    {
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"  {row[0].AsText}: {row[1].AsInteger} rows"</span>);
+    }
+}
+
+<span class="cm">// Multi-table join -- planner uses stats for build-side choice and join ordering.</span>
+<span class="cm">// With ANALYZE: planner swaps build side for ~37% faster joins (7.16ms vs 11.43ms).</span>
+<span class="kw">await using</span> (<span class="kw">var</span> report = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT c.name, c.region, COUNT(oi.id) AS item_count, SUM(oi.price * oi.quantity) AS revenue
+    FROM customers c
+    INNER JOIN orders o ON o.customer_id = c.id
+    INNER JOIN order_items oi ON oi.order_id = o.id
+    WHERE c.region = 'West'
+    GROUP BY c.name, c.region
+    ORDER BY revenue
+    LIMIT 20"</span>))
+{
+    <span class="tp">Console</span>.WriteLine(<span class="str">"\n=== Revenue Report (West Region) ==="</span>);
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> report.GetRowsAsync())
+    {
+        <span class="tp">string</span> name = row[<span class="num">0</span>].AsText;
+        <span class="tp">long</span> items = row[<span class="num">2</span>].AsInteger;
+        <span class="tp">double</span> revenue = row[<span class="num">3</span>].AsReal;
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"  {name}: {items} items, ${revenue:F2}"</span>);
+    }
+}</code></pre>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 5: DURABLE WRITE INGEST
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s5-write-ingest">Scenario 5: Durable Write-Heavy Ingest</h2>
+                    <p>Where the wrong default usage hurts most. If you write one durable row at a time, the fixed WAL/fsync cost dominates.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat muted">
+                            <div class="perf-big">270</div>
+                            <div class="perf-label">ops/sec &mdash; auto-commit, single row</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">2,696</div>
+                            <div class="perf-label">rows/sec &mdash; batch 10 rows/commit</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">27K</div>
+                            <div class="perf-label">rows/sec &mdash; batch 100 rows/commit</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">197K</div>
+                            <div class="perf-label">rows/sec &mdash; batch 1000 rows/commit</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Start with <code>UseWriteOptimizedPreset()</code></li>
+                            <li>Batch writes in explicit transactions</li>
+                            <li>Use <code>InsertBatch</code> for structured bulk inserts</li>
+                            <li>Measure with your real batch size before touching advanced knobs</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-write-ingest.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
+
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"ingest.db"</span>, options);
+
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY,
+        timestamp_ticks INTEGER,
+        source TEXT,
+        payload TEXT
+    )"</span>))
+{ }
+
+<span class="kw">var</span> events = <span class="tp">Enumerable</span>.Range(<span class="num">1</span>, <span class="num">10_000</span>)
+    .Select(i =&gt; (Id: i, Ticks: <span class="tp">DateTime</span>.UtcNow.Ticks + i,
+                   Source: <span class="str">$"sensor-{i % 20}"</span>, Payload: <span class="str">$"data-{i}"</span>))
+    .ToArray();
+
+<span class="cm">// --- GOOD: explicit transaction batching (~197K rows/sec at batch=1000) ---</span>
+<span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
+<span class="kw">const int</span> batchSize = <span class="num">1000</span>;
+
+<span class="kw">for</span> (<span class="tp">int</span> offset = <span class="num">0</span>; offset &lt; events.Length; offset += batchSize)
+{
+    <span class="kw">var</span> batch = events.AsSpan(offset, <span class="tp">Math</span>.Min(batchSize, events.Length - offset));
+
+    <span class="kw">await</span> db.BeginTransactionAsync();
+    <span class="kw">try</span>
+    {
+        <span class="kw">foreach</span> (<span class="kw">var</span> e <span class="kw">in</span> batch)
+        {
+            <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+                <span class="str">$"INSERT INTO events VALUES ({e.Id}, {e.Ticks}, '{e.Source}', '{e.Payload}')"</span>))
+            { }
+        }
+        <span class="kw">await</span> db.CommitAsync();
+    }
+    <span class="kw">catch</span>
+    {
+        <span class="kw">await</span> db.RollbackAsync();
+        <span class="kw">throw</span>;
+    }
+}
+
+sw.Stop();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Inserted {events.Length} events in {sw.ElapsedMilliseconds}ms"</span>);
+
+<span class="cm">// --- EVEN BETTER: use InsertBatch for structured bulk inserts ---</span>
+<span class="kw">await using var</span> db2 = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"ingest2.db"</span>, options);
+<span class="kw">await using</span> (<span class="kw">await</span> db2.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY, timestamp_ticks INTEGER, source TEXT, payload TEXT)"</span>))
+{ }
+
+sw.Restart();
+<span class="kw">await</span> db2.BeginTransactionAsync();
+<span class="kw">var</span> insertBatch = db2.PrepareInsertBatch(<span class="str">"events"</span>);
+<span class="kw">foreach</span> (<span class="kw">var</span> e <span class="kw">in</span> events)
+{
+    <span class="kw">await</span> insertBatch.AddRowAsync([
+        <span class="tp">DbValue</span>.FromInteger(e.Id + <span class="num">100_000</span>),
+        <span class="tp">DbValue</span>.FromInteger(e.Ticks),
+        <span class="tp">DbValue</span>.FromText(e.Source),
+        <span class="tp">DbValue</span>.FromText(e.Payload)
+    ]);
+}
+<span class="tp">int</span> inserted = <span class="kw">await</span> insertBatch.ExecuteAsync();
+<span class="kw">await</span> db2.CommitAsync();
+sw.Stop();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"InsertBatch: {inserted} rows in {sw.ElapsedMilliseconds}ms"</span>);</code></pre>
+                    </div>
+
+                    <div class="callout callout-warning">
+                        <strong>Preset guidance.</strong> Start with <code>UseWriteOptimizedPreset()</code>. Do not assume <code>UseLowLatencyDurableWritePreset()</code> is faster &mdash; on the benchmark runner it was <code>267.8</code> vs <code>261.4</code> ops/sec. Measure first.
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 6: MULTI-WRITER
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s6-multi-writer">Scenario 6: Multi-Writer Contention</h2>
+                    <p>Several writer tasks hitting the same shared <code>Database</code> instance.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">1,079</div>
+                            <div class="perf-label">commits/sec &mdash; 8 writers + 1 MiB WAL prealloc</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">553</div>
+                            <div class="perf-label">commits/sec &mdash; 4 writers + 250&mu;s batch window</div>
+                        </div>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-multi-writer.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
+
+<span class="cm">// Baseline: write-optimized preset (good default for contention too)</span>
+<span class="kw">var</span> baseOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+<span class="cm">// For 8+ concurrent writers, WAL preallocation can help throughput</span>
+<span class="kw">var</span> preallocOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder
+        .UseWriteOptimizedPreset()
+        .UseWalPreallocationChunkBytes(<span class="num">1024</span> * <span class="num">1024</span>)); <span class="cm">// 1 MiB prealloc</span>
+
+<span class="cm">// For 4 concurrent writers, a small batch window can coalesce commits</span>
+<span class="cm">// Do NOT use this for single-writer workloads (it hurts there)</span>
+<span class="kw">var</span> batchWindowOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder
+        .UseWriteOptimizedPreset()
+        .UseDurableCommitBatchWindow(<span class="tp">TimeSpan</span>.FromMicroseconds(<span class="num">250</span>)));
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"contention.db"</span>, baseOptions);
+
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE IF NOT EXISTS counters (id INTEGER PRIMARY KEY, value INTEGER)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO counters VALUES (1, 0)"</span>)) { }
+
+<span class="cm">// Simulate 8 concurrent writers each doing single-row commits</span>
+<span class="tp">int</span> writerCount = <span class="num">8</span>;
+<span class="tp">int</span> writesPerWriter = <span class="num">50</span>;
+<span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
+
+<span class="kw">var</span> tasks = <span class="tp">Enumerable</span>.Range(<span class="num">0</span>, writerCount).Select(<span class="kw">async</span> w =&gt;
+{
+    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; writesPerWriter; i++)
+    {
+        <span class="kw">await</span> db.BeginTransactionAsync();
+        <span class="kw">try</span>
+        {
+            <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+                <span class="str">"UPDATE counters SET value = value + 1 WHERE id = 1"</span>))
+            { }
+            <span class="kw">await</span> db.CommitAsync();
+        }
+        <span class="kw">catch</span>
+        {
+            <span class="kw">await</span> db.RollbackAsync();
+            <span class="kw">throw</span>;
+        }
+    }
+}).ToArray();
+
+<span class="kw">await</span> <span class="tp">Task</span>.WhenAll(tasks);
+sw.Stop();
+
+<span class="tp">int</span> totalCommits = writerCount * writesPerWriter;
+<span class="tp">Console</span>.WriteLine(<span class="str">$"{writerCount} writers: {totalCommits * 1000.0 / sw.ElapsedMilliseconds:F0} commits/sec"</span>);</code></pre>
+                    </div>
+
+                    <div class="perf-dont">
+                        <h4>Don't</h4>
+                        <ul>
+                            <li>Cargo-cult batch-window tuning from multi-writer into single-writer &mdash; <code>BatchWindow(250&mu;s)</code> at single-writer is <code>267.2</code> ops/sec; <code>BatchWindow(1ms)</code> drops to <code>65.8</code></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 7: COLD FILE READS
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s7-cold-reads">Scenario 7: Cold File Reads</h2>
+                    <p>Admin tools, inspection tools, one-shot analytics, or workloads that do not stay hot.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat muted">
+                            <div class="perf-big">28.7 &mu;s</div>
+                            <div class="perf-label">SQL cold lookup &mdash; copy-based path</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">19.8 &mu;s</div>
+                            <div class="perf-label">SQL cold lookup &mdash; 128-page WAL cache</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">54.15 &mu;s</div>
+                            <div class="perf-label">Collection indexed lookup &mdash; 16 pages</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">20.57 &mu;s</div>
+                            <div class="perf-label">Collection indexed lookup &mdash; 2048 pages</div>
+                        </div>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-cold-reads.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="cm">// UseDirectColdFileLookupPreset uses memory-mapped reads, best for one-shot probes</span>
+<span class="kw">var</span> coldOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseDirectColdFileLookupPreset());
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"large-dataset.db"</span>, coldOptions);
+
+<span class="cm">// Probe schema</span>
+<span class="kw">var</span> tables = db.GetTableNames();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Tables: {string.Join(", ", tables)}"</span>);
+
+<span class="kw">foreach</span> (<span class="kw">var</span> tableName <span class="kw">in</span> tables)
+{
+    <span class="kw">var</span> schema = db.GetTableSchema(tableName);
+    <span class="kw">if</span> (schema <span class="kw">is not null</span>)
+    {
+        <span class="kw">var</span> cols = <span class="tp">string</span>.Join(<span class="str">", "</span>, schema.Columns.Select(c =&gt; <span class="str">$"{c.Name} {c.Type}"</span>));
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"  {tableName}({cols})"</span>);
+    }
+}
+
+<span class="cm">// Probe indexes</span>
+<span class="kw">var</span> indexes = db.GetIndexes();
+<span class="kw">foreach</span> (<span class="kw">var</span> idx <span class="kw">in</span> indexes)
+{
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"  Index {idx.IndexName} on {idx.TableName}({string.Join(", ", idx.ColumnNames)})"</span>);
+}
+
+<span class="cm">// Quick analytics query on cold data</span>
+<span class="kw">await using</span> (<span class="kw">var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT COUNT(*), MIN(id), MAX(id) FROM events"</span>))
+{
+    <span class="kw">if</span> (<span class="kw">await</span> result.MoveNextAsync())
+    {
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"Events: count={result.Current[0].AsInteger}, "</span> +
+            <span class="str">$"min_id={result.Current[1].AsInteger}, max_id={result.Current[2].AsInteger}"</span>);
+    }
+}
+
+<span class="cm">// --- Bounded-cache workload ---</span>
+<span class="cm">// Start at 2048 pages, not 16 (tiny caches are expensive)</span>
+<span class="kw">var</span> boundedOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseHybridFileCachePreset(<span class="num">2048</span>));
+
+<span class="kw">await using var</span> db2 = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"large-dataset.db"</span>, boundedOptions);</code></pre>
+                    </div>
+
+                    <div class="perf-dont">
+                        <h4>Don't</h4>
+                        <ul>
+                            <li>Assume caching indexes are automatically a win &mdash; the tuning matrix found <code>UseCachingIndexes</code> neutral-to-negative, including a case where a reused reader-session SQL lookup worsened from <code>41.36 &mu;s</code> to <code>212.94 &mu;s</code></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 8: HOT SET + DURABLE
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s8-hot-set">Scenario 8: Hot Set + Durable Backing</h2>
+                    <p>The hybrid-mode sweet spot: the database must stay durable on disk, but the same tables or collections are hot enough that prewarming them once is worth it.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">625.8K</div>
+                            <div class="perf-label">ops/sec &mdash; hybrid SQL burst</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">707.4K</div>
+                            <div class="perf-label">ops/sec &mdash; hybrid collection burst</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">87 ms</div>
+                            <div class="perf-label">SQL open cost (one-time)</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">129 ms</div>
+                            <div class="perf-label">collection open cost (one-time)</div>
+                        </div>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-hot-set.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
+
+<span class="cm">// First, create a database with data to warm up</span>
+<span class="kw">await using</span> (<span class="kw">var</span> setup = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"hotset.db"</span>))
+{
+    <span class="kw">await using</span> (<span class="kw">await</span> setup.ExecuteAsync(
+        <span class="str">"CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, tier TEXT)"</span>))
+    { }
+
+    <span class="kw">await</span> setup.BeginTransactionAsync();
+    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">1000</span>; i++)
+    {
+        <span class="kw">await using</span> (<span class="kw">await</span> setup.ExecuteAsync(
+            <span class="str">$"INSERT OR IGNORE INTO users VALUES ({i}, 'User {i}', 'gold')"</span>))
+        { }
+    }
+    <span class="kw">await</span> setup.CommitAsync();
+}
+
+<span class="cm">// Open in hybrid mode with hot-set warming</span>
+<span class="cm">// Open cost is ~87-128ms, but steady-state reads hit ~625-707K ops/sec</span>
+<span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"hotset.db"</span>,
+    <span class="kw">new</span> <span class="tp">DatabaseOptions</span>(),
+    <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
+    {
+        PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
+        HotTableNames = [<span class="str">"users"</span>]
+    });
+
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Hybrid open (with hot-set warming): {sw.ElapsedMilliseconds}ms"</span>);
+
+<span class="cm">// Now reads against hot tables are served from memory-resident pages</span>
+sw.Restart();
+<span class="tp">int</span> ops = <span class="num">0</span>;
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; <span class="num">10_000</span>; i++)
+{
+    <span class="tp">int</span> id = (i % <span class="num">1000</span>) + <span class="num">1</span>;
+    <span class="kw">await using</span> (<span class="kw">var</span> r = <span class="kw">await</span> db.ExecuteAsync(<span class="str">$"SELECT name FROM users WHERE id = {id}"</span>))
+    {
+        <span class="kw">if</span> (<span class="kw">await</span> r.MoveNextAsync()) ops++;
+    }
+}
+sw.Stop();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Hot-set reads: {ops} lookups in {sw.ElapsedMilliseconds}ms"</span>);
+
+<span class="cm">// Writes are still durable -- they go through WAL + incremental checkpointing</span>
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO users VALUES (9999, 'New User', 'platinum')"</span>)) { }
+<span class="kw">await</span> db.CommitAsync();</code></pre>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <strong>Constraints.</strong> Hot-set warming is supported only for <code>IncrementalDurable</code>. It is rejected for snapshot mode, bounded caches, and custom page-cache factories.
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 9: IN-MEMORY
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s9-in-memory">Scenario 9: In-Memory Database</h2>
+                    <p>The right answer when durability is optional during the hot path and you can snapshot explicitly.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">315K</div>
+                            <div class="perf-label">ops/sec &mdash; in-memory SQL single insert</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">294K</div>
+                            <div class="perf-label">ops/sec &mdash; in-memory collection single put</div>
+                        </div>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-in-memory.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
+
+<span class="cm">// --- Ephemeral in-memory store ---</span>
+<span class="kw">await using var</span> cache = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
+
+<span class="kw">await using</span> (<span class="kw">await</span> cache.ExecuteAsync(
+    <span class="str">"CREATE TABLE cache_entries (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)"</span>))
+{ }
+
+<span class="cm">// In-memory writes are ~315K ops/sec (vs ~270 ops/sec durable single-row).</span>
+<span class="cm">// That's a ~1000x difference -- the biggest lever in the repo.</span>
+<span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
+<span class="kw">await</span> cache.BeginTransactionAsync();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; <span class="num">10_000</span>; i++)
+{
+    <span class="kw">await using</span> (<span class="kw">await</span> cache.ExecuteAsync(
+        <span class="str">$"INSERT INTO cache_entries VALUES ('key-{i}', 'value-{i}', {DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600})"</span>))
+    { }
+}
+<span class="kw">await</span> cache.CommitAsync();
+sw.Stop();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"In-memory: 10K inserts in {sw.ElapsedMilliseconds}ms"</span>);
+
+<span class="cm">// Snapshot to disk at an explicit persistence boundary</span>
+<span class="kw">await</span> cache.SaveToFileAsync(<span class="str">"cache-snapshot.db"</span>);
+
+<span class="cm">// --- Import-process-export workflow ---</span>
+<span class="cm">// Load an existing file into memory, process it fast, then save back</span>
+<span class="kw">await using var</span> workspace = <span class="kw">await</span> <span class="tp">Database</span>.LoadIntoMemoryAsync(<span class="str">"cache-snapshot.db"</span>);
+
+<span class="cm">// All operations now run at in-memory speed</span>
+<span class="kw">await using</span> (<span class="kw">await</span> workspace.ExecuteAsync(
+    <span class="str">"DELETE FROM cache_entries WHERE expires_at &lt; 1700000000"</span>))
+{ }
+
+<span class="kw">await using</span> (<span class="kw">var</span> stats = <span class="kw">await</span> workspace.ExecuteAsync(
+    <span class="str">"SELECT COUNT(*) FROM cache_entries"</span>))
+{
+    <span class="kw">if</span> (<span class="kw">await</span> stats.MoveNextAsync())
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"Remaining entries: {stats.Current[0].AsInteger}"</span>);
+}
+
+<span class="cm">// Save the processed result back</span>
+<span class="kw">await</span> workspace.SaveToFileAsync(<span class="str">"cache-processed.db"</span>);</code></pre>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 10: COLLECTION API
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s10-collections">Scenario 10: Collection &amp; Document Workloads</h2>
+                    <p>The collection API can be very fast, but only if you use the indexed surfaces when the workload needs them.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat">
+                            <div class="perf-big">569 ns</div>
+                            <div class="perf-label">FindByPath &mdash; <code>$.address.city</code></div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">475 ns</div>
+                            <div class="perf-label">FindByPath &mdash; <code>$.tags[]</code></div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">553 &mu;s</div>
+                            <div class="perf-label">Path range &mdash; 1024 int matches</div>
+                        </div>
+                        <div class="perf-stat muted">
+                            <div class="perf-big">29.1 &mu;s</div>
+                            <div class="perf-label">PutAsync with indexes &mdash; update cost</div>
+                        </div>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-collections.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
+
+<span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;(<span class="str">"users"</span>);
+
+<span class="cm">// Create indexes on the fields and paths you actually query.</span>
+<span class="cm">// Each index costs ~12-47us per write, so only index what matters.</span>
+<span class="kw">await</span> users.EnsureIndexAsync(x =&gt; x.Email);           <span class="cm">// field-level index</span>
+<span class="kw">await</span> users.EnsureIndexAsync(<span class="str">"$.address.city"</span>);        <span class="cm">// nested path index</span>
+<span class="kw">await</span> users.EnsureIndexAsync(<span class="str">"$.tags[]"</span>);              <span class="cm">// array element index</span>
+
+<span class="cm">// Seed documents</span>
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; <span class="num">500</span>; i++)
+{
+    <span class="tp">string</span> city = i % <span class="num">5</span> == <span class="num">0</span> ? <span class="str">"Seattle"</span> : i % <span class="num">5</span> == <span class="num">1</span> ? <span class="str">"Portland"</span>
+                 : i % <span class="num">5</span> == <span class="num">2</span> ? <span class="str">"Denver"</span>  : i % <span class="num">5</span> == <span class="num">3</span> ? <span class="str">"Austin"</span> : <span class="str">"Boston"</span>;
+    <span class="kw">await</span> users.PutAsync(<span class="str">$"user-{i}"</span>, <span class="kw">new</span> <span class="tp">User</span>(
+        <span class="str">$"User {i}"</span>, <span class="str">$"user{i}@example.com"</span>,
+        <span class="kw">new</span> <span class="tp">Address</span>(city, i % <span class="num">5</span> == <span class="num">0</span> ? <span class="str">"WA"</span> : <span class="str">"Other"</span>),
+        i % <span class="num">3</span> == <span class="num">0</span> ? [<span class="str">"admin"</span>, <span class="str">"editor"</span>] : [<span class="str">"viewer"</span>]
+    ));
+}
+
+<span class="cm">// --- Key lookup: fastest path, skips SQL entirely ---</span>
+<span class="kw">var</span> user = <span class="kw">await</span> users.GetAsync(<span class="str">"user-42"</span>);
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Key lookup: {user?.Name}"</span>);
+
+<span class="cm">// --- Indexed field query (~569ns per match) ---</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> users.FindByIndexAsync(x =&gt; x.Email, <span class="str">"user42@example.com"</span>))
+{
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"By email index: {kv.Key} -&gt; {kv.Value.Name}"</span>);
+}
+
+<span class="cm">// --- Indexed path query for nested fields (~475-599ns per match) ---</span>
+<span class="tp">int</span> seattleCount = <span class="num">0</span>;
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> users.FindByPathAsync(<span class="str">"$.address.city"</span>, <span class="str">"Seattle"</span>))
+{
+    seattleCount++;
+}
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Path query ($.address.city = Seattle): {seattleCount} matches"</span>);
+
+<span class="cm">// --- Indexed array element query ---</span>
+<span class="tp">int</span> adminCount = <span class="num">0</span>;
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> users.FindByPathAsync(<span class="str">"$.tags[]"</span>, <span class="str">"admin"</span>))
+{
+    adminCount++;
+}
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Array path query ($.tags[] = admin): {adminCount} matches"</span>);
+
+<span class="cm">// --- Path range query ---</span>
+<span class="tp">int</span> rangeCount = <span class="num">0</span>;
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> users.FindByPathRangeAsync(<span class="str">"$.address.city"</span>, <span class="str">"D"</span>, <span class="str">"Q"</span>))
+{
+    rangeCount++;
+}
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Range query (cities D..Q): {rangeCount} matches"</span>);
+
+<span class="kw">public record</span> <span class="tp">Address</span>(<span class="tp">string</span> City, <span class="tp">string</span> State);
+<span class="kw">public record</span> <span class="tp">User</span>(<span class="tp">string</span> Name, <span class="tp">string</span> Email, <span class="tp">Address</span> Address, <span class="tp">string</span>[] Tags);</code></pre>
+                    </div>
+
+                    <div class="callout callout-warning">
+                        <strong>Practical rule.</strong> <code>FindAsync(predicate)</code> is convenient, but it is still a scan. If the predicate matters to latency, promote it to an indexed field or indexed path.
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SCENARIO 11: ADO.NET
+                     ═══════════════════════════════════════════════════════════ -->
+                <div class="perf-scenario">
+                    <h2 id="s11-adonet">Scenario 11: ADO.NET Apps</h2>
+                    <p>The integration scenario: existing .NET data-access code, ORMs, utilities, or apps that open and close connections frequently.</p>
+
+                    <div class="perf-stat-grid">
+                        <div class="perf-stat muted">
+                            <div class="perf-big">8.9 ms</div>
+                            <div class="perf-label">open+close &mdash; pooling OFF</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">1.9 &mu;s</div>
+                            <div class="perf-label">open+close &mdash; pooling ON</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">239 ns</div>
+                            <div class="perf-label">ExecuteScalar &mdash; private :memory:</div>
+                        </div>
+                        <div class="perf-stat">
+                            <div class="perf-big">2.7 &mu;s</div>
+                            <div class="perf-label">Insert &mdash; private :memory:</div>
+                        </div>
+                    </div>
+
+                    <div class="perf-do">
+                        <h4>Do</h4>
+                        <ul>
+                            <li>Turn pooling on explicitly if you open and close connections often</li>
+                            <li>Use private <code>:memory:</code> when you do not need cross-connection sharing</li>
+                            <li>Use named shared <code>:memory:name</code> only when you actually need multiple connections against the same in-process memory database</li>
+                        </ul>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-header"><span>performance-adonet.cs</span></div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Data.Common</span>;
+<span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
+
+<span class="cm">// --- Pooled connections: open+close drops from ~8.9ms to ~1.9us ---</span>
+<span class="kw">var</span> pooledConnStr = <span class="str">"Data Source=ado-app.db;Pooling=true;Max Pool Size=16"</span>;
+
+<span class="kw">await using</span> (<span class="kw">var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(pooledConnStr))
+{
+    <span class="kw">await</span> conn.OpenAsync();
+
+    <span class="kw">using var</span> createCmd = conn.CreateCommand();
+    createCmd.CommandText = <span class="str">@"
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            price REAL NOT NULL,
+            category TEXT
+        )"</span>;
+    <span class="kw">await</span> createCmd.ExecuteNonQueryAsync();
+
+    <span class="cm">// Insert with parameterized commands (safe from injection)</span>
+    <span class="kw">using var</span> insertCmd = conn.CreateCommand();
+    insertCmd.CommandText = <span class="str">"INSERT OR IGNORE INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+    <span class="kw">var</span> pId = insertCmd.CreateParameter(); pId.ParameterName = <span class="str">"@id"</span>;
+    <span class="kw">var</span> pName = insertCmd.CreateParameter(); pName.ParameterName = <span class="str">"@name"</span>;
+    <span class="kw">var</span> pPrice = insertCmd.CreateParameter(); pPrice.ParameterName = <span class="str">"@price"</span>;
+    <span class="kw">var</span> pCat = insertCmd.CreateParameter(); pCat.ParameterName = <span class="str">"@cat"</span>;
+    insertCmd.Parameters.Add(pId);
+    insertCmd.Parameters.Add(pName);
+    insertCmd.Parameters.Add(pPrice);
+    insertCmd.Parameters.Add(pCat);
+
+    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">100</span>; i++)
+    {
+        pId.Value = i;
+        pName.Value = <span class="str">$"Product {i}"</span>;
+        pPrice.Value = <span class="num">9.99</span> + i;
+        pCat.Value = i % <span class="num">3</span> == <span class="num">0</span> ? <span class="str">"Electronics"</span> : i % <span class="num">3</span> == <span class="num">1</span> ? <span class="str">"Books"</span> : <span class="str">"Clothing"</span>;
+        <span class="kw">await</span> insertCmd.ExecuteNonQueryAsync();
+    }
+}
+
+<span class="cm">// Demonstrate the pooling benefit: rapid open/close cycles</span>
+<span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; <span class="num">1000</span>; i++)
+{
+    <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(pooledConnStr);
+    <span class="kw">await</span> conn.OpenAsync();
+    <span class="kw">using var</span> cmd = conn.CreateCommand();
+    cmd.CommandText = <span class="str">"SELECT COUNT(*) FROM products"</span>;
+    <span class="kw">var</span> count = <span class="kw">await</span> cmd.ExecuteScalarAsync();
+}
+sw.Stop();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Pooled: 1000 open/query/close in {sw.ElapsedMilliseconds}ms"</span>);
+
+<span class="cm">// --- Private in-memory via ADO.NET ---</span>
+<span class="kw">await using</span> (<span class="kw">var</span> memConn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=:memory:"</span>))
+{
+    <span class="kw">await</span> memConn.OpenAsync();
+    <span class="kw">using var</span> cmd = memConn.CreateCommand();
+    cmd.CommandText = <span class="str">"CREATE TABLE temp (id INTEGER PRIMARY KEY, value TEXT)"</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    cmd.CommandText = <span class="str">"INSERT INTO temp VALUES (1, 'fast')"</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    cmd.CommandText = <span class="str">"SELECT value FROM temp WHERE id = 1"</span>;
+    <span class="kw">var</span> val = <span class="kw">await</span> cmd.ExecuteScalarAsync();
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"In-memory ADO.NET: {val}"</span>);
+}
+
+<span class="cm">// --- DbDataReader for streaming results ---</span>
+<span class="kw">await using</span> (<span class="kw">var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(pooledConnStr))
+{
+    <span class="kw">await</span> conn.OpenAsync();
+    <span class="kw">using var</span> cmd = conn.CreateCommand();
+    cmd.CommandText = <span class="str">"SELECT id, name, price FROM products WHERE category = 'Electronics' ORDER BY price LIMIT 10"</span>;
+
+    <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+    <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+    {
+        <span class="tp">int</span> id = reader.GetInt32(<span class="num">0</span>);
+        <span class="tp">string</span> name = reader.GetString(<span class="num">1</span>);
+        <span class="tp">double</span> price = reader.GetDouble(<span class="num">2</span>);
+        <span class="tp">Console</span>.WriteLine(<span class="str">$"  [{id}] {name} - ${price:F2}"</span>);
+    }
+}
+
+<span class="cm">// --- DbProviderFactory pattern (for DI / framework integration) ---</span>
+<span class="tp">DbProviderFactory</span> factory = <span class="tp">CSharpDbFactory</span>.Instance;
+<span class="kw">await using var</span> factoryConn = factory.CreateConnection()!;
+factoryConn.ConnectionString = pooledConnStr;
+<span class="kw">await</span> factoryConn.OpenAsync();
+
+<span class="kw">using var</span> factoryCmd = factoryConn.CreateCommand();
+factoryCmd.CommandText = <span class="str">"SELECT COUNT(*) FROM products"</span>;
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Factory pattern count: {await factoryCmd.ExecuteScalarAsync()}"</span>);</code></pre>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <strong>Summary.</strong> Pooling matters a lot. Memory mode choice matters a little. Command preparation is not the first lever to chase.
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     COMMON MISTAKES
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="common-mistakes">What Usually Hurts</h2>
+                <div class="perf-dont">
+                    <h4>Common performance mistakes</h4>
+                    <ul>
+                        <li>Auto-committing every durable row when batching is possible</li>
+                        <li>Recreating a <code>ReaderSession</code> for every small read</li>
+                        <li>Using <code>SELECT *</code> on range and ordered queries that could be covered or narrow</li>
+                        <li>Skipping <code>ANALYZE</code> after bulk loads, then blaming the planner</li>
+                        <li>Using <code>FindAsync(...)</code> on large collections for fields that should be indexed</li>
+                        <li>Turning on advanced knobs like caching indexes, durable batch windows, or WAL preallocation without measuring</li>
+                        <li>Paying hybrid hot-set open cost for short-lived processes</li>
+                        <li>Using named shared <code>:memory:</code> when private <code>:memory:</code> would do</li>
+                    </ul>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     RECOMMENDED WORKFLOW
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2 id="workflow">Recommended Workflow</h2>
+                <p>When tuning a real CSharpDB workload, use this order:</p>
+
+                <ol class="perf-workflow">
+                    <li>Pick the storage mode: file-backed, hybrid, or in-memory.</li>
+                    <li>Pick the API surface: SQL, collection API, or ADO.NET.</li>
+                    <li>Add the right indexes.</li>
+                    <li>Shape queries so they stay narrow and covered when possible.</li>
+                    <li>Run <code>ANALYZE</code>.</li>
+                    <li>Reuse <code>ReaderSession</code> or pooled connections where appropriate.</li>
+                    <li>Batch writes.</li>
+                    <li>Only then benchmark advanced knobs.</li>
+                </ol>
+
+                <!-- ═══════════════════════════════════════════════════════════
+                     SOURCE MAP
+                     ═══════════════════════════════════════════════════════════ -->
+                <h2>Source Map</h2>
+                <div class="next-step-cards" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+                    <a href="benchmarks.html" class="next-step-card">
+                        <h4>Benchmark Suite</h4>
+                        <p>Full BenchmarkDotNet results</p>
+                    </a>
+                    <a href="architecture.html" class="next-step-card">
+                        <h4>Architecture Guide</h4>
+                        <p>Engine internals and design</p>
+                    </a>
+                    <a href="api-reference.html" class="next-step-card">
+                        <h4>API Reference</h4>
+                        <p>Complete API documentation</p>
+                    </a>
+                    <a href="roadmap.html" class="next-step-card">
+                        <h4>Roadmap</h4>
+                        <p>What&rsquo;s coming next</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

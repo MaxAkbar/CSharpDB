@@ -21,32 +21,134 @@
     <meta name="twitter:description" content="Open-source embedded database engine for .NET with SQL and NoSQL APIs, file-based and in-memory storage, and built-in ETL pipelines.">
     <meta name="twitter:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "CSharpDB",
+        "description": "Open-source embedded database engine for .NET with SQL and NoSQL APIs, file-based and in-memory storage, and built-in ETL pipelines.",
+        "url": "https://csharpdb.com",
+        "codeRepository": "https://github.com/MaxAkbar/CSharpDB",
+        "programmingLanguage": "C#",
+        "runtimePlatform": ".NET",
+        "license": "https://opensource.org/licenses/MIT",
+        "operatingSystem": "Cross-platform"
+    }
+    </script>
     <style>
     /* ═══════════════════════════════════════════════════════════
-       Visual Architecture Hero — Page-Specific Styles
+       Code-First Hero — Scrolling Code Background
        ═══════════════════════════════════════════════════════════ */
 
-    /* ─── Hero Architecture Diagram ─── */
-    .hero-arch {
-        padding: 80px 0 60px;
-        text-align: center;
+    .hero-code-first {
         position: relative;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         overflow: hidden;
     }
 
-    .hero-arch .hero-bg-grid {
+    .hero-code-bg {
         position: absolute;
         inset: 0;
-        background-image:
-            linear-gradient(var(--border) 1px, transparent 1px),
-            linear-gradient(90deg, var(--border) 1px, transparent 1px);
-        background-size: 60px 60px;
-        opacity: 0.3;
-        -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 70%);
-        mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 70%);
+        z-index: 0;
+        overflow: hidden;
+        background: var(--bg-primary);
     }
 
-    .hero-arch .hero-title {
+    .hero-code-bg::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+            180deg,
+            rgba(10, 14, 23, 0.3) 0%,
+            rgba(10, 14, 23, 0.15) 30%,
+            rgba(10, 14, 23, 0.15) 70%,
+            rgba(10, 14, 23, 0.6) 100%
+        );
+        z-index: 1;
+        pointer-events: none;
+    }
+
+    [data-theme="light"] .hero-code-bg::after {
+        background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.3) 0%,
+            rgba(255, 255, 255, 0.15) 30%,
+            rgba(255, 255, 255, 0.15) 70%,
+            rgba(255, 255, 255, 0.6) 100%
+        );
+    }
+
+    .hero-code-scroll {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: max(100%, 900px);
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        font-size: 0.82rem;
+        line-height: 1.8;
+        color: var(--text-muted);
+        opacity: 0.45;
+        white-space: pre;
+        padding: 2rem 4rem;
+        animation: scrollCode 60s linear infinite;
+        -webkit-user-select: none;
+        user-select: none;
+        pointer-events: none;
+    }
+
+    @keyframes scrollCode {
+        0%   { transform: translateX(-50%) translateY(0); }
+        100% { transform: translateX(-50%) translateY(-50%); }
+    }
+
+    .hero-code-scroll .kw  { color: var(--code-keyword); }
+    .hero-code-scroll .tp  { color: var(--code-type); }
+    .hero-code-scroll .str { color: var(--code-string); }
+    .hero-code-scroll .cm  { color: var(--code-comment); }
+    .hero-code-scroll .num { color: var(--code-number); }
+
+    /* ─── Frosted glass panel ─── */
+    .hero-glass {
+        position: relative;
+        z-index: 2;
+        max-width: 680px;
+        width: 90%;
+        padding: 3.5rem 3rem;
+        background: rgba(10, 14, 23, 0.55);
+        -webkit-backdrop-filter: blur(24px) saturate(1.2);
+        backdrop-filter: blur(24px) saturate(1.2);
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-xl);
+        text-align: center;
+        box-shadow:
+            0 0 80px rgba(99, 102, 241, 0.08),
+            var(--shadow-lg);
+    }
+
+    [data-theme="light"] .hero-glass {
+        background: rgba(255, 255, 255, 0.6);
+    }
+
+    .hero-glass .hero-badge {
+        display: inline-block;
+        padding: 0.3rem 1rem;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 999px;
+        margin-bottom: 1.5rem;
+        background: var(--accent-soft);
+    }
+
+    .hero-glass h1 {
         font-size: clamp(2.2rem, 5vw, 3.4rem);
         font-weight: 800;
         line-height: 1.15;
@@ -54,128 +156,216 @@
         letter-spacing: -0.02em;
     }
 
-    .hero-arch .hero-subtitle {
+    .hero-glass .hero-subtitle {
         font-size: 1.1rem;
         color: var(--text-secondary);
-        max-width: 580px;
-        margin: 0 auto 40px;
+        max-width: 540px;
+        margin: 0 auto 2rem;
         line-height: 1.7;
     }
 
-    /* ─── Architecture SVG Diagram ─── */
-    .arch-hero-diagram {
-        max-width: 700px;
-        margin: 0 auto 48px;
-        position: relative;
+    .hero-glass .hero-actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 1.75rem;
     }
 
-    .arch-hero-diagram svg {
-        width: 100%;
-        height: auto;
+    .hero-glass .hero-install {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 1.25rem;
+        background: var(--bg-code);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        font-size: 0.88rem;
+        color: var(--text-primary);
     }
 
-    /* Layer boxes */
-    .arch-svg-layer {
-        stroke-width: 1.5;
-        transition: all 0.3s;
+    .hero-glass .hero-install .copy-btn {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 2px;
+        transition: color 0.2s;
     }
 
-    .arch-svg-layer-sql {
-        fill: rgba(168, 85, 247, 0.08);
-        stroke: rgba(168, 85, 247, 0.4);
-    }
-    .arch-svg-layer-exec {
-        fill: rgba(99, 102, 241, 0.08);
-        stroke: rgba(99, 102, 241, 0.4);
-    }
-    .arch-svg-layer-storage {
-        fill: rgba(6, 182, 212, 0.08);
-        stroke: rgba(6, 182, 212, 0.4);
-    }
-    .arch-svg-layer-disk {
-        fill: rgba(34, 197, 94, 0.08);
-        stroke: rgba(34, 197, 94, 0.4);
-    }
-
-    /* Glow connection lines */
-    .arch-connection {
-        stroke-width: 2;
-        fill: none;
-        stroke-dasharray: 8 4;
-        animation: archFlowDown 1.5s linear infinite;
-    }
-    .arch-connection-1 { stroke: rgba(168, 85, 247, 0.6); animation-delay: 0s; }
-    .arch-connection-2 { stroke: rgba(99, 102, 241, 0.6); animation-delay: 0.4s; }
-    .arch-connection-3 { stroke: rgba(6, 182, 212, 0.6); animation-delay: 0.8s; }
-
-    @keyframes archFlowDown {
-        0% { stroke-dashoffset: 24; }
-        100% { stroke-dashoffset: 0; }
-    }
-
-    /* Floating particles */
-    .arch-particle {
-        r: 3;
-        opacity: 0;
-        animation: particleFlow 3s ease-in-out infinite;
-    }
-    .arch-particle-1 { fill: #a855f7; animation-delay: 0s; }
-    .arch-particle-2 { fill: #6366f1; animation-delay: 1s; }
-    .arch-particle-3 { fill: #06b6d4; animation-delay: 2s; }
-    .arch-particle-4 { fill: #a855f7; animation-delay: 0.5s; }
-    .arch-particle-5 { fill: #22c55e; animation-delay: 1.5s; }
-    .arch-particle-6 { fill: #6366f1; animation-delay: 2.5s; }
-
-    @keyframes particleFlow {
-        0%   { opacity: 0; transform: translateY(0); }
-        15%  { opacity: 0.9; }
-        85%  { opacity: 0.9; }
-        100% { opacity: 0; transform: translateY(60px); }
-    }
-
-    /* Glow pulse on layer borders */
-    .arch-glow-pulse {
-        animation: glowPulse 3s ease-in-out infinite;
-    }
-    .arch-glow-pulse-1 { animation-delay: 0s; }
-    .arch-glow-pulse-2 { animation-delay: 0.75s; }
-    .arch-glow-pulse-3 { animation-delay: 1.5s; }
-    .arch-glow-pulse-4 { animation-delay: 2.25s; }
-
-    @keyframes glowPulse {
-        0%, 100% { opacity: 0.4; }
-        50% { opacity: 1; }
-    }
-
-    /* SVG text */
-    .arch-svg-title {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        font-weight: 700;
-        font-size: 15px;
-        fill: var(--text-primary);
-    }
-    .arch-svg-desc {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        font-weight: 400;
-        font-size: 11px;
-        fill: var(--text-muted);
-    }
-    .arch-svg-sub {
-        font-family: 'JetBrains Mono', 'Fira Code', monospace;
-        font-weight: 400;
-        font-size: 10px;
-        fill: var(--text-muted);
-        opacity: 0.7;
+    .hero-glass .hero-install .copy-btn:hover {
+        color: var(--accent);
     }
 
     /* ─── Quick Start Section ─── */
-    .quick-start-block {
-        max-width: 600px;
-        margin: 0 auto 48px;
+    .api-tabs {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 24px;
     }
 
-    .quick-start-block .code-block {
+    .api-tab {
+        padding: 8px 20px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.25s;
+    }
+
+    .api-tab:hover {
+        border-color: var(--accent);
+        color: var(--text-primary);
+    }
+
+    .api-tab.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+    }
+
+    .api-panel {
+        display: none;
+        max-width: 680px;
+        margin: 0 auto 48px;
         text-align: left;
+    }
+
+    .api-panel.active {
+        display: block;
+    }
+
+    /* ─── AOT Cross-Language Section ─── */
+    .lang-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        max-width: 900px;
+        margin: 0 auto;
+    }
+
+    .lang-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        transition: border-color 0.25s, box-shadow 0.25s;
+    }
+
+    .lang-card:hover {
+        border-color: var(--accent);
+        box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .lang-card-header {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.75rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .lang-card-header .lang-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .lang-dot-python  { background: #3572A5; }
+    .lang-dot-rust    { background: #DEA584; }
+    .lang-dot-go      { background: #00ADD8; }
+    .lang-dot-node    { background: #F7DF1E; }
+
+    .lang-card pre {
+        padding: 1rem 1.25rem;
+        margin: 0;
+        overflow-x: auto;
+        font-size: 0.82rem;
+        line-height: 1.7;
+        background: transparent;
+    }
+
+    .lang-card pre code {
+        background: none;
+        padding: 0;
+        font-size: inherit;
+        color: var(--text-primary);
+    }
+
+    .aot-note {
+        text-align: center;
+        margin-top: 2rem;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+
+    .aot-note code {
+        font-size: 0.82rem;
+    }
+
+    @media (max-width: 768px) {
+        .lang-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    /* ─── Built for .NET ─── */
+    .dotnet-wins {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1.5rem;
+        max-width: 900px;
+        margin: 0 auto;
+    }
+
+    .win-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 1.75rem;
+        transition: border-color 0.25s, box-shadow 0.25s;
+    }
+
+    .win-card:hover {
+        border-color: var(--accent);
+        box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .win-card .win-icon {
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--accent-soft);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 1rem;
+        color: var(--accent);
+    }
+
+    .win-card h4 {
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+    }
+
+    .win-card p {
+        color: var(--text-secondary);
+        font-size: 0.92rem;
+        line-height: 1.6;
+    }
+
+    .win-card code {
+        font-size: 0.82rem;
     }
 
     /* ─── Ecosystem Cards ─── */
@@ -297,8 +487,12 @@
     }
 
     @media (max-width: 768px) {
-        .hero-arch {
-            padding: 60px 0 40px;
+        .hero-glass {
+            padding: 2.5rem 1.75rem;
+        }
+        .hero-code-scroll {
+            font-size: 0.65rem;
+            padding: 1rem;
         }
         .ecosystem-grid {
             grid-template-columns: 1fr 1fr;
@@ -306,9 +500,6 @@
         }
         .eco-card {
             padding: 18px 14px;
-        }
-        .arch-hero-diagram {
-            margin-bottom: 32px;
         }
     }
 
@@ -345,13 +536,220 @@
 
     <main class="page">
         <!-- ═══════════════════════════════════════════════════════
-             Hero — Visual Architecture Diagram
+             Hero — Scrolling Code Background
              ═══════════════════════════════════════════════════════ -->
-        <section class="hero-arch">
-            <div class="hero-bg-grid"></div>
-            <div class="container">
+        <section class="hero-code-first">
+            <div class="hero-code-bg">
+                <pre class="hero-code-scroll"><span class="cm">// CSharpDB &mdash; Embedded Database Engine for .NET</span>
+<span class="cm">// Zero dependencies. ACID-compliant. Production-grade.</span>
+
+<span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Threading.Channels</span>;
+
+<span class="kw">namespace</span> <span class="tp">MyApp.DataLayer</span>;
+
+<span class="kw">public sealed class</span> <span class="tp">AppDatabase</span> : <span class="tp">IAsyncDisposable</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private readonly</span> <span class="tp">Channel</span>&lt;<span class="tp">WriteOp</span>&gt; _writes;
+
+    <span class="kw">public static async</span> <span class="tp">Task</span>&lt;<span class="tp">AppDatabase</span>&gt; OpenAsync(<span class="kw">string</span> path)
+    {
+        <span class="kw">var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(path);
+        <span class="kw">return new</span> <span class="tp">AppDatabase</span>(db);
+    }
+
+    <span class="kw">private</span> <span class="tp">AppDatabase</span>(<span class="tp">Database</span> db)
+    {
+        _db = db;
+        _writes = <span class="tp">Channel</span>.CreateBounded&lt;<span class="tp">WriteOp</span>&gt;(<span class="num">1024</span>);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> CreateSchemaAsync()
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            CREATE TABLE IF NOT EXISTS Products (
+                Id       INTEGER PRIMARY KEY,
+                Name     TEXT NOT NULL,
+                Price    REAL NOT NULL,
+                Category TEXT,
+                Created  TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_products_category
+                ON Products(Category);
+
+            CREATE TABLE IF NOT EXISTS Orders (
+                Id         INTEGER PRIMARY KEY,
+                ProductId  INTEGER REFERENCES Products(Id),
+                Quantity   INTEGER NOT NULL,
+                Total      REAL NOT NULL,
+                OrderDate  TEXT DEFAULT CURRENT_TIMESTAMP
+            );"</span>;
+        <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">IReadOnlyList</span>&lt;<span class="tp">Product</span>&gt;&gt; GetTopProductsAsync(<span class="kw">int</span> limit)
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            SELECT p.Id, p.Name, p.Price, SUM(o.Quantity) AS TotalSold
+            FROM Products p
+            JOIN Orders o ON o.ProductId = p.Id
+            GROUP BY p.Id, p.Name, p.Price
+            ORDER BY TotalSold DESC
+            LIMIT @limit"</span>;
+        cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@limit"</span>, limit));
+
+        <span class="kw">var</span> results = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">Product</span>&gt;();
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+        {
+            results.Add(<span class="kw">new</span> <span class="tp">Product</span>(
+                reader.GetInt32(<span class="num">0</span>),
+                reader.GetString(<span class="num">1</span>),
+                reader.GetDouble(<span class="num">2</span>),
+                reader.GetInt32(<span class="num">3</span>)
+            ));
+        }
+        <span class="kw">return</span> results;
+    }
+
+    <span class="cm">// Collection API for flexible document storage</span>
+    <span class="kw">public async</span> <span class="tp">Task</span> StoreSessionAsync(<span class="tp">UserSession</span> session)
+    {
+        <span class="kw">var</span> sessions = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">UserSession</span>&gt;(<span class="str">"sessions"</span>);
+        <span class="kw">await</span> sessions.PutAsync(session.Id, session);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">UserSession</span>?&gt; GetSessionAsync(<span class="kw">string</span> id)
+    {
+        <span class="kw">var</span> sessions = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">UserSession</span>&gt;(<span class="str">"sessions"</span>);
+        <span class="kw">return await</span> sessions.GetAsync(id);
+    }
+
+    <span class="kw">public async</span> <span class="tp">ValueTask</span> DisposeAsync()
+    {
+        _writes.Writer.Complete();
+        <span class="kw">await</span> _db.DisposeAsync();
+    }
+}
+
+<span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">int</span> Id, <span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">int</span> TotalSold);
+<span class="kw">public record</span> <span class="tp">UserSession</span>(<span class="kw">string</span> Id, <span class="kw">string</span> UserId, <span class="tp">DateTime</span> Expires);
+
+<span class="cm">// ETL Pipeline &mdash; import CSV data into Products table</span>
+<span class="kw">var</span> pipeline = <span class="kw">new</span> <span class="tp">PipelineBuilder</span>()
+    .FromCsv(<span class="str">"products.csv"</span>)
+    .Transform(row =&gt; <span class="kw">new</span> {
+        Name     = row[<span class="str">"name"</span>].Trim(),
+        Price    = <span class="kw">decimal</span>.Parse(row[<span class="str">"price"</span>]),
+        Category = row[<span class="str">"category"</span>]
+    })
+    .ToTable(<span class="str">"Products"</span>)
+    .Build();
+
+<span class="kw">await</span> pipeline.ExecuteAsync(db);
+
+<span class="cm">// ─── End of sample ───</span>
+
+<span class="cm">// CSharpDB &mdash; Embedded Database Engine for .NET</span>
+<span class="cm">// Zero dependencies. ACID-compliant. Production-grade.</span>
+
+<span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+<span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+<span class="kw">using</span> <span class="tp">System.Threading.Channels</span>;
+
+<span class="kw">namespace</span> <span class="tp">MyApp.DataLayer</span>;
+
+<span class="kw">public sealed class</span> <span class="tp">AppDatabase</span> : <span class="tp">IAsyncDisposable</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private readonly</span> <span class="tp">Channel</span>&lt;<span class="tp">WriteOp</span>&gt; _writes;
+
+    <span class="kw">public static async</span> <span class="tp">Task</span>&lt;<span class="tp">AppDatabase</span>&gt; OpenAsync(<span class="kw">string</span> path)
+    {
+        <span class="kw">var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(path);
+        <span class="kw">return new</span> <span class="tp">AppDatabase</span>(db);
+    }
+
+    <span class="kw">private</span> <span class="tp">AppDatabase</span>(<span class="tp">Database</span> db)
+    {
+        _db = db;
+        _writes = <span class="tp">Channel</span>.CreateBounded&lt;<span class="tp">WriteOp</span>&gt;(<span class="num">1024</span>);
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span> CreateSchemaAsync()
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            CREATE TABLE IF NOT EXISTS Products (
+                Id       INTEGER PRIMARY KEY,
+                Name     TEXT NOT NULL,
+                Price    REAL NOT NULL,
+                Category TEXT,
+                Created  TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_products_category
+                ON Products(Category);
+
+            CREATE TABLE IF NOT EXISTS Orders (
+                Id         INTEGER PRIMARY KEY,
+                ProductId  INTEGER REFERENCES Products(Id),
+                Quantity   INTEGER NOT NULL,
+                Total      REAL NOT NULL,
+                OrderDate  TEXT DEFAULT CURRENT_TIMESTAMP
+            );"</span>;
+        <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">IReadOnlyList</span>&lt;<span class="tp">Product</span>&gt;&gt; GetTopProductsAsync(<span class="kw">int</span> limit)
+    {
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(_db);
+        <span class="kw">await</span> conn.OpenAsync();
+
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">@"
+            SELECT p.Id, p.Name, p.Price, SUM(o.Quantity) AS TotalSold
+            FROM Products p
+            JOIN Orders o ON o.ProductId = p.Id
+            GROUP BY p.Id, p.Name, p.Price
+            ORDER BY TotalSold DESC
+            LIMIT @limit"</span>;
+        cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@limit"</span>, limit));
+
+        <span class="kw">var</span> results = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">Product</span>&gt;();
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+        {
+            results.Add(<span class="kw">new</span> <span class="tp">Product</span>(
+                reader.GetInt32(<span class="num">0</span>),
+                reader.GetString(<span class="num">1</span>),
+                reader.GetDouble(<span class="num">2</span>),
+                reader.GetInt32(<span class="num">3</span>)
+            ));
+        }
+        <span class="kw">return</span> results;
+    }
+}</pre>
+            </div>
+
+            <!-- Frosted glass center panel -->
+            <div class="hero-glass">
                 <div class="hero-badge">Open Source Database Engine</div>
-                <h1 class="hero-title">
+                <h1>
                     The Embedded Database<br>
                     Built for <span class="gradient-text">.NET</span>
                 </h1>
@@ -359,98 +757,6 @@
                     Zero dependencies. Full SQL. ACID storage. One NuGet package gives you
                     everything from query parsing to page-level I/O.
                 </p>
-
-                <!-- Architecture Diagram SVG -->
-                <div class="arch-hero-diagram">
-                    <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg">
-                        <defs>
-                            <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-indigo" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                            <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
-                                <feGaussianBlur stdDeviation="4" result="blur"/>
-                                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-                            </filter>
-                        </defs>
-
-                        <!-- Layer 1: SQL / Query Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-sql arch-glow-pulse arch-glow-pulse-1"
-                              x="60" y="20" width="580" height="72" rx="12" ry="12" filter="url(#glow-purple)"/>
-                        <text class="arch-svg-title" x="350" y="50" text-anchor="middle">SQL &amp; Query Engine</text>
-                        <text class="arch-svg-desc" x="350" y="68" text-anchor="middle">Parser, Planner, Cost-Based Optimizer, CTEs, JOINs, Views, Triggers</text>
-
-                        <!-- Connection line 1 -->
-                        <line class="arch-connection arch-connection-1" x1="350" y1="92" x2="350" y2="120"/>
-
-                        <!-- Layer 2: Execution Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-exec arch-glow-pulse arch-glow-pulse-2"
-                              x="60" y="120" width="580" height="72" rx="12" ry="12" filter="url(#glow-indigo)"/>
-                        <text class="arch-svg-title" x="350" y="150" text-anchor="middle">Execution Engine</text>
-                        <text class="arch-svg-desc" x="350" y="168" text-anchor="middle">Volcano Iterator, Collection API, Transactions, Snapshot Isolation, ETL Pipelines</text>
-
-                        <!-- Connection line 2 -->
-                        <line class="arch-connection arch-connection-2" x1="350" y1="192" x2="350" y2="220"/>
-
-                        <!-- Layer 3: Storage Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-storage arch-glow-pulse arch-glow-pulse-3"
-                              x="60" y="220" width="580" height="72" rx="12" ry="12" filter="url(#glow-cyan)"/>
-                        <text class="arch-svg-title" x="350" y="250" text-anchor="middle">Storage Engine</text>
-                        <text class="arch-svg-desc" x="350" y="268" text-anchor="middle">B+Tree, Slotted Pages, WAL, Freelist, Buffer Pool, Overflow Chains</text>
-
-                        <!-- Connection line 3 -->
-                        <line class="arch-connection arch-connection-3" x1="350" y1="292" x2="350" y2="320"/>
-
-                        <!-- Layer 4: Disk Layer -->
-                        <rect class="arch-svg-layer arch-svg-layer-disk arch-glow-pulse arch-glow-pulse-4"
-                              x="60" y="320" width="580" height="72" rx="12" ry="12" filter="url(#glow-green)"/>
-                        <text class="arch-svg-title" x="350" y="350" text-anchor="middle">Disk I/O</text>
-                        <text class="arch-svg-desc" x="350" y="368" text-anchor="middle">Single .db File, 4096-byte Pages, Durable Writes, In-Memory Mode</text>
-
-                        <!-- Floating particles along left path -->
-                        <circle class="arch-particle arch-particle-1" cx="180" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-2" cx="350" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" begin="1s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" begin="1s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-3" cx="520" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3s" begin="2s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.15;0.85;1" dur="3s" begin="2s" repeatCount="indefinite"/>
-                        </circle>
-
-                        <!-- Floating particles along right path (staggered) -->
-                        <circle class="arch-particle arch-particle-4" cx="250" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.15;0.85;1" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-5" cx="450" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="3.5s" begin="1.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.15;0.85;1" dur="3.5s" begin="1.5s" repeatCount="indefinite"/>
-                        </circle>
-                        <circle class="arch-particle arch-particle-6" cx="140" cy="92">
-                            <animate attributeName="cy" from="92" to="320" dur="4s" begin="2.5s" repeatCount="indefinite"/>
-                            <animate attributeName="opacity" values="0;0.7;0.7;0" keyTimes="0;0.15;0.85;1" dur="4s" begin="2.5s" repeatCount="indefinite"/>
-                        </circle>
-
-                        <!-- Side labels -->
-                        <text class="arch-svg-sub" x="20" y="58" text-anchor="middle" transform="rotate(-90, 20, 58)">SQL</text>
-                        <text class="arch-svg-sub" x="20" y="158" text-anchor="middle" transform="rotate(-90, 20, 158)">EXEC</text>
-                        <text class="arch-svg-sub" x="20" y="258" text-anchor="middle" transform="rotate(-90, 20, 258)">STORE</text>
-                        <text class="arch-svg-sub" x="20" y="358" text-anchor="middle" transform="rotate(-90, 20, 358)">DISK</text>
-                    </svg>
-                </div>
-
                 <div class="hero-actions">
                     <a href="getting-started.html" class="btn btn-primary btn-lg">Get Started</a>
                     <a href="docs/index.html" class="btn btn-ghost btn-lg">Read the Docs</a>
@@ -470,18 +776,94 @@
         <section class="section section-alt" id="quickstart">
             <div class="container">
                 <h2 class="section-title">Ship in 30 Seconds</h2>
-                <p class="section-subtitle">Five lines. One file. Full database.</p>
+                <p class="section-subtitle">Use SQL, the Collection API, or low-level storage — all powered by one engine.</p>
 
-                <div class="quick-start-block">
-                    <div class="code-block" data-title="Program.cs">
+                <div class="api-tabs">
+                    <button type="button" class="api-tab active" data-tab="sql">SQL</button>
+                    <button type="button" class="api-tab" data-tab="collection">Collection</button>
+                    <button type="button" class="api-tab" data-tab="storage">Storage</button>
+                </div>
+
+                <!-- SQL Panel -->
+                <div class="api-panel active" data-panel="sql">
+                    <div class="code-block" data-title="SQL via ADO.NET">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Data</span>;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">@"
+    CREATE TABLE IF NOT EXISTS Users (
+        Id   INTEGER PRIMARY KEY,
+        Name TEXT NOT NULL,
+        Email TEXT
+    )"</span>;
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();
+
+cmd.CommandText = <span class="str">"INSERT INTO Users VALUES (@id, @name, @email)"</span>;
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@id"</span>, <span class="num">1</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@name"</span>, <span class="str">"Alice"</span>));
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@email"</span>, <span class="str">"alice@example.com"</span>));
+<span class="kw">await</span> cmd.ExecuteNonQueryAsync();</code></pre>
+                    </div>
+                </div>
+
+                <!-- Collection Panel -->
+                <div class="api-panel" data-panel="collection">
+                    <div class="code-block" data-title="Collection API">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
-<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"app.db"</span>);
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
 <span class="kw">var</span> users = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">User</span>&gt;(<span class="str">"users"</span>);
-<span class="kw">await</span> users.PutAsync(<span class="str">"alice"</span>, <span class="kw">new</span> <span class="tp">User</span>(<span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>));
+
+<span class="cm">// Put and get by string key</span>
+<span class="kw">await</span> users.PutAsync(<span class="str">"alice"</span>, <span class="kw">new</span> <span class="tp">User</span>(<span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>, <span class="num">30</span>));
 <span class="kw">var</span> alice = <span class="kw">await</span> users.GetAsync(<span class="str">"alice"</span>);
 
-<span class="kw">public record</span> <span class="tp">User</span>(<span class="kw">string</span> Name, <span class="kw">string</span> Email);</code></pre>
+<span class="cm">// Create an index and query through it</span>
+<span class="kw">await</span> users.EnsureIndexAsync(u =&gt; u.Email);
+<span class="kw">await foreach</span> (<span class="kw">var</span> match <span class="kw">in</span> users.FindByIndexAsync(
+    u =&gt; u.Email, <span class="str">"alice@example.com"</span>))
+    Console.WriteLine(match.Value.Name);
+
+<span class="kw">public record</span> <span class="tp">User</span>(<span class="kw">string</span> Name, <span class="kw">string</span> Email, <span class="kw">int</span> Age);</code></pre>
+                    </div>
+                </div>
+
+                <!-- Storage Panel -->
+                <div class="api-panel" data-panel="storage">
+                    <div class="code-block" data-title="B+Tree Storage">
+                        <div class="code-header">
+                            <div class="code-dots"><span></span><span></span><span></span></div>
+                            <span class="code-filename">Program.cs</span>
+                        </div>
+                        <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> tree = <span class="kw">await</span> db.GetBTreeAsync(<span class="str">"cache"</span>);
+
+<span class="cm">// Write key-value pairs directly</span>
+<span class="kw">await</span> tree.PutAsync(<span class="str">"session:abc"</span>, payload);
+<span class="kw">var</span> value = <span class="kw">await</span> tree.GetAsync(<span class="str">"session:abc"</span>);
+
+<span class="cm">// Range scan with cursor</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> kv <span class="kw">in</span> tree.ScanAsync(
+    <span class="str">"session:a"</span>, <span class="str">"session:z"</span>))
+{
+    Console.WriteLine(<span class="str">$"</span>{kv.Key} = {kv.Value.Length} bytes<span class="str">"</span>);
+}
+
+<span class="cm">// Delete with transactional guarantee</span>
+<span class="kw">await</span> tree.DeleteAsync(<span class="str">"session:abc"</span>);</code></pre>
                     </div>
                 </div>
 
@@ -602,9 +984,146 @@
         </section>
 
         <!-- ═══════════════════════════════════════════════════════
+             NativeAOT — Use from Any Language
+             ═══════════════════════════════════════════════════════ -->
+        <section class="section" id="polyglot">
+            <div class="container">
+                <h2 class="section-title">Use from Any Language</h2>
+                <p class="section-subtitle">Compile to a native shared library with NativeAOT. Call CSharpDB from Python, Rust, Go, Node.js, or anything that speaks C.</p>
+
+                <div class="lang-grid">
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-python"></span>
+                            Python
+                        </div>
+                        <pre><code><span class="kw">import</span> ctypes
+
+db = ctypes.CDLL(<span class="str">"./libcsharpdb.so"</span>)
+
+db.csharpdb_open(<span class="str">b"app.db"</span>)
+db.csharpdb_exec(<span class="str">b"INSERT INTO Users VALUES (1, 'Alice')"</span>)
+result = db.csharpdb_query(<span class="str">b"SELECT * FROM Users"</span>)
+db.csharpdb_close()</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-rust"></span>
+                            Rust
+                        </div>
+                        <pre><code><span class="kw">extern</span> <span class="str">"C"</span> {
+    <span class="kw">fn</span> <span class="tp">csharpdb_open</span>(path: *<span class="kw">const</span> c_char);
+    <span class="kw">fn</span> <span class="tp">csharpdb_exec</span>(sql: *<span class="kw">const</span> c_char);
+    <span class="kw">fn</span> <span class="tp">csharpdb_query</span>(sql: *<span class="kw">const</span> c_char) -&gt; *<span class="kw">const</span> c_char;
+    <span class="kw">fn</span> <span class="tp">csharpdb_close</span>();
+}
+
+<span class="kw">unsafe</span> {
+    <span class="tp">csharpdb_open</span>(c<span class="str">"app.db"</span>.as_ptr());
+    <span class="tp">csharpdb_exec</span>(c<span class="str">"SELECT * FROM Users"</span>.as_ptr());
+    <span class="tp">csharpdb_close</span>();
+}</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-go"></span>
+                            Go
+                        </div>
+                        <pre><code><span class="cm">// #cgo LDFLAGS: -L. -lcsharpdb</span>
+<span class="cm">// #include "csharpdb.h"</span>
+<span class="kw">import</span> <span class="str">"C"</span>
+
+<span class="kw">func</span> main() {
+    C.csharpdb_open(C.CString(<span class="str">"app.db"</span>))
+    C.csharpdb_exec(C.CString(<span class="str">"SELECT * FROM Users"</span>))
+    C.csharpdb_close()
+}</code></pre>
+                    </div>
+
+                    <div class="lang-card">
+                        <div class="lang-card-header">
+                            <span class="lang-dot lang-dot-node"></span>
+                            Node.js
+                        </div>
+                        <pre><code><span class="kw">const</span> ffi = require(<span class="str">'ffi-napi'</span>);
+
+<span class="kw">const</span> db = ffi.Library(<span class="str">'./libcsharpdb'</span>, {
+    <span class="str">'csharpdb_open'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_exec'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_query'</span>: [<span class="str">'string'</span>, [<span class="str">'string'</span>]],
+    <span class="str">'csharpdb_close'</span>: [<span class="str">'void'</span>, []],
+});
+
+db.csharpdb_open(<span class="str">"app.db"</span>);
+db.csharpdb_exec(<span class="str">"SELECT * FROM Users"</span>);
+db.csharpdb_close();</code></pre>
+                    </div>
+                </div>
+
+                <p class="aot-note">
+                    Built with <code>dotnet publish -r linux-x64 /p:NativeLib=Shared</code> — produces a standard <code>.so</code> / <code>.dll</code> / <code>.dylib</code> with no runtime required.
+                </p>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════
+             Built for .NET
+             ═══════════════════════════════════════════════════════ -->
+        <section class="section section-alt" id="dotnet">
+            <div class="container">
+                <h2 class="section-title">Built for <span class="gradient-text">.NET</span></h2>
+                <p class="section-subtitle">Not a port. Not a wrapper. Native .NET from the ground up.</p>
+
+                <div class="dotnet-wins">
+                    <div class="win-card">
+                        <div class="win-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                        </div>
+                        <h4>NativeAOT Ready</h4>
+                        <p>Ahead-of-time compile your app and CSharpDB together. Sub-millisecond cold starts with no JIT overhead.</p>
+                    </div>
+
+                    <div class="win-card">
+                        <div class="win-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                        </div>
+                        <h4>Zero-Alloc Hot Paths</h4>
+                        <p>Critical read paths use <code>Span&lt;T&gt;</code> and stack allocation. No GC pressure where it matters most.</p>
+                    </div>
+
+                    <div class="win-card">
+                        <div class="win-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c-1.66 0-3-4-3-9s1.34-9 3-9m0 18c1.66 0 3-4 3-9s-1.34-9-3-9"/></svg>
+                        </div>
+                        <h4>IAsyncDisposable</h4>
+                        <p>First-class <code>await using</code> support everywhere. Clean resource lifetime management with no surprises.</p>
+                    </div>
+
+                    <div class="win-card">
+                        <div class="win-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                        </div>
+                        <h4>System.Threading.Channels</h4>
+                        <p>Internal write batching uses bounded channels for backpressure-aware, lock-free coordination.</p>
+                    </div>
+
+                    <div class="win-card">
+                        <div class="win-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        </div>
+                        <h4>No Reflection</h4>
+                        <p>Serialization uses source generators and compile-time analysis. Trimmer-safe, AOT-friendly, fully transparent.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════
              Comparison Table
              ═══════════════════════════════════════════════════════ -->
-        <section class="section section-alt" id="compare">
+        <section class="section" id="compare">
             <div class="container">
                 <h2 class="section-title">How CSharpDB Compares</h2>
                 <p class="section-subtitle">A fair look at where CSharpDB fits alongside other embedded options.</p>

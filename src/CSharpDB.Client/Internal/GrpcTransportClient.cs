@@ -344,6 +344,9 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
     public Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
         => CallAsync(_client.RestoreAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
+    public Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
+        => CallAsync(_client.MigrateForeignKeysAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
     public Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
         => CallAsync(_client.GetMaintenanceReportAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 

@@ -12,16 +12,17 @@ dotnet run --project src/CSharpDB.Cli -- mydata.db
 dotnet run --project src/CSharpDB.Cli
 ```
 
-The CLI also supports command mode (non-REPL) for storage diagnostics:
+The CLI also supports command mode (non-REPL) for storage diagnostics and maintenance:
 
 ```bash
 dotnet run --project src/CSharpDB.Cli -- inspect mydata.db
 dotnet run --project src/CSharpDB.Cli -- inspect-page mydata.db 5 --hex
 dotnet run --project src/CSharpDB.Cli -- check-wal mydata.db
 dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json
+dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only
 ```
 
-If the first argument is one of `inspect`, `inspect-page`, `check-wal`, or `check-indexes`, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.
+If the first argument is one of `inspect`, `inspect-page`, `check-wal`, `check-indexes`, or `migrate-foreign-keys`, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.
 
 ## Interactive Usage
 
@@ -77,6 +78,7 @@ All meta-commands start with a dot (`.`). They are case-insensitive.
 | `.checkpoint` | Flush WAL pages to the main database file |
 | `.backup <FILE> [--with-manifest]` | Write a committed snapshot backup to a file, optionally with a JSON manifest |
 | `.restore <FILE> [--validate-only]` | Validate a source snapshot or restore it into the current database file; for remote transports the path is resolved on the target host |
+| `.migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]` | Validate or apply foreign-key retrofit migration for existing tables; for remote transports, paths resolve on the connected host |
 
 ### Mode Toggles
 
@@ -99,6 +101,43 @@ All meta-commands start with a dot (`.`). They are case-insensitive.
 | `.help` | Show a list of all available commands |
 | `.quit` / `.exit` | Exit the REPL |
 
+### Foreign-Key Retrofit Migration
+
+Use the retrofit workflow when an older database file already contains valid parent/child data but does not yet persist FK metadata:
+
+```json
+{
+  "validateOnly": true,
+  "violationSampleLimit": 100,
+  "constraints": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "onDelete": "Restrict"
+    }
+  ]
+}
+```
+
+Validate only:
+
+```bash
+dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only
+```
+
+Apply from the REPL:
+
+```text
+csdb> .migrate-fks fk-spec.json --backup pre-fk.backup.db
+```
+
+Notes:
+- `--validate-only` reports sampled violations without mutating the database.
+- `--backup` writes a committed snapshot before apply mode starts.
+- For HTTP or gRPC transports, the spec path and backup path are resolved on the connected host.
+
 ## SQL Introspection (`sys.*`)
 
 You can query metadata with SQL in addition to dot-commands:
@@ -107,13 +146,14 @@ You can query metadata with SQL in addition to dot-commands:
 SELECT * FROM sys.tables ORDER BY table_name;
 SELECT * FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position;
 SELECT * FROM sys.indexes WHERE table_name = 'users';
+SELECT * FROM sys.foreign_keys ORDER BY table_name, column_name;
 SELECT * FROM sys.views;
 SELECT * FROM sys.triggers;
 SELECT * FROM sys.objects ORDER BY object_type, object_name;
 SELECT * FROM sys.saved_queries ORDER BY name;
 ```
 
-Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_saved_queries`.
+Underscored aliases are supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_foreign_keys`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_saved_queries`.
 `sys.columns` includes `is_identity` (0/1) in addition to `is_primary_key`.
 
 ---

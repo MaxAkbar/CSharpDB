@@ -65,6 +65,29 @@ internal sealed partial class EngineTransportClient
             ct));
     }
 
+    public async Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
+            ct,
+            "Foreign key migration requires exclusive access. Close active snapshot readers and retry.");
+
+        if (!_transactions.IsEmpty)
+        {
+            throw new CSharpDbClientException(
+                "Foreign key migration requires exclusive access. Commit or rollback active client-managed transactions and retry.");
+        }
+
+        ForeignKeyMigrationResult result = MapForeignKeyMigrationResult(
+            await DatabaseMaintenanceCoordinator.MigrateForeignKeysAsync(
+                _databasePath,
+                MapForeignKeyMigrationRequest(request),
+                ct));
+
+        return result;
+    }
+
     public async Task<CSharpDB.Client.Models.DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
         => MapMaintenanceReport(await DatabaseMaintenanceCoordinator.GetMaintenanceReportAsync(_databasePath, ct));
 

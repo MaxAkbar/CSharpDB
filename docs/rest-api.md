@@ -92,6 +92,73 @@ Responses follow the diagnostics models documented in [Storage Inspector](storag
 
 ---
 
+### Maintenance
+
+#### `POST /api/maintenance/migrate-foreign-keys`
+
+Validate or apply foreign-key retrofit migration for older databases whose tables do not yet persist FK metadata.
+
+**Request:**
+```json
+{
+  "validateOnly": true,
+  "backupDestinationPath": "pre-fk.backup.db",
+  "violationSampleLimit": 100,
+  "constraints": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "onDelete": "Restrict"
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "validateOnly": true,
+  "succeeded": false,
+  "backupDestinationPath": null,
+  "affectedTables": 1,
+  "appliedForeignKeys": 1,
+  "copiedRows": 0,
+  "violationCount": 1,
+  "violations": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "childKeyColumnName": "id",
+      "childKeyValue": 42,
+      "childValue": 999,
+      "reason": "MissingReferencedParent"
+    }
+  ],
+  "appliedConstraints": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "constraintName": "fk_orders_customer_id_abcd1234",
+      "supportingIndexName": "__fk_orders_customer_id_abcd1234",
+      "onDelete": "Restrict"
+    }
+  ]
+}
+```
+
+Notes:
+- `validateOnly = true` previews the migration without mutating schema or data.
+- `backupDestinationPath` is optional and is only used during apply mode.
+- Paths are resolved on the API host machine, not on the caller.
+
+---
+
 ### Tables
 
 #### `GET /api/tables`

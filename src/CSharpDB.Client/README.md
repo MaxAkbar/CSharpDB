@@ -114,8 +114,52 @@ The current `ICSharpDbClient` includes:
 - SQL execution with multi-statement splitting
 - client-managed transaction sessions
 - document collections
-- checkpoint
+- maintenance: checkpoint, backup/restore, reindex, vacuum, and foreign-key retrofit migration
 - storage diagnostics
+
+## Foreign-Key Retrofit Migration
+
+Older databases do not automatically gain foreign-key metadata just because they are opened on a newer engine. Use `MigrateForeignKeysAsync(...)` when you want to validate and then persist FK metadata onto existing tables:
+
+```csharp
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "mydata.db"
+});
+
+var spec = new[]
+{
+    new ForeignKeyMigrationConstraintSpec
+    {
+        TableName = "orders",
+        ColumnName = "customer_id",
+        ReferencedTableName = "customers",
+        ReferencedColumnName = "id",
+        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+    },
+};
+
+var preview = await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+{
+    ValidateOnly = true,
+    ViolationSampleLimit = 100,
+    Constraints = spec,
+});
+
+if (preview.Succeeded)
+{
+    await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+    {
+        BackupDestinationPath = "pre-fk.backup.db",
+        Constraints = spec,
+    });
+}
+```
+
+The same request/response contract flows through the direct, HTTP, and gRPC transports.
 
 ## Implementation Notes
 

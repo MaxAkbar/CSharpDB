@@ -32,6 +32,44 @@ public sealed class SchemaSerializerCompatibilityTests
     }
 
     [Fact]
+    public void SerializeDeserialize_TableSchema_RoundTripsForeignKeys()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "children",
+            Columns = new[]
+            {
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true, IsIdentity = true, Nullable = false },
+                new ColumnDefinition { Name = "parent_id", Type = DbType.Integer, Nullable = true },
+            },
+            ForeignKeys = new[]
+            {
+                new ForeignKeyDefinition
+                {
+                    ConstraintName = "fk_children_parent_id_a1b2c3d4",
+                    ColumnName = "parent_id",
+                    ReferencedTableName = "parents",
+                    ReferencedColumnName = "id",
+                    OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    SupportingIndexName = "__fk_children_parent_id_a1b2",
+                },
+            },
+            NextRowId = 7,
+        };
+
+        byte[] encoded = SchemaSerializer.Serialize(schema);
+        var decoded = SchemaSerializer.Deserialize(encoded);
+
+        ForeignKeyDefinition foreignKey = Assert.Single(decoded.ForeignKeys);
+        Assert.Equal("fk_children_parent_id_a1b2c3d4", foreignKey.ConstraintName);
+        Assert.Equal("parent_id", foreignKey.ColumnName);
+        Assert.Equal("parents", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal("__fk_children_parent_id_a1b2", foreignKey.SupportingIndexName);
+    }
+
+    [Fact]
     public void Deserialize_LegacyPayloadWithoutNextRowId_DefaultsToUnknown()
     {
         byte[] legacy = BuildLegacyTableSchemaPayload(

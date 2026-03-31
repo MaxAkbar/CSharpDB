@@ -63,6 +63,12 @@ public sealed class SchemaCatalog
 
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
 
+    public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysForTable(string tableName) =>
+        _service.GetForeignKeysForTable(tableName);
+
+    public IReadOnlyList<TableForeignKeyReference> GetReferencingForeignKeys(string parentTableName) =>
+        _service.GetReferencingForeignKeys(parentTableName);
+
     public TableStatistics? GetTableStatistics(string tableName) => _service.GetTableStatistics(tableName);
 
     public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
@@ -124,6 +130,9 @@ public sealed class SchemaCatalog
     public ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default) =>
         _service.AdjustTableRowCountAsync(tableName, delta, ct);
 
+    public ValueTask AdjustTableRowCountKnownExactAsync(string tableName, long delta, CancellationToken ct = default) =>
+        _service.AdjustTableRowCountKnownExactAsync(tableName, delta, ct);
+
     public ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default) =>
         _service.PersistDirtyTableStatisticsAsync(ct);
 
@@ -160,11 +169,17 @@ public sealed class SchemaCatalog
     public ValueTask CreateIndexAsync(IndexSchema schema, CancellationToken ct = default) =>
         _service.CreateIndexAsync(schema, ct);
 
+    public ValueTask UpdateIndexSchemaAsync(string oldIndexName, IndexSchema newSchema, CancellationToken ct = default) =>
+        _service.UpdateIndexSchemaAsync(oldIndexName, newSchema, ct);
+
     public ValueTask DropIndexAsync(string indexName, CancellationToken ct = default) =>
         _service.DropIndexAsync(indexName, ct);
 
     public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default) =>
         _service.DropIndexAllowCorruptReclaimAsync(indexName, ct);
+
+    public ValueTask DropForeignKeyOwnedIndexAsync(string indexName, CancellationToken ct = default) =>
+        _service.DropForeignKeyOwnedIndexAsync(indexName, ct);
 
     public string? GetViewSql(string viewName) => _service.GetViewSql(viewName);
 

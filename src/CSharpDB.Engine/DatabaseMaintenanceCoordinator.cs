@@ -74,6 +74,12 @@ public static class DatabaseMaintenanceCoordinator
         };
     }
 
+    public static ValueTask<DatabaseForeignKeyMigrationResult> MigrateForeignKeysAsync(
+        string databasePath,
+        DatabaseForeignKeyMigrationRequest request,
+        CancellationToken ct = default)
+        => DatabaseForeignKeyMigrationCoordinator.MigrateAsync(databasePath, request, ct);
+
     public static async ValueTask<DatabaseReindexResult> ReindexAsync(
         string databasePath,
         DatabaseReindexRequest request,
@@ -717,6 +723,16 @@ public static class DatabaseMaintenanceCoordinator
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
+                Collation = column.Collation,
+            }).ToArray(),
+            ForeignKeys = schema.ForeignKeys.Select(foreignKey => new ForeignKeyDefinition
+            {
+                ConstraintName = foreignKey.ConstraintName,
+                ColumnName = foreignKey.ColumnName,
+                ReferencedTableName = foreignKey.ReferencedTableName,
+                ReferencedColumnName = foreignKey.ReferencedColumnName,
+                OnDelete = foreignKey.OnDelete,
+                SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),
             QualifiedMappings = schema.QualifiedMappings is null
                 ? null

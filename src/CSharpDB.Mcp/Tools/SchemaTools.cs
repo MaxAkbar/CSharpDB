@@ -40,7 +40,17 @@ public static class SchemaTools
             isIdentity = c.IsIdentity,
         });
 
-        return JsonHelper.Serialize(new { tableName = schema.TableName, columns });
+        var foreignKeys = schema.ForeignKeys.Select(fk => new
+        {
+            constraintName = fk.ConstraintName,
+            columnName = fk.ColumnName,
+            referencedTableName = fk.ReferencedTableName,
+            referencedColumnName = fk.ReferencedColumnName,
+            onDelete = fk.OnDelete.ToString().ToLowerInvariant(),
+            supportingIndexName = fk.SupportingIndexName,
+        });
+
+        return JsonHelper.Serialize(new { tableName = schema.TableName, columns, foreignKeys });
     }
 
     [McpServerTool, Description("List all indexes in the database with their table, columns, and uniqueness.")]

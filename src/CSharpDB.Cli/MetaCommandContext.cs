@@ -218,6 +218,40 @@ internal sealed class MetaCommandContext : IDisposable
         return result!;
     }
 
+    public async ValueTask<ForeignKeyMigrationResult> MigrateForeignKeysAsync(
+        ForeignKeyMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        DisableSnapshot();
+        ExceptionDispatchInfo? captured = null;
+        ForeignKeyMigrationResult? result = null;
+
+        try
+        {
+            result = await Client.MigrateForeignKeysAsync(request, ct);
+        }
+        catch (Exception ex)
+        {
+            captured = ExceptionDispatchInfo.Capture(ex);
+        }
+        finally
+        {
+            if (!request.ValidateOnly && _engineBackedClient is not null)
+            {
+                string currentDatabasePath = Path.GetFullPath(Client.DataSource);
+                if (File.Exists(currentDatabasePath))
+                    await RefreshLocalDatabaseAsync(ct);
+                else
+                    _localDatabase = null;
+            }
+        }
+
+        captured?.Throw();
+        return result!;
+    }
+
     public async ValueTask RefreshLocalDatabaseAsync(CancellationToken ct = default)
     {
         if (_engineBackedClient is null)

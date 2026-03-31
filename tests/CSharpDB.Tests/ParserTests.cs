@@ -69,6 +69,40 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateTable_WithForeignKeyClause()
+    {
+        var stmt = Parser.Parse(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE)");
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+        Assert.NotNull(create.Columns[1].ForeignKey);
+        var foreignKey = create.Columns[1].ForeignKey!;
+
+        Assert.Equal("customers", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_TableLevelForeignKey_Throws()
+    {
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES customers(id))"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("Table-level FOREIGN KEY constraints are not supported", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_OnlyOnDeleteCascadeIsSupported()
+    {
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON UPDATE CASCADE)"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("Only ON DELETE is supported", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parse_Insert()
     {
         var stmt = Parser.Parse("INSERT INTO users (name, age) VALUES ('Alice', 30)");
@@ -763,6 +797,20 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_AlterTable_AddColumn_WithForeignKeyClause()
+    {
+        var stmt = Parser.Parse("ALTER TABLE orders ADD COLUMN customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        var add = Assert.IsType<AddColumnAction>(alter.Action);
+        Assert.NotNull(add.Column.ForeignKey);
+        var foreignKey = add.Column.ForeignKey!;
+
+        Assert.Equal("customers", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
     public void Parse_AlterTable_DropColumn()
     {
         var stmt = Parser.Parse("ALTER TABLE users DROP COLUMN age");
@@ -779,6 +827,16 @@ public class ParserTests
         var alter = Assert.IsType<AlterTableStatement>(stmt);
         var drop = Assert.IsType<DropColumnAction>(alter.Action);
         Assert.Equal("age", drop.ColumnName);
+    }
+
+    [Fact]
+    public void Parse_AlterTable_DropConstraint()
+    {
+        var stmt = Parser.Parse("ALTER TABLE users DROP CONSTRAINT fk_users_parent_id_abcd1234");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        Assert.Equal("users", alter.TableName);
+        var drop = Assert.IsType<DropConstraintAction>(alter.Action);
+        Assert.Equal("fk_users_parent_id_abcd1234", drop.ConstraintName);
     }
 
     [Fact]

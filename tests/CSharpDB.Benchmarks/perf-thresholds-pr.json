@@ -1,0 +1,124 @@
+{
+  "baselineSnapshot": "pr-validation/20260330-233433",
+  "defaults": {
+    "maxMeanRegressionPercent": 8.0,
+    "maxAllocRegressionPercent": 10.0,
+    "maxAllocRegressionBytes": 256.0
+  },
+  "checks": [
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.PointLookupGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'SELECT by primary key'",
+            "RowCount": "10000"
+          },
+          "maxMeanRegressionPercent": 20.0
+        }
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.JoinGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.InsertGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'Batch INSERT x100 in transaction'"
+          },
+          "maxMeanRegressionPercent": 18.0
+        },
+        {
+          "match": {
+            "Method": "'Batch INSERT x1000 in transaction'"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ],
+      "maxMeanRegressionPercent": 20.0,
+      "maxAllocRegressionPercent": 20.0,
+      "maxAllocRegressionBytes": 2048.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "maxMeanRegressionPercent": 40.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 262144.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.IndexAggregateGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method",
+        "RowCount"
+      ],
+      "maxMeanRegressionPercent": 25.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ],
+      "maxMeanRegressionPercent": 25.0,
+      "maxAllocRegressionPercent": 30.0,
+      "maxAllocRegressionBytes": 131072.0
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.WalGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'Manual checkpoint after 100 writes'"
+          },
+          "maxMeanRegressionPercent": 25.0
+        },
+        {
+          "match": {
+            "Method": "'Manual checkpoint after 1000 writes'"
+          },
+          "maxMeanRegressionPercent": 25.0
+        }
+      ]
+    },
+    {
+      "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionGuardrailBenchmarks-report.csv",
+      "baselineSnapshot": "pr-validation/20260330-233433",
+      "keyColumns": [
+        "Method"
+      ],
+      "maxMeanRegressionPercent": 25.0
+    }
+  ]
+}

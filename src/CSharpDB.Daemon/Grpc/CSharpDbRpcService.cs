@@ -266,6 +266,9 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<RestoreResultMessage> Restore(RestoreRequestMessage request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.RestoreAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
 
+    public override Task<ForeignKeyMigrationResultMessage> MigrateForeignKeys(ForeignKeyMigrationRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => client.MigrateForeignKeysAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
     public override Task<DatabaseMaintenanceReportMessage> GetMaintenanceReport(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetMaintenanceReportAsync(ct), GrpcModelMapper.ToMessage);
 

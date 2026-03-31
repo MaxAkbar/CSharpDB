@@ -568,6 +568,12 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         return await ReadRequiredAsync<RestoreResult>(response, ct);
     }
 
+    public async Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/migrate-foreign-keys"), request, ct);
+        return await ReadRequiredAsync<ForeignKeyMigrationResult>(response, ct);
+    }
+
     public async Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/maintenance/report"), payload: null, ct);
@@ -776,6 +782,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         {
             TableName = payload.TableName,
             Columns = payload.Columns.Select(MapColumn).ToList(),
+            ForeignKeys = payload.ForeignKeys.Select(MapForeignKey).ToList(),
         };
 
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
@@ -789,6 +796,19 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
             IsPrimaryKey = payload.IsPrimaryKey,
             IsIdentity = payload.IsIdentity,
             Collation = payload.Collation,
+        };
+
+    private static ForeignKeyDefinition MapForeignKey(ApiForeignKeyResponse payload)
+        => new()
+        {
+            ConstraintName = payload.ConstraintName,
+            ColumnName = payload.ColumnName,
+            ReferencedTableName = payload.ReferencedTableName,
+            ReferencedColumnName = payload.ReferencedColumnName,
+            OnDelete = Enum.TryParse<ForeignKeyOnDeleteAction>(payload.OnDelete, ignoreCase: true, out var onDelete)
+                ? onDelete
+                : throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{payload.OnDelete}'."),
+            SupportingIndexName = payload.SupportingIndexName,
         };
 
     private static IndexSchema MapIndex(ApiIndexResponse payload)
@@ -964,8 +984,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         int CollectionCount,
         int SavedQueryCount);
 
-    private sealed record ApiTableSchemaResponse(string TableName, List<ApiColumnResponse> Columns);
+    private sealed record ApiTableSchemaResponse(string TableName, List<ApiColumnResponse> Columns, List<ApiForeignKeyResponse> ForeignKeys);
     private sealed record ApiColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
+    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName);
     private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);
     private sealed record ApiRowCountResponse(string TableName, int Count);
     private sealed record ApiMutationResponse(int RowsAffected);

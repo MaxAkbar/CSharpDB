@@ -3,10 +3,18 @@ namespace CSharpDB.Api.Dtos;
 // ─── Column / Schema ────────────────────────────────────────
 
 public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
+public sealed record ForeignKeyResponse(
+    string ConstraintName,
+    string ColumnName,
+    string ReferencedTableName,
+    string ReferencedColumnName,
+    string OnDelete,
+    string SupportingIndexName);
 
 public sealed record TableSchemaResponse(
     string TableName,
-    IReadOnlyList<ColumnResponse> Columns);
+    IReadOnlyList<ColumnResponse> Columns,
+    IReadOnlyList<ForeignKeyResponse> ForeignKeys);
 
 // ─── Browse ─────────────────────────────────────────────────
 

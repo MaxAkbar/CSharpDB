@@ -10,6 +10,7 @@ internal static class CSharpDbSchemaProvider
     private const string TablesCollection = "Tables";
     private const string ColumnsCollection = "Columns";
     private const string IndexesCollection = "Indexes";
+    private const string ForeignKeysCollection = "ForeignKeys";
     private const string ViewsCollection = "Views";
 
     public static DataTable GetSchema(
@@ -37,6 +38,9 @@ internal static class CSharpDbSchemaProvider
         if (string.Equals(collectionName, IndexesCollection, StringComparison.OrdinalIgnoreCase))
             return CreateIndexesTable(connection, restrictionValues);
 
+        if (string.Equals(collectionName, ForeignKeysCollection, StringComparison.OrdinalIgnoreCase))
+            return CreateForeignKeysTable(connection, restrictionValues);
+
         if (string.Equals(collectionName, ViewsCollection, StringComparison.OrdinalIgnoreCase))
             return CreateViewsTable(connection, restrictionValues);
 
@@ -56,6 +60,7 @@ internal static class CSharpDbSchemaProvider
         table.Rows.Add(TablesCollection, 4, 1);
         table.Rows.Add(ColumnsCollection, 4, 2);
         table.Rows.Add(IndexesCollection, 4, 1);
+        table.Rows.Add(ForeignKeysCollection, 4, 1);
         table.Rows.Add(ViewsCollection, 3, 1);
 
         return table;
@@ -233,6 +238,65 @@ internal static class CSharpDbSchemaProvider
                 index.State.ToString(),
                 string.Join(", ", index.Columns),
                 collationList);
+        }
+
+        return table;
+    }
+
+    private static DataTable CreateForeignKeysTable(CSharpDbConnection connection, string?[]? restrictionValues)
+    {
+        var table = new DataTable(ForeignKeysCollection);
+        table.Columns.Add("CONSTRAINT_CATALOG", typeof(string));
+        table.Columns.Add("CONSTRAINT_SCHEMA", typeof(string));
+        table.Columns.Add("CONSTRAINT_NAME", typeof(string));
+        table.Columns.Add("TABLE_CATALOG", typeof(string));
+        table.Columns.Add("TABLE_SCHEMA", typeof(string));
+        table.Columns.Add("TABLE_NAME", typeof(string));
+        table.Columns.Add("COLUMN_NAME", typeof(string));
+        table.Columns.Add("REFERENCED_TABLE_NAME", typeof(string));
+        table.Columns.Add("REFERENCED_COLUMN_NAME", typeof(string));
+        table.Columns.Add("DELETE_RULE", typeof(string));
+        table.Columns.Add("SUPPORTING_INDEX_NAME", typeof(string));
+
+        string catalog = connection.DataSource;
+        string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
+        string? schemaRestriction = GetRestrictionValue(restrictionValues, 1);
+        string? tableRestriction = GetRestrictionValue(restrictionValues, 2);
+        string? constraintRestriction = GetRestrictionValue(restrictionValues, 3);
+
+        foreach (string tableName in connection.GetTableNames()
+            .Where(IsUserVisibleTableName)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!MatchesRestriction(catalog, catalogRestriction) ||
+                !MatchesRestriction(actualValue: null, schemaRestriction) ||
+                !MatchesRestriction(tableName, tableRestriction))
+            {
+                continue;
+            }
+
+            TableSchema? schema = connection.GetTableSchema(tableName);
+            if (schema is null || schema.ForeignKeys.Count == 0)
+                continue;
+
+            foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys.OrderBy(fk => fk.ConstraintName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!MatchesRestriction(foreignKey.ConstraintName, constraintRestriction))
+                    continue;
+
+                table.Rows.Add(
+                    catalog,
+                    DBNull.Value,
+                    foreignKey.ConstraintName,
+                    catalog,
+                    DBNull.Value,
+                    tableName,
+                    foreignKey.ColumnName,
+                    foreignKey.ReferencedTableName,
+                    foreignKey.ReferencedColumnName,
+                    foreignKey.OnDelete.ToString().ToUpperInvariant(),
+                    foreignKey.SupportingIndexName);
+            }
         }
 
         return table;

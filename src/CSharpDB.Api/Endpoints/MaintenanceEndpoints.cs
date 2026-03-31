@@ -11,6 +11,7 @@ public static class MaintenanceEndpoints
         maintenance.MapPost("/checkpoint", Checkpoint);
         maintenance.MapPost("/backup", Backup);
         maintenance.MapPost("/restore", Restore);
+        maintenance.MapPost("/migrate-foreign-keys", MigrateForeignKeys);
         maintenance.MapGet("/report", GetReport);
         maintenance.MapPost("/reindex", Reindex);
         maintenance.MapPost("/vacuum", Vacuum);
@@ -32,6 +33,12 @@ public static class MaintenanceEndpoints
     private static async Task<IResult> Restore(ICSharpDbClient db, RestoreRequest request)
     {
         var result = await db.RestoreAsync(request);
+        return Results.Ok(result);
+    }
+
+    private static async Task<IResult> MigrateForeignKeys(ICSharpDbClient db, ForeignKeyMigrationRequest request)
+    {
+        var result = await db.MigrateForeignKeysAsync(request);
         return Results.Ok(result);
     }
 
