@@ -13,6 +13,14 @@
             </div>
             <div class="modal-body">
                 <p>@ModalService.Current.Message</p>
+                @if (ModalService.Current.ShowInput)
+                {
+                    <input type="text"
+                           class="modal-input"
+                           placeholder="@ModalService.Current.InputPlaceholder"
+                           @bind="_inputValue"
+                           @onkeydown="OnInputKeyDown" />
+                }
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" @onclick="Cancel">
@@ -27,14 +35,39 @@
 }
 
 @code {
+    private string _inputValue = string.Empty;
+
     protected override void OnInitialized()
     {
         ModalService.OnChange += OnChange;
     }
 
-    private void Confirm() => ModalService.Respond(true);
-    private void Cancel() => ModalService.Respond(false);
-    private void OnChange() => InvokeAsync(StateHasChanged);
+    private void Confirm()
+    {
+        if (ModalService.Current?.ShowInput == true)
+            ModalService.RespondWithValue(_inputValue);
+        else
+            ModalService.Respond(true);
+    }
+
+    private void Cancel()
+    {
+        _inputValue = string.Empty;
+        ModalService.Respond(false);
+    }
+
+    private void OnInputKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            Confirm();
+    }
+
+    private void OnChange()
+    {
+        if (ModalService.Current?.ShowInput == true)
+            _inputValue = ModalService.Current.InputValue;
+        InvokeAsync(StateHasChanged);
+    }
 
     public void Dispose() => ModalService.OnChange -= OnChange;
 }

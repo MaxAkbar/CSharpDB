@@ -208,24 +208,6 @@
         </div>
     </div>
 
-    <div class="sidebar-footer">
-        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query">
-            <i class="bi bi-plus"></i> New Query
-        </button>
-        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenTableDesignerTab()" title="New Table">
-            <i class="bi bi-table"></i> New Table
-        </button>
-        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenNewProcedureTab()" title="New Procedure">
-            <i class="bi bi-gear-wide-connected"></i> New Procedure
-        </button>
-        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenPipelineTab()" title="New Pipeline">
-            <i class="bi bi-diagram-3"></i> Pipeline
-        </button>
-        <button class="sidebar-action-btn" @onclick="() => TabManager.OpenStorageTab()" title="Storage Inspector">
-            <i class="bi bi-hdd-stack"></i> Storage
-        </button>
-    </div>
-
     <div class="sidebar-resize" @onmousedown="StartResize" @onmousedown:preventDefault></div>
 </aside>
 

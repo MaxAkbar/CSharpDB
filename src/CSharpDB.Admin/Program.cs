@@ -7,28 +7,34 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddCSharpDbClient(sp =>
+builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
 
+    CSharpDbClientOptions options;
     if (!string.IsNullOrWhiteSpace(endpoint))
     {
-        return new CSharpDbClientOptions
+        options = new CSharpDbClientOptions
         {
             Transport = transport,
             Endpoint = endpoint,
         };
     }
-
-    return new CSharpDbClientOptions
+    else
     {
-        Transport = transport,
-        ConnectionString = configuration.GetConnectionString("CSharpDB")
-            ?? "Data Source=csharpdb.db",
-    };
+        options = new CSharpDbClientOptions
+        {
+            Transport = transport,
+            ConnectionString = configuration.GetConnectionString("CSharpDB")
+                ?? "Data Source=csharpdb.db",
+        };
+    }
+
+    return new DatabaseClientHolder(CSharpDbClient.Create(options));
 });
+builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
