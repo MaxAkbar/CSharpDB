@@ -564,6 +564,47 @@ public static class GrpcModelMapper
             ValidateOnly = value.ValidateOnly,
         };
 
+    public static ForeignKeyMigrationConstraintSpecMessage ToMessage(ForeignKeyMigrationConstraintSpec value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName ?? string.Empty,
+            OnDelete = ToMessage(value.OnDelete),
+        };
+
+    public static ForeignKeyMigrationConstraintSpec ToModel(ForeignKeyMigrationConstraintSpecMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = string.IsNullOrWhiteSpace(value.ReferencedColumnName) ? null : value.ReferencedColumnName,
+            OnDelete = ToModel(value.OnDelete),
+        };
+
+    public static ForeignKeyMigrationRequestMessage ToMessage(ForeignKeyMigrationRequest value)
+    {
+        var message = new ForeignKeyMigrationRequestMessage
+        {
+            ValidateOnly = value.ValidateOnly,
+            BackupDestinationPath = value.BackupDestinationPath ?? string.Empty,
+            ViolationSampleLimit = value.ViolationSampleLimit,
+        };
+        message.Constraints.Add(value.Constraints.Select(ToMessage));
+        return message;
+    }
+
+    public static ForeignKeyMigrationRequest ToModel(ForeignKeyMigrationRequestMessage value)
+        => new()
+        {
+            ValidateOnly = value.ValidateOnly,
+            BackupDestinationPath = string.IsNullOrWhiteSpace(value.BackupDestinationPath) ? null : value.BackupDestinationPath,
+            ViolationSampleLimit = value.ViolationSampleLimit,
+            Constraints = value.Constraints.Select(ToModel).ToArray(),
+        };
+
     public static SpaceUsageReportMessage ToMessage(SpaceUsageReport value)
         => new()
         {
@@ -630,6 +671,87 @@ public static class GrpcModelMapper
             SpaceUsage = ToModel(value.SpaceUsage),
             Fragmentation = ToModel(value.Fragmentation),
             PageTypeHistogram = value.PageTypeHistogram.ToDictionary(entry => entry.Key, entry => entry.Value),
+        };
+
+    public static ForeignKeyMigrationViolationMessage ToMessage(ForeignKeyMigrationViolation value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ChildKeyColumnName = value.ChildKeyColumnName,
+            ChildKeyValue = GrpcValueMapper.ToMessage(value.ChildKeyValue),
+            ChildValue = GrpcValueMapper.ToMessage(value.ChildValue),
+            Reason = value.Reason,
+        };
+
+    public static ForeignKeyMigrationViolation ToModel(ForeignKeyMigrationViolationMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ChildKeyColumnName = value.ChildKeyColumnName,
+            ChildKeyValue = GrpcValueMapper.FromMessage(value.ChildKeyValue),
+            ChildValue = GrpcValueMapper.FromMessage(value.ChildValue),
+            Reason = value.Reason,
+        };
+
+    public static ForeignKeyMigrationAppliedConstraintMessage ToMessage(ForeignKeyMigrationAppliedConstraint value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ConstraintName = value.ConstraintName,
+            SupportingIndexName = value.SupportingIndexName,
+            OnDelete = ToMessage(value.OnDelete),
+        };
+
+    public static ForeignKeyMigrationAppliedConstraint ToModel(ForeignKeyMigrationAppliedConstraintMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ConstraintName = value.ConstraintName,
+            SupportingIndexName = value.SupportingIndexName,
+            OnDelete = ToModel(value.OnDelete),
+        };
+
+    public static ForeignKeyMigrationResultMessage ToMessage(ForeignKeyMigrationResult value)
+    {
+        var message = new ForeignKeyMigrationResultMessage
+        {
+            ValidateOnly = value.ValidateOnly,
+            Succeeded = value.Succeeded,
+            BackupDestinationPath = value.BackupDestinationPath,
+            AffectedTables = value.AffectedTables,
+            AppliedForeignKeys = value.AppliedForeignKeys,
+            CopiedRows = value.CopiedRows,
+            ViolationCount = value.ViolationCount,
+        };
+        message.Violations.Add(value.Violations.Select(ToMessage));
+        message.AppliedConstraints.Add(value.AppliedConstraints.Select(ToMessage));
+        return message;
+    }
+
+    public static ForeignKeyMigrationResult ToModel(ForeignKeyMigrationResultMessage value)
+        => new()
+        {
+            ValidateOnly = value.ValidateOnly,
+            Succeeded = value.Succeeded,
+            BackupDestinationPath = value.BackupDestinationPath,
+            AffectedTables = value.AffectedTables,
+            AppliedForeignKeys = value.AppliedForeignKeys,
+            CopiedRows = value.CopiedRows,
+            ViolationCount = value.ViolationCount,
+            Violations = value.Violations.Select(ToModel).ToArray(),
+            AppliedConstraints = value.AppliedConstraints.Select(ToModel).ToArray(),
         };
 
     public static ReindexResultMessage ToMessage(ReindexResult value)

@@ -393,6 +393,59 @@ await using var foreignKeys = await db.ExecuteAsync(
     "SELECT constraint_name, table_name, column_name FROM sys.foreign_keys ORDER BY table_name, column_name");
 ```
 
+### Retrofitting foreign keys onto older databases
+
+If you already have tables on disk without `REFERENCES` metadata, opening the database on a newer engine does not add foreign keys automatically. Use the maintenance migration workflow when you want to validate and then persist FK metadata onto existing tables:
+
+```csharp
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "myapp.db"
+});
+
+var spec =
+    new[]
+    {
+        new ForeignKeyMigrationConstraintSpec
+        {
+            TableName = "orders",
+            ColumnName = "customer_id",
+            ReferencedTableName = "customers",
+            ReferencedColumnName = "id",
+            OnDelete = ForeignKeyOnDeleteAction.Cascade,
+        },
+    };
+
+var preview = await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+{
+    ValidateOnly = true,
+    ViolationSampleLimit = 100,
+    Constraints = spec,
+});
+
+if (!preview.Succeeded)
+{
+    foreach (var violation in preview.Violations)
+        Console.WriteLine($"{violation.TableName}.{violation.ColumnName}: {violation.Reason}");
+}
+else
+{
+    await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+    {
+        BackupDestinationPath = "pre-fk.backup.db",
+        Constraints = spec,
+    });
+}
+```
+
+Notes:
+- `ValidateOnly = true` previews the migration without changing schema or data.
+- `BackupDestinationPath` is optional but recommended for apply mode.
+- The same operation is available through HTTP, gRPC, the CLI, and the Admin Storage tab.
+
 ### Schema migration pattern (PRIMARY KEY / IDENTITY changes)
 
 `ALTER TABLE` does not currently support changing an existing column to/from `PRIMARY KEY` or `IDENTITY`.

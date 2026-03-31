@@ -1,6 +1,8 @@
 using CSharpDB.Client;
 using CSharpDB.Client.Internal;
+using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using System.Text.Json;
 
 namespace CSharpDB.Cli.Tests;
 
@@ -381,6 +383,114 @@ public sealed class ReplTests
         }
     }
 
+    [Fact]
+    public async Task Repl_MigrateForeignKeysValidateOnly_ShowsValidationSummary()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+        string specPath = NewTempFilePath(".json");
+
+        try
+        {
+            await WriteForeignKeyMigrationSpecAsync(
+                specPath,
+                new ForeignKeyMigrationRequest
+                {
+                    ValidateOnly = true,
+                    Constraints =
+                    [
+                        new ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = "orders",
+                            ColumnName = "customer_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                        },
+                    ],
+                },
+                ct);
+
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE customers (id INTEGER PRIMARY KEY);",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);",
+                "INSERT INTO customers VALUES (1);",
+                "INSERT INTO orders VALUES (10, 1);",
+                $".migrate-fks \"{specPath}\" --validate-only",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            Assert.Contains("Foreign key migration validation succeeded.", output, StringComparison.OrdinalIgnoreCase);
+
+            await using var db = await Database.OpenAsync(dbPath, ct);
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM sys.foreign_keys WHERE table_name = 'orders';", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Equal(0L, Assert.Single(rows)[0].AsInteger);
+        }
+        finally
+        {
+            DeleteIfExists(specPath);
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task Repl_MigrateForeignKeysApply_PersistsMetadata()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+        string specPath = NewTempFilePath(".json");
+
+        try
+        {
+            await WriteForeignKeyMigrationSpecAsync(
+                specPath,
+                new ForeignKeyMigrationRequest
+                {
+                    Constraints =
+                    [
+                        new ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = "orders",
+                            ColumnName = "customer_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                            OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                        },
+                    ],
+                },
+                ct);
+
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                "CREATE TABLE customers (id INTEGER PRIMARY KEY);",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);",
+                "INSERT INTO customers VALUES (1);",
+                "INSERT INTO orders VALUES (10, 1);",
+                $".migrate-fks \"{specPath}\"",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            Assert.Contains("Foreign key migration completed.", output, StringComparison.OrdinalIgnoreCase);
+
+            await using var db = await Database.OpenAsync(dbPath, ct);
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM sys.foreign_keys WHERE table_name = 'orders';", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Equal(1L, Assert.Single(rows)[0].AsInteger);
+        }
+        finally
+        {
+            DeleteIfExists(specPath);
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
     private static async Task<long> QueryCountAsync(Database db, string sql, CancellationToken ct)
     {
         await using var result = await db.ExecuteAsync(sql, ct);
@@ -437,6 +547,7 @@ public sealed class ReplTests
         commands.Add(new CheckpointCommand());
         commands.Add(new BackupCommand());
         commands.Add(new RestoreCommand());
+        commands.Add(new MigrateForeignKeysCommand());
         commands.Add(new SnapshotCommand());
         commands.Add(new SyncPointCommand());
         commands.Add(new TimingCommand());
@@ -455,5 +566,15 @@ public sealed class ReplTests
     {
         if (File.Exists(path))
             File.Delete(path);
+    }
+
+    private static async Task WriteForeignKeyMigrationSpecAsync(string path, ForeignKeyMigrationRequest request, CancellationToken ct)
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+        };
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(request, options), ct);
     }
 }

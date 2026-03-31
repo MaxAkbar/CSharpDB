@@ -53,6 +53,18 @@ Current v1 boundary:
 - Table-level/composite foreign keys are not implemented yet.
 - `ON UPDATE`, `SET NULL`, `SET DEFAULT`, and deferred constraints are not implemented yet.
 
+### Will older databases automatically show foreign keys after I upgrade?
+
+No. Opening an older database on a newer engine does not add FK metadata by itself.
+
+Use the foreign-key retrofit migration workflow when you want to persist FK metadata onto existing tables:
+
+- `ICSharpDbClient.MigrateForeignKeysAsync(...)`
+- `POST /api/maintenance/migrate-foreign-keys`
+- `csharpdb migrate-foreign-keys ...`
+- `.migrate-fks ...` in the CLI REPL
+- the Admin Storage tab
+
 ## Admin, CLI, and API
 
 ### How do I run a sample SQL file quickly?

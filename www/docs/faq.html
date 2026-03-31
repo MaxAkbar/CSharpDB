@@ -91,6 +91,17 @@
                     <li><code>ON UPDATE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>, and deferred constraints are not implemented yet.</li>
                 </ul>
 
+                <h3>Will older databases automatically show foreign keys after I upgrade?</h3>
+                <p>No. Opening an older database on a newer engine does not add FK metadata by itself.</p>
+                <p>Use the foreign-key retrofit migration workflow when you want to persist FK metadata onto existing tables:</p>
+                <ul>
+                    <li><code>ICSharpDbClient.MigrateForeignKeysAsync(...)</code></li>
+                    <li><code>POST /api/maintenance/migrate-foreign-keys</code></li>
+                    <li><code>csharpdb migrate-foreign-keys ...</code></li>
+                    <li><code>.migrate-fks ...</code> in the CLI REPL</li>
+                    <li>the Admin Storage tab</li>
+                </ul>
+
                 <h2 id="admin-cli-and-api">Admin, CLI, and API</h2>
 
                 <h3>How do I run a sample SQL file quickly?</h3>

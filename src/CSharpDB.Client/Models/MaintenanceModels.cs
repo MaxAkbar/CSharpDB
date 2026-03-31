@@ -54,6 +54,59 @@ public sealed class RestoreResult
     public int ErrorCount { get; init; }
 }
 
+public sealed class ForeignKeyMigrationRequest
+{
+    public bool ValidateOnly { get; init; }
+    public string? BackupDestinationPath { get; init; }
+    public int ViolationSampleLimit { get; init; } = 100;
+    public IReadOnlyList<ForeignKeyMigrationConstraintSpec> Constraints { get; init; } = Array.Empty<ForeignKeyMigrationConstraintSpec>();
+}
+
+public sealed class ForeignKeyMigrationConstraintSpec
+{
+    public required string TableName { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public string? ReferencedColumnName { get; init; }
+    public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+}
+
+public sealed class ForeignKeyMigrationResult
+{
+    public bool ValidateOnly { get; init; }
+    public bool Succeeded { get; init; }
+    public string? BackupDestinationPath { get; init; }
+    public int AffectedTables { get; init; }
+    public int AppliedForeignKeys { get; init; }
+    public long CopiedRows { get; init; }
+    public int ViolationCount { get; init; }
+    public IReadOnlyList<ForeignKeyMigrationViolation> Violations { get; init; } = Array.Empty<ForeignKeyMigrationViolation>();
+    public IReadOnlyList<ForeignKeyMigrationAppliedConstraint> AppliedConstraints { get; init; } = Array.Empty<ForeignKeyMigrationAppliedConstraint>();
+}
+
+public sealed class ForeignKeyMigrationViolation
+{
+    public required string TableName { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public required string ReferencedColumnName { get; init; }
+    public required string ChildKeyColumnName { get; init; }
+    public object? ChildKeyValue { get; init; }
+    public object? ChildValue { get; init; }
+    public required string Reason { get; init; }
+}
+
+public sealed class ForeignKeyMigrationAppliedConstraint
+{
+    public required string TableName { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public required string ReferencedColumnName { get; init; }
+    public required string ConstraintName { get; init; }
+    public required string SupportingIndexName { get; init; }
+    public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+}
+
 public sealed class DatabaseMaintenanceReport
 {
     public string SchemaVersion { get; init; } = "1.0";

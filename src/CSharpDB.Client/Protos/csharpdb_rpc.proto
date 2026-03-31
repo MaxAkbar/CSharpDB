@@ -75,6 +75,7 @@ service CSharpDbRpc {
   rpc Checkpoint (google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc Backup (BackupRequestMessage) returns (BackupResultMessage);
   rpc Restore (RestoreRequestMessage) returns (RestoreResultMessage);
+  rpc MigrateForeignKeys (ForeignKeyMigrationRequestMessage) returns (ForeignKeyMigrationResultMessage);
   rpc GetMaintenanceReport (google.protobuf.Empty) returns (DatabaseMaintenanceReportMessage);
   rpc Reindex (ReindexRequestMessage) returns (ReindexResultMessage);
   rpc Vacuum (google.protobuf.Empty) returns (VacuumResultMessage);
@@ -354,6 +355,21 @@ message RestoreRequestMessage {
   bool validate_only = 2;
 }
 
+message ForeignKeyMigrationConstraintSpecMessage {
+  string table_name = 1;
+  string column_name = 2;
+  string referenced_table_name = 3;
+  string referenced_column_name = 4;
+  ForeignKeyOnDeleteActionEnum on_delete = 5;
+}
+
+message ForeignKeyMigrationRequestMessage {
+  bool validate_only = 1;
+  string backup_destination_path = 2;
+  int32 violation_sample_limit = 3;
+  repeated ForeignKeyMigrationConstraintSpecMessage constraints = 4;
+}
+
 message ColumnDefinitionMessage {
   string name = 1;
   DbTypeEnum type = 2;
@@ -617,6 +633,39 @@ message RestoreResultMessage {
   bool source_wal_exists = 8;
   int32 warning_count = 9;
   int32 error_count = 10;
+}
+
+message ForeignKeyMigrationViolationMessage {
+  string table_name = 1;
+  string column_name = 2;
+  string referenced_table_name = 3;
+  string referenced_column_name = 4;
+  string child_key_column_name = 5;
+  VariantValue child_key_value = 6;
+  VariantValue child_value = 7;
+  string reason = 8;
+}
+
+message ForeignKeyMigrationAppliedConstraintMessage {
+  string table_name = 1;
+  string column_name = 2;
+  string referenced_table_name = 3;
+  string referenced_column_name = 4;
+  string constraint_name = 5;
+  string supporting_index_name = 6;
+  ForeignKeyOnDeleteActionEnum on_delete = 7;
+}
+
+message ForeignKeyMigrationResultMessage {
+  bool validate_only = 1;
+  bool succeeded = 2;
+  google.protobuf.StringValue backup_destination_path = 3;
+  int32 affected_tables = 4;
+  int32 applied_foreign_keys = 5;
+  int64 copied_rows = 6;
+  int32 violation_count = 7;
+  repeated ForeignKeyMigrationViolationMessage violations = 8;
+  repeated ForeignKeyMigrationAppliedConstraintMessage applied_constraints = 9;
 }
 
 message FileHeaderReportMessage {

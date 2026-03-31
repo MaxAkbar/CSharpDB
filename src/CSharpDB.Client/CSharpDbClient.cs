@@ -78,6 +78,7 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     public Task CheckpointAsync(CancellationToken ct = default) => _inner.CheckpointAsync(ct);
     public Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default) => _inner.BackupAsync(request, ct);
     public Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default) => _inner.RestoreAsync(request, ct);
+    public Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default) => _inner.MigrateForeignKeysAsync(request, ct);
     public Task<CSharpDB.Client.Models.DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default) => _inner.GetMaintenanceReportAsync(ct);
     public Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default) => _inner.ReindexAsync(request, ct);
     public Task<VacuumResult> VacuumAsync(CancellationToken ct = default) => _inner.VacuumAsync(ct);

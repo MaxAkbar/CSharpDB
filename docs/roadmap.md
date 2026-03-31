@@ -32,6 +32,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Collection path indexes** | Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes with `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Hybrid storage mode** | Lazy-resident durable storage with gRPC tunable file-cache configuration | Done |
 | **Client backup/restore** | `BackupAsync` / `RestoreAsync` as first-class `ICSharpDbClient` operations across direct, HTTP, gRPC, CLI, and Admin | Done |
+| **Older DB foreign-key retrofit migration** | Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin | Done |
 
 ---
 
@@ -135,6 +136,7 @@ Major features already implemented:
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
 - Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)
 - Foreign key constraints: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`
+- Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin
 - ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)
 - ADO.NET `GetSchema()` metadata collections for `MetaDataCollections`, `Tables`, `Columns`, `Indexes`, `Views`, and `ForeignKeys`
 - ADO.NET connection pooling with `ClearPool` / `ClearAllPools`

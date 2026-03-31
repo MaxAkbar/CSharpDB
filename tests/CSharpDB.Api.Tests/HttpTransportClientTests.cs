@@ -226,6 +226,68 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_MigrateForeignKeys_RoundTripsValidationAndApply()
+    {
+        var create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_migrate_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE http_migrate_children (id INTEGER PRIMARY KEY, parent_id INTEGER);
+            INSERT INTO http_migrate_parents VALUES (1);
+            INSERT INTO http_migrate_children VALUES (10, 1);
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        var validate = await _client.MigrateForeignKeysAsync(
+            new ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                Constraints =
+                [
+                    new ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "http_migrate_children",
+                        ColumnName = "parent_id",
+                        ReferencedTableName = "http_migrate_parents",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(validate.ValidateOnly);
+        Assert.True(validate.Succeeded);
+        Assert.Equal(1, validate.AppliedForeignKeys);
+        Assert.Empty(validate.Violations);
+
+        var apply = await _client.MigrateForeignKeysAsync(
+            new ForeignKeyMigrationRequest
+            {
+                Constraints =
+                [
+                    new ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "http_migrate_children",
+                        ColumnName = "parent_id",
+                        ReferencedTableName = "http_migrate_parents",
+                        ReferencedColumnName = "id",
+                        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.False(apply.ValidateOnly);
+        Assert.True(apply.Succeeded);
+        Assert.Equal(1, apply.CopiedRows);
+
+        var schema = await _client.GetTableSchemaAsync("http_migrate_children", Ct);
+        Assert.NotNull(schema);
+        var foreignKey = Assert.Single(schema!.ForeignKeys);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
     public async Task HttpTransport_MutatingSchemaEndpoints_AcceptCollationMetadata()
     {
         var createTable = await _client.ExecuteSqlAsync(

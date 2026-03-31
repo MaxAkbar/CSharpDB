@@ -10,6 +10,7 @@ internal static class MaintenanceCommandRunner
     private static readonly HashSet<string> KnownCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "maintenance-report",
+        "migrate-foreign-keys",
         "reindex",
         "vacuum",
     };
@@ -42,6 +43,7 @@ internal static class MaintenanceCommandRunner
             return args[0].ToLowerInvariant() switch
             {
                 "maintenance-report" => await RunMaintenanceReportAsync(args, output, error, ct),
+                "migrate-foreign-keys" => await RunMigrateForeignKeysAsync(args, output, error, ct),
                 "reindex" => await RunReindexAsync(args, output, error, ct),
                 "vacuum" => await RunVacuumAsync(args, output, error, ct),
                 _ => InspectorCommandRunner.ExitUsage,
@@ -83,6 +85,35 @@ internal static class MaintenanceCommandRunner
             await output.WriteLineAsync(JsonSerializer.Serialize(report, JsonOptions));
         else
             WriteMaintenanceReportSummary(report, output);
+
+        return InspectorCommandRunner.ExitOk;
+    }
+
+    private static async ValueTask<int> RunMigrateForeignKeysAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (args.Length < 4)
+        {
+            await error.WriteLineAsync("Usage: csharpdb migrate-foreign-keys <dbfile> --spec <json-file> [--validate-only] [--backup <file>] [--json]");
+            return InspectorCommandRunner.ExitUsage;
+        }
+
+        string dbPath = Path.GetFullPath(args[1]);
+        if (!TryParseForeignKeyMigrationOptions(args, 2, error, out string? specPath, out bool validateOnly, out string? backupPath, out bool asJson))
+            return InspectorCommandRunner.ExitUsage;
+
+        var request = await MetaCommandHelpers.LoadForeignKeyMigrationRequestAsync(specPath!, validateOnly, backupPath, ct);
+
+        await using var client = CreateClient(dbPath);
+        var result = await client.MigrateForeignKeysAsync(request, ct);
+
+        if (asJson)
+            await output.WriteLineAsync(JsonSerializer.Serialize(result, JsonOptions));
+        else
+            MetaCommandHelpers.WriteForeignKeyMigrationSummary(result, output);
 
         return InspectorCommandRunner.ExitOk;
     }
@@ -218,6 +249,63 @@ internal static class MaintenanceCommandRunner
             Name = name,
             AllowCorruptIndexRecovery = allowCorruptIndexRecovery,
         };
+
+        return true;
+    }
+
+    private static bool TryParseForeignKeyMigrationOptions(
+        string[] args,
+        int startIndex,
+        TextWriter error,
+        out string? specPath,
+        out bool validateOnly,
+        out string? backupPath,
+        out bool asJson)
+    {
+        specPath = null;
+        validateOnly = false;
+        backupPath = null;
+        asJson = false;
+
+        for (int i = startIndex; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--json":
+                    asJson = true;
+                    break;
+                case "--validate-only":
+                    validateOnly = true;
+                    break;
+                case "--spec":
+                    if (i + 1 >= args.Length)
+                    {
+                        _ = error.WriteLineAsync("Missing value for --spec.");
+                        return false;
+                    }
+
+                    specPath = args[++i];
+                    break;
+                case "--backup":
+                    if (i + 1 >= args.Length)
+                    {
+                        _ = error.WriteLineAsync("Missing value for --backup.");
+                        return false;
+                    }
+
+                    backupPath = args[++i];
+                    break;
+                default:
+                    _ = error.WriteLineAsync($"Unknown option: {args[i]}");
+                    return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(specPath))
+        {
+            _ = error.WriteLineAsync("Missing required option: --spec <json-file>.");
+            return false;
+        }
 
         return true;
     }

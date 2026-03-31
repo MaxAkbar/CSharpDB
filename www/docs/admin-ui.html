@@ -287,7 +287,7 @@ dotnet run</code></pre>
                     <li><strong>WAL (Write-Ahead Log)</strong> &mdash; WAL file path, existence, length, frame count, commit frames, and integrity checks.</li>
                     <li><strong>Space Usage</strong> &mdash; Database and WAL file sizes, page size, physical/declared page counts, and freelist utilization.</li>
                     <li><strong>Fragmentation</strong> &mdash; B+tree free bytes, pages with free space, and tail freelist analysis.</li>
-                    <li><strong>Maintenance</strong> &mdash; Reindex (by scope: all, table, or index), vacuum (with confirmation), and backup/restore operations.</li>
+                    <li><strong>Maintenance</strong> &mdash; Reindex (by scope: all, table, or index), vacuum (with confirmation), backup/restore operations, and foreign-key retrofit migration with validate/apply preview for older databases.</li>
                     <li><strong>Page Type Histogram</strong> &mdash; Distribution of page types (leaf, internal, freelist, overflow).</li>
                     <li><strong>Index Checks</strong> &mdash; Per-index integrity validation: root OK, table OK, columns OK, reachability.</li>
                     <li><strong>Integrity Issues</strong> &mdash; Warnings or errors found during the latest diagnostics scan.</li>

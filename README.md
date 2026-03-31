@@ -396,6 +396,7 @@ Current boundary:
 - Correlated subqueries in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections remain unsupported.
 - `UNION ALL` remains planned.
 - Foreign keys are currently v1 only: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`. Table-level/composite foreign keys, `ON UPDATE` actions, `SET NULL` / `SET DEFAULT`, and deferred constraints are not implemented.
+- Older databases do not automatically grow foreign-key metadata when opened on `v2.7.0+`; use the retrofit migration workflow below when you want to persist FK metadata onto existing tables.
 
 ### System Catalog Queries
 
@@ -414,6 +415,55 @@ SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;
 ```
 
 Underscored aliases are also supported: `sys_tables`, `sys_columns`, `sys_indexes`, `sys_views`, `sys_triggers`, `sys_objects`, `sys_table_stats`, `sys_column_stats`.
+
+### Retrofitting Foreign Keys Onto Older Databases
+
+If you already have tables without persisted FK metadata, use the maintenance migration workflow instead of rebuilding everything by hand:
+
+```csharp
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = "mydata.db"
+});
+
+var spec = new[]
+{
+    new ForeignKeyMigrationConstraintSpec
+    {
+        TableName = "orders",
+        ColumnName = "customer_id",
+        ReferencedTableName = "customers",
+        ReferencedColumnName = "id",
+        OnDelete = ForeignKeyOnDeleteAction.Restrict,
+    },
+};
+
+var preview = await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+{
+    ValidateOnly = true,
+    ViolationSampleLimit = 100,
+    Constraints = spec,
+});
+
+if (!preview.Succeeded)
+{
+    foreach (var violation in preview.Violations)
+        Console.WriteLine($"{violation.TableName}.{violation.ColumnName}: {violation.Reason}");
+}
+else
+{
+    var apply = await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+    {
+        BackupDestinationPath = "pre-fk.backup.db",
+        Constraints = spec,
+    });
+}
+```
+
+The same workflow is available through HTTP, gRPC, the CLI (`csharpdb migrate-foreign-keys ...` and `.migrate-fks ...`), and the Admin Storage tab.
 
 ## Building and Testing
 
@@ -475,6 +525,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full roadmap and status.
 - `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, and `EXISTS (SELECT ...)`
 - `ANALYZE`, persisted exact table row counts, `sys.table_stats`, `sys.column_stats`, and stale-aware column stats
 - Foreign key constraints with optional `ON DELETE CASCADE`, plus `sys.foreign_keys` and ADO.NET `GetSchema("ForeignKeys")`
+- Foreign-key retrofit migration for older databases across direct, HTTP, gRPC, CLI, and Admin surfaces
 - Phase-1 cost-based planner work: stats-driven non-unique lookup choice, join method selection, hash build-side choice, and limited greedy inner-join reordering for selective filters
 
 **In progress**

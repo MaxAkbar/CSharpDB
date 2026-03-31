@@ -568,6 +568,12 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         return await ReadRequiredAsync<RestoreResult>(response, ct);
     }
 
+    public async Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/migrate-foreign-keys"), request, ct);
+        return await ReadRequiredAsync<ForeignKeyMigrationResult>(response, ct);
+    }
+
     public async Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/maintenance/report"), payload: null, ct);

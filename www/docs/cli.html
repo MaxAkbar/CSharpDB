@@ -58,6 +58,7 @@
                                 <li><a href="#general">General</a></li>
                             </ul>
                         </li>
+                        <li><a href="#foreign-key-retrofit-migration">Foreign-Key Retrofit Migration</a></li>
                         <li><a href="#sql-introspection">SQL Introspection (sys.*)</a></li>
                         <li><a href="#storage-inspector-commands">Storage Inspector Commands</a></li>
                         <li><a href="#examples">Examples</a></li>
@@ -77,13 +78,14 @@ dotnet run --project src/CSharpDB.Cli -- mydata.db
 # Without arguments, uses csharpdb.db in the current directory
 dotnet run --project src/CSharpDB.Cli</code></pre></div>
 
-                <p>The CLI also supports command mode (non-REPL) for storage diagnostics:</p>
+                <p>The CLI also supports command mode (non-REPL) for storage diagnostics and maintenance:</p>
                 <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- inspect mydata.db
 dotnet run --project src/CSharpDB.Cli -- inspect-page mydata.db 5 --hex
 dotnet run --project src/CSharpDB.Cli -- check-wal mydata.db
-dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json</code></pre></div>
+dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json
+dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only</code></pre></div>
 
-                <p>If the first argument is one of <code>inspect</code>, <code>inspect-page</code>, <code>check-wal</code>, or <code>check-indexes</code>, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.</p>
+                <p>If the first argument is one of <code>inspect</code>, <code>inspect-page</code>, <code>check-wal</code>, <code>check-indexes</code>, or <code>migrate-foreign-keys</code>, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.</p>
 
                 <h2 id="interactive-usage">Interactive Usage</h2>
                 <p>The REPL displays a <code>csdb&gt;</code> prompt. Enter SQL statements followed by a semicolon, or use dot-prefixed meta-commands:</p>
@@ -138,6 +140,7 @@ csdb&gt; .quit</code></pre></div>
                         <tr><td><code>.checkpoint</code></td><td>Flush WAL pages to the main database file</td></tr>
                         <tr><td><code>.backup &lt;FILE&gt; [--with-manifest]</code></td><td>Write a committed snapshot backup to a file, optionally with a JSON manifest</td></tr>
                         <tr><td><code>.restore &lt;FILE&gt; [--validate-only]</code></td><td>Validate a source snapshot or restore it into the current database file; for remote transports the path is resolved on the target host</td></tr>
+                        <tr><td><code>.migrate-fks &lt;SPEC.json&gt; [--validate-only] [--backup &lt;FILE&gt;]</code></td><td>Validate or apply foreign-key retrofit migration for existing tables; for remote transports, paths resolve on the connected host</td></tr>
                     </tbody>
                 </table>
 
@@ -173,6 +176,35 @@ csdb&gt; .quit</code></pre></div>
                         <tr><td><code>.quit</code> / <code>.exit</code></td><td>Exit the REPL</td></tr>
                     </tbody>
                 </table>
+
+                <h2 id="foreign-key-retrofit-migration">Foreign-Key Retrofit Migration</h2>
+                <p>Use the retrofit workflow when an older database file already contains valid parent/child data but does not yet persist FK metadata:</p>
+                <div class="code-block" data-title="JSON"><pre><code>{
+  "validateOnly": true,
+  "violationSampleLimit": 100,
+  "constraints": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "onDelete": "Restrict"
+    }
+  ]
+}</code></pre></div>
+
+                <p>Validate only:</p>
+                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only</code></pre></div>
+
+                <p>Apply from the REPL:</p>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .migrate-fks fk-spec.json --backup pre-fk.backup.db</code></pre></div>
+
+                <p>Notes:</p>
+                <ul>
+                    <li><code>--validate-only</code> reports sampled violations without mutating the database.</li>
+                    <li><code>--backup</code> writes a committed snapshot before apply mode starts.</li>
+                    <li>For HTTP or gRPC transports, the spec path and backup path are resolved on the connected host.</li>
+                </ul>
 
                 <h2 id="sql-introspection">SQL Introspection (<code>sys.*</code>)</h2>
                 <p>You can query metadata with SQL in addition to dot-commands:</p>

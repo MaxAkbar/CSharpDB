@@ -1,6 +1,8 @@
 using CSharpDB.Client.Models;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
 using ClientForeignKeyDefinition = CSharpDB.Client.Models.ForeignKeyDefinition;
 using ClientForeignKeyOnDeleteAction = CSharpDB.Client.Models.ForeignKeyOnDeleteAction;
@@ -461,6 +463,26 @@ internal sealed class RestoreCommand : IMetaCommand
     }
 }
 
+internal sealed class MigrateForeignKeysCommand : IMetaCommand
+{
+    public IReadOnlyList<string> Aliases => [".migrate-fks"];
+    public string Name => ".migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]";
+    public string Description => "Validate or retrofit foreign keys onto existing tables";
+
+    public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
+    {
+        if (!MetaCommandHelpers.TryParseForeignKeyMigrationArgument(argument, out string? specPath, out bool validateOnly, out string? backupPath, out string? error))
+        {
+            output.WriteLine(Ansi.Colorize(error ?? "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]", Ansi.Yellow));
+            return;
+        }
+
+        var request = await MetaCommandHelpers.LoadForeignKeyMigrationRequestAsync(specPath!, validateOnly, backupPath, ct);
+        var result = await context.MigrateForeignKeysAsync(request, ct);
+        MetaCommandHelpers.WriteForeignKeyMigrationSummary(result, output);
+    }
+}
+
 internal sealed class ReindexCommand : IMetaCommand
 {
     public IReadOnlyList<string> Aliases => [".reindex"];
@@ -705,6 +727,7 @@ internal sealed class ReadCommand : IMetaCommand
 internal static class MetaCommandHelpers
 {
     internal const string CollectionPrefix = "_col_";
+    private static readonly JsonSerializerOptions s_foreignKeyMigrationJsonOptions = CreateForeignKeyMigrationJsonOptions();
 
     internal static bool TryParseReindexArgument(string argument, out ReindexRequest request, out string? error)
     {
@@ -835,6 +858,60 @@ internal static class MetaCommandHelpers
         if (string.IsNullOrWhiteSpace(sourcePath))
         {
             error = "Usage: .restore <FILE> [--validate-only]";
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool TryParseForeignKeyMigrationArgument(
+        string argument,
+        out string? specPath,
+        out bool validateOnly,
+        out string? backupPath,
+        out string? error)
+    {
+        specPath = null;
+        validateOnly = false;
+        backupPath = null;
+        error = null;
+
+        if (!TryTokenizeArgument(argument, out var tokens, out error))
+            return false;
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            string token = tokens[i];
+            if (token.Equals("--validate-only", StringComparison.OrdinalIgnoreCase))
+            {
+                validateOnly = true;
+                continue;
+            }
+
+            if (token.Equals("--backup", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokens.Count)
+                {
+                    error = "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]";
+                    return false;
+                }
+
+                backupPath = tokens[++i];
+                continue;
+            }
+
+            if (specPath is not null)
+            {
+                error = "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]";
+                return false;
+            }
+
+            specPath = token;
+        }
+
+        if (string.IsNullOrWhiteSpace(specPath))
+        {
+            error = "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]";
             return false;
         }
 
@@ -990,6 +1067,96 @@ internal static class MetaCommandHelpers
         tokens = result;
         return true;
     }
+
+    internal static async Task<ForeignKeyMigrationRequest> LoadForeignKeyMigrationRequestAsync(
+        string specPath,
+        bool validateOnly,
+        string? backupPath,
+        CancellationToken ct)
+    {
+        string normalizedSpecPath = NormalizePath(specPath);
+        if (!File.Exists(normalizedSpecPath))
+            throw new FileNotFoundException($"Foreign key migration spec file not found: {normalizedSpecPath}", normalizedSpecPath);
+
+        string json = await File.ReadAllTextAsync(normalizedSpecPath, ct);
+        var request = JsonSerializer.Deserialize<ForeignKeyMigrationRequest>(json, s_foreignKeyMigrationJsonOptions)
+            ?? throw new InvalidOperationException($"Foreign key migration spec '{normalizedSpecPath}' did not deserialize.");
+
+        return new ForeignKeyMigrationRequest
+        {
+            ValidateOnly = validateOnly || request.ValidateOnly,
+            BackupDestinationPath = string.IsNullOrWhiteSpace(backupPath) ? request.BackupDestinationPath : NormalizePath(backupPath),
+            ViolationSampleLimit = request.ViolationSampleLimit,
+            Constraints = request.Constraints,
+        };
+    }
+
+    internal static void WriteForeignKeyMigrationSummary(ForeignKeyMigrationResult result, TextWriter output)
+    {
+        if (result.ValidateOnly)
+        {
+            output.WriteLine(result.Succeeded
+                ? "Foreign key migration validation succeeded."
+                : "Foreign key migration validation failed.");
+        }
+        else
+        {
+            output.WriteLine(result.Succeeded
+                ? "Foreign key migration completed."
+                : "Foreign key migration failed.");
+        }
+
+        output.WriteLine($"Affected tables: {result.AffectedTables}");
+        output.WriteLine($"Applied foreign keys: {result.AppliedForeignKeys}");
+        output.WriteLine($"Copied rows: {result.CopiedRows}");
+        output.WriteLine($"Violations: {result.ViolationCount}");
+
+        if (!string.IsNullOrWhiteSpace(result.BackupDestinationPath))
+            output.WriteLine($"Backup: {result.BackupDestinationPath}");
+
+        if (result.AppliedConstraints.Count > 0)
+        {
+            output.WriteLine("Applied constraints:");
+            foreach (var applied in result.AppliedConstraints.OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
+            {
+                output.WriteLine(
+                    $"  {applied.TableName}.{applied.ColumnName} -> {applied.ReferencedTableName}({applied.ReferencedColumnName}), " +
+                    $"constraint={applied.ConstraintName}, onDelete={applied.OnDelete}, supportIndex={applied.SupportingIndexName}");
+            }
+        }
+
+        if (result.Violations.Count > 0)
+        {
+            output.WriteLine("Violation sample:");
+            foreach (var violation in result.Violations)
+            {
+                output.WriteLine(
+                    $"  {violation.TableName}.{violation.ColumnName} value={FormatValue(violation.ChildValue)} " +
+                    $"childKey {violation.ChildKeyColumnName}={FormatValue(violation.ChildKeyValue)} " +
+                    $"-> {violation.ReferencedTableName}({violation.ReferencedColumnName}) reason={violation.Reason}");
+            }
+        }
+    }
+
+    private static JsonSerializerOptions CreateForeignKeyMigrationJsonOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true,
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
+    }
+
+    private static string FormatValue(object? value)
+        => value switch
+        {
+            null => "NULL",
+            string text => $"'{text}'",
+            _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "NULL",
+        };
 
     private static CSharpDB.Client.Models.DbType MapDbType(CSharpDB.Primitives.DbType type) => type switch
     {
