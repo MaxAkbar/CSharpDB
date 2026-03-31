@@ -18,10 +18,27 @@ public sealed class ColumnDefinition
     public string? Collation { get; init; }
 }
 
+public enum ForeignKeyOnDeleteAction
+{
+    Restrict = 0,
+    Cascade = 1,
+}
+
+public sealed class ForeignKeyDefinition
+{
+    public required string ConstraintName { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public required string ReferencedColumnName { get; init; }
+    public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+    public required string SupportingIndexName { get; init; }
+}
+
 public sealed class TableSchema
 {
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
+    public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();
 }
 
 public sealed class IndexSchema

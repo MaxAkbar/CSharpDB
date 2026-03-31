@@ -1,7 +1,9 @@
+using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Execution;
 
@@ -26,6 +28,23 @@ public sealed class QueryPlanner
         public required Expression Expression { get; init; }
         public required HashSet<string> ReferencedTables { get; init; }
         public required int OriginalIndex { get; init; }
+    }
+
+    private sealed class ForeignKeyMutationContext
+    {
+        public HashSet<ForeignKeyDeleteKey> VisitedDeletes { get; } = [];
+        public HashSet<string> TouchedTables { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> StaleTables { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private readonly record struct ForeignKeyDeleteKey(string TableName, long RowId)
+    {
+        public bool Equals(ForeignKeyDeleteKey other) =>
+            RowId == other.RowId &&
+            string.Equals(TableName, other.TableName, StringComparison.OrdinalIgnoreCase);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(TableName), RowId);
     }
 
     private static readonly ColumnDefinition[] SystemTablesColumns =
@@ -55,6 +74,17 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "is_unique", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
+    ];
+
+    private static readonly ColumnDefinition[] SystemForeignKeysColumns =
+    [
+        new ColumnDefinition { Name = "constraint_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "referenced_table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "referenced_column_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "on_delete", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "supporting_index_name", Type = DbType.Text, Nullable = false },
     ];
 
     private static readonly ColumnDefinition[] SystemViewsColumns =
@@ -132,6 +162,7 @@ public sealed class QueryPlanner
     /// <summary>Recursion guard for trigger execution.</summary>
     private int _triggerDepth;
     private const int MaxTriggerDepth = 16;
+    private const int MaxForeignKeyCascadeDepth = 64;
 
     /// <summary>Cache of parsed trigger bodies to avoid re-parsing on every row.</summary>
     private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
@@ -146,11 +177,13 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemTablesRowsCache;
     private List<DbValue[]>? _systemColumnsRowsCache;
     private List<DbValue[]>? _systemIndexesRowsCache;
+    private List<DbValue[]>? _systemForeignKeysRowsCache;
     private List<DbValue[]>? _systemViewsRowsCache;
     private List<DbValue[]>? _systemTriggersRowsCache;
     private List<DbValue[]>? _systemObjectsRowsCache;
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
+    private long? _systemForeignKeysCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SelectStatement, SelectPlanKind> _selectPlanCache = new(ReferenceEqualityComparer.Instance);
     private readonly Queue<SelectStatement> _selectPlanInsertionOrder = new();
@@ -302,11 +335,13 @@ public sealed class QueryPlanner
         _systemTablesRowsCache = null;
         _systemColumnsRowsCache = null;
         _systemIndexesRowsCache = null;
+        _systemForeignKeysRowsCache = null;
         _systemViewsRowsCache = null;
         _systemTriggersRowsCache = null;
         _systemObjectsRowsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
+        _systemForeignKeysCountCache = null;
         _selectPlanCache.Clear();
         _selectPlanInsertionOrder.Clear();
 
@@ -360,8 +395,23 @@ public sealed class QueryPlanner
             Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
         }).ToArray();
 
-        var schema = new TableSchema { TableName = stmt.TableName, Columns = columns, NextRowId = 1 };
+        ForeignKeyDefinition[] foreignKeys = await BuildForeignKeysAsync(
+            stmt.TableName,
+            columns,
+            stmt.Columns,
+            Array.Empty<ForeignKeyDefinition>(),
+            ct);
+
+        var schema = new TableSchema
+        {
+            TableName = stmt.TableName,
+            Columns = columns,
+            ForeignKeys = foreignKeys,
+            NextRowId = 1,
+        };
         await _catalog.CreateTableAsync(schema, ct);
+        for (int i = 0; i < foreignKeys.Length; i++)
+            await CreateForeignKeySupportIndexAsync(schema, foreignKeys[i], ct);
         _nextRowIdCache.Remove(stmt.TableName);
         return new QueryResult(0);
     }
@@ -370,6 +420,17 @@ public sealed class QueryPlanner
     {
         if (stmt.IfExists && _catalog.GetTable(stmt.TableName) == null)
             return new QueryResult(0);
+
+        TableForeignKeyReference[] inboundReferences = _catalog.GetReferencingForeignKeys(stmt.TableName)
+            .Where(reference => !string.Equals(reference.TableName, stmt.TableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (inboundReferences.Length > 0)
+        {
+            string constraintList = string.Join(", ", inboundReferences.Select(static reference => reference.ForeignKey.ConstraintName));
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot drop table '{stmt.TableName}' because it is referenced by foreign key(s): {constraintList}.");
+        }
 
         await _catalog.DropTableAsync(stmt.TableName, ct);
         _nextRowIdCache.Remove(stmt.TableName);
@@ -399,8 +460,24 @@ public sealed class QueryPlanner
                     Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.TypeToken, add.Column.Collation),
                 });
 
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols.ToArray(), NextRowId = schema.NextRowId };
+                ColumnDefinition[] newColumns = newCols.ToArray();
+                ForeignKeyDefinition[] newForeignKeys = await BuildForeignKeysAsync(
+                    stmt.TableName,
+                    newColumns,
+                    new[] { add.Column },
+                    schema.ForeignKeys,
+                    ct);
+
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = newColumns,
+                    ForeignKeys = newForeignKeys,
+                    NextRowId = schema.NextRowId,
+                };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                if (add.Column.ForeignKey is not null)
+                    await CreateForeignKeySupportIndexAsync(newSchema, newForeignKeys[^1], ct);
                 break;
             }
 
@@ -412,6 +489,17 @@ public sealed class QueryPlanner
 
                 if (schema.Columns[colIdx].IsPrimaryKey)
                     throw new CSharpDbException(ErrorCode.SyntaxError, "Cannot drop primary key column.");
+
+                if (schema.ForeignKeys.Any(fk => string.Equals(fk.ColumnName, drop.ColumnName, StringComparison.OrdinalIgnoreCase)))
+                    throw new CSharpDbException(ErrorCode.ConstraintViolation, $"Cannot drop column '{drop.ColumnName}' because it has a foreign key constraint.");
+
+                if (_catalog.GetReferencingForeignKeys(stmt.TableName)
+                    .Any(reference => string.Equals(reference.ForeignKey.ReferencedColumnName, drop.ColumnName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot drop column '{drop.ColumnName}' because it is referenced by a foreign key.");
+                }
 
                 var newCols = schema.Columns.Where((_, i) => i != colIdx).ToArray();
                 if (newCols.Length == 0)
@@ -449,8 +537,42 @@ public sealed class QueryPlanner
 
                 await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols, NextRowId = schema.NextRowId };
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = newCols,
+                    ForeignKeys = schema.ForeignKeys,
+                    NextRowId = schema.NextRowId,
+                };
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                break;
+            }
+
+            case DropConstraintAction dropConstraint:
+            {
+                ForeignKeyDefinition? foreignKey = schema.ForeignKeys.FirstOrDefault(fk =>
+                    string.Equals(fk.ConstraintName, dropConstraint.ConstraintName, StringComparison.OrdinalIgnoreCase));
+                if (foreignKey is null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Constraint '{dropConstraint.ConstraintName}' not found on table '{stmt.TableName}'.");
+                }
+
+                ForeignKeyDefinition[] remainingForeignKeys = schema.ForeignKeys
+                    .Where(fk => !string.Equals(fk.ConstraintName, dropConstraint.ConstraintName, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = schema.Columns,
+                    ForeignKeys = remainingForeignKeys,
+                    NextRowId = schema.NextRowId,
+                };
+
+                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                await _catalog.DropForeignKeyOwnedIndexAsync(foreignKey.SupportingIndexName, ct);
                 break;
             }
 
@@ -460,8 +582,7 @@ public sealed class QueryPlanner
                 if (_catalog.GetTable(rename.NewTableName) != null)
                     throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{rename.NewTableName}' already exists.");
 
-                var newSchema = new TableSchema { TableName = rename.NewTableName, Columns = schema.Columns, NextRowId = schema.NextRowId };
-                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
                 break;
@@ -477,22 +598,7 @@ public sealed class QueryPlanner
                 if (schema.GetColumnIndex(renameCol.NewColumnName) >= 0)
                     throw new CSharpDbException(ErrorCode.SyntaxError, $"Column '{renameCol.NewColumnName}' already exists in table '{stmt.TableName}'.");
 
-                var newCols = schema.Columns.Select((col, i) =>
-                    i == colIdx
-                        ? new ColumnDefinition
-                        {
-                            Name = renameCol.NewColumnName,
-                            Type = col.Type,
-                            IsPrimaryKey = col.IsPrimaryKey,
-                            IsIdentity = col.IsIdentity,
-                            Nullable = col.Nullable,
-                            Collation = col.Collation,
-                        }
-                        : col
-                ).ToArray();
-
-                var newSchema = new TableSchema { TableName = stmt.TableName, Columns = newCols, NextRowId = schema.NextRowId };
-                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                await RenameColumnWithDependenciesAsync(stmt.TableName, renameCol.OldColumnName, renameCol.NewColumnName, schema, ct);
                 break;
             }
 
@@ -573,6 +679,7 @@ public sealed class QueryPlanner
         if (stmt.IfExists && _catalog.GetIndex(stmt.IndexName) == null)
             return new QueryResult(0);
 
+        ValidateParentIndexCanBeDropped(stmt.IndexName);
         await _catalog.DropIndexAsync(stmt.IndexName, ct);
         return new QueryResult(0);
     }
@@ -1697,7 +1804,7 @@ public sealed class QueryPlanner
             return new QueryResult(0);
         }
 
-        foreach (string tableName in _catalog.GetTableNames())
+        foreach (string tableName in _catalog.GetTableNames().ToArray())
             await AnalyzeTableAsync(tableName, ct);
 
         return new QueryResult(0);
@@ -2178,18 +2285,39 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         int inserted = 0;
-        foreach (var valueRow in stmt.ValueRows)
+        ForeignKeyMutationContext? mutationContext =
+            _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
+                ? new ForeignKeyMutationContext()
+                : null;
+        try
         {
-            var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
-            await ExecuteResolvedInsertRowAsync(stmt.TableName, schema, tree, indexes, row, ct);
-            inserted++;
+            foreach (var valueRow in stmt.ValueRows)
+            {
+                var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
+                await ExecuteResolvedInsertRowAsync(
+                    stmt.TableName,
+                    schema,
+                    tree,
+                    indexes,
+                    row,
+                    mutationContext,
+                    adjustTableRowCount: false,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext,
+                stmt.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
         }
 
-        if (inserted > 0)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
-
-        if (persistRootChanges)
-            await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+        await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
 
         return QueryResult.FromRowsAffected(inserted);
     }
@@ -3457,6 +3585,108 @@ public sealed class QueryPlanner
         public int GetHashCode(RowSetKey obj) => obj.HashCode;
     }
 
+    internal async ValueTask<QueryResult?> TryExecuteSimplePrimaryKeyLookupDirectAsync(
+        SimplePrimaryKeyLookupSql lookup,
+        CancellationToken ct = default)
+    {
+        if (_catalog.IsView(lookup.TableName))
+            return null;
+        if (IsSystemCatalogTable(lookup.TableName))
+            return null;
+        if (_cteData != null && _cteData.ContainsKey(lookup.TableName))
+            return null;
+
+        var schema = _catalog.GetTable(lookup.TableName);
+        if (schema == null)
+            return null;
+
+        int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
+        if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
+            return null;
+
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        if (pkIdx < 0 ||
+            pkIdx >= schema.Columns.Count ||
+            predicateColumnIndex != pkIdx ||
+            schema.Columns[pkIdx].Type != DbType.Integer)
+        {
+            return null;
+        }
+
+        DbValue predicateLiteral = lookup.PredicateLiteral;
+        if (predicateLiteral.Type == DbType.Null)
+            predicateLiteral = DbValue.FromInteger(lookup.LookupValue);
+        if (predicateLiteral.Type != DbType.Integer)
+            return null;
+
+        ColumnDefinition[] outputColumns;
+        int[] projectionColumnIndices;
+        if (lookup.SelectStar)
+        {
+            outputColumns = GetSchemaColumnsArray(schema);
+            projectionColumnIndices = Array.Empty<int>();
+        }
+        else if (!TryBuildSimpleLookupProjection(lookup.ProjectionColumns, schema, out projectionColumnIndices, out outputColumns))
+        {
+            return null;
+        }
+
+        long lookupValue = predicateLiteral.AsInteger;
+        var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
+        ReadOnlyMemory<byte>? payload = tableTree.TryFindCachedMemory(lookupValue, out var cachedPayload)
+            ? cachedPayload
+            : await tableTree.FindMemoryAsync(lookupValue, ct);
+
+        if (payload is not { } payloadMemory)
+            return QueryResult.FromSyncLookup(null, outputColumns);
+
+        var serializer = GetReadSerializer(schema);
+        if (lookup.HasResidualPredicate)
+        {
+            int residualColumnIndex = schema.GetColumnIndex(lookup.ResidualPredicateColumn);
+            if (residualColumnIndex < 0 || residualColumnIndex >= schema.Columns.Count)
+                return null;
+
+            byte[]? residualTextBytes = lookup.ResidualPredicateLiteral.Type == DbType.Text &&
+                                        CanPushDownPredicate(schema, residualColumnIndex, lookup.ResidualPredicateLiteral)
+                ? Encoding.UTF8.GetBytes(lookup.ResidualPredicateLiteral.AsText)
+                : null;
+
+            if (!BoundColumnAccessHelper.EvaluatePreDecodeFilter(
+                    payloadMemory.Span,
+                    serializer,
+                    BoundColumnAccessHelper.TryCreate(serializer, residualColumnIndex),
+                    residualColumnIndex,
+                    residualTextBytes,
+                    BinaryOp.Equals,
+                    lookup.ResidualPredicateLiteral))
+            {
+                return QueryResult.FromSyncLookup(null, outputColumns);
+            }
+        }
+
+        if (lookup.SelectStar)
+            return QueryResult.FromSyncLookup(serializer.Decode(payloadMemory.Span), outputColumns);
+
+        if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
+        {
+            var row = outputColumns.Length == 0 ? Array.Empty<DbValue>() : new DbValue[outputColumns.Length];
+            if (row.Length > 0)
+            {
+                var keyValue = DbValue.FromInteger(lookupValue);
+                Array.Fill(row, keyValue);
+            }
+
+            return QueryResult.FromSyncLookup(row, outputColumns);
+        }
+
+        var projectedRow = new DbValue[projectionColumnIndices.Length];
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+            projectedRow[i] = serializer.DecodeColumn(payloadMemory.Span, projectionColumnIndices[i]);
+
+        return QueryResult.FromSyncLookup(projectedRow, outputColumns);
+    }
+
     public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)
     {
         result = null!;
@@ -3716,28 +3946,155 @@ public sealed class QueryPlanner
         var schema = GetSchema(insert.TableName);
         var tree = _catalog.GetTableTree(insert.TableName);
         var indexes = _catalog.GetIndexesForTable(insert.TableName);
+        IReadOnlyList<ForeignKeyDefinition> foreignKeys = _catalog.GetForeignKeysForTable(insert.TableName);
+        IReadOnlyList<TriggerSchema> triggers = _catalog.GetTriggersForTable(insert.TableName);
+
+        if (indexes.Count == 0 && foreignKeys.Count == 0 && triggers.Count == 0)
+            return await ExecuteBareSimpleInsertAsync(insert, schema, tree, persistRootChanges, ct);
 
         int inserted = 0;
-        for (int i = 0; i < insert.RowCount; i++)
+        ForeignKeyMutationContext? mutationContext =
+            foreignKeys.Count > 0
+                ? new ForeignKeyMutationContext()
+                : null;
+        try
         {
-            var row = insert.ValueRows[i];
-            if (row.Length != schema.Columns.Count)
+            for (int i = 0; i < insert.RowCount; i++)
             {
-                throw new CSharpDbException(
-                    ErrorCode.SyntaxError,
-                    $"Expected {schema.Columns.Count} values, got {row.Length}.");
-            }
+                var row = insert.ValueRows[i];
+                if (row.Length != schema.Columns.Count)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
+                }
 
-            await ExecuteResolvedInsertRowAsync(insert.TableName, schema, tree, indexes, row, ct);
-            inserted++;
+                await ExecuteResolvedInsertRowAsync(
+                    insert.TableName,
+                    schema,
+                    tree,
+                    indexes,
+                    row,
+                    mutationContext,
+                    adjustTableRowCount: false,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext,
+                insert.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
         }
 
-        if (inserted > 0)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(insert.TableName, ct);
-
-        if (persistRootChanges)
-            await _catalog.PersistRootPageChangesAsync(insert.TableName, ct);
+        await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
         return QueryResult.FromRowsAffected(inserted);
+    }
+
+    private async ValueTask<QueryResult> ExecuteBareSimpleInsertAsync(
+        SimpleInsertSql insert,
+        TableSchema schema,
+        BTree tree,
+        bool persistRootChanges,
+        CancellationToken ct)
+    {
+        int inserted = 0;
+        var insertTraversalPath = new List<uint>(capacity: 8);
+        var insertTraversalSet = new HashSet<uint>();
+        try
+        {
+            for (int i = 0; i < insert.RowCount; i++)
+            {
+                DbValue[] row = insert.ValueRows[i];
+                if (row.Length != schema.Columns.Count)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
+                }
+
+                await ExecuteBareInsertRowAsync(
+                    insert.TableName,
+                    schema,
+                    tree,
+                    row,
+                    insertTraversalPath,
+                    insertTraversalSet,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext: null,
+                insert.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
+        }
+
+        await FinalizeInsertStatementAsync(
+            mutationContext: null,
+            insert.TableName,
+            inserted,
+            persistRootChanges,
+            ct);
+        return QueryResult.FromRowsAffected(inserted);
+    }
+
+    private async ValueTask FinalizeInsertStatementAsync(
+        ForeignKeyMutationContext? mutationContext,
+        string tableName,
+        int inserted,
+        bool persistRootChanges,
+        CancellationToken ct)
+    {
+        if (inserted <= 0)
+            return;
+
+        await _catalog.AdjustTableRowCountKnownExactAsync(tableName, inserted, ct);
+        await PersistForeignKeyMutationContextAsync(
+            mutationContext,
+            tableName,
+            hasMutations: true,
+            persistRootChanges,
+            ct);
+    }
+
+    private async ValueTask<long> ExecuteBareInsertRowAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        DbValue[] row,
+        List<uint>? traversalPath,
+        HashSet<uint>? traversalSet,
+        CancellationToken ct)
+    {
+        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        while (true)
+        {
+            try
+            {
+                ReadOnlyMemory<byte> encodedRow = _recordSerializer.Encode(row);
+                if (traversalPath != null && traversalSet != null)
+                    await tree.InsertAsync(rowId, encodedRow, traversalPath, traversalSet, ct);
+                else
+                    await tree.InsertAsync(rowId, encodedRow, ct);
+                return rowId;
+            }
+            catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
+            {
+                InvalidateRowIdCache(tableName);
+                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+            }
+        }
     }
 
     /// <summary>
@@ -4045,6 +4402,7 @@ public sealed class QueryPlanner
             "sys.tables" => _catalog.GetTableNames().Count,
             "sys.columns" => CountSystemColumns(),
             "sys.indexes" => CountSystemIndexes(),
+            "sys.foreign_keys" => CountSystemForeignKeys(),
             "sys.views" => _catalog.GetViewNames().Count,
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
@@ -4094,15 +4452,38 @@ public sealed class QueryPlanner
 
         long count = 0;
         foreach (var index in _catalog.GetIndexes())
+        {
+            if (index.Kind == IndexKind.ForeignKeyInternal)
+                continue;
+
             count += index.Columns.Count;
+        }
 
         _systemIndexesCountCache = count;
         return count;
     }
 
+    private long CountSystemForeignKeys()
+    {
+        if (_systemForeignKeysCountCache.HasValue)
+            return _systemForeignKeysCountCache.Value;
+
+        long count = 0;
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is not null)
+                count += schema.ForeignKeys.Count;
+        }
+
+        _systemForeignKeysCountCache = count;
+        return count;
+    }
+
     private long CountSystemObjects() =>
         _catalog.GetTableNames().Count
-        + _catalog.GetIndexes().Count
+        + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
+        + CountSystemForeignKeys()
         + _catalog.GetViewNames().Count
         + _catalog.GetTriggers().Count;
 
@@ -5202,27 +5583,53 @@ public sealed class QueryPlanner
             rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
         }
 
-        foreach (var (rowId, row) in rowsToDelete)
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
+        if (!hasIncomingForeignKeys)
         {
-            // BEFORE DELETE triggers
-            await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Delete, row, null, schema, ct);
+            foreach (var (rowId, row) in rowsToDelete)
+            {
+                // BEFORE DELETE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Delete, row, null, schema, ct);
 
-            await tree.DeleteAsync(rowId, ct);
+                await tree.DeleteAsync(rowId, ct);
 
-            // Maintain indexes
-            await DeleteFromAllIndexesAsync(indexes, schema, row, rowId, ct);
-            await _catalog.AdjustTableRowCountAsync(stmt.TableName, -1, ct);
+                // Maintain indexes
+                await DeleteFromAllIndexesAsync(indexes, schema, row, rowId, ct);
+                await _catalog.AdjustTableRowCountAsync(stmt.TableName, -1, ct);
 
-            // AFTER DELETE triggers
-            await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null, schema, ct);
+                // AFTER DELETE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null, schema, ct);
+            }
+
+            if (rowsToDelete.Count > 0)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
+            await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+
+            return new QueryResult(rowsToDelete.Count);
         }
 
-        if (rowsToDelete.Count > 0)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+        int deleted = 0;
+        var mutationContext = new ForeignKeyMutationContext();
+        foreach (var (rowId, _) in rowsToDelete)
+        {
+            if (await DeleteRowWithForeignKeysAsync(
+                    stmt.TableName,
+                    schema,
+                    tree,
+                    indexes,
+                    rowId,
+                    mutationContext,
+                    depth: 0,
+                    ct))
+            {
+                deleted++;
+            }
+        }
 
-        await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+        await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, deleted > 0, persistRootChanges: true, ct);
 
-        return new QueryResult(rowsToDelete.Count);
+        return new QueryResult(deleted);
     }
 
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
@@ -5236,6 +5643,8 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
+        bool hasOutgoingForeignKeys = _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0;
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
 
         // Collect rows to update
         int? updateCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
@@ -5278,6 +5687,47 @@ public sealed class QueryPlanner
             updates.Add((scan.CurrentRowId, oldRow, newRow));
         }
 
+        if (!hasOutgoingForeignKeys && !hasIncomingForeignKeys)
+        {
+            foreach (var (rowId, oldRow, newRow) in updates)
+            {
+                // BEFORE UPDATE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+
+                long newRowId = rowId;
+                if (hasIntegerPrimaryKey)
+                {
+                    if (newRow[pkIdx].IsNull)
+                    {
+                        // INTEGER PRIMARY KEY aliases the physical row key.
+                        newRow[pkIdx] = DbValue.FromInteger(rowId);
+                    }
+
+                    if (newRow[pkIdx].Type != DbType.Integer)
+                        throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+
+                    newRowId = newRow[pkIdx].AsInteger;
+                }
+
+                await tree.DeleteAsync(rowId, ct);
+                await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+
+                // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
+                await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
+
+                // AFTER UPDATE triggers
+                await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            }
+
+            if (updates.Count > 0)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
+
+            await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+
+            return new QueryResult(updates.Count);
+        }
+
+        var mutationContext = new ForeignKeyMutationContext();
         foreach (var (rowId, oldRow, newRow) in updates)
         {
             // BEFORE UPDATE triggers
@@ -5298,20 +5748,22 @@ public sealed class QueryPlanner
                 newRowId = newRow[pkIdx].AsInteger;
             }
 
+            await ValidateIncomingForeignKeyUpdatesAsync(stmt.TableName, schema, rowId, oldRow, newRow, ct);
+            await ValidateOutgoingForeignKeysAsync(stmt.TableName, schema, oldRow, newRow, ct);
+
             await tree.DeleteAsync(rowId, ct);
             await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
 
             // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
             await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
+            mutationContext.TouchedTables.Add(stmt.TableName);
+            mutationContext.StaleTables.Add(stmt.TableName);
 
             // AFTER UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
         }
 
-        if (updates.Count > 0)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(stmt.TableName, ct);
-
-        await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
+        await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, updates.Count > 0, persistRootChanges: true, ct);
 
         return new QueryResult(updates.Count);
     }
@@ -8840,7 +9292,7 @@ public sealed class QueryPlanner
                 continue;
             }
 
-            if (idx.Kind != IndexKind.Sql)
+            if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal))
                 continue;
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
@@ -8910,7 +9362,7 @@ public sealed class QueryPlanner
                 continue;
             }
 
-            if (idx.Kind != IndexKind.Sql)
+            if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal))
                 continue;
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
@@ -8948,7 +9400,7 @@ public sealed class QueryPlanner
                 continue;
             }
 
-            if (idx.Kind != IndexKind.Sql)
+            if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal))
                 continue;
 
             if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
@@ -9926,7 +10378,14 @@ public sealed class QueryPlanner
         => BatchPlanCompiler.TryCreate(predicate, projections, schema);
 
     private static bool IsBatchPlanEligibleSource(IOperator source)
-        => source is TableScanOperator or IndexScanOperator or IndexOrderedScanOperator;
+        => source is
+            TableScanOperator or
+            IndexScanOperator or
+            IndexOrderedScanOperator or
+            HashJoinOperator or
+            IndexNestedLoopJoinOperator or
+            HashedIndexNestedLoopJoinOperator or
+            NestedLoopJoinOperator;
 
     private string GetQualifiedMappingsFingerprint(TableSchema schema)
     {
@@ -10026,6 +10485,13 @@ public sealed class QueryPlanner
             return true;
         }
 
+        if (string.Equals(tableName, "sys.foreign_keys", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_foreign_keys", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.foreign_keys";
+            return true;
+        }
+
         if (string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase))
         {
@@ -10096,6 +10562,11 @@ public sealed class QueryPlanner
             case "sys.indexes":
                 columns = SystemIndexesColumns;
                 rows = BuildSystemIndexesRows();
+                break;
+
+            case "sys.foreign_keys":
+                columns = SystemForeignKeysColumns;
+                rows = BuildSystemForeignKeysRows();
                 break;
 
             case "sys.views":
@@ -10256,6 +10727,9 @@ public sealed class QueryPlanner
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
+            if (index.Kind == IndexKind.ForeignKeyInternal)
+                continue;
+
             var tableSchema = _catalog.GetTable(index.TableName);
             for (int i = 0; i < index.Columns.Count; i++)
             {
@@ -10283,6 +10757,37 @@ public sealed class QueryPlanner
         }
 
         _systemIndexesRowsCache = rows;
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemForeignKeysRows()
+    {
+        if (_systemForeignKeysRowsCache != null)
+            return _systemForeignKeysRowsCache;
+
+        var rows = new List<DbValue[]>((int)Math.Min(CountSystemForeignKeys(), int.MaxValue));
+        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is null || schema.ForeignKeys.Count == 0)
+                continue;
+
+            foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys.OrderBy(fk => fk.ConstraintName, StringComparer.OrdinalIgnoreCase))
+            {
+                rows.Add(
+                [
+                    DbValue.FromText(foreignKey.ConstraintName),
+                    DbValue.FromText(tableName),
+                    DbValue.FromText(foreignKey.ColumnName),
+                    DbValue.FromText(foreignKey.ReferencedTableName),
+                    DbValue.FromText(foreignKey.ReferencedColumnName),
+                    DbValue.FromText(foreignKey.OnDelete.ToString().ToUpperInvariant()),
+                    DbValue.FromText(foreignKey.SupportingIndexName),
+                ]);
+            }
+        }
+
+        _systemForeignKeysRowsCache = rows;
         return rows;
     }
 
@@ -10335,7 +10840,8 @@ public sealed class QueryPlanner
             return _systemObjectsRowsCache;
 
         int capacity = _catalog.GetTableNames().Count
-            + _catalog.GetIndexes().Count
+            + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
+            + (int)Math.Min(CountSystemForeignKeys(), int.MaxValue)
             + _catalog.GetViewNames().Count
             + _catalog.GetTriggers().Count;
 
@@ -10355,12 +10861,32 @@ public sealed class QueryPlanner
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
+            if (index.Kind == IndexKind.ForeignKeyInternal)
+                continue;
+
             rows.Add(
             [
                 DbValue.FromText(index.IndexName),
                 DbValue.FromText("INDEX"),
                 DbValue.FromText(index.TableName),
             ]);
+        }
+
+        foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is null || schema.ForeignKeys.Count == 0)
+                continue;
+
+            foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys.OrderBy(fk => fk.ConstraintName, StringComparer.OrdinalIgnoreCase))
+            {
+                rows.Add(
+                [
+                    DbValue.FromText(foreignKey.ConstraintName),
+                    DbValue.FromText("FOREIGN KEY"),
+                    DbValue.FromText(tableName),
+                ]);
+            }
         }
 
         foreach (string viewName in _catalog.GetViewNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
@@ -10509,6 +11035,528 @@ public sealed class QueryPlanner
         return normalized;
     }
 
+    private async ValueTask<ForeignKeyDefinition[]> BuildForeignKeysAsync(
+        string tableName,
+        ColumnDefinition[] columns,
+        IReadOnlyList<ColumnDef> columnDefs,
+        IReadOnlyList<ForeignKeyDefinition> existingForeignKeys,
+        CancellationToken ct)
+    {
+        var foreignKeys = new List<ForeignKeyDefinition>(existingForeignKeys.Count + columnDefs.Count);
+        foreignKeys.AddRange(existingForeignKeys);
+
+        var currentSchema = new TableSchema
+        {
+            TableName = tableName,
+            Columns = columns,
+            ForeignKeys = foreignKeys,
+            NextRowId = 1,
+        };
+
+        for (int i = 0; i < columnDefs.Count; i++)
+        {
+            if (columnDefs[i].ForeignKey is null)
+                continue;
+
+            foreignKeys.Add(await ValidateAndMaterializeForeignKeyAsync(
+                tableName,
+                columns,
+                columnDefs[i],
+                currentSchema,
+                ct));
+        }
+
+        return foreignKeys.ToArray();
+    }
+
+    private async ValueTask<ForeignKeyDefinition> ValidateAndMaterializeForeignKeyAsync(
+        string tableName,
+        IReadOnlyList<ColumnDefinition> columns,
+        ColumnDef columnDef,
+        TableSchema currentTableSchema,
+        CancellationToken ct)
+    {
+        if (columnDef.ForeignKey is null)
+            throw new InvalidOperationException($"Column '{columnDef.Name}' does not define a foreign key.");
+
+        int childColumnIndex = currentTableSchema.GetColumnIndex(columnDef.Name);
+        if (childColumnIndex < 0)
+            throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnDef.Name}' not found in table '{tableName}'.");
+
+        ColumnDefinition childColumn = columns[childColumnIndex];
+        if (childColumn.Type is not (DbType.Integer or DbType.Text))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"Foreign key column '{columnDef.Name}' must use INTEGER or TEXT.");
+        }
+
+        TableSchema parentSchema;
+        if (string.Equals(columnDef.ForeignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase))
+        {
+            parentSchema = currentTableSchema;
+        }
+        else
+        {
+            parentSchema = GetSchema(columnDef.ForeignKey.ReferencedTableName);
+        }
+
+        string referencedColumnName = columnDef.ForeignKey.ReferencedColumnName ?? ResolvePrimaryKeyColumnName(parentSchema, columnDef.Name);
+        int parentColumnIndex = parentSchema.GetColumnIndex(referencedColumnName);
+        if (parentColumnIndex < 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ColumnNotFound,
+                $"Referenced column '{referencedColumnName}' was not found on table '{parentSchema.TableName}'.");
+        }
+
+        ColumnDefinition parentColumn = parentSchema.Columns[parentColumnIndex];
+        if (parentColumn.Type != childColumn.Type)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"Foreign key column '{columnDef.Name}' type '{childColumn.Type}' does not match referenced column '{parentSchema.TableName}.{referencedColumnName}' type '{parentColumn.Type}'.");
+        }
+
+        string? childCollation = childColumn.Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(childColumn.Collation)
+            : null;
+        if (!CanUseParentColumnForForeignKey(parentSchema, parentColumnIndex, childCollation, excludedIndexName: null))
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Referenced column '{parentSchema.TableName}.{referencedColumnName}' must be a single-column PRIMARY KEY or UNIQUE index with matching collation.");
+        }
+
+        string constraintName = GenerateForeignKeyConstraintName(
+            tableName,
+            columnDef.Name,
+            parentSchema.TableName,
+            referencedColumnName);
+
+        return new ForeignKeyDefinition
+        {
+            ConstraintName = constraintName,
+            ColumnName = columnDef.Name,
+            ReferencedTableName = parentSchema.TableName,
+            ReferencedColumnName = referencedColumnName,
+            OnDelete = columnDef.ForeignKey.OnDelete,
+            SupportingIndexName = GenerateForeignKeySupportIndexName(constraintName, tableName, columnDef.Name),
+        };
+    }
+
+    private string ResolvePrimaryKeyColumnName(TableSchema parentSchema, string childColumnName)
+    {
+        int parentPrimaryKeyIndex = parentSchema.PrimaryKeyColumnIndex;
+        if (parentPrimaryKeyIndex < 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Foreign key column '{childColumnName}' references table '{parentSchema.TableName}', which does not have a primary key.");
+        }
+
+        return parentSchema.Columns[parentPrimaryKeyIndex].Name;
+    }
+
+    private bool CanUseParentColumnForForeignKey(
+        TableSchema parentSchema,
+        int parentColumnIndex,
+        string? expectedTextCollation,
+        string? excludedIndexName)
+    {
+        ColumnDefinition parentColumn = parentSchema.Columns[parentColumnIndex];
+        if (parentColumn.Type == DbType.Text &&
+            !CollationSupport.SemanticallyEquals(
+                expectedTextCollation,
+                CollationSupport.NormalizeMetadataName(parentColumn.Collation)) &&
+            !HasCompatibleUniqueParentIndex(parentSchema, parentColumnIndex, expectedTextCollation, excludedIndexName))
+        {
+            return false;
+        }
+
+        if (parentColumn.IsPrimaryKey)
+            return true;
+
+        return HasCompatibleUniqueParentIndex(parentSchema, parentColumnIndex, expectedTextCollation, excludedIndexName);
+    }
+
+    private bool HasCompatibleUniqueParentIndex(
+        TableSchema parentSchema,
+        int parentColumnIndex,
+        string? expectedTextCollation,
+        string? excludedIndexName)
+    {
+        foreach (IndexSchema index in _catalog.GetSqlIndexesForTable(parentSchema.TableName))
+        {
+            if (!index.IsUnique ||
+                index.Columns.Count != 1 ||
+                !string.Equals(index.Columns[0], parentSchema.Columns[parentColumnIndex].Name, StringComparison.OrdinalIgnoreCase) ||
+                (excludedIndexName != null && string.Equals(index.IndexName, excludedIndexName, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            string?[] effectiveCollations = CollationSupport.GetEffectiveIndexColumnCollations(index, parentSchema, new[] { parentColumnIndex });
+            string? effectiveCollation = effectiveCollations.Length > 0
+                ? CollationSupport.NormalizeMetadataName(effectiveCollations[0])
+                : null;
+            if (parentSchema.Columns[parentColumnIndex].Type == DbType.Text &&
+                !CollationSupport.SemanticallyEquals(expectedTextCollation, effectiveCollation))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private async ValueTask CreateForeignKeySupportIndexAsync(
+        TableSchema tableSchema,
+        ForeignKeyDefinition foreignKey,
+        CancellationToken ct)
+    {
+        ColumnDefinition column = tableSchema.Columns[tableSchema.GetColumnIndex(foreignKey.ColumnName)];
+        string? columnCollation = column.Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(column.Collation)
+            : null;
+
+        var indexSchema = new IndexSchema
+        {
+            IndexName = foreignKey.SupportingIndexName,
+            TableName = tableSchema.TableName,
+            Columns = new[] { foreignKey.ColumnName },
+            ColumnCollations = new string?[] { columnCollation },
+            IsUnique = false,
+            Kind = IndexKind.ForeignKeyInternal,
+            OwnerIndexName = foreignKey.ConstraintName,
+        };
+
+        await CreateAndBackfillIndexWithOrderedTextFallbackAsync(indexSchema, tableSchema, ct);
+    }
+
+    private static string GenerateForeignKeyConstraintName(
+        string tableName,
+        string columnName,
+        string referencedTableName,
+        string referencedColumnName)
+        => $"fk_{SanitizeNameSegment(tableName)}_{SanitizeNameSegment(columnName)}_{ComputeStableNameSuffix($"{tableName}|{columnName}|{referencedTableName}|{referencedColumnName}")}";
+
+    private static string GenerateForeignKeySupportIndexName(
+        string constraintName,
+        string tableName,
+        string columnName)
+        => $"__fk_{SanitizeNameSegment(tableName)}_{SanitizeNameSegment(columnName)}_{ComputeStableNameSuffix(constraintName)}";
+
+    private void ValidateParentIndexCanBeDropped(string indexName)
+    {
+        IndexSchema? index = _catalog.GetIndex(indexName);
+        if (index is null ||
+            index.Kind != IndexKind.Sql ||
+            !index.IsUnique ||
+            index.Columns.Count != 1)
+        {
+            return;
+        }
+
+        TableSchema? parentSchema = _catalog.GetTable(index.TableName);
+        if (parentSchema is null)
+            return;
+
+        int parentColumnIndex = parentSchema.GetColumnIndex(index.Columns[0]);
+        if (parentColumnIndex < 0)
+            return;
+
+        foreach (TableForeignKeyReference reference in _catalog.GetReferencingForeignKeys(index.TableName))
+        {
+            if (!string.Equals(reference.ForeignKey.ReferencedColumnName, index.Columns[0], StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            TableSchema? childSchema = _catalog.GetTable(reference.TableName);
+            if (childSchema is null)
+                continue;
+
+            int childColumnIndex = childSchema.GetColumnIndex(reference.ForeignKey.ColumnName);
+            if (childColumnIndex < 0)
+                continue;
+
+            string? expectedCollation = childSchema.Columns[childColumnIndex].Type == DbType.Text
+                ? CollationSupport.NormalizeMetadataName(childSchema.Columns[childColumnIndex].Collation)
+                : null;
+
+            if (!CanUseParentColumnForForeignKey(parentSchema, parentColumnIndex, expectedCollation, excludedIndexName: indexName))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot drop index '{indexName}' because foreign key '{reference.ForeignKey.ConstraintName}' depends on it.");
+            }
+        }
+    }
+
+    private async ValueTask RenameTableWithDependenciesAsync(
+        string oldTableName,
+        string newTableName,
+        TableSchema schema,
+        CancellationToken ct)
+    {
+        IndexSchema[] originalIndexes = _catalog.GetIndexesForTable(oldTableName).ToArray();
+        ForeignKeyDefinition[] renamedForeignKeys = schema.ForeignKeys
+            .Select(foreignKey => RenameForeignKeyForTable(foreignKey, oldTableName, newTableName))
+            .ToArray();
+
+        var renamedSchema = new TableSchema
+        {
+            TableName = newTableName,
+            Columns = schema.Columns,
+            ForeignKeys = renamedForeignKeys,
+            NextRowId = schema.NextRowId,
+        };
+
+        await _catalog.UpdateTableSchemaAsync(oldTableName, renamedSchema, ct);
+
+        for (int i = 0; i < originalIndexes.Length; i++)
+        {
+            IndexSchema index = originalIndexes[i];
+            string newIndexName = index.IndexName;
+            if (index.Kind == IndexKind.ForeignKeyInternal && index.OwnerIndexName is { Length: > 0 })
+            {
+                ForeignKeyDefinition? foreignKey = renamedForeignKeys.FirstOrDefault(fk =>
+                    string.Equals(fk.ConstraintName, index.OwnerIndexName, StringComparison.OrdinalIgnoreCase));
+                if (foreignKey != null)
+                    newIndexName = foreignKey.SupportingIndexName;
+            }
+
+            await _catalog.UpdateIndexSchemaAsync(
+                index.IndexName,
+                CloneIndexSchema(index, newIndexName, newTableName, index.Columns),
+                ct);
+        }
+
+        foreach (string tableName in _catalog.GetTableNames().ToArray())
+        {
+            if (string.Equals(tableName, newTableName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            TableSchema? tableSchema = _catalog.GetTable(tableName);
+            if (tableSchema is null || tableSchema.ForeignKeys.Count == 0)
+                continue;
+
+            ForeignKeyDefinition[] updatedForeignKeys = tableSchema.ForeignKeys
+                .Select(foreignKey => string.Equals(foreignKey.ReferencedTableName, oldTableName, StringComparison.OrdinalIgnoreCase)
+                    ? new ForeignKeyDefinition
+                    {
+                        ConstraintName = foreignKey.ConstraintName,
+                        ColumnName = foreignKey.ColumnName,
+                        ReferencedTableName = newTableName,
+                        ReferencedColumnName = foreignKey.ReferencedColumnName,
+                        OnDelete = foreignKey.OnDelete,
+                        SupportingIndexName = foreignKey.SupportingIndexName,
+                    }
+                    : foreignKey)
+                .ToArray();
+
+            if (updatedForeignKeys.SequenceEqual(tableSchema.ForeignKeys))
+                continue;
+
+            await _catalog.UpdateTableSchemaAsync(
+                tableSchema.TableName,
+                new TableSchema
+                {
+                    TableName = tableSchema.TableName,
+                    Columns = tableSchema.Columns,
+                    ForeignKeys = updatedForeignKeys,
+                    NextRowId = tableSchema.NextRowId,
+                },
+                ct);
+        }
+    }
+
+    private async ValueTask RenameColumnWithDependenciesAsync(
+        string tableName,
+        string oldColumnName,
+        string newColumnName,
+        TableSchema schema,
+        CancellationToken ct)
+    {
+        IndexSchema[] originalIndexes = _catalog.GetIndexesForTable(tableName).ToArray();
+        ColumnDefinition[] renamedColumns = schema.Columns.Select(column =>
+            string.Equals(column.Name, oldColumnName, StringComparison.OrdinalIgnoreCase)
+                ? new ColumnDefinition
+                {
+                    Name = newColumnName,
+                    Type = column.Type,
+                    Nullable = column.Nullable,
+                    IsPrimaryKey = column.IsPrimaryKey,
+                    IsIdentity = column.IsIdentity,
+                    Collation = column.Collation,
+                }
+                : column).ToArray();
+
+        ForeignKeyDefinition[] renamedForeignKeys = schema.ForeignKeys
+            .Select(foreignKey => RenameForeignKeyForColumn(foreignKey, tableName, oldColumnName, newColumnName))
+            .ToArray();
+
+        await _catalog.UpdateTableSchemaAsync(
+            tableName,
+            new TableSchema
+            {
+                TableName = tableName,
+                Columns = renamedColumns,
+                ForeignKeys = renamedForeignKeys,
+                NextRowId = schema.NextRowId,
+            },
+            ct);
+
+        for (int i = 0; i < originalIndexes.Length; i++)
+        {
+            IndexSchema index = originalIndexes[i];
+            IReadOnlyList<string> updatedColumns = index.Columns
+                .Select(column => string.Equals(column, oldColumnName, StringComparison.OrdinalIgnoreCase) ? newColumnName : column)
+                .ToArray();
+
+            string newIndexName = index.IndexName;
+            if (index.Kind == IndexKind.ForeignKeyInternal && index.OwnerIndexName is { Length: > 0 })
+            {
+                ForeignKeyDefinition? foreignKey = renamedForeignKeys.FirstOrDefault(fk =>
+                    string.Equals(fk.ConstraintName, index.OwnerIndexName, StringComparison.OrdinalIgnoreCase));
+                if (foreignKey != null)
+                    newIndexName = foreignKey.SupportingIndexName;
+            }
+
+            await _catalog.UpdateIndexSchemaAsync(
+                index.IndexName,
+                CloneIndexSchema(index, newIndexName, tableName, updatedColumns),
+                ct);
+        }
+
+        foreach (string otherTableName in _catalog.GetTableNames().ToArray())
+        {
+            if (string.Equals(otherTableName, tableName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            TableSchema? otherSchema = _catalog.GetTable(otherTableName);
+            if (otherSchema is null || otherSchema.ForeignKeys.Count == 0)
+                continue;
+
+            bool changed = false;
+            ForeignKeyDefinition[] updatedForeignKeys = otherSchema.ForeignKeys
+                .Select(foreignKey =>
+                {
+                    if (!string.Equals(foreignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(foreignKey.ReferencedColumnName, oldColumnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return foreignKey;
+                    }
+
+                    changed = true;
+                    return new ForeignKeyDefinition
+                    {
+                        ConstraintName = foreignKey.ConstraintName,
+                        ColumnName = foreignKey.ColumnName,
+                        ReferencedTableName = foreignKey.ReferencedTableName,
+                        ReferencedColumnName = newColumnName,
+                        OnDelete = foreignKey.OnDelete,
+                        SupportingIndexName = foreignKey.SupportingIndexName,
+                    };
+                })
+                .ToArray();
+
+            if (!changed)
+                continue;
+
+            await _catalog.UpdateTableSchemaAsync(
+                otherSchema.TableName,
+                new TableSchema
+                {
+                    TableName = otherSchema.TableName,
+                    Columns = otherSchema.Columns,
+                    ForeignKeys = updatedForeignKeys,
+                    NextRowId = otherSchema.NextRowId,
+                },
+                ct);
+        }
+    }
+
+    private static ForeignKeyDefinition RenameForeignKeyForTable(ForeignKeyDefinition foreignKey, string oldTableName, string newTableName)
+    {
+        bool childTableRenamed = true;
+        bool referencedTableRenamed = string.Equals(foreignKey.ReferencedTableName, oldTableName, StringComparison.OrdinalIgnoreCase);
+
+        return new ForeignKeyDefinition
+        {
+            ConstraintName = foreignKey.ConstraintName,
+            ColumnName = foreignKey.ColumnName,
+            ReferencedTableName = referencedTableRenamed ? newTableName : foreignKey.ReferencedTableName,
+            ReferencedColumnName = foreignKey.ReferencedColumnName,
+            OnDelete = foreignKey.OnDelete,
+            SupportingIndexName = childTableRenamed
+                ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, newTableName, foreignKey.ColumnName)
+                : foreignKey.SupportingIndexName,
+        };
+    }
+
+    private static ForeignKeyDefinition RenameForeignKeyForColumn(
+        ForeignKeyDefinition foreignKey,
+        string tableName,
+        string oldColumnName,
+        string newColumnName)
+    {
+        bool childColumnRenamed = string.Equals(foreignKey.ColumnName, oldColumnName, StringComparison.OrdinalIgnoreCase);
+        bool referencedColumnRenamed =
+            string.Equals(foreignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(foreignKey.ReferencedColumnName, oldColumnName, StringComparison.OrdinalIgnoreCase);
+
+        string childColumnName = childColumnRenamed ? newColumnName : foreignKey.ColumnName;
+        return new ForeignKeyDefinition
+        {
+            ConstraintName = foreignKey.ConstraintName,
+            ColumnName = childColumnName,
+            ReferencedTableName = foreignKey.ReferencedTableName,
+            ReferencedColumnName = referencedColumnRenamed ? newColumnName : foreignKey.ReferencedColumnName,
+            OnDelete = foreignKey.OnDelete,
+            SupportingIndexName = childColumnRenamed
+                ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, tableName, newColumnName)
+                : foreignKey.SupportingIndexName,
+        };
+    }
+
+    private static IndexSchema CloneIndexSchema(
+        IndexSchema index,
+        string newIndexName,
+        string newTableName,
+        IReadOnlyList<string> newColumns)
+        => new()
+        {
+            IndexName = newIndexName,
+            TableName = newTableName,
+            Columns = newColumns.ToArray(),
+            ColumnCollations = index.ColumnCollations.ToArray(),
+            IsUnique = index.IsUnique,
+            Kind = index.Kind,
+            State = index.State,
+            OwnerIndexName = index.OwnerIndexName,
+            OptionsJson = index.OptionsJson,
+        };
+
+    private static string SanitizeNameSegment(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            char ch = value[i];
+            builder.Append(char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : '_');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ComputeStableNameSuffix(string value)
+    {
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+    }
+
     private DbValue[] ResolveInsertRow(TableSchema schema, List<string>? columnNames, List<Expression> values)
     {
         var row = new DbValue[schema.Columns.Count];
@@ -10563,18 +11611,460 @@ public sealed class QueryPlanner
         };
     }
 
+    private async ValueTask PersistForeignKeyMutationContextAsync(
+        ForeignKeyMutationContext? mutationContext,
+        string tableName,
+        bool hasMutations,
+        bool persistRootChanges,
+        CancellationToken ct)
+    {
+        if (!hasMutations)
+            return;
+
+        if (mutationContext is null)
+        {
+            await _catalog.MarkTableColumnStatisticsStaleAsync(tableName, ct);
+            if (persistRootChanges)
+                await _catalog.PersistRootPageChangesAsync(tableName, ct);
+
+            return;
+        }
+
+        if (mutationContext.TouchedTables.Count == 0)
+            mutationContext.TouchedTables.Add(tableName);
+
+        if (mutationContext.StaleTables.Count == 0)
+            mutationContext.StaleTables.Add(tableName);
+
+        foreach (string staleTableName in mutationContext.StaleTables)
+            await _catalog.MarkTableColumnStatisticsStaleAsync(staleTableName, ct);
+
+        if (!persistRootChanges)
+            return;
+
+        foreach (string touchedTableName in mutationContext.TouchedTables)
+            await _catalog.PersistRootPageChangesAsync(touchedTableName, ct);
+    }
+
+    private async ValueTask ValidateOutgoingForeignKeysAsync(
+        string tableName,
+        TableSchema schema,
+        DbValue[]? oldRow,
+        DbValue[] newRow,
+        CancellationToken ct)
+    {
+        IReadOnlyList<ForeignKeyDefinition> foreignKeys = _catalog.GetForeignKeysForTable(tableName);
+        if (foreignKeys.Count == 0)
+            return;
+
+        for (int i = 0; i < foreignKeys.Count; i++)
+        {
+            ForeignKeyDefinition foreignKey = foreignKeys[i];
+            int childColumnIndex = schema.GetColumnIndex(foreignKey.ColumnName);
+            if (childColumnIndex < 0)
+                throw new InvalidOperationException($"Foreign key '{foreignKey.ConstraintName}' references missing child column '{foreignKey.ColumnName}'.");
+
+            DbValue childValue = newRow[childColumnIndex];
+            if (childValue.IsNull)
+                continue;
+
+            if (oldRow is not null && DbValue.Compare(oldRow[childColumnIndex], childValue) == 0)
+                continue;
+
+            TableSchema parentSchema = string.Equals(foreignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase)
+                ? schema
+                : GetSchema(foreignKey.ReferencedTableName);
+            int parentColumnIndex = parentSchema.GetColumnIndex(foreignKey.ReferencedColumnName);
+            if (parentColumnIndex < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Foreign key '{foreignKey.ConstraintName}' references missing parent column '{foreignKey.ReferencedColumnName}'.");
+            }
+
+            if (string.Equals(foreignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                DbValue.Compare(newRow[parentColumnIndex], childValue) == 0)
+            {
+                continue;
+            }
+
+            if (!await ParentRowExistsAsync(parentSchema, parentColumnIndex, childValue, ct))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Foreign key '{foreignKey.ConstraintName}' on table '{tableName}' requires a matching row in '{foreignKey.ReferencedTableName}'.");
+            }
+        }
+    }
+
+    private async ValueTask ValidateIncomingForeignKeyUpdatesAsync(
+        string tableName,
+        TableSchema schema,
+        long rowId,
+        DbValue[] oldRow,
+        DbValue[] newRow,
+        CancellationToken ct)
+    {
+        IReadOnlyList<TableForeignKeyReference> references = _catalog.GetReferencingForeignKeys(tableName);
+        if (references.Count == 0)
+            return;
+
+        for (int i = 0; i < references.Count; i++)
+        {
+            TableForeignKeyReference reference = references[i];
+            int parentColumnIndex = schema.GetColumnIndex(reference.ForeignKey.ReferencedColumnName);
+            if (parentColumnIndex < 0)
+                throw new InvalidOperationException($"Foreign key '{reference.ForeignKey.ConstraintName}' references missing parent column '{reference.ForeignKey.ReferencedColumnName}'.");
+
+            DbValue oldParentValue = oldRow[parentColumnIndex];
+            DbValue newParentValue = newRow[parentColumnIndex];
+            if (oldParentValue.IsNull || DbValue.Compare(oldParentValue, newParentValue) == 0)
+                continue;
+
+            List<(long RowId, DbValue[] Row)> dependents = await LoadReferencingRowsAsync(reference, oldParentValue, ct);
+            if (dependents.Count == 0)
+                continue;
+
+            bool onlyCurrentRowSelfReference = dependents.Count == 1 &&
+                string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                dependents[0].RowId == rowId;
+            if (onlyCurrentRowSelfReference)
+                continue;
+
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot update referenced value '{reference.ForeignKey.ReferencedColumnName}' on table '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows.");
+        }
+    }
+
+    private async ValueTask<bool> DeleteRowWithForeignKeysAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        IReadOnlyList<IndexSchema> indexes,
+        long rowId,
+        ForeignKeyMutationContext mutationContext,
+        int depth,
+        CancellationToken ct)
+    {
+        if (depth > MaxForeignKeyCascadeDepth)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
+        }
+
+        if (!mutationContext.VisitedDeletes.Add(new ForeignKeyDeleteKey(tableName, rowId)))
+            return false;
+
+        DbValue[]? currentRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+        if (currentRow is null)
+            return false;
+
+        await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Delete, currentRow, null, schema, ct);
+
+        currentRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+        if (currentRow is null)
+            return false;
+
+        IReadOnlyList<TableForeignKeyReference> references = _catalog.GetReferencingForeignKeys(tableName);
+        for (int i = 0; i < references.Count; i++)
+        {
+            TableForeignKeyReference reference = references[i];
+            int parentColumnIndex = schema.GetColumnIndex(reference.ForeignKey.ReferencedColumnName);
+            if (parentColumnIndex < 0)
+                throw new InvalidOperationException($"Foreign key '{reference.ForeignKey.ConstraintName}' references missing parent column '{reference.ForeignKey.ReferencedColumnName}'.");
+
+            DbValue parentValue = currentRow[parentColumnIndex];
+            if (parentValue.IsNull)
+                continue;
+
+            List<(long RowId, DbValue[] Row)> dependentRows = await LoadReferencingRowsAsync(reference, parentValue, ct);
+            if (dependentRows.Count == 0)
+                continue;
+
+            if (reference.ForeignKey.OnDelete != ForeignKeyOnDeleteAction.Cascade)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot delete row from '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows in '{reference.TableName}'.");
+            }
+
+            TableSchema childSchema = GetSchema(reference.TableName);
+            BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
+            IReadOnlyList<IndexSchema> childIndexes = _catalog.GetIndexesForTable(reference.TableName);
+            for (int dependentIndex = 0; dependentIndex < dependentRows.Count; dependentIndex++)
+            {
+                (long dependentRowId, _) = dependentRows[dependentIndex];
+                if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                    dependentRowId == rowId)
+                {
+                    continue;
+                }
+
+                await DeleteRowWithForeignKeysAsync(
+                    reference.TableName,
+                    childSchema,
+                    childTree,
+                    childIndexes,
+                    dependentRowId,
+                    mutationContext,
+                    depth + 1,
+                    ct);
+            }
+        }
+
+        await tree.DeleteAsync(rowId, ct);
+        await DeleteFromAllIndexesAsync(indexes, schema, currentRow, rowId, ct);
+        await _catalog.AdjustTableRowCountAsync(tableName, -1, ct);
+        mutationContext.TouchedTables.Add(tableName);
+        mutationContext.StaleTables.Add(tableName);
+
+        await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Delete, currentRow, null, schema, ct);
+        return true;
+    }
+
+    private async ValueTask<List<(long RowId, DbValue[] Row)>> LoadReferencingRowsAsync(
+        TableForeignKeyReference reference,
+        DbValue referencedValue,
+        CancellationToken ct)
+    {
+        var rows = new List<(long RowId, DbValue[] Row)>();
+        TableSchema childSchema = GetSchema(reference.TableName);
+        int childColumnIndex = childSchema.GetColumnIndex(reference.ForeignKey.ColumnName);
+        if (childColumnIndex < 0 || referencedValue.IsNull)
+            return rows;
+
+        BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
+        IRecordSerializer serializer = GetReadSerializer(childSchema);
+        IndexSchema? supportIndex = _catalog.GetIndex(reference.ForeignKey.SupportingIndexName);
+        if (supportIndex is not null &&
+            TryBuildForeignKeyLookup(supportIndex, childSchema, childColumnIndex, referencedValue, out long lookupKey, out DbValue[]? keyComponents, out SqlIndexStorageMode storageMode, out bool usesDirectIntegerKey))
+        {
+            byte[]? payload = await _catalog.GetIndexStore(supportIndex.IndexName).FindAsync(lookupKey, ct);
+            ReadOnlyMemory<byte> rowIdPayload = GetMatchingIndexRowIds(payload, keyComponents, storageMode, usesDirectIntegerKey);
+            if (!rowIdPayload.IsEmpty)
+            {
+                int rowIdCount = RowIdPayloadCodec.GetCount(rowIdPayload.Span);
+                for (int i = 0; i < rowIdCount; i++)
+                {
+                    long dependentRowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
+                    ReadOnlyMemory<byte>? rowPayload = await childTree.FindMemoryAsync(dependentRowId, ct);
+                    if (rowPayload is not { } rowPayloadMemory)
+                        continue;
+
+                    rows.Add((dependentRowId, serializer.Decode(rowPayloadMemory.Span)));
+                }
+
+                return rows;
+            }
+        }
+
+        string? childCollation = childSchema.Columns[childColumnIndex].Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(childSchema.Columns[childColumnIndex].Collation)
+            : null;
+        var cursor = childTree.CreateCursor();
+        while (await cursor.MoveNextAsync(ct))
+        {
+            DbValue[] childRow = serializer.Decode(cursor.CurrentValue.Span);
+            if (childColumnIndex >= childRow.Length)
+                continue;
+
+            if (!childRow[childColumnIndex].IsNull &&
+                CollationSupport.Compare(childRow[childColumnIndex], referencedValue, childCollation) == 0)
+            {
+                rows.Add((cursor.CurrentKey, childRow));
+            }
+        }
+
+        return rows;
+    }
+
+    private async ValueTask<bool> ParentRowExistsAsync(
+        TableSchema parentSchema,
+        int parentColumnIndex,
+        DbValue expectedValue,
+        CancellationToken ct)
+    {
+        if (expectedValue.IsNull)
+            return true;
+
+        if (parentColumnIndex == parentSchema.PrimaryKeyColumnIndex &&
+            parentSchema.Columns[parentColumnIndex].Type == DbType.Integer &&
+            expectedValue.Type == DbType.Integer)
+        {
+            return await _catalog.GetTableTree(parentSchema.TableName, _pager).FindMemoryAsync(expectedValue.AsInteger, ct) is not null;
+        }
+
+        IndexSchema? lookupIndex = FindSingleColumnForeignKeyLookupIndex(parentSchema, parentColumnIndex);
+        if (lookupIndex is not null &&
+            TryBuildForeignKeyLookup(lookupIndex, parentSchema, parentColumnIndex, expectedValue, out long lookupKey, out DbValue[]? keyComponents, out SqlIndexStorageMode storageMode, out bool usesDirectIntegerKey))
+        {
+            byte[]? payload = await _catalog.GetIndexStore(lookupIndex.IndexName).FindAsync(lookupKey, ct);
+            ReadOnlyMemory<byte> rowIdPayload = GetMatchingIndexRowIds(payload, keyComponents, storageMode, usesDirectIntegerKey);
+            if (!rowIdPayload.IsEmpty)
+            {
+                int rowIdCount = RowIdPayloadCodec.GetCount(rowIdPayload.Span);
+                BTree tableTree = _catalog.GetTableTree(parentSchema.TableName, _pager);
+                for (int i = 0; i < rowIdCount; i++)
+                {
+                    long rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, i);
+                    if (await tableTree.FindMemoryAsync(rowId, ct) is not null)
+                        return true;
+                }
+            }
+        }
+
+        string? parentCollation = parentSchema.Columns[parentColumnIndex].Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(parentSchema.Columns[parentColumnIndex].Collation)
+            : null;
+        BTree scanTree = _catalog.GetTableTree(parentSchema.TableName, _pager);
+        IRecordSerializer serializer = GetReadSerializer(parentSchema);
+        var cursor = scanTree.CreateCursor();
+        while (await cursor.MoveNextAsync(ct))
+        {
+            DbValue[] row = serializer.Decode(cursor.CurrentValue.Span);
+            if (parentColumnIndex < row.Length &&
+                !row[parentColumnIndex].IsNull &&
+                CollationSupport.Compare(row[parentColumnIndex], expectedValue, parentCollation) == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private IndexSchema? FindSingleColumnForeignKeyLookupIndex(TableSchema schema, int columnIndex)
+    {
+        string columnName = schema.Columns[columnIndex].Name;
+        string? expectedCollation = schema.Columns[columnIndex].Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(schema.Columns[columnIndex].Collation)
+            : null;
+
+        IndexSchema? firstMatch = null;
+        foreach (IndexSchema index in _catalog.GetSqlIndexesForTable(schema.TableName))
+        {
+            if (index.Columns.Count != 1 ||
+                !string.Equals(index.Columns[0], columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string? indexCollation = index.ColumnCollations.Count > 0
+                ? CollationSupport.NormalizeMetadataName(index.ColumnCollations[0])
+                : expectedCollation;
+            if (!CollationSupport.SemanticallyEquals(indexCollation, expectedCollation))
+                continue;
+
+            if (index.IsUnique)
+                return index;
+
+            firstMatch ??= index;
+        }
+
+        return firstMatch;
+    }
+
+    private static bool TryBuildForeignKeyLookup(
+        IndexSchema index,
+        TableSchema schema,
+        int columnIndex,
+        DbValue value,
+        out long lookupKey,
+        out DbValue[]? keyComponents,
+        out SqlIndexStorageMode storageMode,
+        out bool usesDirectIntegerKey)
+    {
+        lookupKey = 0;
+        keyComponents = null;
+        storageMode = SqlIndexStorageMode.Hashed;
+        usesDirectIntegerKey = false;
+
+        if (index.Columns.Count != 1 || value.IsNull)
+            return false;
+
+        int[] columnIndices = [columnIndex];
+        string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(index, schema, columnIndices);
+        storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(index, schema);
+        usesDirectIntegerKey = schema.Columns[columnIndex].Type == DbType.Integer;
+        if (usesDirectIntegerKey)
+        {
+            if (value.Type != DbType.Integer)
+                return false;
+
+            lookupKey = value.AsInteger;
+            return true;
+        }
+
+        if (value.Type is not (DbType.Integer or DbType.Text))
+            return false;
+
+        DbValue normalizedValue = CollationSupport.NormalizeIndexValue(
+            value,
+            indexColumnCollations.Length > 0 ? indexColumnCollations[0] : null);
+        keyComponents = [normalizedValue];
+        lookupKey = storageMode == SqlIndexStorageMode.OrderedText
+            ? OrderedTextIndexKeyCodec.ComputeKey(normalizedValue.AsText)
+            : IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+        return true;
+    }
+
+    private static ReadOnlyMemory<byte> GetMatchingIndexRowIds(
+        byte[]? payload,
+        DbValue[]? keyComponents,
+        SqlIndexStorageMode storageMode,
+        bool usesDirectIntegerKey)
+    {
+        if (payload is null || payload.Length == 0)
+            return ReadOnlyMemory<byte>.Empty;
+
+        if (usesDirectIntegerKey)
+            return payload;
+
+        if (storageMode == SqlIndexStorageMode.OrderedText)
+        {
+            return keyComponents is [var keyComponent] &&
+                   keyComponent.Type == DbType.Text &&
+                   OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(payload, keyComponent.AsText, out ReadOnlyMemory<byte> orderedRowIds)
+                ? orderedRowIds
+                : ReadOnlyMemory<byte>.Empty;
+        }
+
+        if (keyComponents is null)
+            return ReadOnlyMemory<byte>.Empty;
+
+        if (!HashedIndexPayloadCodec.TryGetMatchingRowIds(payload, keyComponents, out byte[]? hashedRowIds))
+            return ReadOnlyMemory<byte>.Empty;
+
+        return hashedRowIds ?? ReadOnlyMemory<byte>.Empty;
+    }
+
+    private async ValueTask<DbValue[]?> TryLoadRowAsync(
+        string tableName,
+        TableSchema schema,
+        long rowId,
+        CancellationToken ct)
+    {
+        ReadOnlyMemory<byte>? payload = await _catalog.GetTableTree(tableName, _pager).FindMemoryAsync(rowId, ct);
+        return payload is { } rowPayload ? GetReadSerializer(schema).Decode(rowPayload.Span) : null;
+    }
+
     private async ValueTask<long> ExecuteResolvedInsertRowAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
         IReadOnlyList<IndexSchema> indexes,
         DbValue[] row,
+        ForeignKeyMutationContext? mutationContext,
+        bool adjustTableRowCount,
         CancellationToken ct)
     {
         // BEFORE INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Insert, null, row, schema, ct);
 
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        if (mutationContext is not null)
+            await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow: null, row, ct);
         while (true)
         {
             try
@@ -10592,7 +12082,13 @@ public sealed class QueryPlanner
 
         // Maintain indexes
         await InsertIntoAllIndexesAsync(indexes, schema, row, rowId, ct);
-        await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
+        if (adjustTableRowCount)
+            await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
+        if (mutationContext is not null)
+        {
+            mutationContext.TouchedTables.Add(tableName);
+            mutationContext.StaleTables.Add(tableName);
+        }
 
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);

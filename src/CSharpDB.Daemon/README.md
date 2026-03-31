@@ -59,6 +59,7 @@ The contract is now method-based and strongly typed:
 - each `ICSharpDbClient` operation maps to an explicit RPC
 - complex models use protobuf messages
 - dynamic row/document/argument values use a recursive protobuf value shape instead of JSON payload strings
+- maintenance operations such as backup/restore, reindex, vacuum, and foreign-key retrofit migration are first-class RPCs rather than a generic tunnel
 
 ## Protocol Boundary
 

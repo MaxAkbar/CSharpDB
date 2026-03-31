@@ -1148,6 +1148,9 @@ public sealed class Parser
         var columns = new List<ColumnDef>();
         do
         {
+            if (Peek().Type == TokenType.Foreign)
+                throw Error("Table-level FOREIGN KEY constraints are not supported.");
+
             columns.Add(ParseColumnDef());
         } while (TryConsume(TokenType.Comma));
 
@@ -1234,8 +1237,9 @@ public sealed class Parser
         bool isIdentity = false;
         bool isNullable = true;
         string? collation = null;
+        ForeignKeyClause? foreignKey = null;
 
-        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE modifiers.
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE / REFERENCES modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
@@ -1269,6 +1273,13 @@ public sealed class Parser
                 Advance();
                 collation = ParseRequiredCollationName();
             }
+            else if (Peek().Type == TokenType.References)
+            {
+                if (foreignKey != null)
+                    throw Error($"REFERENCES specified multiple times for column '{name}'.");
+
+                foreignKey = ParseColumnForeignKeyClause(name);
+            }
             else break;
         }
 
@@ -1290,6 +1301,46 @@ public sealed class Parser
             IsIdentity = isIdentity,
             IsNullable = isNullable,
             Collation = collation,
+            ForeignKey = foreignKey,
+        };
+    }
+
+    private ForeignKeyClause ParseColumnForeignKeyClause(string columnName)
+    {
+        Expect(TokenType.References);
+        string referencedTableName = ParseMultipartIdentifier();
+
+        string? referencedColumnName = null;
+        if (TryConsume(TokenType.LeftParen))
+        {
+            referencedColumnName = ExpectIdentifier();
+            if (TryConsume(TokenType.Comma))
+                throw Error($"Composite foreign keys are not supported for column '{columnName}'.");
+
+            Expect(TokenType.RightParen);
+        }
+
+        var onDelete = ForeignKeyOnDeleteAction.Restrict;
+        if (TryConsume(TokenType.On))
+        {
+            if (!TryConsume(TokenType.Delete))
+                throw Error($"Only ON DELETE is supported for column '{columnName}'.");
+
+            if (TryConsume(TokenType.Cascade))
+            {
+                onDelete = ForeignKeyOnDeleteAction.Cascade;
+            }
+            else
+            {
+                throw Error($"Only ON DELETE CASCADE is supported for column '{columnName}'.");
+            }
+        }
+
+        return new ForeignKeyClause
+        {
+            ReferencedTableName = referencedTableName,
+            ReferencedColumnName = referencedColumnName,
+            OnDelete = onDelete,
         };
     }
 
@@ -1466,10 +1517,21 @@ public sealed class Parser
         else if (t == TokenType.Drop)
         {
             Advance();
-            // Optional COLUMN keyword
-            TryConsume(TokenType.Column);
-            string colName = ExpectIdentifier();
-            action = new DropColumnAction { ColumnName = colName };
+            if (TryConsume(TokenType.Column))
+            {
+                string colName = ExpectIdentifier();
+                action = new DropColumnAction { ColumnName = colName };
+            }
+            else if (TryConsume(TokenType.Constraint))
+            {
+                string constraintName = ExpectIdentifier();
+                action = new DropConstraintAction { ConstraintName = constraintName };
+            }
+            else
+            {
+                string colName = ExpectIdentifier();
+                action = new DropColumnAction { ColumnName = colName };
+            }
         }
         else if (t == TokenType.Rename)
         {

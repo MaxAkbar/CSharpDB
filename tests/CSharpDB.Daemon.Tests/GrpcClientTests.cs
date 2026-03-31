@@ -235,6 +235,98 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_MapsForeignKeyMetadata()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE grpc_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES grpc_parents(id) ON DELETE CASCADE
+            );
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        TableSchema? schema = await client.GetTableSchemaAsync("grpc_children", Ct);
+        Assert.NotNull(schema);
+        var foreignKey = Assert.Single(schema!.ForeignKeys);
+        Assert.Equal("parent_id", foreignKey.ColumnName);
+        Assert.Equal("grpc_parents", foreignKey.ReferencedTableName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.StartsWith("__fk_grpc_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GrpcClient_MigrateForeignKeys_RoundTripsValidationAndApply()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_migrate_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE grpc_migrate_children (id INTEGER PRIMARY KEY, parent_id INTEGER);
+            INSERT INTO grpc_migrate_parents VALUES (1);
+            INSERT INTO grpc_migrate_children VALUES (10, 1);
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        ForeignKeyMigrationResult validate = await client.MigrateForeignKeysAsync(
+            new ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                Constraints =
+                [
+                    new ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "grpc_migrate_children",
+                        ColumnName = "parent_id",
+                        ReferencedTableName = "grpc_migrate_parents",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(validate.ValidateOnly);
+        Assert.True(validate.Succeeded);
+        Assert.Equal(1, validate.AppliedForeignKeys);
+        Assert.Empty(validate.Violations);
+
+        ForeignKeyMigrationResult apply = await client.MigrateForeignKeysAsync(
+            new ForeignKeyMigrationRequest
+            {
+                Constraints =
+                [
+                    new ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "grpc_migrate_children",
+                        ColumnName = "parent_id",
+                        ReferencedTableName = "grpc_migrate_parents",
+                        ReferencedColumnName = "id",
+                        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.False(apply.ValidateOnly);
+        Assert.True(apply.Succeeded);
+        Assert.Equal(1, apply.CopiedRows);
+
+        TableSchema? schema = await client.GetTableSchemaAsync("grpc_migrate_children", Ct);
+        Assert.NotNull(schema);
+        var foreignKey = Assert.Single(schema!.ForeignKeys);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
     public async Task GrpcContract_ExposesExplicitRpcMethods()
     {
         using var transportClient = CreateGrpcHttpClient();

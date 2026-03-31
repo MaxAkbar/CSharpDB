@@ -19,7 +19,7 @@ public static partial class SqlHighlighter
         "AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "COLLATE", "UNION",
         "BEGIN", "END", "COMMIT", "ROLLBACK", "TRANSACTION",
         "PRIMARY", "KEY", "UNIQUE", "NOT", "DEFAULT", "CHECK", "FOREIGN", "REFERENCES",
-        "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "ADD", "RENAME", "TO",
+        "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "CONSTRAINT", "ADD", "RENAME", "TO",
         "BEFORE", "AFTER", "FOR", "EACH", "ROW", "INSTEAD", "OF",
         "IDENTITY", "AUTOINCREMENT",
         "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",

@@ -118,6 +118,226 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrateForeignKeysAsync_ValidateOnly_LegacyDatabaseWithValidDataReportsSuccessWithoutMutation()
+    {
+        await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);", Ct);
+        await _client.ExecuteSqlAsync("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, total INTEGER);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO customers VALUES (1, 'Ada');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (10, 1, 25);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (11, NULL, 50);", Ct);
+
+        await _client.DisposeAsync();
+        await RewriteTableSchemaAsLegacyAsync(_dbPath, "orders", Ct);
+        _client = CreateClient();
+
+        var result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "orders",
+                        ColumnName = "customer_id",
+                        ReferencedTableName = "customers",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.ValidateOnly);
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.AffectedTables);
+        Assert.Equal(1, result.AppliedForeignKeys);
+        Assert.Equal(0, result.CopiedRows);
+        Assert.Equal(0, result.ViolationCount);
+        var applied = Assert.Single(result.AppliedConstraints);
+        Assert.Equal("orders", applied.TableName);
+        Assert.Equal("customer_id", applied.ColumnName);
+        Assert.Equal("customers", applied.ReferencedTableName);
+        Assert.Equal("id", applied.ReferencedColumnName);
+        Assert.StartsWith("__fk_orders_customer_id_", applied.SupportingIndexName, StringComparison.Ordinal);
+
+        var schema = await _client.GetTableSchemaAsync("orders", Ct);
+        Assert.NotNull(schema);
+        Assert.Empty(schema!.ForeignKeys);
+
+        var fkRows = await _client.ExecuteSqlAsync("SELECT COUNT(*) FROM sys.foreign_keys WHERE table_name = 'orders';", Ct);
+        Assert.Null(fkRows.Error);
+        Assert.NotNull(fkRows.Rows);
+        Assert.Equal(0L, Convert.ToInt64(Assert.Single(fkRows.Rows)[0]));
+    }
+
+    [Fact]
+    public async Task MigrateForeignKeysAsync_ValidateOnly_ReportsSampledOrphans()
+    {
+        await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);", Ct);
+        await _client.ExecuteSqlAsync("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, total INTEGER);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO customers VALUES (1, 'Ada');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (10, 1, 25);", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (11, 99, 50);", Ct);
+
+        await _client.DisposeAsync();
+        await RewriteTableSchemaAsLegacyAsync(_dbPath, "orders", Ct);
+        _client = CreateClient();
+
+        var result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                ViolationSampleLimit = 10,
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "orders",
+                        ColumnName = "customer_id",
+                        ReferencedTableName = "customers",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.ValidateOnly);
+        Assert.False(result.Succeeded);
+        Assert.Equal(1, result.AffectedTables);
+        Assert.Equal(1, result.AppliedForeignKeys);
+        Assert.Equal(1, result.ViolationCount);
+        var violation = Assert.Single(result.Violations);
+        Assert.Equal("orders", violation.TableName);
+        Assert.Equal("customer_id", violation.ColumnName);
+        Assert.Equal("customers", violation.ReferencedTableName);
+        Assert.Equal("id", violation.ReferencedColumnName);
+        Assert.Equal("id", violation.ChildKeyColumnName);
+        Assert.Equal(11L, Assert.IsType<long>(violation.ChildKeyValue));
+        Assert.Equal(99L, Assert.IsType<long>(violation.ChildValue));
+        Assert.Equal("MissingReferencedParent", violation.Reason);
+
+        var schema = await _client.GetTableSchemaAsync("orders", Ct);
+        Assert.NotNull(schema);
+        Assert.Empty(schema!.ForeignKeys);
+    }
+
+    [Fact]
+    public async Task MigrateForeignKeysAsync_Apply_PersistsMetadataBackupEnforcementAndDropConstraint()
+    {
+        string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_fk_migration_backup_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);", Ct);
+            await _client.ExecuteSqlAsync("CREATE TABLE child_audit (child_id INTEGER NOT NULL);", Ct);
+            await _client.ExecuteSqlAsync("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, total INTEGER);", Ct);
+            await _client.ExecuteSqlAsync("CREATE INDEX idx_orders_total ON orders(total);", Ct);
+            await _client.ExecuteSqlAsync(
+                """
+                CREATE TRIGGER trg_orders_audit AFTER INSERT ON orders BEGIN
+                    INSERT INTO child_audit VALUES (NEW.id);
+                END;
+                """,
+                Ct);
+            await _client.ExecuteSqlAsync("INSERT INTO customers VALUES (1, 'Ada');", Ct);
+            await _client.ExecuteSqlAsync("INSERT INTO customers VALUES (2, 'Grace');", Ct);
+            await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (10, 1, 25);", Ct);
+
+            long auditCountBefore = await QueryScalarCountAsync(_client, "SELECT COUNT(*) FROM child_audit;", Ct);
+            Assert.Equal(1L, auditCountBefore);
+
+            await _client.DisposeAsync();
+            await RewriteTableSchemaAsLegacyAsync(_dbPath, "orders", Ct);
+            _client = CreateClient();
+
+            var result = await _client.MigrateForeignKeysAsync(
+                new ClientModels.ForeignKeyMigrationRequest
+                {
+                    BackupDestinationPath = backupPath,
+                    Constraints =
+                    [
+                        new ClientModels.ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = "orders",
+                            ColumnName = "customer_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                            OnDelete = ClientModels.ForeignKeyOnDeleteAction.Cascade,
+                        },
+                    ],
+                },
+                Ct);
+
+            Assert.False(result.ValidateOnly);
+            Assert.True(result.Succeeded);
+            Assert.Equal(Path.GetFullPath(backupPath), result.BackupDestinationPath);
+            Assert.Equal(1, result.AffectedTables);
+            Assert.Equal(1, result.AppliedForeignKeys);
+            Assert.Equal(1, result.CopiedRows);
+            Assert.True(File.Exists(backupPath));
+
+            var schema = await _client.GetTableSchemaAsync("orders", Ct);
+            Assert.NotNull(schema);
+            var foreignKey = Assert.Single(schema!.ForeignKeys);
+            Assert.Equal("customer_id", foreignKey.ColumnName);
+            Assert.Equal("customers", foreignKey.ReferencedTableName);
+            Assert.Equal("id", foreignKey.ReferencedColumnName);
+            Assert.Equal(ClientModels.ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+
+            long auditCountAfterMigration = await QueryScalarCountAsync(_client, "SELECT COUNT(*) FROM child_audit;", Ct);
+            Assert.Equal(auditCountBefore, auditCountAfterMigration);
+
+            var foreignKeyRows = await _client.ExecuteSqlAsync(
+                "SELECT constraint_name, supporting_index_name, on_delete FROM sys.foreign_keys WHERE table_name = 'orders';",
+                Ct);
+            Assert.Null(foreignKeyRows.Error);
+            Assert.NotNull(foreignKeyRows.Rows);
+            var foreignKeyRow = Assert.Single(foreignKeyRows.Rows);
+            string constraintName = Assert.IsType<string>(foreignKeyRow[0]);
+            string supportingIndexName = Assert.IsType<string>(foreignKeyRow[1]);
+            Assert.Equal("CASCADE", Assert.IsType<string>(foreignKeyRow[2]));
+            Assert.StartsWith("__fk_orders_customer_id_", supportingIndexName, StringComparison.Ordinal);
+
+            var invalidInsert = await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (20, 999, 30);", Ct);
+            Assert.NotNull(invalidInsert.Error);
+
+            var validInsert = await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (21, 2, 30);", Ct);
+            Assert.Null(validInsert.Error);
+            long auditCountAfterInsert = await QueryScalarCountAsync(_client, "SELECT COUNT(*) FROM child_audit;", Ct);
+            Assert.Equal(2L, auditCountAfterInsert);
+
+            var deleteParent = await _client.ExecuteSqlAsync("DELETE FROM customers WHERE id = 2;", Ct);
+            Assert.Null(deleteParent.Error);
+            long remainingChildren = await QueryScalarCountAsync(_client, "SELECT COUNT(*) FROM orders WHERE customer_id = 2;", Ct);
+            Assert.Equal(0L, remainingChildren);
+
+            var dropConstraint = await _client.ExecuteSqlAsync($"ALTER TABLE orders DROP CONSTRAINT {constraintName};", Ct);
+            Assert.Null(dropConstraint.Error);
+
+            var postDropSchema = await _client.GetTableSchemaAsync("orders", Ct);
+            Assert.NotNull(postDropSchema);
+            Assert.Empty(postDropSchema!.ForeignKeys);
+
+            var insertAfterDrop = await _client.ExecuteSqlAsync("INSERT INTO orders VALUES (30, 999, 35);", Ct);
+            Assert.Null(insertAfterDrop.Error);
+
+            await _client.DisposeAsync();
+            _client = CreateClient();
+
+            var reopenedSchema = await _client.GetTableSchemaAsync("orders", Ct);
+            Assert.NotNull(reopenedSchema);
+            Assert.Empty(reopenedSchema!.ForeignKeys);
+        }
+        finally
+        {
+            if (File.Exists(backupPath))
+                File.Delete(backupPath);
+            if (File.Exists(backupPath + ".wal"))
+                File.Delete(backupPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ReindexAsync_RebuildsNamedIndexTableScopeAndFullScope()
     {
         await _client.ExecuteSqlAsync("CREATE TABLE people (id INTEGER PRIMARY KEY, age INTEGER, name TEXT);", Ct);
@@ -499,6 +719,14 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
 
     private ICSharpDbClient CreateClient()
         => CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = _dbPath });
+
+    private static async Task<long> QueryScalarCountAsync(ICSharpDbClient client, string sql, CancellationToken ct)
+    {
+        var result = await client.ExecuteSqlAsync(sql, ct);
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Rows);
+        return Convert.ToInt64(Assert.Single(result.Rows)[0]);
+    }
 
     private static async Task<List<KeyValuePair<string, TDocument>>> CollectAsync<TDocument>(
         IAsyncEnumerable<KeyValuePair<string, TDocument>> source,

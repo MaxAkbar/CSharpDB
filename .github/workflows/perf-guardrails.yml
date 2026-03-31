@@ -35,21 +35,33 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Run Perf Guardrails (Report)
-        if: github.event_name != 'workflow_dispatch' || inputs.fail_on_regression != true
+      - name: Run Perf Guardrails PR Lane (Report)
+        if: github.event_name == 'pull_request'
         shell: pwsh
         run: |
           pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
             -Configuration Release `
+            -Mode pr `
             -NoFailOnRegression `
             -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
 
-      - name: Run Perf Guardrails (Gate)
+      - name: Run Perf Guardrails Release Lane (Report)
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.fail_on_regression != true)
+        shell: pwsh
+        run: |
+          pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
+            -Configuration Release `
+            -Mode release `
+            -NoFailOnRegression `
+            -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
+
+      - name: Run Perf Guardrails Release Lane (Gate)
         if: github.event_name == 'workflow_dispatch' && inputs.fail_on_regression == true
         shell: pwsh
         run: |
           pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 `
             -Configuration Release `
+            -Mode release `
             -BaselineSnapshot "${{ inputs.baseline_snapshot }}"
 
       - name: Upload Perf Artifacts

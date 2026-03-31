@@ -64,6 +64,7 @@ await using (client)
     commands.Add(new CheckpointCommand());
     commands.Add(new BackupCommand());
     commands.Add(new RestoreCommand());
+    commands.Add(new MigrateForeignKeysCommand());
     commands.Add(new ReindexCommand());
     commands.Add(new VacuumCommand());
     commands.Add(new SnapshotCommand());

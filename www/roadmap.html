@@ -13,6 +13,20 @@
     <meta property="og:url" content="https://csharpdb.com/roadmap.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Roadmap",
+        "description": "CSharpDB development roadmap — planned features, milestones, and the path from embedded engine to distributed database.",
+        "url": "https://csharpdb.com/roadmap.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
     <style>
         .roadmap-section { margin-bottom: 64px; }
         .roadmap-section h2 { display: flex; align-items: center; gap: 12px; }
@@ -117,7 +131,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Roadmap</h1>
-                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.4.0 state.</p>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.7.0 state.</p>
 
                 <!-- ════════ NEAR-TERM ════════ -->
                 <div class="roadmap-section">
@@ -212,6 +226,13 @@
                             </div>
                             <p>BackupAsync / RestoreAsync as first-class operations across direct, HTTP, gRPC, CLI, and Admin.</p>
                         </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Older DB Foreign-Key Retrofit Migration</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin.</p>
+                        </div>
                     </div>
                 </div>
 
@@ -248,9 +269,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Foreign Key Constraints</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>REFERENCES with optional ON DELETE CASCADE for referential integrity.</p>
+                            <p>v1 support for single-column, column-level REFERENCES with optional ON DELETE CASCADE, plus metadata/tooling surfaces.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -403,7 +424,7 @@
                             <tr><td>Functions</td><td>Limited scalar function surface; no user-defined functions yet</td></tr>
                             <tr><td>Query</td><td>Correlated subqueries not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
                             <tr><td>Query</td><td>No window functions; no UNION ALL</td></tr>
-                            <tr><td>Schema</td><td>No SQL DEFAULT column values, CHECK constraints, or foreign keys</td></tr>
+                            <tr><td>Schema</td><td>No SQL DEFAULT column values or CHECK constraints yet. Foreign keys are currently v1 only: single-column, column-level REFERENCES with optional ON DELETE CASCADE; table-level/composite/deferred foreign keys and ON UPDATE actions are not implemented</td></tr>
                             <tr><td>Indexes</td><td>Ordered range-scan pushdown limited to single-column INTEGER index paths</td></tr>
                             <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); consolidation planned</td></tr>
                             <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls</td></tr>
@@ -448,6 +469,7 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Background WAL auto-checkpointing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree delete rebalancing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide backup and restore</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization and ranking</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite</div>
                     </div>

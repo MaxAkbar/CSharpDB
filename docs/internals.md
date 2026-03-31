@@ -356,7 +356,7 @@ These are known simplifications:
 | **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE`; correlated subqueries are still unsupported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, and aggregate projections |
 | **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
-| **Schema** | No SQL `DEFAULT` column values, `CHECK` constraints, or foreign keys |
+| **Schema** | No SQL `DEFAULT` column values or `CHECK` constraints yet. Foreign keys are currently v1 only: single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`; table-level/composite/deferred foreign keys and `ON UPDATE` actions are not implemented |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |

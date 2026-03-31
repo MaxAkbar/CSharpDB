@@ -2847,6 +2847,7 @@ public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseC
 public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider
 {
     private const int DefaultBatchSize = 64;
+    private const int SmallLimitRowModeThreshold = 4;
 
     private readonly IOperator _source;
     private readonly int _limit;
@@ -2895,6 +2896,22 @@ public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseCo
     {
         if (_count >= _limit)
             return false;
+
+        int remaining = _limit - _count;
+        if (remaining <= SmallLimitRowModeThreshold && _sourceBatchRowIndex < 0)
+        {
+            var smallBatch = _reuseCurrentBatch ? EnsureBatch(_source.OutputSchema.Length) : CreateBatch(_source.OutputSchema.Length);
+            smallBatch.Reset();
+
+            while (smallBatch.Count < remaining && _count < _limit && await _source.MoveNextAsync(ct))
+            {
+                smallBatch.AppendRow(_source.Current);
+                _count++;
+            }
+
+            _currentBatch = smallBatch;
+            return smallBatch.Count > 0;
+        }
 
         var batchSource = BatchSourceHelper.TryGetBatchSource(_source);
         if (batchSource != null)
@@ -6123,7 +6140,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
 /// Hash-join operator for equi-joins (with optional residual predicate).
 /// Supports INNER, LEFT OUTER, and RIGHT OUTER joins.
 /// </summary>
-public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
 {
     private const int DefaultBatchSize = 64;
 
@@ -6158,6 +6175,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
     private bool _probeExhausted;
     private int _rightOuterEmitIndex;
     private int[]? _projectionColumnIndices;
+    private ProjectionAccessor[]? _projectionAccessors;
     private bool _buildRowCompactionEnabled;
     private int[]? _buildRequiredColumnIndices;
     private int[]? _buildColumnToCompactIndexMap;
@@ -6172,6 +6190,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
     public HashJoinOperator(
         IOperator left,
@@ -6227,6 +6246,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
             throw new CSharpDbException(ErrorCode.Unknown, "Swapped hash build side is supported for INNER JOIN only.");
 
         ConfigureBuildRowCompaction();
+        ConfigureProjectionAccessors();
 
         if (_left is IRowBufferReuseController leftController)
         {
@@ -6517,6 +6537,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
         _projectionColumnIndices = (int[])columnIndices.Clone();
         OutputSchema = outputSchema;
         TryApplyDecodeBoundPushdown();
+        ConfigureProjectionAccessors();
         return true;
     }
 
@@ -6649,6 +6670,52 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
                 orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
                 break;
         }
+    }
+
+    private void ConfigureProjectionAccessors()
+    {
+        var projection = _projectionColumnIndices;
+        if (projection == null || projection.Length == 0)
+        {
+            _projectionAccessors = null;
+            return;
+        }
+
+        var accessors = new ProjectionAccessor[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                bool sourceIsBuild = !_buildRightSide;
+                accessors[i] = new ProjectionAccessor(
+                    sourceIsLeft: true,
+                    sourceIndex: ResolveProjectedSourceIndex(columnIndex, sourceIsBuild));
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                bool sourceIsBuild = _buildRightSide;
+                accessors[i] = new ProjectionAccessor(
+                    sourceIsLeft: false,
+                    sourceIndex: ResolveProjectedSourceIndex(rightIndex, sourceIsBuild));
+            }
+        }
+
+        _projectionAccessors = accessors;
+    }
+
+    private int ResolveProjectedSourceIndex(int columnIndex, bool sourceIsBuild)
+    {
+        if (!sourceIsBuild || !_buildRowCompactionEnabled)
+            return columnIndex;
+
+        var columnToCompactIndex = _buildColumnToCompactIndexMap
+            ?? throw new InvalidOperationException("Build row compaction map is not configured.");
+        if ((uint)columnIndex >= (uint)columnToCompactIndex.Length)
+            return -1;
+
+        return columnToCompactIndex[columnIndex];
     }
 
     private IOperator BuildSource => _buildRightSide ? _right : _left;
@@ -7481,6 +7548,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
             return Array.Empty<DbValue>();
 
         var projected = new DbValue[projection.Length];
+        if (ReferenceEquals(projection, _projectionColumnIndices) && _projectionAccessors != null)
+        {
+            WriteProjectedRowsWithAccessors(leftRow, rightRow, _projectionAccessors, projected);
+            return projected;
+        }
+
         for (int i = 0; i < projection.Length; i++)
         {
             int columnIndex = projection[i];
@@ -7540,6 +7613,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
         bool leftIsBuildSide = false,
         bool rightIsBuildSide = false)
     {
+        if (ReferenceEquals(projection, _projectionColumnIndices) && _projectionAccessors != null)
+        {
+            WriteProjectedRowsWithAccessors(leftRow, rightRow, _projectionAccessors, destination);
+            return;
+        }
+
         for (int i = 0; i < projection.Length; i++)
         {
             int columnIndex = projection[i];
@@ -7563,6 +7642,23 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
         }
     }
 
+    private static void WriteProjectedRowsWithAccessors(
+        DbValue[] leftRow,
+        DbValue[] rightRow,
+        ProjectionAccessor[] accessors,
+        Span<DbValue> destination)
+    {
+        for (int i = 0; i < accessors.Length; i++)
+        {
+            ref readonly ProjectionAccessor accessor = ref accessors[i];
+            DbValue[] sourceRow = accessor.SourceIsLeft ? leftRow : rightRow;
+            int sourceIndex = accessor.SourceIndex;
+            destination[i] = sourceIndex >= 0 && sourceIndex < sourceRow.Length
+                ? sourceRow[sourceIndex]
+                : DbValue.Null;
+        }
+    }
+
     private DbValue GetBuildSideColumnValue(DbValue[] buildRow, int buildColumnIndex)
     {
         if (!_buildRowCompactionEnabled)
@@ -7577,6 +7673,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
         return compactIndex >= 0 && compactIndex < buildRow.Length
             ? buildRow[compactIndex]
             : DbValue.Null;
+    }
+
+    private readonly struct ProjectionAccessor(bool sourceIsLeft, int sourceIndex)
+    {
+        public bool SourceIsLeft { get; } = sourceIsLeft;
+        public int SourceIndex { get; } = sourceIndex;
     }
 
     private struct SingleKeyBucket
@@ -7666,19 +7768,22 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IProjectionPus
 /// Uses a right-side PRIMARY KEY or unique single-column index for lookup joins.
 /// Supports INNER and LEFT OUTER joins.
 /// </summary>
-public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
 {
     private const int DefaultBatchSize = 64;
 
     private readonly IOperator _outer;
     private readonly BTree _innerTableTree;
     private readonly IIndexStore? _innerIndexStore;
+    private readonly ICacheAwareIndexStore? _innerCacheAwareIndexStore;
     private readonly JoinType _joinType;
     private readonly int _outerKeyIndex;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
     private readonly int? _estimatedRowCount;
+    private readonly Expression? _residualConditionExpression;
     private readonly Func<DbValue[], DbValue>? _residualPredicate;
+    private readonly TableSchema _compositeSchema;
     private readonly IRecordSerializer _recordSerializer;
     private DbValue[]? _activeOuterRow;
     private bool _activeOuterMatched;
@@ -7702,6 +7807,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
     public IndexNestedLoopJoinOperator(
         IOperator outer,
@@ -7719,14 +7825,17 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
         _outer = outer;
         _innerTableTree = innerTableTree;
         _innerIndexStore = innerIndexStore;
+        _innerCacheAwareIndexStore = innerIndexStore as ICacheAwareIndexStore;
         _joinType = joinType;
         _outerKeyIndex = outerKeyIndex;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
+        _residualConditionExpression = residualCondition;
         _residualPredicate = residualCondition != null
             ? ExpressionCompiler.Compile(residualCondition, compositeSchema)
             : null;
+        _compositeSchema = compositeSchema;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
     }
@@ -7822,7 +7931,17 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
             }
             else
             {
-                var indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
+                byte[]? indexPayload;
+                if (_innerCacheAwareIndexStore != null &&
+                    _innerCacheAwareIndexStore.TryFindCached(lookupKey, out var cachedIndexPayload))
+                {
+                    indexPayload = cachedIndexPayload;
+                }
+                else
+                {
+                    indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
+                }
+
                 _pendingPrimaryRowId = false;
                 _pendingIndexPayload = indexPayload == null
                     ? ReadOnlyMemory<byte>.Empty
@@ -7876,7 +7995,17 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
             }
             else
             {
-                var indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
+                byte[]? indexPayload;
+                if (_innerCacheAwareIndexStore != null &&
+                    _innerCacheAwareIndexStore.TryFindCached(lookupKey, out var cachedIndexPayload))
+                {
+                    indexPayload = cachedIndexPayload;
+                }
+                else
+                {
+                    indexPayload = await _innerIndexStore.FindAsync(lookupKey, ct);
+                }
+
                 _pendingPrimaryRowId = false;
                 _pendingIndexPayload = indexPayload == null
                     ? ReadOnlyMemory<byte>.Empty
@@ -7927,10 +8056,6 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
         if (_projectionColumnIndices == null)
             return;
 
-        // Residual predicates are evaluated on full combined rows; keep full decode in that case.
-        if (_residualPredicate != null)
-            return;
-
         var outerFlags = new bool[_leftColCount];
         var rightFlags = new bool[_rightColCount];
         int outerRequiredCount = 0;
@@ -7968,6 +8093,12 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
             }
         }
 
+        if (_residualConditionExpression != null &&
+            !TryMarkConditionColumnsForExpression(_residualConditionExpression, MarkOuterRequired, MarkRightRequired))
+        {
+            return;
+        }
+
         int[] outerRequiredColumns = BuildRequiredColumnIndices(outerFlags, outerRequiredCount);
         _decodedRightColumnIndices = BuildRequiredColumnIndices(rightFlags, rightRequiredCount);
         _maxDecodedRightColumnIndex = _decodedRightColumnIndices.Length == 0
@@ -7976,6 +8107,80 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
 
         if (!TrySetDecodedColumnIndices(_outer, outerRequiredColumns) && outerRequiredColumns.Length > 0)
             TrySetDecodedColumnUpperBound(_outer, outerRequiredColumns[^1]);
+    }
+
+    private bool TryMarkConditionColumnsForExpression(
+        Expression expression,
+        Action<int> markOuterColumn,
+        Action<int> markRightColumn)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                return true;
+            case ColumnRefExpression columnRef:
+            {
+                int compositeColumnIndex = columnRef.TableAlias != null
+                    ? _compositeSchema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
+                    : _compositeSchema.GetColumnIndex(columnRef.ColumnName);
+                if (compositeColumnIndex < 0)
+                    return false;
+
+                if (compositeColumnIndex < _leftColCount)
+                    markOuterColumn(compositeColumnIndex);
+                else
+                    markRightColumn(compositeColumnIndex - _leftColCount);
+
+                return true;
+            }
+            case BinaryExpression binaryExpression:
+                return TryMarkConditionColumnsForExpression(binaryExpression.Left, markOuterColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(binaryExpression.Right, markOuterColumn, markRightColumn);
+            case UnaryExpression unaryExpression:
+                return TryMarkConditionColumnsForExpression(unaryExpression.Operand, markOuterColumn, markRightColumn);
+            case CollateExpression collateExpression:
+                return TryMarkConditionColumnsForExpression(collateExpression.Operand, markOuterColumn, markRightColumn);
+            case LikeExpression likeExpression:
+                return TryMarkConditionColumnsForExpression(likeExpression.Operand, markOuterColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(likeExpression.Pattern, markOuterColumn, markRightColumn)
+                    && (likeExpression.EscapeChar == null
+                        || TryMarkConditionColumnsForExpression(likeExpression.EscapeChar, markOuterColumn, markRightColumn));
+            case InExpression inExpression:
+            {
+                if (!TryMarkConditionColumnsForExpression(inExpression.Operand, markOuterColumn, markRightColumn))
+                    return false;
+
+                for (int i = 0; i < inExpression.Values.Count; i++)
+                {
+                    if (!TryMarkConditionColumnsForExpression(inExpression.Values[i], markOuterColumn, markRightColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            case BetweenExpression betweenExpression:
+                return TryMarkConditionColumnsForExpression(betweenExpression.Operand, markOuterColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(betweenExpression.Low, markOuterColumn, markRightColumn)
+                    && TryMarkConditionColumnsForExpression(betweenExpression.High, markOuterColumn, markRightColumn);
+            case IsNullExpression isNullExpression:
+                return TryMarkConditionColumnsForExpression(isNullExpression.Operand, markOuterColumn, markRightColumn);
+            case FunctionCallExpression functionCall:
+            {
+                if (functionCall.IsStarArg)
+                    return true;
+
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryMarkConditionColumnsForExpression(functionCall.Arguments[i], markOuterColumn, markRightColumn))
+                        return false;
+                }
+
+                return true;
+            }
+            default:
+                return false;
+        }
     }
 
     private static int[] BuildRequiredColumnIndices(bool[] flags, int count)
@@ -8417,9 +8622,11 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IPr
 /// Supports exact equality lookups over single-column text indexes and
 /// composite integer/text indexes on the right side.
 /// </summary>
-public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
 {
     private const int DefaultBatchSize = 64;
+    private const int CoveredProjectionLeftSlot = -2;
+    private const int CoveredProjectionRowIdSlot = -1;
 
     private readonly IOperator _outer;
     private readonly BTree _innerTableTree;
@@ -8442,6 +8649,9 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private bool _rowIdsVerifiedByIndexPayload;
     private DbValue[]? _currentKeyComponents;
     private byte[][]? _currentKeyTextBytes;
+    private DbValue[]? _lookupKeyComponentBuffer;
+    private byte[][]? _lookupKeyTextBytesBuffer;
+    private Dictionary<string, byte[]>? _lookupTextByteCache;
     private RecordColumnAccessor?[]? _keyAccessors;
     private DbValue[]? _rightRowBuffer;
     private DbValue[]? _residualRowBuffer;
@@ -8449,6 +8659,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private int[]? _decodedRightColumnIndices;
     private int? _maxDecodedRightColumnIndex;
     private bool _canProjectRightFromIndexPayload;
+    private int[]? _coveredProjectionKeyComponentMap;
     private IBatchOperator? _outerBatchSource;
     private RowBatch? _pendingOuterBatch;
     private int _pendingOuterBatchRowIndex;
@@ -8460,6 +8671,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
     public HashedIndexNestedLoopJoinOperator(
         IOperator outer,
@@ -8512,6 +8724,9 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _pendingOuterBatch = null;
         _pendingOuterBatchRowIndex = 0;
         _outerBatchRowBuffer = null;
+        _lookupKeyComponentBuffer = null;
+        _lookupKeyTextBytesBuffer = null;
+        _lookupTextByteCache = null;
         _residualRowBuffer = _residualPredicate == null
             ? null
             : new DbValue[_leftColCount + _rightColCount];
@@ -8573,7 +8788,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             var outerRow = await TryMoveNextOuterRowAsync(ct);
             if (outerRow == null)
                 return false;
-            if (!TryBuildLookupKey(outerRow, out long lookupKey, out var keyComponents))
+            if (!TryBuildLookupKey(outerRow, out long lookupKey, out var keyComponents, out var keyTextBytes))
             {
                 if (_joinType == JoinType.LeftOuter)
                 {
@@ -8587,7 +8802,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             _activeOuterRow = outerRow;
             _activeOuterMatched = false;
             _currentKeyComponents = keyComponents;
-            _currentKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+            _currentKeyTextBytes = keyTextBytes;
 
             byte[]? indexPayload;
             if (_innerIndexStore is ICacheAwareIndexStore cacheAware &&
@@ -8624,7 +8839,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             if (outerRow == null)
                 break;
 
-            if (!TryBuildLookupKey(outerRow, out long lookupKey, out var keyComponents))
+            if (!TryBuildLookupKey(outerRow, out long lookupKey, out var keyComponents, out var keyTextBytes))
             {
                 if (_joinType == JoinType.LeftOuter)
                 {
@@ -8638,7 +8853,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             _activeOuterRow = outerRow;
             _activeOuterMatched = false;
             _currentKeyComponents = keyComponents;
-            _currentKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+            _currentKeyTextBytes = keyTextBytes;
 
             byte[]? indexPayload;
             if (_innerIndexStore is ICacheAwareIndexStore cacheAware &&
@@ -8689,6 +8904,9 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         OutputSchema = outputSchema;
         TryApplyDecodeBoundPushdown();
         _canProjectRightFromIndexPayload = CanProjectRightFromIndexPayload();
+        _coveredProjectionKeyComponentMap = _canProjectRightFromIndexPayload
+            ? BuildCoveredProjectionKeyComponentMap(_projectionColumnIndices)
+            : null;
         return true;
     }
 
@@ -8815,10 +9033,16 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         }
     }
 
-    private bool TryBuildLookupKey(DbValue[] outerRow, out long lookupKey, out DbValue[] keyComponents)
+    private bool TryBuildLookupKey(DbValue[] outerRow, out long lookupKey, out DbValue[] keyComponents, out byte[][]? keyTextBytes)
     {
         lookupKey = 0;
-        keyComponents = new DbValue[_outerKeyIndices.Length];
+        keyTextBytes = null;
+        keyComponents = EnsureLookupKeyComponentBuffer(_outerKeyIndices.Length);
+        byte[][]? textBytes = _lookupKeyTextBytesBuffer;
+        if (textBytes != null)
+            Array.Clear(textBytes, 0, textBytes.Length);
+
+        bool hasTextComponents = false;
         for (int i = 0; i < _outerKeyIndices.Length; i++)
         {
             int outerKeyIndex = _outerKeyIndices[i];
@@ -8830,8 +9054,17 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
                 return false;
 
             string? collation = i < _rightKeyCollations.Length ? _rightKeyCollations[i] : null;
-            keyComponents[i] = CollationSupport.NormalizeIndexValue(value, collation);
+            var normalized = CollationSupport.NormalizeIndexValue(value, collation);
+            keyComponents[i] = normalized;
+            if (normalized.Type == DbType.Text)
+            {
+                textBytes ??= EnsureLookupKeyTextBytesBuffer(_outerKeyIndices.Length);
+                textBytes[i] = GetCachedLookupTextBytes(normalized.AsText);
+                hasTextComponents = true;
+            }
         }
+
+        keyTextBytes = hasTextComponents ? textBytes : null;
 
         if (_usesOrderedTextPayload)
         {
@@ -9147,36 +9380,27 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
 
         var projected = new DbValue[projection.Length];
         DbValue rowIdValue = DbValue.FromInteger(rowId);
+        var coveredProjectionMap = _coveredProjectionKeyComponentMap;
         for (int i = 0; i < projection.Length; i++)
         {
-            int projectionIndex = projection[i];
-            if (projectionIndex < _leftColCount)
+            int mapping = coveredProjectionMap is { Length: > 0 } ? coveredProjectionMap[i] : int.MinValue;
+            if (mapping == CoveredProjectionLeftSlot)
             {
+                int projectionIndex = projection[i];
                 projected[i] = projectionIndex < leftRow.Length
                     ? leftRow[projectionIndex]
                     : DbValue.Null;
                 continue;
             }
 
-            int rightColumnIndex = projectionIndex - _leftColCount;
-            if (rightColumnIndex == _rightPrimaryKeyColumnIndex)
+            if (mapping == CoveredProjectionRowIdSlot)
             {
                 projected[i] = rowIdValue;
                 continue;
             }
 
-            int keyComponentIndex = -1;
-            for (int j = 0; j < _rightKeyColumnIndices.Length; j++)
-            {
-                if (_rightKeyColumnIndices[j] == rightColumnIndex)
-                {
-                    keyComponentIndex = j;
-                    break;
-                }
-            }
-
-            projected[i] = keyComponentIndex >= 0
-                ? keyComponents[keyComponentIndex]
+            projected[i] = mapping >= 0
+                ? keyComponents[mapping]
                 : DbValue.Null;
         }
 
@@ -9340,39 +9564,90 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     {
         DbValue rowIdValue = DbValue.FromInteger(rowId);
         var keyComponents = _currentKeyComponents;
+        var coveredProjectionMap = _coveredProjectionKeyComponentMap;
 
         for (int i = 0; i < projection.Length; i++)
         {
-            int columnIndex = projection[i];
-            if (columnIndex < _leftColCount)
+            int mapping = coveredProjectionMap is { Length: > 0 } ? coveredProjectionMap[i] : int.MinValue;
+            if (mapping == CoveredProjectionLeftSlot)
             {
+                int columnIndex = projection[i];
                 destination[i] = columnIndex < leftRow.Length
                     ? leftRow[columnIndex]
                     : DbValue.Null;
                 continue;
             }
 
-            int rightColumnIndex = columnIndex - _leftColCount;
-            if (rightColumnIndex == _rightPrimaryKeyColumnIndex)
+            if (mapping == CoveredProjectionRowIdSlot)
             {
                 destination[i] = rowIdValue;
                 continue;
             }
 
-            int keyComponentIndex = -1;
+            destination[i] = mapping >= 0 && keyComponents != null
+                ? keyComponents[mapping]
+                : DbValue.Null;
+        }
+    }
+
+    private DbValue[] EnsureLookupKeyComponentBuffer(int componentCount)
+    {
+        if (_lookupKeyComponentBuffer == null || _lookupKeyComponentBuffer.Length != componentCount)
+            _lookupKeyComponentBuffer = componentCount == 0 ? Array.Empty<DbValue>() : new DbValue[componentCount];
+
+        return _lookupKeyComponentBuffer;
+    }
+
+    private byte[][] EnsureLookupKeyTextBytesBuffer(int componentCount)
+    {
+        if (_lookupKeyTextBytesBuffer == null || _lookupKeyTextBytesBuffer.Length != componentCount)
+            _lookupKeyTextBytesBuffer = new byte[componentCount][];
+
+        return _lookupKeyTextBytesBuffer;
+    }
+
+    private byte[] GetCachedLookupTextBytes(string value)
+    {
+        _lookupTextByteCache ??= new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        if (_lookupTextByteCache.TryGetValue(value, out var bytes))
+            return bytes;
+
+        bytes = Encoding.UTF8.GetBytes(value);
+        _lookupTextByteCache[value] = bytes;
+        return bytes;
+    }
+
+    private int[] BuildCoveredProjectionKeyComponentMap(int[] projection)
+    {
+        var mapping = new int[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                mapping[i] = CoveredProjectionLeftSlot;
+                continue;
+            }
+
+            int rightColumnIndex = columnIndex - _leftColCount;
+            if (rightColumnIndex == _rightPrimaryKeyColumnIndex)
+            {
+                mapping[i] = CoveredProjectionRowIdSlot;
+                continue;
+            }
+
+            mapping[i] = -3;
             for (int j = 0; j < _rightKeyColumnIndices.Length; j++)
             {
                 if (_rightKeyColumnIndices[j] == rightColumnIndex)
                 {
-                    keyComponentIndex = j;
+                    mapping[i] = j;
                     break;
                 }
             }
-
-            destination[i] = keyComponentIndex >= 0 && keyComponents != null
-                ? keyComponents[keyComponentIndex]
-                : DbValue.Null;
         }
+
+        return mapping;
     }
 }
 
@@ -9380,7 +9655,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
 /// Nested-loop join operator — materializes both sides and computes the join.
 /// Supports INNER, LEFT OUTER, RIGHT OUTER, and CROSS joins.
 /// </summary>
-public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
 {
     private const int DefaultBatchSize = 64;
 
@@ -9414,6 +9689,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IProject
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
     public NestedLoopJoinOperator(
         IOperator left, IOperator right,

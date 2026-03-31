@@ -35,7 +35,14 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.Collation)).ToList());
+                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.Collation)).ToList(),
+            schema.ForeignKeys.Select(fk => new ForeignKeyResponse(
+                fk.ConstraintName,
+                fk.ColumnName,
+                fk.ReferencedTableName,
+                fk.ReferencedColumnName,
+                fk.OnDelete.ToString(),
+                fk.SupportingIndexName)).ToList());
 
         return Results.Ok(response);
     }

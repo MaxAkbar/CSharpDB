@@ -1,6 +1,8 @@
 @using CSharpDB.Client
 @using CSharpDB.Client.Models
 @using CSharpDB.Storage.Diagnostics
+@using System.Text.Json
+@using System.Text.Json.Serialization
 @inject ICSharpDbClient DbClient
 @inject ToastService Toast
 @inject DatabaseChangeService Changes
@@ -213,6 +215,125 @@
                         <p class="schema-empty">@_backupRestoreStatus</p>
                     }
                 </div>
+
+                <div class="storage-subsection">
+                    <h4>Foreign Key Migration</h4>
+                    <p class="schema-empty">Paste a JSON migration spec for older databases. Validation previews violations; apply rewrites only the affected child tables.</p>
+
+                    <textarea class="storage-input mono"
+                              rows="12"
+                              @bind="_foreignKeyMigrationSpecJson"
+                              disabled="@_maintenanceBusy"
+                              placeholder='{"validateOnly":true,"violationSampleLimit":100,"constraints":[{"tableName":"orders","columnName":"customer_id","referencedTableName":"customers","referencedColumnName":"id","onDelete":"Restrict"}]}'></textarea>
+
+                    <div class="storage-action-row">
+                        <input class="storage-input mono storage-path-input"
+                               type="text"
+                               @bind="_foreignKeyMigrationBackupPath"
+                               placeholder="Optional backup destination path"
+                               disabled="@_maintenanceBusy" />
+
+                        <button class="toolbar-btn" @onclick="ValidateForeignKeyMigrationAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
+                            <i class="bi bi-shield-check"></i> Validate
+                        </button>
+
+                        <label class="storage-check">
+                            <input type="checkbox" @bind="_foreignKeyMigrationConfirmArmed" disabled="@_maintenanceBusy" />
+                            Confirm apply migration
+                        </label>
+
+                        <button class="toolbar-btn danger" @onclick="RunForeignKeyMigrationAsync" disabled="@(_maintenanceBusy || !_foreignKeyMigrationConfirmArmed || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
+                            <i class="bi bi-link-45deg"></i> Apply
+                        </button>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_foreignKeyMigrationStatus))
+                    {
+                        <p class="schema-empty">@_foreignKeyMigrationStatus</p>
+                    }
+
+                    @if (_foreignKeyMigrationResult is not null)
+                    {
+                        <table class="schema-table">
+                            <tbody>
+                                <tr><th>Validate Only</th><td>@BoolText(_foreignKeyMigrationResult.ValidateOnly)</td></tr>
+                                <tr><th>Succeeded</th><td>@BoolText(_foreignKeyMigrationResult.Succeeded)</td></tr>
+                                <tr><th>Affected Tables</th><td>@_foreignKeyMigrationResult.AffectedTables</td></tr>
+                                <tr><th>Applied Foreign Keys</th><td>@_foreignKeyMigrationResult.AppliedForeignKeys</td></tr>
+                                <tr><th>Copied Rows</th><td>@_foreignKeyMigrationResult.CopiedRows</td></tr>
+                                <tr><th>Violations</th><td>@_foreignKeyMigrationResult.ViolationCount</td></tr>
+                                @if (!string.IsNullOrWhiteSpace(_foreignKeyMigrationResult.BackupDestinationPath))
+                                {
+                                    <tr><th>Backup</th><td class="mono-cell">@_foreignKeyMigrationResult.BackupDestinationPath</td></tr>
+                                }
+                            </tbody>
+                        </table>
+
+                        @if (_foreignKeyMigrationResult.AppliedConstraints.Count > 0)
+                        {
+                            <div class="storage-subsection">
+                                <h4>Applied Constraints</h4>
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Table</th>
+                                            <th>Column</th>
+                                            <th>References</th>
+                                            <th>On Delete</th>
+                                            <th>Constraint</th>
+                                            <th>Support Index</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var applied in _foreignKeyMigrationResult.AppliedConstraints.OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
+                                        {
+                                            <tr>
+                                                <td>@applied.TableName</td>
+                                                <td>@applied.ColumnName</td>
+                                                <td>@($"{applied.ReferencedTableName}({applied.ReferencedColumnName})")</td>
+                                                <td>@applied.OnDelete</td>
+                                                <td class="mono-cell">@applied.ConstraintName</td>
+                                                <td class="mono-cell">@applied.SupportingIndexName</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+
+                        @if (_foreignKeyMigrationResult.Violations.Count > 0)
+                        {
+                            <div class="storage-subsection">
+                                <h4>Violation Sample</h4>
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Child Table</th>
+                                            <th>Column</th>
+                                            <th>Value</th>
+                                            <th>Child Key</th>
+                                            <th>References</th>
+                                            <th>Reason</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var violation in _foreignKeyMigrationResult.Violations)
+                                        {
+                                            <tr>
+                                                <td>@violation.TableName</td>
+                                                <td>@violation.ColumnName</td>
+                                                <td class="mono-cell">@FormatMigrationValue(violation.ChildValue)</td>
+                                                <td class="mono-cell">@($"{violation.ChildKeyColumnName}={FormatMigrationValue(violation.ChildKeyValue)}")</td>
+                                                <td>@($"{violation.ReferencedTableName}({violation.ReferencedColumnName})")</td>
+                                                <td>@violation.Reason</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    }
+                </div>
             </section>
 
             <section class="storage-card">
@@ -386,11 +507,30 @@
     private bool _allowCorruptIndexRecovery;
     private bool _vacuumConfirmArmed;
     private bool _restoreConfirmArmed;
+    private bool _foreignKeyMigrationConfirmArmed;
     private bool _backupWithManifest = true;
     private string? _maintenanceStatus;
     private string? _backupRestoreStatus;
+    private string? _foreignKeyMigrationStatus;
     private string? _backupPath;
     private string? _restoreSourcePath;
+    private string? _foreignKeyMigrationBackupPath;
+    private string _foreignKeyMigrationSpecJson = """
+{
+  "validateOnly": true,
+  "violationSampleLimit": 100,
+  "constraints": [
+    {
+      "tableName": "orders",
+      "columnName": "customer_id",
+      "referencedTableName": "customers",
+      "referencedColumnName": "id",
+      "onDelete": "Restrict"
+    }
+  ]
+}
+""";
+    private ForeignKeyMigrationResult? _foreignKeyMigrationResult;
     private IReadOnlyList<string> _availableTables = [];
     private IReadOnlyList<string> _availableIndexes = [];
 
@@ -523,6 +663,72 @@
         catch (Exception ex)
         {
             Toast.Error($"Restore failed: {ex.Message}");
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task ValidateForeignKeyMigrationAsync()
+    {
+        var request = TryBuildForeignKeyMigrationRequest(validateOnly: true);
+        if (request is null)
+            return;
+
+        _maintenanceBusy = true;
+        _foreignKeyMigrationStatus = null;
+        try
+        {
+            var result = await DbClient.MigrateForeignKeysAsync(request);
+            _foreignKeyMigrationResult = result;
+            _foreignKeyMigrationStatus = BuildForeignKeyMigrationStatus(result);
+            if (result.Succeeded)
+                Toast.Success(_foreignKeyMigrationStatus);
+            else
+                Toast.Warning(_foreignKeyMigrationStatus);
+        }
+        catch (Exception ex)
+        {
+            _foreignKeyMigrationStatus = FormatMaintenanceError("Foreign key migration validation", ex);
+            Toast.Error(_foreignKeyMigrationStatus);
+        }
+        finally
+        {
+            _maintenanceBusy = false;
+        }
+    }
+
+    private async Task RunForeignKeyMigrationAsync()
+    {
+        var request = TryBuildForeignKeyMigrationRequest(validateOnly: false);
+        if (request is null)
+            return;
+
+        _maintenanceBusy = true;
+        _foreignKeyMigrationStatus = null;
+        try
+        {
+            var result = await DbClient.MigrateForeignKeysAsync(request);
+            _foreignKeyMigrationResult = result;
+            _foreignKeyMigrationConfirmArmed = false;
+            _foreignKeyMigrationStatus = BuildForeignKeyMigrationStatus(result);
+
+            if (result.Succeeded)
+            {
+                Changes.NotifyChanged();
+                Toast.Success(_foreignKeyMigrationStatus);
+                await RefreshAllAsync();
+            }
+            else
+            {
+                Toast.Warning(_foreignKeyMigrationStatus);
+            }
+        }
+        catch (Exception ex)
+        {
+            _foreignKeyMigrationStatus = FormatMaintenanceError("Foreign key migration", ex);
+            Toast.Error(_foreignKeyMigrationStatus);
         }
         finally
         {
@@ -705,6 +911,41 @@
         return Path.Combine(directory, $"{fileNameWithoutExtension}.backup{extension}");
     }
 
+    private ForeignKeyMigrationRequest? TryBuildForeignKeyMigrationRequest(bool validateOnly)
+    {
+        if (string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))
+        {
+            Toast.Error("Enter a foreign key migration JSON spec.");
+            return null;
+        }
+
+        try
+        {
+            var request = JsonSerializer.Deserialize<ForeignKeyMigrationRequest>(_foreignKeyMigrationSpecJson, ForeignKeyMigrationJsonOptions)
+                ?? throw new InvalidOperationException("Foreign key migration spec did not deserialize.");
+
+            return new ForeignKeyMigrationRequest
+            {
+                ValidateOnly = validateOnly || request.ValidateOnly,
+                BackupDestinationPath = string.IsNullOrWhiteSpace(_foreignKeyMigrationBackupPath) ? request.BackupDestinationPath : _foreignKeyMigrationBackupPath,
+                ViolationSampleLimit = request.ViolationSampleLimit,
+                Constraints = request.Constraints,
+            };
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Foreign key migration spec is invalid JSON: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string BuildForeignKeyMigrationStatus(ForeignKeyMigrationResult result)
+    {
+        string action = result.ValidateOnly ? "Validation" : "Migration";
+        string status = result.Succeeded ? "succeeded" : "failed";
+        return $"{action} {status}: affectedTables={result.AffectedTables}, appliedForeignKeys={result.AppliedForeignKeys}, copiedRows={result.CopiedRows}, violations={result.ViolationCount}.";
+    }
+
     private string FormatMaintenanceError(string operation, Exception ex)
     {
         string databasePath = _dbReport?.DatabasePath ?? DbClient.DataSource;
@@ -718,10 +959,32 @@
         return $"{operation} failed for {databasePath}: {message}";
     }
 
+    private static string FormatMigrationValue(object? value)
+        => value switch
+        {
+            null => "NULL",
+            string text => text,
+            _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "NULL",
+        };
+
     private static string SeverityClass(InspectSeverity severity) => severity switch
     {
         InspectSeverity.Error => "storage-badge-error",
         InspectSeverity.Warning => "storage-badge-warning",
         _ => "storage-badge-info",
     };
+
+    private static readonly JsonSerializerOptions ForeignKeyMigrationJsonOptions = CreateForeignKeyMigrationJsonOptions();
+
+    private static JsonSerializerOptions CreateForeignKeyMigrationJsonOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true,
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
+    }
 }

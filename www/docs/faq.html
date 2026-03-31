@@ -13,6 +13,20 @@
     <meta property="og:url" content="https://csharpdb.com/docs/faq.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "name": "FAQ",
+        "description": "CSharpDB frequently asked questions — general usage, SQL and schema, admin/CLI/API, and development.",
+        "url": "https://csharpdb.com/docs/faq.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
 </head>
 <body>
     <script>
@@ -54,6 +68,7 @@
                     <li><code>sys.tables</code></li>
                     <li><code>sys.columns</code></li>
                     <li><code>sys.indexes</code></li>
+                    <li><code>sys.foreign_keys</code></li>
                     <li><code>sys.views</code></li>
                     <li><code>sys.triggers</code></li>
                     <li><code>sys.objects</code></li>
@@ -64,10 +79,28 @@
                 <p>No. They are virtual system catalog sources, so use the Query tab to query them.</p>
 
                 <h3>Why does index creation fail on some column types?</h3>
-                <p>Current index support is limited to <code>INTEGER</code> columns.</p>
+                <p>Current SQL secondary indexes support <code>INTEGER</code> and <code>TEXT</code> columns. <code>COLLATE</code> is only valid on <code>TEXT</code> index columns.</p>
 
                 <h3>Are foreign keys enforced?</h3>
-                <p>Not currently. Define relationship columns in schema and enforce integrity in application logic for now.</p>
+                <p>Yes. CSharpDB currently supports single-column, column-level <code>REFERENCES</code> constraints with optional <code>ON DELETE CASCADE</code>.</p>
+                <p>Current v1 boundary:</p>
+                <ul>
+                    <li>Constraints are enforced immediately.</li>
+                    <li><code>NULL</code> child values are allowed.</li>
+                    <li>Table-level/composite foreign keys are not implemented yet.</li>
+                    <li><code>ON UPDATE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>, and deferred constraints are not implemented yet.</li>
+                </ul>
+
+                <h3>Will older databases automatically show foreign keys after I upgrade?</h3>
+                <p>No. Opening an older database on a newer engine does not add FK metadata by itself.</p>
+                <p>Use the foreign-key retrofit migration workflow when you want to persist FK metadata onto existing tables:</p>
+                <ul>
+                    <li><code>ICSharpDbClient.MigrateForeignKeysAsync(...)</code></li>
+                    <li><code>POST /api/maintenance/migrate-foreign-keys</code></li>
+                    <li><code>csharpdb migrate-foreign-keys ...</code></li>
+                    <li><code>.migrate-fks ...</code> in the CLI REPL</li>
+                    <li>the Admin Storage tab</li>
+                </ul>
 
                 <h2 id="admin-cli-and-api">Admin, CLI, and API</h2>
 
