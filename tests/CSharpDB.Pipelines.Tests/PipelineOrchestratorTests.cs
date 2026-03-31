@@ -9,6 +9,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_ValidateMode_SucceedsWithoutCreatingComponents()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var factory = new FakeComponentFactory();
         var logger = new RecordingRunLogger();
         var orchestrator = new PipelineOrchestrator(factory, new RecordingCheckpointStore(), logger);
@@ -17,7 +18,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(),
             Mode = PipelineExecutionMode.Validate,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
         Assert.Equal(0, factory.SourceCreateCount);
@@ -27,6 +28,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_DryRun_ReadsAndTransformsWithoutWriting()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource(
         [
             CreateBatch(1, 1, 2),
@@ -42,7 +44,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(),
             Mode = PipelineExecutionMode.DryRun,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
         Assert.Equal(3, result.Metrics.RowsRead);
@@ -58,6 +60,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_RunMode_WritesBatchesAndCompletesDestination()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource([CreateBatch(1, 1, 2)]);
         var destination = new FakeDestination();
         var factory = new FakeComponentFactory(source, destination, []);
@@ -68,7 +71,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
         Assert.Equal(2, result.Metrics.RowsRead);
@@ -82,6 +85,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_ResumeMode_LoadsExistingCheckpoint()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var runId = "resume-run-1";
         var source = new FakeSource([CreateBatch(2, 3, 4)]);
         var destination = new FakeDestination();
@@ -104,7 +108,7 @@ public sealed class PipelineOrchestratorTests
             Package = CreatePackage(),
             Mode = PipelineExecutionMode.Resume,
             ExistingRunId = runId,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
         Assert.Equal(runId, checkpointStore.LoadedRunId);
@@ -115,6 +119,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_InvalidPackage_ReturnsFailedResult()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var orchestrator = new PipelineOrchestrator(
             new FakeComponentFactory(),
             new RecordingCheckpointStore(),
@@ -124,7 +129,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = new PipelinePackageDefinition(),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Failed, result.Status);
         Assert.Contains("Pipeline name is required.", result.ErrorSummary);
@@ -133,6 +138,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_TransformFailure_ReturnsStepAndBatchContext()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource([CreateBatch(3, 41, 42)]);
         var transform = new ThrowingTransform("cast", "Cannot parse integer.");
         var orchestrator = new PipelineOrchestrator(
@@ -144,7 +150,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Failed, result.Status);
         Assert.Contains("Step: transform", result.ErrorSummary);
@@ -157,6 +163,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_DestinationFailure_ReturnsStepAndComponentContext()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource([CreateBatch(1, 7)]);
         var destination = new ThrowingDestination("Cannot read Text as Integer.");
         var orchestrator = new PipelineOrchestrator(
@@ -168,7 +175,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(errorMode: PipelineErrorMode.FailFast),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Failed, result.Status);
         Assert.Contains("Step: destination-write", result.ErrorSummary);
@@ -181,6 +188,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_SkipBadRows_RecordsRejectsAndContinues()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource([CreateBatch(1, 1, 2)]);
         var destination = new RejectingDestination(row => Convert.ToInt32(row["id"]) == 2, "Duplicate key.");
         var logger = new RecordingRunLogger();
@@ -193,7 +201,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
         Assert.Equal(2, result.Metrics.RowsRead);
@@ -209,6 +217,7 @@ public sealed class PipelineOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_SkipBadRows_RespectsMaxRejects()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var source = new FakeSource([CreateBatch(1, 1, 2)]);
         var destination = new RejectingDestination(_ => true, "Bad row.");
         var checkpointStore = new RecordingCheckpointStore();
@@ -221,7 +230,7 @@ public sealed class PipelineOrchestratorTests
         {
             Package = CreatePackage(maxRejects: 1),
             Mode = PipelineExecutionMode.Run,
-        });
+        }, ct);
 
         Assert.Equal(PipelineRunStatus.Failed, result.Status);
         Assert.Contains("exceeding MaxRejects=1", result.ErrorSummary);

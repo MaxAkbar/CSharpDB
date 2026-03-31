@@ -41,13 +41,14 @@ public sealed class PipelinePackageSerializerTests
     [Fact]
     public async Task SaveToFileAsync_AndLoadFromFileAsync_RoundTripPackage()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var package = CreatePackage();
         string path = Path.Combine(Path.GetTempPath(), $"pipeline-{Guid.NewGuid():N}.json");
 
         try
         {
-            await PipelinePackageSerializer.SaveToFileAsync(package, path);
-            PipelinePackageDefinition loaded = await PipelinePackageSerializer.LoadFromFileAsync(path);
+            await PipelinePackageSerializer.SaveToFileAsync(package, path, ct);
+            PipelinePackageDefinition loaded = await PipelinePackageSerializer.LoadFromFileAsync(path, ct);
 
             Assert.Equal(package.Name, loaded.Name);
             Assert.Equal(package.Transforms.Count, loaded.Transforms.Count);

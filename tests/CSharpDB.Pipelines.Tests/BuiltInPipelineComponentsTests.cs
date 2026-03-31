@@ -11,6 +11,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task CsvPipelineSource_ReadsRowsInBatches()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"csv-source-{Guid.NewGuid():N}.csv");
         await File.WriteAllLinesAsync(path,
         [
@@ -18,7 +19,7 @@ public sealed class BuiltInPipelineComponentsTests
             "1,Alice",
             "2,Bob",
             "3,Carol",
-        ]);
+        ], ct);
 
         try
         {
@@ -30,8 +31,8 @@ public sealed class BuiltInPipelineComponentsTests
             });
 
             var context = CreateContext(batchSize: 2);
-            await source.OpenAsync(context);
-            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+            await source.OpenAsync(context, ct);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context, ct).ToListAsync(ct);
 
             Assert.Equal(2, batches.Count);
             Assert.Equal("Alice", batches[0].Rows[0]["name"]);
@@ -46,6 +47,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task CsvPipelineSource_ResolvesRelativePathsFromAppBaseDirectory()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
         string path = Path.Combine(dataDirectory, $"csv-source-{Guid.NewGuid():N}.csv");
         string relativePath = Path.GetRelativePath(AppContext.BaseDirectory, path);
@@ -54,7 +56,7 @@ public sealed class BuiltInPipelineComponentsTests
         [
             "id,name",
             "1,Alice",
-        ]);
+        ], ct);
 
         string originalCurrentDirectory = Directory.GetCurrentDirectory();
         string isolatedCurrentDirectory = Path.Combine(Path.GetTempPath(), $"csv-cwd-{Guid.NewGuid():N}");
@@ -72,8 +74,8 @@ public sealed class BuiltInPipelineComponentsTests
             });
 
             var context = CreateContext(batchSize: 10);
-            await source.OpenAsync(context);
-            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+            await source.OpenAsync(context, ct);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context, ct).ToListAsync(ct);
 
             Assert.Single(batches);
             Assert.Equal("Alice", batches[0].Rows[0]["name"]);
@@ -89,13 +91,14 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task JsonPipelineSource_ReadsObjectArray()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"json-source-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(path, """
 [
   { "id": 1, "name": "Alice" },
   { "id": 2, "name": "Bob" }
 ]
-""");
+""", ct);
 
         try
         {
@@ -106,8 +109,8 @@ public sealed class BuiltInPipelineComponentsTests
             });
 
             var context = CreateContext(batchSize: 10);
-            await source.OpenAsync(context);
-            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+            await source.OpenAsync(context, ct);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context, ct).ToListAsync(ct);
 
             Assert.Single(batches);
             Assert.Equal(2L, Convert.ToInt64(batches[0].Rows[1]["id"]));
@@ -121,6 +124,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task JsonPipelineSource_ResolvesRelativePathsFromAppBaseDirectory()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
         string path = Path.Combine(dataDirectory, $"json-source-{Guid.NewGuid():N}.json");
         string relativePath = Path.GetRelativePath(AppContext.BaseDirectory, path);
@@ -129,7 +133,7 @@ public sealed class BuiltInPipelineComponentsTests
 [
   { "id": 1, "name": "Alice" }
 ]
-""");
+""", ct);
 
         string originalCurrentDirectory = Directory.GetCurrentDirectory();
         string isolatedCurrentDirectory = Path.Combine(Path.GetTempPath(), $"json-cwd-{Guid.NewGuid():N}");
@@ -146,8 +150,8 @@ public sealed class BuiltInPipelineComponentsTests
             });
 
             var context = CreateContext(batchSize: 10);
-            await source.OpenAsync(context);
-            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+            await source.OpenAsync(context, ct);
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context, ct).ToListAsync(ct);
 
             Assert.Single(batches);
             Assert.Equal("Alice", batches[0].Rows[0]["name"]);
@@ -163,6 +167,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task CsvPipelineSource_ResumeMode_SkipsCompletedBatches()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"csv-resume-source-{Guid.NewGuid():N}.csv");
         await File.WriteAllLinesAsync(path,
         [
@@ -170,7 +175,7 @@ public sealed class BuiltInPipelineComponentsTests
             "1,Alice",
             "2,Bob",
             "3,Carol",
-        ]);
+        ], ct);
 
         try
         {
@@ -195,7 +200,7 @@ public sealed class BuiltInPipelineComponentsTests
                 },
             };
 
-            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context).ToListAsync();
+            List<PipelineRowBatch> batches = await source.ReadBatchesAsync(context, ct).ToListAsync(ct);
 
             Assert.Single(batches);
             Assert.Equal(2L, batches[0].BatchNumber);
@@ -210,6 +215,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task CsvPipelineDestination_WritesHeaderAndRows()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"csv-destination-{Guid.NewGuid():N}.csv");
         var destination = new CsvPipelineDestination(new PipelineDestinationDefinition
         {
@@ -221,13 +227,13 @@ public sealed class BuiltInPipelineComponentsTests
         try
         {
             var context = CreateContext();
-            await destination.InitializeAsync(context);
+            await destination.InitializeAsync(context, ct);
             await destination.WriteBatchAsync(CreateBatch(
                 new Dictionary<string, object?> { ["id"] = 1, ["name"] = "Alice" },
-                new Dictionary<string, object?> { ["id"] = 2, ["name"] = "Bob" }), context);
-            await destination.CompleteAsync(context);
+                new Dictionary<string, object?> { ["id"] = 2, ["name"] = "Bob" }), context, ct);
+            await destination.CompleteAsync(context, ct);
 
-            string[] lines = await File.ReadAllLinesAsync(path);
+            string[] lines = await File.ReadAllLinesAsync(path, ct);
             Assert.Equal("id,name", lines[0]);
             Assert.Contains("Alice", lines[1]);
             Assert.Contains("Bob", lines[2]);
@@ -244,6 +250,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task JsonPipelineDestination_WritesObjectArray()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"json-destination-{Guid.NewGuid():N}.json");
         var destination = new JsonPipelineDestination(new PipelineDestinationDefinition
         {
@@ -254,12 +261,12 @@ public sealed class BuiltInPipelineComponentsTests
         try
         {
             var context = CreateContext();
-            await destination.InitializeAsync(context);
+            await destination.InitializeAsync(context, ct);
             await destination.WriteBatchAsync(CreateBatch(
-                new Dictionary<string, object?> { ["id"] = 1L, ["name"] = "Alice" }), context);
-            await destination.CompleteAsync(context);
+                new Dictionary<string, object?> { ["id"] = 1L, ["name"] = "Alice" }), context, ct);
+            await destination.CompleteAsync(context, ct);
 
-            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path, ct));
             Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
             Assert.Equal("Alice", document.RootElement[0].GetProperty("name").GetString());
         }
@@ -275,6 +282,7 @@ public sealed class BuiltInPipelineComponentsTests
     [Fact]
     public async Task BuiltInTransforms_ProjectRenameCastFilterDeriveAndDeduplicate()
     {
+        CancellationToken ct = TestContext.Current.CancellationToken;
         var transforms = new IPipelineTransform[]
         {
             new SelectPipelineTransform(new PipelineTransformDefinition
@@ -327,7 +335,7 @@ public sealed class BuiltInPipelineComponentsTests
         PipelineRowBatch current = batch;
         foreach (var transform in transforms)
         {
-            current = await transform.TransformAsync(current, context);
+            current = await transform.TransformAsync(current, context, ct);
         }
 
         Assert.Single(current.Rows);
