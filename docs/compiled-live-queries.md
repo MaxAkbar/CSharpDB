@@ -1,6 +1,6 @@
-# Index-Aware Prepared Access Plans For CSharpDB
+# Compiled Live Queries For CSharpDB
 
-This document replaces the earlier research-style draft with a CSharpDB-specific recommendation.
+This document replaces the earlier research-style draft with a CSharpDB-specific recommendation for compiled live queries.
 It is intentionally pragmatic:
 
 - anchor the design in code that already exists in this repo
