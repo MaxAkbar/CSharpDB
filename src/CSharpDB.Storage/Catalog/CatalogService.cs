@@ -777,6 +777,41 @@ internal sealed class CatalogService
             markDirty: true);
     }
 
+    public async ValueTask AdjustTableRowCountKnownExactAsync(string tableName, long delta, CancellationToken ct = default)
+    {
+        long rowCount;
+        bool hasStaleColumns;
+        uint lastPersistedChangeCounter;
+        if (_tableStatsCache.TryGetValue(tableName, out var existing))
+        {
+            rowCount = checked(existing.RowCount + delta);
+            hasStaleColumns = existing.HasStaleColumns;
+            lastPersistedChangeCounter = existing.LastPersistedChangeCounter;
+        }
+        else
+        {
+            var tree = GetTableTree(tableName);
+            long cachedOrExactCount = await tree.CountEntriesAsync(ct);
+            rowCount = checked(cachedOrExactCount + delta);
+            hasStaleColumns = false;
+            lastPersistedChangeCounter = 0;
+        }
+
+        if (rowCount < 0)
+            throw new InvalidOperationException($"Table '{tableName}' row count would become negative.");
+
+        CacheTableStatistics(
+            new TableStatistics
+            {
+                TableName = tableName,
+                RowCount = rowCount,
+                HasStaleColumns = hasStaleColumns,
+                LastPersistedChangeCounter = lastPersistedChangeCounter,
+            },
+            isExact: true,
+            markDirty: true);
+    }
+
     public async ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default)
     {
         if (_dirtyTableStatistics.Count == 0)

@@ -1,8 +1,10 @@
+using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Benchmarks.Macro;
 using CSharpDB.Benchmarks.Stress;
 using CSharpDB.Benchmarks.Scaling;
+using System.Reflection;
 using System.Text.Json;
 
 namespace CSharpDB.Benchmarks;
@@ -41,7 +43,9 @@ public static class Program
         switch (mode)
         {
             case "--micro":
-                RunMicroBenchmarks(StripCustomArgs(RemoveFirstToken(args, "--micro")));
+                RunMicroBenchmarks(
+                    StripCustomArgs(RemoveFirstToken(args, "--micro")),
+                    excludePrGuardrailsWhenFilterMissing: true);
                 return;
 
             case "--filter":
@@ -93,13 +97,23 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("hybrid-post-checkpoint", RunHybridPostCheckpointOnceAsync, repeatCount);
                 return;
 
+            case "--pr":
+                await RunBenchmarkPlanAsync(
+                    thresholdsFileName: "perf-thresholds-pr.json",
+                    microHeading: "=== PR Micro Guardrails ===",
+                    nonMicroHeading: "=== PR Non-Micro Guardrails ===");
+                return;
+
             case "--release":
-                await RunReleaseBenchmarksAsync();
+                await RunBenchmarkPlanAsync(
+                    thresholdsFileName: "perf-thresholds.json",
+                    microHeading: "=== Release Micro Guardrails ===",
+                    nonMicroHeading: "=== Release Non-Micro Guardrails ===");
                 return;
 
             case "--all":
                 Console.WriteLine("=== Micro-Benchmarks (BenchmarkDotNet) ===");
-                RunMicroBenchmarks(["--filter", "*"]);
+                RunAllMicroBenchmarks();
                 Console.WriteLine();
                 Console.WriteLine("=== Macro-Benchmarks ===");
                 EnsureReproConfigured();
@@ -240,22 +254,52 @@ public static class Program
         }
     }
 
-    private static void RunMicroBenchmarks(string[] args)
+    private static void RunMicroBenchmarks(string[] args, bool excludePrGuardrailsWhenFilterMissing = false)
     {
+        if (excludePrGuardrailsWhenFilterMissing && !ContainsExplicitFilter(args))
+        {
+            RunMicroBenchmarksWithoutPrGuardrails(args);
+            return;
+        }
+
         var switcher = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly);
         switcher.Run(args);
     }
 
-    private static async Task RunReleaseBenchmarksAsync()
+    private static void RunAllMicroBenchmarks()
     {
-        var plan = LoadReleaseBenchmarkPlan();
+        RunMicroBenchmarksWithoutPrGuardrails([]);
+    }
+
+    private static void RunMicroBenchmarksWithoutPrGuardrails(string[] args)
+    {
+        var benchmarkTypes = typeof(Program).Assembly
+            .GetTypes()
+            .Where(static type =>
+                type is { IsClass: true, IsAbstract: false } &&
+                string.Equals(type.Namespace, "CSharpDB.Benchmarks.Micro", StringComparison.Ordinal) &&
+                !type.Name.EndsWith("GuardrailBenchmarks", StringComparison.Ordinal) &&
+                type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Any(static method => method.GetCustomAttribute<BenchmarkAttribute>() is not null))
+            .ToArray();
+
+        var switcher = BenchmarkSwitcher.FromTypes(benchmarkTypes);
+        switcher.Run(args);
+    }
+
+    private static async Task RunBenchmarkPlanAsync(
+        string thresholdsFileName,
+        string microHeading,
+        string nonMicroHeading)
+    {
+        var plan = LoadBenchmarkPlan(thresholdsFileName);
 
         if (plan.MicroFilters.Count == 0 && plan.Suites.Count == 0)
             throw new InvalidOperationException("Release benchmark plan is empty.");
 
         if (plan.MicroFilters.Count > 0)
         {
-            Console.WriteLine("=== Release Micro Guardrails ===");
+            Console.WriteLine(microHeading);
             foreach (string filter in plan.MicroFilters)
             {
                 Console.WriteLine($"--- Micro ({filter}) ---");
@@ -280,7 +324,7 @@ public static class Program
             reproConfigured = true;
         }
 
-        Console.WriteLine("=== Release Non-Micro Guardrails ===");
+        Console.WriteLine(nonMicroHeading);
         foreach (var suite in plan.Suites)
         {
             int repeatCount = ParseRepeatCount(suite.Arguments);
@@ -505,9 +549,9 @@ public static class Program
         return filtered.ToArray();
     }
 
-    private static ReleaseBenchmarkPlan LoadReleaseBenchmarkPlan()
+    private static ReleaseBenchmarkPlan LoadBenchmarkPlan(string thresholdsFileName)
     {
-        string thresholdsPath = ResolvePerfThresholdsPath();
+        string thresholdsPath = ResolvePerfThresholdsPath(thresholdsFileName);
         using var document = JsonDocument.Parse(File.ReadAllText(thresholdsPath));
 
         if (!document.RootElement.TryGetProperty("checks", out JsonElement checksElement) ||
@@ -558,19 +602,21 @@ public static class Program
         return new ReleaseBenchmarkPlan(microFilters.ToArray(), suites);
     }
 
-    private static string ResolvePerfThresholdsPath()
+    private static string ResolvePerfThresholdsPath(string thresholdsFileName)
     {
         DirectoryInfo? current = new DirectoryInfo(AppContext.BaseDirectory);
         while (current != null)
         {
-            string candidate = Path.Combine(current.FullName, "perf-thresholds.json");
+            string candidate = Path.Combine(current.FullName, thresholdsFileName);
             if (File.Exists(candidate))
                 return candidate;
 
             current = current.Parent;
         }
 
-        throw new FileNotFoundException("Could not locate perf-thresholds.json from the benchmark runner base directory.", "perf-thresholds.json");
+        throw new FileNotFoundException(
+            $"Could not locate {thresholdsFileName} from the benchmark runner base directory.",
+            thresholdsFileName);
     }
 
     private static string? TryGetMicroFilterFromCsv(string? csvName)
@@ -632,6 +678,11 @@ public static class Program
         return args.Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static bool ContainsExplicitFilter(string[] args)
+    {
+        return args.Any(static arg => arg.Equals("--filter", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string[] RemoveFirstToken(string[] args, string token)
     {
         var result = new List<string>(args.Length);
@@ -687,6 +738,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-cold-open  Run focused engine-cold open + first read benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-hot-set-read  Run focused post-open hot-set read benchmark including hybrid warm-set mode");
         Console.WriteLine("  dotnet run -- --hybrid-post-checkpoint  Run focused post-checkpoint hot reread benchmark");
+        Console.WriteLine("  dotnet run -- --pr                 Run the fast PR guardrail subset from perf-thresholds-pr.json");
         Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");

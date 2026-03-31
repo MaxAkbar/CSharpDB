@@ -3,6 +3,8 @@ param(
     [string]$Configuration = "Release",
     [string]$BaselineSnapshot = "",
     [string]$ThresholdsPath = "",
+    [ValidateSet("pr", "release")]
+    [string]$Mode = "release",
     [switch]$NoFailOnRegression,
     [switch]$SkipMicroRun
 )
@@ -269,7 +271,17 @@ New-Item -ItemType Directory -Path $runLogsDir -Force | Out-Null
 $resolvedThresholdsPath = $ThresholdsPath
 if ([string]::IsNullOrWhiteSpace($resolvedThresholdsPath))
 {
-    $resolvedThresholdsPath = Join-Path $benchDir "perf-thresholds.json"
+    $thresholdsFileName =
+    if ($Mode -eq "pr")
+    {
+        "perf-thresholds-pr.json"
+    }
+    else
+    {
+        "perf-thresholds.json"
+    }
+
+    $resolvedThresholdsPath = Join-Path $benchDir $thresholdsFileName
 }
 elseif (-not [System.IO.Path]::IsPathRooted($resolvedThresholdsPath))
 {

@@ -1,0 +1,14 @@
+{
+  "fingerprintVersion": 1,
+  "capturedUtc": "2026-03-30T23:50:11.4148035Z",
+  "runnerId": "",
+  "machineName": "MAXAKBAR3090",
+  "cpuName": "11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz",
+  "logicalCoreCount": 16,
+  "osPlatform": "Windows",
+  "osDescription": "Microsoft Windows 10.0.26300",
+  "osArchitecture": "X64",
+  "processArchitecture": "X64",
+  "dotnetVersion": "10.0.201",
+  "dotnetMajorMinor": "10.0"
+}

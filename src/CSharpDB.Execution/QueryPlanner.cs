@@ -2289,14 +2289,35 @@ public sealed class QueryPlanner
             _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
                 ? new ForeignKeyMutationContext()
                 : null;
-        foreach (var valueRow in stmt.ValueRows)
+        try
         {
-            var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
-            await ExecuteResolvedInsertRowAsync(stmt.TableName, schema, tree, indexes, row, mutationContext, ct);
-            inserted++;
+            foreach (var valueRow in stmt.ValueRows)
+            {
+                var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
+                await ExecuteResolvedInsertRowAsync(
+                    stmt.TableName,
+                    schema,
+                    tree,
+                    indexes,
+                    row,
+                    mutationContext,
+                    adjustTableRowCount: false,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext,
+                stmt.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
         }
 
-        await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, inserted > 0, persistRootChanges, ct);
+        await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
 
         return QueryResult.FromRowsAffected(inserted);
     }
@@ -3925,28 +3946,155 @@ public sealed class QueryPlanner
         var schema = GetSchema(insert.TableName);
         var tree = _catalog.GetTableTree(insert.TableName);
         var indexes = _catalog.GetIndexesForTable(insert.TableName);
+        IReadOnlyList<ForeignKeyDefinition> foreignKeys = _catalog.GetForeignKeysForTable(insert.TableName);
+        IReadOnlyList<TriggerSchema> triggers = _catalog.GetTriggersForTable(insert.TableName);
+
+        if (indexes.Count == 0 && foreignKeys.Count == 0 && triggers.Count == 0)
+            return await ExecuteBareSimpleInsertAsync(insert, schema, tree, persistRootChanges, ct);
 
         int inserted = 0;
         ForeignKeyMutationContext? mutationContext =
-            _catalog.GetForeignKeysForTable(insert.TableName).Count > 0
+            foreignKeys.Count > 0
                 ? new ForeignKeyMutationContext()
                 : null;
-        for (int i = 0; i < insert.RowCount; i++)
+        try
         {
-            var row = insert.ValueRows[i];
-            if (row.Length != schema.Columns.Count)
+            for (int i = 0; i < insert.RowCount; i++)
             {
-                throw new CSharpDbException(
-                    ErrorCode.SyntaxError,
-                    $"Expected {schema.Columns.Count} values, got {row.Length}.");
-            }
+                var row = insert.ValueRows[i];
+                if (row.Length != schema.Columns.Count)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
+                }
 
-            await ExecuteResolvedInsertRowAsync(insert.TableName, schema, tree, indexes, row, mutationContext, ct);
-            inserted++;
+                await ExecuteResolvedInsertRowAsync(
+                    insert.TableName,
+                    schema,
+                    tree,
+                    indexes,
+                    row,
+                    mutationContext,
+                    adjustTableRowCount: false,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext,
+                insert.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
         }
 
-        await PersistForeignKeyMutationContextAsync(mutationContext, insert.TableName, inserted > 0, persistRootChanges, ct);
+        await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
         return QueryResult.FromRowsAffected(inserted);
+    }
+
+    private async ValueTask<QueryResult> ExecuteBareSimpleInsertAsync(
+        SimpleInsertSql insert,
+        TableSchema schema,
+        BTree tree,
+        bool persistRootChanges,
+        CancellationToken ct)
+    {
+        int inserted = 0;
+        var insertTraversalPath = new List<uint>(capacity: 8);
+        var insertTraversalSet = new HashSet<uint>();
+        try
+        {
+            for (int i = 0; i < insert.RowCount; i++)
+            {
+                DbValue[] row = insert.ValueRows[i];
+                if (row.Length != schema.Columns.Count)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
+                }
+
+                await ExecuteBareInsertRowAsync(
+                    insert.TableName,
+                    schema,
+                    tree,
+                    row,
+                    insertTraversalPath,
+                    insertTraversalSet,
+                    ct);
+                inserted++;
+            }
+        }
+        catch
+        {
+            await FinalizeInsertStatementAsync(
+                mutationContext: null,
+                insert.TableName,
+                inserted,
+                persistRootChanges: false,
+                ct);
+            throw;
+        }
+
+        await FinalizeInsertStatementAsync(
+            mutationContext: null,
+            insert.TableName,
+            inserted,
+            persistRootChanges,
+            ct);
+        return QueryResult.FromRowsAffected(inserted);
+    }
+
+    private async ValueTask FinalizeInsertStatementAsync(
+        ForeignKeyMutationContext? mutationContext,
+        string tableName,
+        int inserted,
+        bool persistRootChanges,
+        CancellationToken ct)
+    {
+        if (inserted <= 0)
+            return;
+
+        await _catalog.AdjustTableRowCountKnownExactAsync(tableName, inserted, ct);
+        await PersistForeignKeyMutationContextAsync(
+            mutationContext,
+            tableName,
+            hasMutations: true,
+            persistRootChanges,
+            ct);
+    }
+
+    private async ValueTask<long> ExecuteBareInsertRowAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        DbValue[] row,
+        List<uint>? traversalPath,
+        HashSet<uint>? traversalSet,
+        CancellationToken ct)
+    {
+        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        while (true)
+        {
+            try
+            {
+                ReadOnlyMemory<byte> encodedRow = _recordSerializer.Encode(row);
+                if (traversalPath != null && traversalSet != null)
+                    await tree.InsertAsync(rowId, encodedRow, traversalPath, traversalSet, ct);
+                else
+                    await tree.InsertAsync(rowId, encodedRow, ct);
+                return rowId;
+            }
+            catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
+            {
+                InvalidateRowIdCache(tableName);
+                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+            }
+        }
     }
 
     /// <summary>
@@ -11908,6 +12056,7 @@ public sealed class QueryPlanner
         IReadOnlyList<IndexSchema> indexes,
         DbValue[] row,
         ForeignKeyMutationContext? mutationContext,
+        bool adjustTableRowCount,
         CancellationToken ct)
     {
         // BEFORE INSERT triggers
@@ -11933,7 +12082,8 @@ public sealed class QueryPlanner
 
         // Maintain indexes
         await InsertIntoAllIndexesAsync(indexes, schema, row, rowId, ct);
-        await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
+        if (adjustTableRowCount)
+            await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
         if (mutationContext is not null)
         {
             mutationContext.TouchedTables.Add(tableName);

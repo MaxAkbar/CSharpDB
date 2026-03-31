@@ -6175,6 +6175,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
     private bool _probeExhausted;
     private int _rightOuterEmitIndex;
     private int[]? _projectionColumnIndices;
+    private ProjectionAccessor[]? _projectionAccessors;
     private bool _buildRowCompactionEnabled;
     private int[]? _buildRequiredColumnIndices;
     private int[]? _buildColumnToCompactIndexMap;
@@ -6245,6 +6246,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
             throw new CSharpDbException(ErrorCode.Unknown, "Swapped hash build side is supported for INNER JOIN only.");
 
         ConfigureBuildRowCompaction();
+        ConfigureProjectionAccessors();
 
         if (_left is IRowBufferReuseController leftController)
         {
@@ -6535,6 +6537,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         _projectionColumnIndices = (int[])columnIndices.Clone();
         OutputSchema = outputSchema;
         TryApplyDecodeBoundPushdown();
+        ConfigureProjectionAccessors();
         return true;
     }
 
@@ -6667,6 +6670,52 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
                 orderedScan.SetDecodedColumnUpperBound(maxColumnIndex);
                 break;
         }
+    }
+
+    private void ConfigureProjectionAccessors()
+    {
+        var projection = _projectionColumnIndices;
+        if (projection == null || projection.Length == 0)
+        {
+            _projectionAccessors = null;
+            return;
+        }
+
+        var accessors = new ProjectionAccessor[projection.Length];
+        for (int i = 0; i < projection.Length; i++)
+        {
+            int columnIndex = projection[i];
+            if (columnIndex < _leftColCount)
+            {
+                bool sourceIsBuild = !_buildRightSide;
+                accessors[i] = new ProjectionAccessor(
+                    sourceIsLeft: true,
+                    sourceIndex: ResolveProjectedSourceIndex(columnIndex, sourceIsBuild));
+            }
+            else
+            {
+                int rightIndex = columnIndex - _leftColCount;
+                bool sourceIsBuild = _buildRightSide;
+                accessors[i] = new ProjectionAccessor(
+                    sourceIsLeft: false,
+                    sourceIndex: ResolveProjectedSourceIndex(rightIndex, sourceIsBuild));
+            }
+        }
+
+        _projectionAccessors = accessors;
+    }
+
+    private int ResolveProjectedSourceIndex(int columnIndex, bool sourceIsBuild)
+    {
+        if (!sourceIsBuild || !_buildRowCompactionEnabled)
+            return columnIndex;
+
+        var columnToCompactIndex = _buildColumnToCompactIndexMap
+            ?? throw new InvalidOperationException("Build row compaction map is not configured.");
+        if ((uint)columnIndex >= (uint)columnToCompactIndex.Length)
+            return -1;
+
+        return columnToCompactIndex[columnIndex];
     }
 
     private IOperator BuildSource => _buildRightSide ? _right : _left;
@@ -7499,6 +7548,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
             return Array.Empty<DbValue>();
 
         var projected = new DbValue[projection.Length];
+        if (ReferenceEquals(projection, _projectionColumnIndices) && _projectionAccessors != null)
+        {
+            WriteProjectedRowsWithAccessors(leftRow, rightRow, _projectionAccessors, projected);
+            return projected;
+        }
+
         for (int i = 0; i < projection.Length; i++)
         {
             int columnIndex = projection[i];
@@ -7558,6 +7613,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         bool leftIsBuildSide = false,
         bool rightIsBuildSide = false)
     {
+        if (ReferenceEquals(projection, _projectionColumnIndices) && _projectionAccessors != null)
+        {
+            WriteProjectedRowsWithAccessors(leftRow, rightRow, _projectionAccessors, destination);
+            return;
+        }
+
         for (int i = 0; i < projection.Length; i++)
         {
             int columnIndex = projection[i];
@@ -7581,6 +7642,23 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         }
     }
 
+    private static void WriteProjectedRowsWithAccessors(
+        DbValue[] leftRow,
+        DbValue[] rightRow,
+        ProjectionAccessor[] accessors,
+        Span<DbValue> destination)
+    {
+        for (int i = 0; i < accessors.Length; i++)
+        {
+            ref readonly ProjectionAccessor accessor = ref accessors[i];
+            DbValue[] sourceRow = accessor.SourceIsLeft ? leftRow : rightRow;
+            int sourceIndex = accessor.SourceIndex;
+            destination[i] = sourceIndex >= 0 && sourceIndex < sourceRow.Length
+                ? sourceRow[sourceIndex]
+                : DbValue.Null;
+        }
+    }
+
     private DbValue GetBuildSideColumnValue(DbValue[] buildRow, int buildColumnIndex)
     {
         if (!_buildRowCompactionEnabled)
@@ -7595,6 +7673,12 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         return compactIndex >= 0 && compactIndex < buildRow.Length
             ? buildRow[compactIndex]
             : DbValue.Null;
+    }
+
+    private readonly struct ProjectionAccessor(bool sourceIsLeft, int sourceIndex)
+    {
+        public bool SourceIsLeft { get; } = sourceIsLeft;
+        public int SourceIndex { get; } = sourceIndex;
     }
 
     private struct SingleKeyBucket

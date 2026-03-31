@@ -398,6 +398,26 @@ public sealed class BTree
     {
         var traversalPath = new List<uint>(capacity: 8);
         var traversalSet = new HashSet<uint>();
+        await InsertAsync(key, payload, traversalPath, traversalSet, ct);
+    }
+
+    /// <summary>
+    /// Insert a key/value pair while reusing caller-provided traversal scratch state.
+    /// Callers should provide collections that are safe to clear and reuse across inserts.
+    /// </summary>
+    public async ValueTask InsertAsync(
+        long key,
+        ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(traversalPath);
+        ArgumentNullException.ThrowIfNull(traversalSet);
+
+        traversalPath.Clear();
+        traversalSet.Clear();
+
         var result = await InsertRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
 
         if (result.Split)

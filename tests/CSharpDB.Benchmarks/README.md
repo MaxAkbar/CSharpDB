@@ -18,6 +18,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Item | Result |
 |------|--------|
 | Baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
+| PR baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` |
 | Broad main sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260330-081102.csv` |
 | Direct transport sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260330-081709.csv` |
 | Hybrid storage sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260330-082134.csv` |
@@ -32,6 +33,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 High-level takeaways from the March 30 refresh:
 
 - The focused validation baseline now points to a single coherent March 30 snapshot built on `main`.
+- The PR lane now has its own checked-in March 30 snapshot under `baselines/pr-validation/20260330-233433`.
 - The top-level SQL, collection, storage-mode, and master comparison tables below now use March 30 durable artifacts from the same run family.
 - The durable write guardrails now anchor on same-day `median-of-3` captures for `write-diagnostics`, `durable-sql-batching`, and `concurrent-write-diagnostics`.
 - The broad micro sweep in `BenchmarkDotNet.Artifacts/results` was also refreshed on March 30, 2026.
@@ -88,10 +90,13 @@ High-level takeaways from the March 30 refresh:
 ## Running Benchmarks
 
 ```bash
+# Fast PR guardrail pass (dedicated guardrail classes only)
+dotnet run -c Release -- --pr
+
 # Focused release/guardrail pass (recommended for normal validation)
 dotnet run -c Release -- --release
 
-# Micro-benchmarks (BenchmarkDotNet)
+# Micro-benchmarks (BenchmarkDotNet, original full micro surface)
 dotnet run -c Release -- --micro
 
 # Filter to a specific micro suite
@@ -160,7 +165,7 @@ dotnet run -c Release -- --macro-batch-memory
 dotnet run -c Release -- --stress
 dotnet run -c Release -- --scaling
 
-# Exhaustive full sweep (includes every micro suite; very slow)
+# Exhaustive full sweep (includes the original full micro suite set; very slow)
 dotnet run -c Release -- --all
 ```
 
@@ -226,19 +231,27 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 # Capture a fresh baseline snapshot
 pwsh ./tests/CSharpDB.Benchmarks/scripts/Capture-Baseline.ps1
 
-# Run the current guardrail subset
-pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1
+# Run the fast PR guardrails
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -Mode pr
+
+# Run the fuller release guardrails
+pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -Mode release
 ```
 
 Defaults:
 
-- Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/20260314-173320`
+- Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
+- PR baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433`
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
+- PR threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds-pr.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
 - The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
-- `--release` reads `perf-thresholds.json` and runs just the tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
+- `--pr` reads `perf-thresholds-pr.json` and runs only the dedicated PR guardrail classes. It skips the repeat-3 durability suites and the specialized read suites that stay release-only.
+- `--release` reads `perf-thresholds.json` and runs the existing tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
+- `--micro` and `--all` keep the original full micro benchmark surface; they do not automatically add the PR guardrail duplicates unless you explicitly filter for `*GuardrailBenchmarks*`.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
+- The checked-in PR snapshot under `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` carries only the dedicated PR guardrail CSVs so PR validation stays lane-specific and fast.
 - That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
 - Set `CSHARPDB_PERF_RUNNER_ID` on the canonical perf runner before capturing a baseline if you want strict regression failures to be limited to that designated machine.
