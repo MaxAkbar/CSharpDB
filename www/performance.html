@@ -241,6 +241,10 @@
                         <div class="code-header"><span>performance-point-reads.cs</span></div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"app.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"app.db"</span>);
+
 <span class="cm">// Configure for hot local lookup workloads</span>
 <span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseDirectLookupOptimizedPreset());
@@ -256,7 +260,7 @@
 <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">100</span>; i++)
 {
     <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
-        <span class="str">$"INSERT OR IGNORE INTO users VALUES ({i}, 'User {i}', 'user{i}@example.com')"</span>))
+        <span class="str">$"INSERT INTO users VALUES ({i}, 'User {i}', 'user{i}@example.com')"</span>))
     { }
 }
 <span class="kw">await</span> db.CommitAsync();
@@ -312,6 +316,10 @@
                         <div class="code-header"><span>performance-burst-reads.cs</span></div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"service.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"service.db"</span>);
+
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"service.db"</span>);
 
 <span class="cm">// Set up tables and seed data</span>
@@ -323,10 +331,10 @@
 { }
 
 <span class="kw">await</span> db.BeginTransactionAsync();
-<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO users VALUES (1, 'Alice', 'gold')"</span>)) { }
-<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO users VALUES (2, 'Bob', 'silver')"</span>)) { }
-<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO orders VALUES (1, 1, 99.95)"</span>)) { }
-<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO orders VALUES (2, 1, 149.50)"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO users VALUES (1, 'Alice', 'gold')"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO users VALUES (2, 'Bob', 'silver')"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO orders VALUES (1, 1, 99.95)"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO orders VALUES (2, 1, 149.50)"</span>)) { }
 <span class="kw">await</span> db.CommitAsync();
 
 <span class="cm">// --- Reuse a single ReaderSession for a burst of related reads ---</span>
@@ -406,6 +414,10 @@
                         <div class="code-header"><span>performance-range-queries.cs</span></div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"orders.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"orders.db"</span>);
+
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"orders.db"</span>);
 
 <span class="cm">// Create a table with several columns (simulating a wide row)</span>
@@ -435,7 +447,7 @@
 {
     <span class="tp">string</span> status = i % <span class="num">3</span> == <span class="num">0</span> ? <span class="str">"shipped"</span> : i % <span class="num">3</span> == <span class="num">1</span> ? <span class="str">"pending"</span> : <span class="str">"delivered"</span>;
     <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
-        <span class="str">$"INSERT OR IGNORE INTO orders VALUES ({i}, {i % 50}, {1700000000 + i * 3600}, '{status}', {i * 1.5}, 'Note {i}', 'Address {i}')"</span>))
+        <span class="str">$"INSERT INTO orders VALUES ({i}, {i % 50}, {1700000000 + i * 3600}, '{status}', {i * 1.5}, 'Note {i}', 'Address {i}')"</span>))
     { }
 }
 <span class="kw">await</span> db.CommitAsync();
@@ -512,6 +524,10 @@
                         <div class="code-header"><span>performance-joins-reporting.cs</span></div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"reporting.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"reporting.db"</span>);
+
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"reporting.db"</span>);
 
 <span class="cm">// Schema</span>
@@ -545,7 +561,7 @@
 {
     <span class="tp">string</span> region = i % <span class="num">4</span> == <span class="num">0</span> ? <span class="str">"West"</span> : i % <span class="num">4</span> == <span class="num">1</span> ? <span class="str">"East"</span> : i % <span class="num">4</span> == <span class="num">2</span> ? <span class="str">"North"</span> : <span class="str">"South"</span>;
     <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
-        <span class="str">$"INSERT OR IGNORE INTO customers VALUES ({i}, 'Customer {i}', '{region}')"</span>))
+        <span class="str">$"INSERT INTO customers VALUES ({i}, 'Customer {i}', '{region}')"</span>))
     { }
 }
 <span class="kw">await</span> db.CommitAsync();
@@ -630,6 +646,12 @@
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 <span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
 
+<span class="cm">// If the files exist, delete them to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"ingest.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"ingest.db"</span>);
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"ingest2.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"ingest2.db"</span>);
+
 <span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
 
@@ -655,7 +677,7 @@
 
 <span class="kw">for</span> (<span class="tp">int</span> offset = <span class="num">0</span>; offset &lt; events.Length; offset += batchSize)
 {
-    <span class="kw">var</span> batch = events.AsSpan(offset, <span class="tp">Math</span>.Min(batchSize, events.Length - offset));
+    <span class="kw">var</span> batch = events[offset..<span class="tp">Math</span>.Min(offset + batchSize, events.Length)];
 
     <span class="kw">await</span> db.BeginTransactionAsync();
     <span class="kw">try</span>
@@ -690,12 +712,12 @@ sw.Restart();
 <span class="kw">var</span> insertBatch = db2.PrepareInsertBatch(<span class="str">"events"</span>);
 <span class="kw">foreach</span> (<span class="kw">var</span> e <span class="kw">in</span> events)
 {
-    <span class="kw">await</span> insertBatch.AddRowAsync([
+    insertBatch.AddRow(
         <span class="tp">DbValue</span>.FromInteger(e.Id + <span class="num">100_000</span>),
         <span class="tp">DbValue</span>.FromInteger(e.Ticks),
         <span class="tp">DbValue</span>.FromText(e.Source),
         <span class="tp">DbValue</span>.FromText(e.Payload)
-    ]);
+    );
 }
 <span class="tp">int</span> inserted = <span class="kw">await</span> insertBatch.ExecuteAsync();
 <span class="kw">await</span> db2.CommitAsync();
@@ -731,6 +753,10 @@ sw.Stop();
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 <span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"contention.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"contention.db"</span>);
+
 <span class="cm">// Baseline: write-optimized preset (good default for contention too)</span>
 <span class="kw">var</span> baseOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
@@ -753,9 +779,11 @@ sw.Stop();
 <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
     <span class="str">"CREATE TABLE IF NOT EXISTS counters (id INTEGER PRIMARY KEY, value INTEGER)"</span>))
 { }
-<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT OR IGNORE INTO counters VALUES (1, 0)"</span>)) { }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO counters VALUES (1, 0)"</span>)) { }
 
-<span class="cm">// Simulate 8 concurrent writers each doing single-row commits</span>
+<span class="cm">// Simulate 8 concurrent writers each doing single-row auto-commits.</span>
+<span class="cm">// CSharpDB is single-writer: auto-commit serializes through the write gate,</span>
+<span class="cm">// so concurrent tasks safely queue up without explicit transaction management.</span>
 <span class="tp">int</span> writerCount = <span class="num">8</span>;
 <span class="tp">int</span> writesPerWriter = <span class="num">50</span>;
 <span class="kw">var</span> sw = <span class="tp">Stopwatch</span>.StartNew();
@@ -764,19 +792,9 @@ sw.Stop();
 {
     <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; writesPerWriter; i++)
     {
-        <span class="kw">await</span> db.BeginTransactionAsync();
-        <span class="kw">try</span>
-        {
-            <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
-                <span class="str">"UPDATE counters SET value = value + 1 WHERE id = 1"</span>))
-            { }
-            <span class="kw">await</span> db.CommitAsync();
-        }
-        <span class="kw">catch</span>
-        {
-            <span class="kw">await</span> db.RollbackAsync();
-            <span class="kw">throw</span>;
-        }
+        <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+            <span class="str">"UPDATE counters SET value = value + 1 WHERE id = 1"</span>))
+        { }
     }
 }).ToArray();
 
@@ -825,11 +843,32 @@ sw.Stop();
                         <div class="code-header"><span>performance-cold-reads.cs</span></div>
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"large-dataset.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"large-dataset.db"</span>);
+
 <span class="cm">// UseDirectColdFileLookupPreset uses memory-mapped reads, best for one-shot probes</span>
 <span class="kw">var</span> coldOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseDirectColdFileLookupPreset());
 
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"large-dataset.db"</span>, coldOptions);
+
+<span class="cm">// Seed a table so there is something to probe</span>
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, source TEXT, payload TEXT)"</span>))
+{ }
+<span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"CREATE INDEX IF NOT EXISTS idx_events_source ON events(source)"</span>))
+{ }
+
+<span class="kw">await</span> db.BeginTransactionAsync();
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">500</span>; i++)
+{
+    <span class="kw">await using</span> (<span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"INSERT INTO events VALUES ({i}, 'sensor-{i % 10}', 'data-{i}')"</span>))
+    { }
+}
+<span class="kw">await</span> db.CommitAsync();
 
 <span class="cm">// Probe schema</span>
 <span class="kw">var</span> tables = db.GetTableNames();
@@ -849,7 +888,7 @@ sw.Stop();
 <span class="kw">var</span> indexes = db.GetIndexes();
 <span class="kw">foreach</span> (<span class="kw">var</span> idx <span class="kw">in</span> indexes)
 {
-    <span class="tp">Console</span>.WriteLine(<span class="str">$"  Index {idx.IndexName} on {idx.TableName}({string.Join(", ", idx.ColumnNames)})"</span>);
+    <span class="tp">Console</span>.WriteLine(<span class="str">$"  Index {idx.IndexName} on {idx.TableName}({string.Join(", ", idx.Columns)})"</span>);
 }
 
 <span class="cm">// Quick analytics query on cold data</span>
@@ -864,6 +903,9 @@ sw.Stop();
 }
 
 <span class="cm">// --- Bounded-cache workload ---</span>
+<span class="cm">// Close the first instance before reopening with a different preset</span>
+<span class="kw">await</span> db.DisposeAsync();
+
 <span class="cm">// Start at 2048 pages, not 16 (tiny caches are expensive)</span>
 <span class="kw">var</span> boundedOptions = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseHybridFileCachePreset(<span class="num">2048</span>));
@@ -874,7 +916,7 @@ sw.Stop();
                     <div class="perf-dont">
                         <h4>Don't</h4>
                         <ul>
-                            <li>Assume caching indexes are automatically a win &mdash; the tuning matrix found <code>UseCachingIndexes</code> neutral-to-negative, including a case where a reused reader-session SQL lookup worsened from <code>41.36 &mu;s</code> to <code>212.94 &mu;s</code></li>
+                            <li>Assume caching indexes are automatically a win &mdash; the tuning matrix found <code>UseCachingBTreeIndexes</code> neutral-to-negative, including a case where a reused reader-session SQL lookup worsened from <code>41.36 &mu;s</code> to <code>212.94 &mu;s</code></li>
                         </ul>
                     </div>
                 </div>
@@ -910,6 +952,10 @@ sw.Stop();
                         <pre><code><span class="kw">using</span> <span class="tp">CSharpDB.Engine</span>;
 <span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"hotset.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"hotset.db"</span>);
+
 <span class="cm">// First, create a database with data to warm up</span>
 <span class="kw">await using</span> (<span class="kw">var</span> setup = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"hotset.db"</span>))
 {
@@ -921,7 +967,7 @@ sw.Stop();
     <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">1</span>; i &lt;= <span class="num">1000</span>; i++)
     {
         <span class="kw">await using</span> (<span class="kw">await</span> setup.ExecuteAsync(
-            <span class="str">$"INSERT OR IGNORE INTO users VALUES ({i}, 'User {i}', 'gold')"</span>))
+            <span class="str">$"INSERT INTO users VALUES ({i}, 'User {i}', 'gold')"</span>))
         { }
     }
     <span class="kw">await</span> setup.CommitAsync();
@@ -994,7 +1040,7 @@ sw.Stop();
 <span class="kw">await using var</span> cache = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
 
 <span class="kw">await using</span> (<span class="kw">await</span> cache.ExecuteAsync(
-    <span class="str">"CREATE TABLE cache_entries (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)"</span>))
+    <span class="str">"CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)"</span>))
 { }
 
 <span class="cm">// In-memory writes are ~315K ops/sec (vs ~270 ops/sec durable single-row).</span>
@@ -1172,6 +1218,10 @@ sw.Stop();
 <span class="kw">using</span> <span class="tp">System.Data.Common</span>;
 <span class="kw">using</span> <span class="tp">System.Diagnostics</span>;
 
+<span class="cm">// If the file exists, delete it to start fresh</span>
+<span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"ado-app.db"</span>))
+    <span class="tp">File</span>.Delete(<span class="str">"ado-app.db"</span>);
+
 <span class="cm">// --- Pooled connections: open+close drops from ~8.9ms to ~1.9us ---</span>
 <span class="kw">var</span> pooledConnStr = <span class="str">"Data Source=ado-app.db;Pooling=true;Max Pool Size=16"</span>;
 
@@ -1191,7 +1241,7 @@ sw.Stop();
 
     <span class="cm">// Insert with parameterized commands (safe from injection)</span>
     <span class="kw">using var</span> insertCmd = conn.CreateCommand();
-    insertCmd.CommandText = <span class="str">"INSERT OR IGNORE INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+    insertCmd.CommandText = <span class="str">"INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
     <span class="kw">var</span> pId = insertCmd.CreateParameter(); pId.ParameterName = <span class="str">"@id"</span>;
     <span class="kw">var</span> pName = insertCmd.CreateParameter(); pName.ParameterName = <span class="str">"@name"</span>;
     <span class="kw">var</span> pPrice = insertCmd.CreateParameter(); pPrice.ParameterName = <span class="str">"@price"</span>;
