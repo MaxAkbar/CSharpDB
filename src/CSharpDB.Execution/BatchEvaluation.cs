@@ -888,6 +888,13 @@ internal static class BatchPlanCompiler
             return true;
         }
 
+        if (IsNumericType(literalValue.Type) &&
+            TryBindNumericProjection(left, schema, out var numericProjection))
+        {
+            predicate = BatchPredicateTerm.CreateNumericExpressionCompare(numericProjection, op, literalValue);
+            return true;
+        }
+
         if (!TryResolveColumnIndex(left, schema, out int columnIndex))
             return false;
 
@@ -913,13 +920,6 @@ internal static class BatchPlanCompiler
                 op,
                 literalValue.AsText,
                 textCollation);
-            return true;
-        }
-
-        if (IsNumericType(literalValue.Type) &&
-            TryBindNumericProjection(left, schema, out var numericProjection))
-        {
-            predicate = BatchPredicateTerm.CreateNumericExpressionCompare(numericProjection, op, literalValue);
             return true;
         }
 
@@ -1631,7 +1631,9 @@ internal readonly struct BatchPredicateTerm
 
     public bool Evaluate(ReadOnlySpan<DbValue> row)
     {
-        DbValue value = row[_columnIndex];
+        DbValue value = (uint)_columnIndex < (uint)row.Length
+            ? row[_columnIndex]
+            : DbValue.Null;
         return _kind switch
         {
             BatchPredicateKind.NullCheck => _negated ? !value.IsNull : value.IsNull,
@@ -2239,10 +2241,15 @@ internal readonly struct BatchProjectionTerm
     {
         return _kind switch
         {
-            BatchProjectionKind.Column => row[_columnIndex],
+            BatchProjectionKind.Column => (uint)_columnIndex < (uint)row.Length
+                ? row[_columnIndex]
+                : DbValue.Null,
             BatchProjectionKind.Constant => _constant,
             BatchProjectionKind.NumericExpression => EvaluateNumericExpression(row),
-            BatchProjectionKind.TextColumn => ScalarFunctionEvaluator.EvaluateTextValue(row[_columnIndex]),
+            BatchProjectionKind.TextColumn => ScalarFunctionEvaluator.EvaluateTextValue(
+                (uint)_columnIndex < (uint)row.Length
+                    ? row[_columnIndex]
+                    : DbValue.Null),
             BatchProjectionKind.TextNumericExpression => EvaluateTextNumericExpression(row),
             _ => DbValue.Null,
         };
@@ -2321,6 +2328,9 @@ internal sealed class BatchNumericExpression
                 value = _constant;
                 return true;
             case BatchNumericExpressionKind.Column:
+                if ((uint)_columnIndex >= (uint)row.Length)
+                    return false;
+
                 DbValue cell = row[_columnIndex];
                 if (cell.IsNull || (cell.Type is not DbType.Integer and not DbType.Real))
                     return false;

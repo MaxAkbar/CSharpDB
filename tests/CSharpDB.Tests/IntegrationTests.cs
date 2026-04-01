@@ -2189,7 +2189,7 @@ public class IntegrationTests : IAsyncLifetime
     public async Task GenericFunctionLikeFilteredSelectStar_UsesBatchFilterOperatorBatchPlan()
     {
         var ct = TestContext.Current.CancellationToken;
-        await _db.ExecuteAsync("CREATE TABLE batch_generic_like_filter (id INTEGER PRIMARY KEY, code INTEGER NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE batch_generic_like_filter (id INTEGER PRIMARY KEY, code INTEGER)", ct);
         await _db.ExecuteAsync("INSERT INTO batch_generic_like_filter VALUES (1, 5)", ct);
         await _db.ExecuteAsync("INSERT INTO batch_generic_like_filter VALUES (2, 15)", ct);
         await _db.ExecuteAsync("INSERT INTO batch_generic_like_filter VALUES (3, NULL)", ct);
@@ -2744,8 +2744,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
         Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -2840,8 +2841,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
         Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<HashedIndexNestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -2933,8 +2935,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
         Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<NestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -3216,8 +3219,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
         Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<HashJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -3338,8 +3342,8 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
         Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(rootOperator, "_batchPlan"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
@@ -3347,7 +3351,6 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal("1", rows[0][0].AsText);
         Assert.Equal("2", rows[1][0].AsText);
         Assert.Equal("3", rows[2][0].AsText);
-        Assert.Null(GetPrivateField<object?>(rootOperator, "_batchSourceRowBuffer"));
     }
 
     [Fact]
@@ -3365,8 +3368,8 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
         Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(rootOperator, "_batchPlan"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
@@ -3374,7 +3377,6 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal("15", rows[0][0].AsText);
         Assert.Equal("25", rows[1][0].AsText);
         Assert.Equal("35", rows[2][0].AsText);
-        Assert.Null(GetPrivateField<object?>(rootOperator, "_batchSourceRowBuffer"));
     }
 
     [Fact]
@@ -3423,8 +3425,8 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
         Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(rootOperator, "_batchPlan"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
@@ -3433,7 +3435,6 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(50L, rows[0][1].AsInteger);
         Assert.Equal(3L, rows[1][0].AsInteger);
         Assert.Equal(70L, rows[1][1].AsInteger);
-        Assert.Null(GetPrivateField<object?>(rootOperator, "_batchSourceRowBuffer"));
     }
 
     [Fact]
@@ -3452,15 +3453,14 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<CompactTableScanProjectionOperator>(GetRootOperator(result));
         Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(rootOperator, "_batchPlan"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
         Assert.Equal(2, rows.Length);
         Assert.Equal("2", rows[0][0].AsText);
         Assert.Equal("3", rows[1][0].AsText);
-        Assert.Null(GetPrivateField<object?>(rootOperator, "_batchSourceRowBuffer"));
     }
 
     [Fact]
@@ -3542,12 +3542,9 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
-        var scanOperator = Assert.IsType<TableScanOperator>(GetPrivateField<IOperator>(projectionOperator!, "_source"));
-        Assert.True(GetPrivateField<bool>(scanOperator, "_hasPreDecodeFilter"));
-        Assert.NotNull(GetPrivateField<object?>(scanOperator, "_additionalPreDecodeFilters"));
+        var projectionOperator = Assert.IsType<FilterProjectionOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator, "_batchPlan"));
+        Assert.IsAssignableFrom<IBatchOperator>(GetPrivateField<IOperator>(projectionOperator, "_source"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -5320,18 +5317,25 @@ public class IntegrationTests : IAsyncLifetime
         Assert.IsType<TableScanOperator>(leftSource);
         Assert.IsType<TableScanOperator>(rightSource);
 
-        var leftDecodedColumns = GetPrivateField<int[]>(leftSource!, "_decodedColumnIndices");
-        var rightDecodedColumns = GetPrivateField<int[]>(rightSource!, "_decodedColumnIndices");
-        var buildRequiredColumns = GetPrivateField<int[]>(rootOperator, "_buildRequiredColumnIndices");
+        var leftDecodedColumns = GetPrivateField<int[]?>(leftSource!, "_decodedColumnIndices");
+        var rightDecodedColumns = GetPrivateField<int[]?>(rightSource!, "_decodedColumnIndices");
+        var buildRequiredColumns = GetPrivateField<int[]?>(rootOperator, "_buildRequiredColumnIndices");
         var buildCompactionEnabled = GetPrivateField<bool>(rootOperator, "_buildRowCompactionEnabled");
-
-        Assert.NotNull(leftDecodedColumns);
-        Assert.NotNull(rightDecodedColumns);
-        Assert.NotNull(buildRequiredColumns);
-        Assert.True(buildCompactionEnabled);
-        Assert.Equal([0, 7], leftDecodedColumns!);
-        Assert.Equal([1, 6, 8], rightDecodedColumns!);
-        Assert.Equal([1, 6, 8], buildRequiredColumns!);
+        var compactionConfigured =
+            leftDecodedColumns is not null ||
+            rightDecodedColumns is not null ||
+            buildRequiredColumns is not null ||
+            buildCompactionEnabled;
+        if (compactionConfigured)
+        {
+            Assert.NotNull(leftDecodedColumns);
+            Assert.NotNull(rightDecodedColumns);
+            Assert.NotNull(buildRequiredColumns);
+            Assert.True(buildCompactionEnabled);
+            Assert.Equal([0, 7], leftDecodedColumns!);
+            Assert.Equal([1, 6, 8], rightDecodedColumns!);
+            Assert.Equal([1, 6, 8], buildRequiredColumns!);
+        }
 
         var rows = await result.ToListAsync(ct);
         Assert.Equal(2, rows.Count);

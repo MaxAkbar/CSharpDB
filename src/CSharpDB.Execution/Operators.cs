@@ -387,9 +387,28 @@ internal static class BoundColumnAccessHelper
         out long intValue,
         out double realValue,
         out bool isReal)
-        => accessor is { } boundAccessor
-            ? boundAccessor.TryDecodeNumeric(payload, out intValue, out realValue, out isReal)
-            : serializer.TryDecodeNumericColumn(payload, columnIndex, out intValue, out realValue, out isReal);
+    {
+        try
+        {
+            return accessor is { } boundAccessor
+                ? boundAccessor.TryDecodeNumeric(payload, out intValue, out realValue, out isReal)
+                : serializer.TryDecodeNumericColumn(payload, columnIndex, out intValue, out realValue, out isReal);
+        }
+        catch (InvalidOperationException)
+        {
+            intValue = 0;
+            realValue = 0;
+            isReal = false;
+            return false;
+        }
+        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TypeMismatch)
+        {
+            intValue = 0;
+            realValue = 0;
+            isReal = false;
+            return false;
+        }
+    }
 
     public static DbValue Decode(
         ReadOnlySpan<byte> payload,

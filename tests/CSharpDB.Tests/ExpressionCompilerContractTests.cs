@@ -235,7 +235,7 @@ public class ExpressionCompilerContractTests
             [DbValue.FromInteger(2), DbValue.FromInteger(20)],
             [DbValue.FromInteger(2), DbValue.FromText("2")]);
         var misses = evaluator(
-            [DbValue.FromInteger(3), DbValue.FromInteger(20)],
+            [DbValue.FromInteger(3), DbValue.FromInteger(30)],
             [DbValue.FromInteger(2), DbValue.FromText("3")]);
 
         Assert.True(matches.IsTruthy);

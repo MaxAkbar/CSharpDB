@@ -10445,7 +10445,7 @@ public sealed class QueryPlanner
         Expression? predicate,
         TableSchema schema)
     {
-        if (predicate == null || BatchSourceHelper.TryGetBatchSource(source) == null)
+        if (predicate == null || !IsBatchPlanEligibleSource(source))
             return null;
 
         var batchPlan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
