@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Blog — CSharpDB</title>
+    <meta name="description" content="CSharpDB blog — tutorials, guides, and best practices for building with CSharpDB.">
+    <link rel="canonical" href="https://csharpdb.com/blog/">
+    <meta property="og:title" content="Blog — CSharpDB">
+    <meta property="og:description" content="CSharpDB blog — tutorials, guides, and best practices for building with CSharpDB.">
+    <meta property="og:url" content="https://csharpdb.com/blog/">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "Blog",
+        "name": "CSharpDB Blog",
+        "description": "Tutorials, guides, and best practices for building with CSharpDB.",
+        "url": "https://csharpdb.com/blog/",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .blog-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 24px;
+            margin-top: 32px;
+        }
+        .blog-card {
+            display: flex;
+            flex-direction: column;
+            padding: 28px 28px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s;
+        }
+        .blog-card:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+        .blog-card-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 14px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+        .blog-card-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-card h3 {
+            margin: 0 0 10px;
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.4;
+        }
+        .blog-card p {
+            margin: 0;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+            flex: 1;
+        }
+        .blog-card-footer {
+            margin-top: 16px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        @media (max-width: 768px) {
+            .blog-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Blog',
+        description: 'CSharpDB blog — tutorials, guides, and best practices for building with CSharpDB.',
+        keywords: 'CSharpDB blog, database tutorials, .NET database guide, CSharpDB how-to',
+        canonicalPath: 'blog/',
+        ogType: 'website',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Blog</h1>
+                <p class="lead">Tutorials, guides, and best practices for building with CSharpDB.</p>
+
+                <div class="blog-grid">
+                    <a href="getting-started-with-csharpdb.html" class="blog-card">
+                        <div class="blog-card-meta">
+                            <span class="blog-card-tag">Tutorial</span>
+                            <span>March 31, 2026</span>
+                        </div>
+                        <h3>Getting Started with CSharpDB</h3>
+                        <p>Learn how to install CSharpDB, create your first database, run SQL queries, use the Collection API, and configure the storage engine — all in a single tutorial.</p>
+                        <div class="blog-card-footer">Read article &rarr;</div>
+                    </a>
+
+                    <a href="working-with-collections.html" class="blog-card">
+                        <div class="blog-card-meta">
+                            <span class="blog-card-tag">Guide</span>
+                            <span>March 31, 2026</span>
+                        </div>
+                        <h3>Working with the Collection API</h3>
+                        <p>Store, query, and index typed C# objects without writing SQL. Learn about path indexes, scanning, and building document-oriented applications.</p>
+                        <div class="blog-card-footer">Read article &rarr;</div>
+                    </a>
+
+                    <a href="sql-deep-dive.html" class="blog-card">
+                        <div class="blog-card-meta">
+                            <span class="blog-card-tag">Guide</span>
+                            <span>March 31, 2026</span>
+                        </div>
+                        <h3>SQL Deep Dive: JOINs, CTEs, and Subqueries</h3>
+                        <p>Explore advanced SQL features in CSharpDB including multi-table JOINs, Common Table Expressions, subqueries, set operations, and aggregate functions.</p>
+                        <div class="blog-card-footer">Read article &rarr;</div>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>

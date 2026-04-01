@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>News — CSharpDB</title>
+    <meta name="description" content="CSharpDB news — release announcements, upcoming features, and project updates.">
+    <link rel="canonical" href="https://csharpdb.com/news/">
+    <meta property="og:title" content="News — CSharpDB">
+    <meta property="og:description" content="CSharpDB news — release announcements, upcoming features, and project updates.">
+    <meta property="og:url" content="https://csharpdb.com/news/">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "CSharpDB News",
+        "description": "Release announcements, upcoming features, and project updates.",
+        "url": "https://csharpdb.com/news/",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .news-timeline {
+            margin-top: 40px;
+            position: relative;
+            padding-left: 32px;
+        }
+        .news-timeline::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: 8px;
+            bottom: 8px;
+            width: 2px;
+            background: var(--border);
+        }
+        .news-entry {
+            position: relative;
+            margin-bottom: 40px;
+            padding: 24px 28px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            transition: border-color 0.2s;
+        }
+        .news-entry:hover {
+            border-color: var(--accent);
+        }
+        .news-entry::before {
+            content: '';
+            position: absolute;
+            left: -29px;
+            top: 30px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: 2px solid var(--bg-primary);
+        }
+        .news-entry-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .news-date {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+        .news-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 10px;
+            border-radius: 100px;
+        }
+        .news-badge-release { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+        .news-badge-upcoming { background: rgba(59, 130, 246, 0.15); color: var(--info); }
+        .news-badge-preview { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+        .news-entry h3 {
+            margin: 0 0 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .news-entry p {
+            margin: 0 0 8px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.65;
+        }
+        .news-entry ul {
+            margin: 8px 0 0;
+            padding-left: 20px;
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+        .news-entry li { margin-bottom: 4px; }
+
+        .news-section-label {
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+            padding-left: 32px;
+        }
+
+        @media (max-width: 768px) {
+            .news-timeline { padding-left: 24px; }
+            .news-entry::before { left: -21px; width: 10px; height: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'news'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'News',
+        description: 'CSharpDB news — release announcements, upcoming features, and project updates.',
+        keywords: 'CSharpDB news, releases, updates, upcoming features, changelog',
+        canonicalPath: 'news/',
+        ogType: 'website',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>News</h1>
+                <p class="lead">Release announcements, upcoming features, and project updates.</p>
+
+                <!-- ════════ UPCOMING ════════ -->
+                <div class="news-section-label" style="margin-top: 40px;">Upcoming</div>
+                <div class="news-timeline">
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-upcoming">Upcoming</span>
+                            <span class="news-date">Q2 2026</span>
+                        </div>
+                        <h3>User-Defined Functions &amp; Window Functions</h3>
+                        <p>Planned for mid-2026, these features will expand SQL capabilities significantly:</p>
+                        <ul>
+                            <li><strong>User-defined functions</strong> — Register C# functions callable from SQL, plus native plugin extensions</li>
+                            <li><strong>Window functions</strong> — ROW_NUMBER(), RANK(), DENSE_RANK(), LEAD(), LAG() for analytical queries</li>
+                            <li><strong>DEFAULT &amp; CHECK constraints</strong> — Default column expressions and expression-based table constraints</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-upcoming">Upcoming</span>
+                            <span class="news-date">Q2 2026</span>
+                        </div>
+                        <h3>Remote Host Consolidation &amp; Security</h3>
+                        <p>Merging REST/HTTP into CSharpDB.Daemon for a single unified server host, plus built-in security:</p>
+                        <ul>
+                            <li><strong>Unified daemon</strong> — REST, gRPC, and future transports from one process with a shared warm Database instance</li>
+                            <li><strong>Authentication &amp; authorization</strong> — API keys, protected admin endpoints, and role-based access</li>
+                            <li><strong>TLS/mTLS support</strong> — Secure connections for production deployments</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-preview">Future</span>
+                            <span class="news-date">2026+</span>
+                        </div>
+                        <h3>On the Research Radar</h3>
+                        <p>Long-term research items being explored for future versions:</p>
+                        <ul>
+                            <li><strong>At-rest encryption</strong> — Encrypt database and WAL files with passphrase-based key management</li>
+                            <li><strong>Multi-writer support</strong> — Concurrent write transactions with conflict detection</li>
+                            <li><strong>Replication &amp; change feed</strong> — Stream committed changes for read replicas or event-driven architectures</li>
+                            <li><strong>WebAssembly sandboxed UDFs</strong> — Execute untrusted functions in a WASM sandbox via Wasmtime</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- ════════ RECENT RELEASES ════════ -->
+                <div class="news-section-label">Recent Releases</div>
+                <div class="news-timeline">
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">March 2026</span>
+                        </div>
+                        <h3>v2.8.0 — Batch-First SQL Row Transport</h3>
+                        <p>The SQL execution engine now uses a batch-first row transport foundation. This is a significant internal architecture change that enables more efficient query processing:</p>
+                        <ul>
+                            <li>Batch-capable result boundaries across scans, joins, and aggregates</li>
+                            <li>Foundation for future vectorized query execution</li>
+                            <li>Reduced per-row overhead for large result sets</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">March 2026</span>
+                        </div>
+                        <h3>Full-Text Search</h3>
+                        <p>CSharpDB now includes built-in full-text search capabilities:</p>
+                        <ul>
+                            <li>Inverted index with tokenization and stemming</li>
+                            <li>Relevance ranking via MATCH() in SQL</li>
+                            <li>CREATE FULLTEXT INDEX syntax for easy setup</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">February 2026</span>
+                        </div>
+                        <h3>Foreign Key Constraints</h3>
+                        <p>v1 foreign key support has landed with column-level REFERENCES and optional ON DELETE CASCADE:</p>
+                        <ul>
+                            <li>Single-column, column-level REFERENCES syntax</li>
+                            <li>ON DELETE CASCADE for automatic child row cleanup</li>
+                            <li>Metadata and tooling surfaces across direct, HTTP, gRPC, CLI, and Admin</li>
+                            <li>Retrofit migration for older databases</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">January 2026</span>
+                        </div>
+                        <h3>Subqueries, Set Operations &amp; Visual Query Designer</h3>
+                        <p>Major SQL feature additions and tooling improvements:</p>
+                        <ul>
+                            <li>Scalar subqueries, IN/EXISTS (including correlated) subqueries</li>
+                            <li>UNION, INTERSECT, EXCEPT set operations</li>
+                            <li>Visual query builder in Admin UI with drag-and-drop source canvas, join editing, and SQL preview</li>
+                            <li>Collation support (BINARY, NOCASE, NOCASE_AI, ICU:&lt;locale&gt;)</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">Q4 2025</span>
+                        </div>
+                        <h3>Ecosystem Expansion</h3>
+                        <p>Major tooling and ecosystem additions that shipped in late 2025:</p>
+                        <ul>
+                            <li><strong>Dedicated gRPC daemon</strong> — Full gRPC coverage for SQL, schema, procedures, collections, and maintenance</li>
+                            <li><strong>Hybrid storage mode</strong> — Hot tables in memory with durable checkpoint to disk</li>
+                            <li><strong>Client backup &amp; restore</strong> — First-class operations across all access methods</li>
+                            <li><strong>Background WAL checkpointing</strong> — Incremental auto-checkpointing off the commit path</li>
+                            <li><strong>MCP server</strong> — AI assistant integration for database operations</li>
+                            <li><strong>NativeAOT C library</strong> — Cross-language FFI for JavaScript, Python, and more</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>

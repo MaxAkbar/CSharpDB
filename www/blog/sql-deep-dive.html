@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>SQL Deep Dive: JOINs, CTEs, and Subqueries — Blog — CSharpDB</title>
+    <meta name="description" content="Explore advanced SQL features in CSharpDB including JOINs, Common Table Expressions, subqueries, set operations, and aggregate functions.">
+    <link rel="canonical" href="https://csharpdb.com/blog/sql-deep-dive.html">
+    <meta property="og:title" content="SQL Deep Dive: JOINs, CTEs, and Subqueries">
+    <meta property="og:description" content="Explore advanced SQL features in CSharpDB including JOINs, Common Table Expressions, subqueries, set operations, and aggregate functions.">
+    <meta property="og:url" content="https://csharpdb.com/blog/sql-deep-dive.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "SQL Deep Dive: JOINs, CTEs, and Subqueries",
+        "description": "Explore advanced SQL features in CSharpDB including JOINs, CTEs, subqueries, set operations, and aggregate functions.",
+        "url": "https://csharpdb.com/blog/sql-deep-dive.html",
+        "datePublished": "2026-03-31",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'SQL Deep Dive: JOINs, CTEs, and Subqueries',
+        description: 'Explore advanced SQL features in CSharpDB including JOINs, CTEs, subqueries, set operations, and aggregate functions.',
+        keywords: 'CSharpDB SQL, JOINs, CTE, subqueries, aggregates, UNION, INTERSECT',
+        canonicalPath: 'blog/sql-deep-dive.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>SQL Deep Dive: JOINs, CTEs, and Subqueries</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>March 31, 2026</span>
+                    <span>&middot; 10 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB ships a full SQL engine — not a SQL-like query language, but proper SQL with JOINs, aggregates, CTEs, subqueries, and set operations. This post walks through the advanced features with practical examples.</p>
+
+                    <h2>Setup: Sample Schema</h2>
+                    <p>We'll use a simple e-commerce schema throughout this guide:</p>
+                    <div class="code-block" data-title="Schema Setup">
+                        <pre><code><span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE Customers (
+        Id    INTEGER PRIMARY KEY,
+        Name  TEXT NOT NULL,
+        Email TEXT NOT NULL
+    );
+    CREATE TABLE Orders (
+        Id         INTEGER PRIMARY KEY,
+        CustomerId INTEGER REFERENCES Customers(Id),
+        Total      REAL NOT NULL,
+        CreatedAt  TEXT NOT NULL
+    );
+    CREATE TABLE OrderItems (
+        Id        INTEGER PRIMARY KEY,
+        OrderId   INTEGER REFERENCES Orders(Id),
+        Product   TEXT NOT NULL,
+        Quantity  INTEGER NOT NULL,
+        UnitPrice REAL NOT NULL
+    )"</span>);</code></pre>
+                    </div>
+
+                    <h2>JOINs</h2>
+                    <p>CSharpDB supports INNER, LEFT, RIGHT, and CROSS JOINs:</p>
+                    <div class="code-block" data-title="INNER JOIN">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT c.Name, o.Total, o.CreatedAt
+    FROM Customers c
+    INNER JOIN Orders o ON o.CustomerId = c.Id
+    WHERE o.Total > 100
+    ORDER BY o.Total DESC"</span>);</code></pre>
+                    </div>
+
+                    <h3>LEFT JOIN for Optional Relationships</h3>
+                    <p>Find customers who may or may not have orders:</p>
+                    <div class="code-block" data-title="LEFT JOIN">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT c.Name, COUNT(o.Id) AS OrderCount
+    FROM Customers c
+    LEFT JOIN Orders o ON o.CustomerId = c.Id
+    GROUP BY c.Id, c.Name
+    ORDER BY OrderCount DESC"</span>);</code></pre>
+                    </div>
+
+                    <h3>Multi-Table JOINs</h3>
+                    <p>Join three tables to get full order details:</p>
+                    <div class="code-block" data-title="Multi-Table JOIN">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT c.Name, oi.Product, oi.Quantity, oi.UnitPrice,
+           oi.Quantity * oi.UnitPrice AS LineTotal
+    FROM Customers c
+    INNER JOIN Orders o ON o.CustomerId = c.Id
+    INNER JOIN OrderItems oi ON oi.OrderId = o.Id
+    ORDER BY c.Name, oi.Product"</span>);</code></pre>
+                    </div>
+
+                    <h2>Aggregates and GROUP BY</h2>
+                    <p>Standard aggregate functions — <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code> — work with <code>GROUP BY</code> and <code>HAVING</code>:</p>
+                    <div class="code-block" data-title="Aggregates">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT c.Name,
+           COUNT(o.Id)  AS TotalOrders,
+           SUM(o.Total) AS TotalSpent,
+           AVG(o.Total) AS AvgOrder
+    FROM Customers c
+    INNER JOIN Orders o ON o.CustomerId = c.Id
+    GROUP BY c.Id, c.Name
+    HAVING SUM(o.Total) > 500
+    ORDER BY TotalSpent DESC"</span>);</code></pre>
+                    </div>
+
+                    <h2>Common Table Expressions (CTEs)</h2>
+                    <p>CTEs let you break complex queries into readable, named steps:</p>
+                    <div class="code-block" data-title="CTE">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    WITH CustomerTotals AS (
+        SELECT CustomerId,
+               SUM(Total) AS LifetimeSpend,
+               COUNT(*)   AS OrderCount
+        FROM Orders
+        GROUP BY CustomerId
+    )
+    SELECT c.Name, ct.LifetimeSpend, ct.OrderCount
+    FROM Customers c
+    INNER JOIN CustomerTotals ct ON ct.CustomerId = c.Id
+    WHERE ct.LifetimeSpend > 1000
+    ORDER BY ct.LifetimeSpend DESC"</span>);</code></pre>
+                    </div>
+
+                    <h2>Subqueries</h2>
+                    <p>CSharpDB supports scalar subqueries, <code>IN</code> subqueries, and <code>EXISTS</code> — including correlated subqueries:</p>
+
+                    <h3>Scalar Subquery</h3>
+                    <div class="code-block" data-title="Scalar Subquery">
+                        <pre><code><span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT Name, Email,
+           (SELECT COUNT(*) FROM Orders o WHERE o.CustomerId = c.Id) AS OrderCount
+    FROM Customers c"</span>);</code></pre>
+                    </div>
+
+                    <h3>IN Subquery</h3>
+                    <div class="code-block" data-title="IN Subquery">
+                        <pre><code><span class="cm">-- Customers who ordered products over $50</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT Name FROM Customers
+    WHERE Id IN (
+        SELECT DISTINCT CustomerId FROM Orders WHERE Total > 50
+    )"</span>);</code></pre>
+                    </div>
+
+                    <h3>EXISTS Subquery</h3>
+                    <div class="code-block" data-title="EXISTS Subquery">
+                        <pre><code><span class="cm">-- Customers with at least one order</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT Name FROM Customers c
+    WHERE EXISTS (
+        SELECT 1 FROM Orders o WHERE o.CustomerId = c.Id
+    )"</span>);</code></pre>
+                    </div>
+
+                    <h2>Set Operations</h2>
+                    <p>Combine results from multiple queries with <code>UNION</code>, <code>INTERSECT</code>, and <code>EXCEPT</code>:</p>
+                    <div class="code-block" data-title="Set Operations">
+                        <pre><code><span class="cm">-- All product names from orders, deduplicated</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    SELECT Product FROM OrderItems WHERE UnitPrice > 50
+    UNION
+    SELECT Product FROM OrderItems WHERE Quantity > 10"</span>);</code></pre>
+                    </div>
+
+                    <h2>DISTINCT</h2>
+                    <p>Deduplicate rows in any SELECT, including with aggregates:</p>
+                    <div class="code-block" data-title="DISTINCT">
+                        <pre><code><span class="cm">-- Unique products ordered</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT DISTINCT Product FROM OrderItems ORDER BY Product"</span>);
+
+<span class="cm">-- Count of distinct customers who placed orders</span>
+<span class="kw">await using var</span> count = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT COUNT(DISTINCT CustomerId) FROM Orders"</span>);</code></pre>
+                    </div>
+
+                    <h2>Views and Triggers</h2>
+                    <p>Encapsulate complex queries as views and react to data changes with triggers:</p>
+                    <div class="code-block" data-title="Views">
+                        <pre><code><span class="cm">-- Create a reusable view</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE VIEW CustomerSummary AS
+    SELECT c.Id, c.Name, c.Email,
+           COUNT(o.Id) AS OrderCount,
+           COALESCE(SUM(o.Total), 0) AS TotalSpent
+    FROM Customers c
+    LEFT JOIN Orders o ON o.CustomerId = c.Id
+    GROUP BY c.Id, c.Name, c.Email"</span>);
+
+<span class="cm">-- Query the view like a table</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT * FROM CustomerSummary WHERE TotalSpent > 500"</span>);</code></pre>
+                    </div>
+
+                    <h2>Performance Tips</h2>
+                    <ul>
+                        <li><strong>Create indexes on JOIN columns.</strong> <code>CREATE INDEX idx_orders_customer ON Orders(CustomerId)</code> dramatically speeds up JOINs.</li>
+                        <li><strong>Use composite indexes for multi-column filters.</strong> A single composite index can cover both the WHERE and ORDER BY.</li>
+                        <li><strong>Run ANALYZE periodically.</strong> CSharpDB uses table statistics to pick better query plans.</li>
+                        <li><strong>Use parameterized queries.</strong> The prepared statement cache avoids re-parsing identical SQL.</li>
+                    </ul>
+
+                    <div class="blog-nav">
+                        <a href="working-with-collections.html">&larr; Working with Collections</a>
+                        <a href="index.html">All posts &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>
