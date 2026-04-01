@@ -168,6 +168,7 @@ public sealed class QueryPlanner
     private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
+    private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
@@ -328,6 +329,7 @@ public sealed class QueryPlanner
         _triggerBodyCache.Clear();
         _nextRowIdCache.Clear();
         _compiledExpressionCache.Clear();
+        _compiledSpanExpressionCache.Clear();
         _qualifiedMappingFingerprintCache.Clear();
         _tableSchemaArrayCache.Clear();
         _singleColumnOutputSchemaCache.Clear();
@@ -3221,13 +3223,16 @@ public sealed class QueryPlanner
         }
 
         bool delayFilterUntilProjection = !hasAggregates && !stmt.Columns.Any(c => c.IsStar);
-        Func<DbValue[], DbValue>? remainingWhereEvaluator =
+        SpanExpressionEvaluator? remainingWhereEvaluator =
             remainingWhere != null && delayFilterUntilProjection
-                ? GetOrCompileExpression(remainingWhere, schema)
+                ? GetOrCompileSpanExpression(remainingWhere, schema)
                 : null;
 
         if (remainingWhere != null && remainingWhereEvaluator == null)
-            op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+            op = new FilterOperator(
+                op,
+                GetOrCompileSpanExpression(remainingWhere, schema),
+                TryCreateFilterBatchPlan(op, remainingWhere, schema));
 
         if (hasAggregates)
         {
@@ -3313,7 +3318,7 @@ public sealed class QueryPlanner
 
                         if (remainingWhereEvaluator != null)
                             op = batchPlan != null
-                                ? new FilterProjectionOperator(op, remainingWhereEvaluator, columnIndices, outputCols, batchPlan)
+                                ? new FilterProjectionOperator(op, remainingWhereEvaluator, columnIndices, outputCols, batchPlan, useSpanEvaluator: true)
                                 : new FilterOperator(op, remainingWhereEvaluator);
 
                         op = batchPlan != null
@@ -3329,22 +3334,25 @@ public sealed class QueryPlanner
                     {
                         outputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, schema, i);
                     }
-                    var expressionEvaluators = GetOrCompileExpressions(expressions, schema);
+                    var expressionEvaluators = GetOrCompileSpanExpressions(expressions, schema);
                     var batchPlan = TryCreateBatchPlan(op, remainingWhere, expressions, schema);
                     op = remainingWhereEvaluator != null
-                        ? new FilterProjectionOperator(op, remainingWhereEvaluator, outputCols, expressionEvaluators, batchPlan)
+                        ? new FilterProjectionOperator(op, remainingWhereEvaluator, outputCols, expressionEvaluators, batchPlan, useSpanEvaluator: true)
                         : batchPlan != null
                             ? new ProjectionOperator(
                                 op,
                                 Array.Empty<int>(),
                                 outputCols,
                                 expressionEvaluators,
-                                batchPlan)
+                                batchPlan,
+                                useSpanEvaluators: true)
                             : new ProjectionOperator(
                                 op,
                                 Array.Empty<int>(),
                                 outputCols,
-                                expressionEvaluators);
+                                expressionEvaluators,
+                                batchPlan: null,
+                                useSpanEvaluators: true);
                 }
             }
 
@@ -3366,17 +3374,7 @@ public sealed class QueryPlanner
             ? QueryResult.FromBatchOperator(batchOperator)
             : new QueryResult(op);
 
-    private static bool ShouldUseBatchResultBoundary(IOperator op)
-        => op switch
-        {
-            IndexScanOperator => false,
-            IndexOrderedScanOperator => false,
-            HashJoinOperator => false,
-            IndexNestedLoopJoinOperator => false,
-            HashedIndexNestedLoopJoinOperator => false,
-            NestedLoopJoinOperator => false,
-            _ => true,
-        };
+    private static bool ShouldUseBatchResultBoundary(IOperator _) => true;
 
     private static int? GetOrderByTopN(SelectStatement stmt)
         => GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset);
@@ -4159,7 +4157,10 @@ public sealed class QueryPlanner
             if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
                 residualWhere = pushedWhere;
             if (residualWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(residualWhere, schema));
+                op = new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(residualWhere, schema),
+                    TryCreateFilterBatchPlan(op, residualWhere, schema));
             result = CreateQueryResult(op);
             return true;
         }
@@ -4245,7 +4246,10 @@ public sealed class QueryPlanner
 
             IOperator projOp = pkOp;
             if (remainingResidual != null)
-                projOp = new FilterOperator(projOp, GetOrCompileExpression(remainingResidual, schema));
+                projOp = new FilterOperator(
+                    projOp,
+                    GetOrCompileSpanExpression(remainingResidual, schema),
+                    TryCreateFilterBatchPlan(projOp, remainingResidual, schema));
 
             projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
@@ -4592,7 +4596,8 @@ public sealed class QueryPlanner
             return false;
 
         bool isCountStar = false;
-        ColumnRefExpression? col = null;
+        ColumnRefExpression? aggregateColumnRef = null;
+        Expression? aggregateExpression = null;
 
         if (func.IsStarArg)
         {
@@ -4609,10 +4614,8 @@ public sealed class QueryPlanner
             if (func.FunctionName is not ("COUNT" or "SUM" or "AVG" or "MIN" or "MAX"))
                 return false;
 
-            if (func.Arguments[0] is not ColumnRefExpression aggregateColumn)
-                return false;
-
-            col = aggregateColumn;
+            aggregateExpression = func.Arguments[0];
+            aggregateColumnRef = aggregateExpression as ColumnRefExpression;
         }
 
         if (_catalog.IsView(simpleRef.TableName))
@@ -4621,24 +4624,27 @@ public sealed class QueryPlanner
         if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
             return false;
 
-        if (col?.TableAlias != null)
+        if (aggregateColumnRef?.TableAlias != null)
         {
             string expectedAlias = simpleRef.Alias ?? simpleRef.TableName;
-            if (!string.Equals(col.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(aggregateColumnRef.TableAlias, expectedAlias, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 
         var schema = GetSchema(simpleRef.TableName);
         int columnIndex = -1;
-        if (!isCountStar)
+        if (aggregateColumnRef != null)
         {
-            columnIndex = schema.GetColumnIndex(col!.ColumnName);
+            columnIndex = aggregateColumnRef.TableAlias != null
+                ? schema.GetQualifiedColumnIndex(aggregateColumnRef.TableAlias, aggregateColumnRef.ColumnName)
+                : schema.GetColumnIndex(aggregateColumnRef.ColumnName);
             if (columnIndex < 0)
                 return false;
         }
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
-        if (TryBuildKeyAggregateQuery(
+        if ((isCountStar || columnIndex >= 0) &&
+            TryBuildKeyAggregateQuery(
                 simpleRef.TableName,
                 schema,
                 stmt.Where,
@@ -4655,7 +4661,7 @@ public sealed class QueryPlanner
         IOperator? indexedSource = null;
         Expression? indexedRemainingWhere = null;
 
-        if (!isCountStar)
+        if (!isCountStar && columnIndex >= 0)
         {
             indexedSource = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
             if (indexedSource != null && indexedRemainingWhere == null)
@@ -4716,12 +4722,15 @@ public sealed class QueryPlanner
             }
 
             if (!isCountStar)
-                indexedDecodeColumns.Add(columnIndex);
+            {
+                if (!TryAccumulateReferencedColumns(aggregateExpression!, schema, indexedDecodeColumns))
+                    return false;
+            }
 
             var compactIndexedDecodeColumns = ToSortedColumnIndices(indexedDecodeColumns);
             var compactIndexedSchema = CreateCompactProjectionSchema(schema, compactIndexedDecodeColumns);
             int compactIndexedAggregateColumnIndex = -1;
-            if (!isCountStar)
+            if (columnIndex >= 0)
             {
                 compactIndexedAggregateColumnIndex = Array.BinarySearch(compactIndexedDecodeColumns, columnIndex);
                 if (compactIndexedAggregateColumnIndex < 0)
@@ -4731,10 +4740,13 @@ public sealed class QueryPlanner
             Func<DbValue[], DbValue>? compactIndexedPredicateEvaluator = indexedRemainingWhere != null
                 ? GetOrCompileExpression(indexedRemainingWhere, compactIndexedSchema)
                 : null;
+            Func<DbValue[], DbValue>? compactIndexedAggregateEvaluator = !isCountStar && compactIndexedAggregateColumnIndex < 0
+                ? GetOrCompileExpression(aggregateExpression!, compactIndexedSchema)
+                : null;
             var indexedScalarBatchPlan = BatchPlanCompiler.TryCreateScalarAggregate(
                 indexedRemainingWhere,
                 func.FunctionName,
-                compactIndexedAggregateColumnIndex,
+                aggregateExpression,
                 isCountStar,
                 func.IsDistinct,
                 compactIndexedSchema);
@@ -4747,6 +4759,7 @@ public sealed class QueryPlanner
                 func.FunctionName,
                 outputSchema,
                 predicateEvaluator: compactIndexedPredicateEvaluator,
+                aggregateArgumentEvaluator: compactIndexedAggregateEvaluator,
                 isDistinct: func.IsDistinct,
                 isCountStar,
                 batchPlan: indexedScalarBatchPlan));
@@ -4758,12 +4771,15 @@ public sealed class QueryPlanner
             return false;
 
         if (!isCountStar)
-            decodeColumns.Add(columnIndex);
+        {
+            if (!TryAccumulateReferencedColumns(aggregateExpression!, schema, decodeColumns))
+                return false;
+        }
 
         var filteredDecodeColumns = ToSortedColumnIndices(decodeColumns);
         var compactSchema = CreateCompactProjectionSchema(schema, filteredDecodeColumns);
         int compactAggregateColumnIndex = -1;
-        if (!isCountStar)
+        if (columnIndex >= 0)
         {
             compactAggregateColumnIndex = Array.BinarySearch(filteredDecodeColumns, columnIndex);
             if (compactAggregateColumnIndex < 0)
@@ -4771,10 +4787,13 @@ public sealed class QueryPlanner
         }
 
         var compactPredicateEvaluator = GetOrCompileExpression(stmt.Where, compactSchema);
+        Func<DbValue[], DbValue>? compactAggregateEvaluator = !isCountStar && compactAggregateColumnIndex < 0
+            ? GetOrCompileExpression(aggregateExpression!, compactSchema)
+            : null;
         var scalarBatchPlan = BatchPlanCompiler.TryCreateScalarAggregate(
             stmt.Where,
             func.FunctionName,
-            compactAggregateColumnIndex,
+            aggregateExpression,
             isCountStar,
             func.IsDistinct,
             compactSchema);
@@ -4786,6 +4805,7 @@ public sealed class QueryPlanner
             outputSchema,
             compactPredicateEvaluator,
             filteredDecodeColumns,
+            aggregateArgumentEvaluator: compactAggregateEvaluator,
             isDistinct: func.IsDistinct,
             isCountStar,
             recordSerializer: GetReadSerializer(schema),
@@ -5833,7 +5853,10 @@ public sealed class QueryPlanner
                     }
 
                     if (viewStmt.Where != null)
-                        viewOp = new FilterOperator(viewOp, GetOrCompileExpression(viewStmt.Where, viewSchema));
+                        viewOp = new FilterOperator(
+                            viewOp,
+                            GetOrCompileSpanExpression(viewStmt.Where, viewSchema),
+                            TryCreateFilterBatchPlan(viewOp, viewStmt.Where, viewSchema));
 
                     if (hasAggregates)
                     {
@@ -5866,7 +5889,9 @@ public sealed class QueryPlanner
                             viewOp,
                             Array.Empty<int>(),
                             outputCols,
-                            GetOrCompileExpressions(expressions, viewSchema));
+                            GetOrCompileSpanExpressions(expressions, viewSchema),
+                            batchPlan: null,
+                            useSpanEvaluators: true);
 
                         viewSchema = new TableSchema
                         {
@@ -8123,7 +8148,10 @@ public sealed class QueryPlanner
         if (stmt.Columns.Any(c => c.IsStar))
         {
             if (remainingWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+                op = new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(remainingWhere, schema),
+                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
             result = CreateQueryResult(op);
             return true;
         }
@@ -8197,7 +8225,10 @@ public sealed class QueryPlanner
                 TrySetDecodedColumnUpperBound(op, maxCol);
 
             if (remainingWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+                op = new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(remainingWhere, schema),
+                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = CreateQueryResult(op);
@@ -8286,7 +8317,10 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere != null)
-                op = new FilterOperator(op, GetOrCompileExpression(remainingWhere, schema));
+                op = new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(remainingWhere, schema),
+                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
 
             result = CreateQueryResult(op);
             return true;
@@ -10342,6 +10376,7 @@ public sealed class QueryPlanner
         if (_compiledExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
         {
             _compiledExpressionCache.Clear();
+            _compiledSpanExpressionCache.Clear();
             _qualifiedMappingFingerprintCache.Clear();
             _requiresQualifiedMappingCache.Clear();
         }
@@ -10359,6 +10394,38 @@ public sealed class QueryPlanner
         return evaluators;
     }
 
+    private SpanExpressionEvaluator GetOrCompileSpanExpression(Expression expression, TableSchema schema)
+    {
+        bool requiresQualifiedMappings = RequiresQualifiedMappings(expression);
+        var key = new CompiledExpressionCacheKey(
+            expression,
+            schema.Columns,
+            requiresQualifiedMappings ? GetQualifiedMappingsFingerprint(schema) : null);
+
+        if (_compiledSpanExpressionCache.TryGetValue(key, out var evaluator))
+            return evaluator;
+
+        if (_compiledSpanExpressionCache.Count >= MaxCompiledExpressionCacheEntries)
+        {
+            _compiledExpressionCache.Clear();
+            _compiledSpanExpressionCache.Clear();
+            _qualifiedMappingFingerprintCache.Clear();
+            _requiresQualifiedMappingCache.Clear();
+        }
+
+        evaluator = ExpressionCompiler.CompileSpan(expression, schema);
+        _compiledSpanExpressionCache[key] = evaluator;
+        return evaluator;
+    }
+
+    private SpanExpressionEvaluator[] GetOrCompileSpanExpressions(Expression[] expressions, TableSchema schema)
+    {
+        var evaluators = new SpanExpressionEvaluator[expressions.Length];
+        for (int i = 0; i < expressions.Length; i++)
+            evaluators[i] = GetOrCompileSpanExpression(expressions[i], schema);
+        return evaluators;
+    }
+
     private IFilterProjectionBatchPlan? TryCreateBatchPlan(
         IOperator source,
         Expression? predicate,
@@ -10368,7 +10435,22 @@ public sealed class QueryPlanner
         if (!IsBatchPlanEligibleSource(source))
             return null;
 
-        return BatchPlanCompiler.TryCreate(predicate, projections, schema);
+        var batchPlan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+        ApplyBatchPlanPreDecodeFilters(source, batchPlan);
+        return batchPlan;
+    }
+
+    private IFilterProjectionBatchPlan? TryCreateFilterBatchPlan(
+        IOperator source,
+        Expression? predicate,
+        TableSchema schema)
+    {
+        if (predicate == null || BatchSourceHelper.TryGetBatchSource(source) == null)
+            return null;
+
+        var batchPlan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+        ApplyBatchPlanPreDecodeFilters(source, batchPlan);
+        return batchPlan;
     }
 
     private static IFilterProjectionBatchPlan? TryCreateCompactBatchPlan(
@@ -10386,6 +10468,21 @@ public sealed class QueryPlanner
             IndexNestedLoopJoinOperator or
             HashedIndexNestedLoopJoinOperator or
             NestedLoopJoinOperator;
+
+    private void ApplyBatchPlanPreDecodeFilters(IOperator source, IFilterProjectionBatchPlan? batchPlan)
+    {
+        if (source is not IPreDecodeFilterSupport preDecodeFilterTarget ||
+            batchPlan?.PushdownFilters is not { Length: > 0 } pushdownFilters)
+        {
+            return;
+        }
+
+        for (int i = 0; i < pushdownFilters.Length; i++)
+        {
+            var filter = pushdownFilters[i];
+            preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(_recordSerializer, filter.ColumnIndex, filter));
+        }
+    }
 
     private string GetQualifiedMappingsFingerprint(TableSchema schema)
     {

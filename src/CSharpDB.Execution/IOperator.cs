@@ -45,6 +45,7 @@ internal interface IBatchBackedRowOperator
 internal interface IPreDecodeFilterSupport
 {
     void SetPreDecodeFilter(int columnIndex, CSharpDB.Sql.BinaryOp op, DbValue literal);
+    void SetPreDecodeFilter(in PreDecodeFilterSpec filter);
 }
 
 internal interface IEstimatedRowCountProvider

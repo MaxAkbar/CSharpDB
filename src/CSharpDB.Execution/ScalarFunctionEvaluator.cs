@@ -25,8 +25,11 @@ internal static class ScalarFunctionEvaluator
             throw new CSharpDbException(ErrorCode.SyntaxError, "TEXT() requires exactly one argument.");
 
         DbValue value = evaluateArgument(func.Arguments[0]);
-        return DbValue.FromText(ToDisplayText(value));
+        return EvaluateTextValue(value);
     }
+
+    internal static DbValue EvaluateTextValue(DbValue value)
+        => DbValue.FromText(ToDisplayText(value));
 
     private static string ToDisplayText(DbValue value) => value.Type switch
     {

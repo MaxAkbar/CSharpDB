@@ -311,9 +311,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Collation Support</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Per-database or per-column collation for case-insensitive comparisons, locale-aware sorting, and COLLATE clause.</p>
+                            <p><code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation now work across SQL and collection indexes; dedicated ordered SQL text index optimization remains future work.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -358,9 +358,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>SQL Batched Row Transport</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Internal row-batch transport between operators as foundation for vectorized scan-heavy execution.</p>
+                            <p>Internal row-batch transport now serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -428,7 +428,7 @@
                             <tr><td>Indexes</td><td>Ordered range-scan pushdown limited to single-column INTEGER index paths</td></tr>
                             <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); consolidation planned</td></tr>
                             <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls</td></tr>
-                            <tr><td>Collation</td><td>Ordinal (byte-order) comparisons only; no case-insensitive matching or locale-aware ordering</td></tr>
+                            <tr><td>Collation</td><td>Default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented; dedicated ordered SQL text index optimization remains future work</td></tr>
                             <tr><td>Concurrency</td><td>Single writer only (no multi-writer)</td></tr>
                             <tr><td>Storage</td><td>No page-level compression or at-rest encryption</td></tr>
                         </tbody>
@@ -452,6 +452,7 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ANALYZE with persisted table/column stats</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SELECT DISTINCT and DISTINCT aggregates</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Prepared statement and query plan caching</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Batch-first SQL row-batch execution foundation across scans, joins, aggregates, and result boundaries</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Views and triggers (BEFORE/AFTER)</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET provider with connection pooling</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET GetSchema metadata collections for tooling and ORMs</div>

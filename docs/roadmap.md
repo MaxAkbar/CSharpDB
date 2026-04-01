@@ -74,7 +74,7 @@ Advanced features and fundamental architecture enhancements.
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) via `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
 | **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
-| **SQL batched row transport** | Introduce true internal row-batch transport between operators as the foundation for batch-oriented/vectorized scan-heavy execution | Planned |
+| **SQL batched row transport** | Internal row-batch transport now serves as the generalized batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates; future kernel specialization remains iterative optimization work | Done |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Advanced cost-based query optimizer** | In progress: phase-1 statistics-guided costing is already in place for non-unique lookup selection, hash-vs-lookup join choice, hash build-side choice, and limited greedy inner-join reordering for selective equality/range/`IN`/same-column `OR` filters; advanced histograms, skew/correlation modeling, and adaptive re-optimization remain future work | In Progress |
@@ -110,6 +110,7 @@ These are known simplifications in the current implementation:
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Storage** | Durable auto-commit single-row writes still pay a physical WAL flush per commit; current write-heavy presets mainly reduce checkpoint variance rather than the flush cost itself |
 | **Query** | Phase-1 cost-based planning is in place: `ANALYZE`, `sys.table_stats`, and `sys.column_stats` now feed join/access-path costing, but there are still no histograms, no adaptive re-optimization, and complex skew/correlation cases can still fall back to heuristics |
+| **Query** | Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage |
 
 ---
 
@@ -149,6 +150,7 @@ Major features already implemented:
 - Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
 - Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing
 - SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters
+- Batch-first SQL row-batch execution foundation with batch-aware scan/index/join roots, shared predicate/projection kernels, and batch-native generic aggregate paths
 - Interactive CLI with meta-commands and file execution
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
@@ -171,7 +173,7 @@ Major features already implemented:
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
-- [SQL Batched Row Transport Design](sql-batched-row-transport/README.md) — Internal batch transport proposal for scan-heavy SQL execution, staged operator migration, and future vectorized work
+- [SQL Batched Row Transport Status](sql-batched-row-transport/README.md) — Shipped batch-first execution foundation, focused benchmark validation, and follow-on optimization work
 - [Low-Latency Durable Writes Plan](low-latency-durable-writes/README.md) — Exact-durability auto-commit write optimization plan, advisory stats deferral, and benchmark gates
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
