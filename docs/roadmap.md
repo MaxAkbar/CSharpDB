@@ -73,8 +73,8 @@ Advanced features and fundamental architecture enhancements.
 | **Full-text search** | Inverted index with tokenization, stemming, and relevance ranking | Done |
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) via `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
+| **SQL batched row transport** | Internal row-batch transport serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates | Done |
 | **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
-| **SQL batched row transport** | Internal row-batch transport now serves as the generalized batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates; future kernel specialization remains iterative optimization work | Done |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Advanced cost-based query optimizer** | In progress: phase-1 statistics-guided costing is already in place for non-unique lookup selection, hash-vs-lookup join choice, hash build-side choice, and limited greedy inner-join reordering for selective equality/range/`IN`/same-column `OR` filters; advanced histograms, skew/correlation modeling, and adaptive re-optimization remain future work | In Progress |
@@ -173,7 +173,6 @@ Major features already implemented:
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
-- [SQL Batched Row Transport Status](sql-batched-row-transport/README.md) — Shipped batch-first execution foundation, focused benchmark validation, and follow-on optimization work
 - [Low-Latency Durable Writes Plan](low-latency-durable-writes/README.md) — Exact-durability auto-commit write optimization plan, advisory stats deferral, and benchmark gates
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
