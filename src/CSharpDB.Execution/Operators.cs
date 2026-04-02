@@ -890,6 +890,9 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
+        if (_source is IBatchBufferReuseController controller)
+            controller.SetReuseCurrentBatch(reuse);
+
         if (!reuse)
             _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
@@ -3307,6 +3310,19 @@ public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseCo
 
             if (batch.Count >= batch.Capacity || _count >= _limit)
                 break;
+
+            int remaining = _limit - _count;
+            if (batch.Count == 0 &&
+                _sourceBatchRowIndex < 0 &&
+                sourceBatch.Count > 0 &&
+                sourceBatch.Count <= remaining &&
+                (_reuseCurrentBatch || !batchSource.ReusesCurrentBatch))
+            {
+                _currentBatch = sourceBatch;
+                _count += sourceBatch.Count;
+                _sourceBatchRowIndex = sourceBatch.Count - 1;
+                return true;
+            }
 
             if (!await batchSource.MoveNextBatchAsync(ct))
                 break;
@@ -11189,6 +11205,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     internal long SeekValue => _seekValue;
     internal int[]? ExpectedKeyColumnIndices => _expectedKeyColumnIndices;
     internal DbValue[]? ExpectedKeyComponents => _expectedKeyComponents;
+    internal byte[][]? ExpectedKeyTextBytes => _expectedKeyTextBytes;
     internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
 
     public IndexScanOperator(
@@ -13780,6 +13797,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
         bool hasAny = false;
         DbValue? best = null;
         AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        bool cachedResultFinalized = false;
 
         void Accumulate(ReadOnlySpan<byte> payload)
         {
@@ -13890,6 +13908,135 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
             }
         }
 
+        bool TryAccumulateCachedPrimaryKey()
+        {
+            if (!_tableTree.TryFindCachedMemory(_lookupValue, out var cachedPayload))
+                return false;
+
+            if (cachedPayload is { } payloadMemory)
+                Accumulate(payloadMemory.Span);
+
+            return true;
+        }
+
+        bool TryAccumulateCachedIndexEquality()
+        {
+            if (_indexStore is not ICacheAwareIndexStore cacheAware ||
+                !cacheAware.TryFindCached(_lookupValue, out var cachedIndexPayload))
+            {
+                return false;
+            }
+
+            if (cachedIndexPayload is not { Length: > 0 })
+                return true;
+
+            if (cachedIndexPayload.Length == RowIdPayloadCodec.RowIdSize)
+            {
+                long rowId = BinaryPrimitives.ReadInt64LittleEndian(cachedIndexPayload.AsSpan(0, RowIdPayloadCodec.RowIdSize));
+                if (!_tableTree.TryFindCachedMemory(rowId, out var cachedRowPayload))
+                    return false;
+
+                FinalizeSingleRowAggregate(cachedRowPayload);
+                return true;
+            }
+
+            int rowIdCount = RowIdPayloadCodec.GetCount(cachedIndexPayload);
+            for (int i = 0; i < rowIdCount; i++)
+            {
+                long rowId = RowIdPayloadCodec.ReadAt(cachedIndexPayload, i);
+                if (!_tableTree.TryFindCachedMemory(rowId, out var cachedRowPayload))
+                    return false;
+
+                if (cachedRowPayload is { } rowPayloadMemory)
+                    Accumulate(rowPayloadMemory.Span);
+            }
+
+            return true;
+        }
+
+        void FinalizeSingleRowAggregate(ReadOnlyMemory<byte>? rowPayload)
+        {
+            DbValue aggregate;
+            if (rowPayload is not { } rowPayloadMemory)
+            {
+                aggregate = _kind switch
+                {
+                    AggregateKind.Count => DbValue.FromInteger(0),
+                    AggregateKind.Sum => DbValue.FromInteger(0),
+                    AggregateKind.Avg => DbValue.Null,
+                    AggregateKind.Min => DbValue.Null,
+                    AggregateKind.Max => DbValue.Null,
+                    _ => DbValue.Null,
+                };
+            }
+            else
+            {
+                var payload = rowPayloadMemory.Span;
+                aggregate = _kind switch
+                {
+                    AggregateKind.Count => BoundColumnAccessHelper.IsNull(payload, _recordSerializer, _columnAccessor, _columnIndex)
+                        ? DbValue.FromInteger(0)
+                        : DbValue.FromInteger(1),
+                    AggregateKind.Sum => BoundColumnAccessHelper.TryDecodeNumeric(
+                            payload,
+                            _recordSerializer,
+                            _columnAccessor,
+                            _columnIndex,
+                            out long intVal,
+                            out double realVal,
+                            out bool isReal)
+                        ? isReal ? DbValue.FromReal(realVal) : DbValue.FromInteger(intVal)
+                        : DbValue.FromInteger(0),
+                    AggregateKind.Avg => BoundColumnAccessHelper.TryDecodeNumeric(
+                            payload,
+                            _recordSerializer,
+                            _columnAccessor,
+                            _columnIndex,
+                            out long avgIntVal,
+                            out double avgRealVal,
+                            out bool avgIsReal)
+                        ? avgIsReal ? DbValue.FromReal(avgRealVal) : DbValue.FromInteger(avgIntVal)
+                        : DbValue.Null,
+                    AggregateKind.Min => BoundColumnAccessHelper.Decode(payload, _recordSerializer, _columnAccessor, _columnIndex),
+                    AggregateKind.Max => BoundColumnAccessHelper.Decode(payload, _recordSerializer, _columnAccessor, _columnIndex),
+                    _ => DbValue.Null,
+                };
+            }
+
+            Current = new[] { aggregate };
+            cachedResultFinalized = true;
+        }
+
+        void FinalizeAggregate()
+        {
+            DbValue aggregate = _kind switch
+            {
+                AggregateKind.Count => DbValue.FromInteger(count),
+                AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
+                    : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
+                AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+                AggregateKind.Min => best ?? DbValue.Null,
+                AggregateKind.Max => best ?? DbValue.Null,
+                _ => DbValue.Null,
+            };
+
+            Current = new[] { aggregate };
+        }
+
+        bool usedCachedFastPath = _lookupKind switch
+        {
+            LookupKind.PrimaryKey => TryAccumulateCachedPrimaryKey(),
+            LookupKind.IndexEquality => TryAccumulateCachedIndexEquality(),
+            _ => false,
+        };
+
+        if (usedCachedFastPath)
+        {
+            if (!cachedResultFinalized)
+                FinalizeAggregate();
+            return;
+        }
+
         if (_lookupKind == LookupKind.PrimaryKey)
         {
             var payload = await _tableTree.FindMemoryAsync(_lookupValue, ct);
@@ -13912,18 +14059,7 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
             }
         }
 
-        DbValue aggregate = _kind switch
-        {
-            AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
-                : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
-            AggregateKind.Min => best ?? DbValue.Null,
-            AggregateKind.Max => best ?? DbValue.Null,
-            _ => DbValue.Null,
-        };
-
-        Current = new[] { aggregate };
+        FinalizeAggregate();
     }
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)

@@ -145,6 +145,115 @@ internal static class HashedIndexPayloadCodec
         return offset == span.Length;
     }
 
+    public static bool TryGetSingleMatchingRowId(
+        byte[] payload,
+        ReadOnlySpan<DbValue> keyComponents,
+        byte[][]? expectedTextBytes,
+        out bool foundRow,
+        out long rowId)
+    {
+        foundRow = false;
+        rowId = 0;
+
+        ReadOnlySpan<byte> span = payload;
+        if (!IsEncoded(span))
+            return false;
+
+        int offset = MagicBytes.Length;
+        if (offset + sizeof(int) * 2 > span.Length)
+            return false;
+
+        int componentCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
+        offset += sizeof(int);
+        int groupCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
+        offset += sizeof(int);
+
+        if (componentCount <= 0 || groupCount < 0)
+            return false;
+
+        if (componentCount != keyComponents.Length)
+            return true;
+
+        for (int groupIndex = 0; groupIndex < groupCount; groupIndex++)
+        {
+            bool matches = true;
+            for (int componentIndex = 0; componentIndex < componentCount; componentIndex++)
+            {
+                if (offset >= span.Length)
+                    return false;
+
+                byte tag = span[offset++];
+                var expectedComponent = keyComponents[componentIndex];
+                switch (tag)
+                {
+                    case IntegerComponentTag:
+                    {
+                        if (offset + sizeof(long) > span.Length)
+                            return false;
+
+                        long value = BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long)));
+                        offset += sizeof(long);
+                        if (expectedComponent.Type != DbType.Integer || expectedComponent.AsInteger != value)
+                            matches = false;
+                        break;
+                    }
+
+                    case TextComponentTag:
+                    {
+                        if (offset + sizeof(int) > span.Length)
+                            return false;
+
+                        int textByteLength = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
+                        offset += sizeof(int);
+                        if (textByteLength < 0 || offset + textByteLength > span.Length)
+                            return false;
+
+                        ReadOnlySpan<byte> actualTextBytes = span.Slice(offset, textByteLength);
+                        offset += textByteLength;
+
+                        ReadOnlySpan<byte> expectedBytes = GetExpectedTextBytes(expectedComponent, expectedTextBytes, componentIndex);
+                        if (expectedComponent.Type != DbType.Text || !actualTextBytes.SequenceEqual(expectedBytes))
+                            matches = false;
+                        break;
+                    }
+
+                    default:
+                        return false;
+                }
+            }
+
+            if (offset + sizeof(int) > span.Length)
+                return false;
+
+            int rowIdCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
+            offset += sizeof(int);
+            if (rowIdCount < 0)
+                return false;
+
+            int rowIdPayloadLength = checked(rowIdCount * RowIdPayloadCodec.RowIdSize);
+            if (offset + rowIdPayloadLength > span.Length)
+                return false;
+
+            if (!matches)
+            {
+                offset += rowIdPayloadLength;
+                continue;
+            }
+
+            if (rowIdCount == 0)
+                return true;
+
+            if (rowIdCount != 1)
+                return false;
+
+            rowId = BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, RowIdPayloadCodec.RowIdSize));
+            foundRow = true;
+            return true;
+        }
+
+        return offset == span.Length;
+    }
+
     public static byte[] Insert(
         ReadOnlySpan<byte> payload,
         ReadOnlySpan<DbValue> keyComponents,

@@ -2,9 +2,24 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current top-level snapshot in this README centers on the March 30, 2026 `main` validation refresh: one full `--all` sweep, one same-day focused baseline snapshot, and same-day `median-of-3` reruns for the durable write guardrails. Archived competitor ranges and older spot-check notes are still called out inline where they remain useful.
+The current top-level snapshot in this README centers on the March 30, 2026 `main` validation refresh: one full `--all` sweep, one same-day focused baseline snapshot, and same-day `median-of-3` reruns for the durable write guardrails. A release validation rerun was completed on April 2, 2026 against that March 30 focused baseline and finished clean at `PASS=184, FAIL=0`. Archived competitor ranges and older spot-check notes are still called out inline where they remain useful.
 
 ## Latest Validation Snapshot
+
+The latest release guardrail rerun completed on April 2, 2026 with a clean compare report:
+
+```powershell
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
+  -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json `
+  -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-last.md
+```
+
+| Item | Result |
+|------|--------|
+| Release guardrail report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` |
+| Release guardrail result | `Compared 184 rows against baseline. PASS=184, WARN=0, SKIP=0, FAIL=0` |
+| Baseline used by release rerun | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
+| Release rerun note | `BenchmarkDotNet class refreshes were run sequentially before compare to avoid shared job-directory collisions between concurrent filtered runs.` |
 
 The current focused validation baseline was refreshed on March 30, 2026 with:
 

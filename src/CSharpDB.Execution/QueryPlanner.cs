@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -8262,6 +8263,211 @@ public sealed class QueryPlanner
 
         // Expression projections fall back to the general path.
         return false;
+    }
+
+    private bool TryMaterializeSyncIndexedLookupResult(
+        IOperator lookupOp,
+        TableSchema schema,
+        IRecordSerializer serializer,
+        ColumnDefinition[] outputSchema,
+        int[]? projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (!PreferSyncPointLookups ||
+            !TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+        {
+            return false;
+        }
+
+        if (projectionColumnIndices == null)
+        {
+            DbValue[]? row = rowPayload is { } rowPayloadMemory
+                ? serializer.Decode(rowPayloadMemory.Span)
+                : null;
+            result = QueryResult.FromSyncLookup(row, outputSchema);
+            return true;
+        }
+
+        DbValue[]? projectedRow = null;
+        if (rowPayload is { } projectedPayloadMemory)
+        {
+            projectedRow = projectionColumnIndices.Length == 0
+                ? Array.Empty<DbValue>()
+                : new DbValue[projectionColumnIndices.Length];
+
+            if (projectionColumnIndices.Length > 0)
+            {
+                if (AreStrictlyAscendingUnique(projectionColumnIndices))
+                {
+                    serializer.DecodeSelectedCompactInto(
+                        projectedPayloadMemory.Span,
+                        projectedRow,
+                        projectionColumnIndices);
+                }
+                else
+                {
+                    var decodedRow = serializer.Decode(projectedPayloadMemory.Span);
+                    for (int i = 0; i < projectionColumnIndices.Length; i++)
+                    {
+                        int columnIndex = projectionColumnIndices[i];
+                        projectedRow[i] = columnIndex >= 0 && columnIndex < decodedRow.Length
+                            ? decodedRow[columnIndex]
+                            : DbValue.Null;
+                    }
+                }
+            }
+        }
+
+        result = QueryResult.FromSyncLookup(projectedRow, outputSchema);
+        return true;
+    }
+
+    private static bool TryGetSingleCachedLookupRowPayload(IOperator lookupOp, out ReadOnlyMemory<byte>? rowPayload)
+    {
+        rowPayload = null;
+        return lookupOp switch
+        {
+            UniqueIndexLookupOperator uniqueLookup => TryGetSingleCachedLookupRowPayload(uniqueLookup, out rowPayload),
+            IndexScanOperator indexScan => TryGetSingleCachedLookupRowPayload(indexScan, out rowPayload),
+            _ => false,
+        };
+    }
+
+    private static bool TryGetSingleCachedLookupRowPayload(
+        UniqueIndexLookupOperator uniqueLookup,
+        out ReadOnlyMemory<byte>? rowPayload)
+    {
+        rowPayload = null;
+
+        if (uniqueLookup.IndexStore is not ICacheAwareIndexStore cacheAware ||
+            !cacheAware.TryFindCached(uniqueLookup.SeekValue, out var cachedIndexPayload))
+        {
+            return false;
+        }
+
+        if (cachedIndexPayload is not { Length: >= RowIdPayloadCodec.RowIdSize })
+            return true;
+
+        long rowId = BinaryPrimitives.ReadInt64LittleEndian(cachedIndexPayload.AsSpan(0, RowIdPayloadCodec.RowIdSize));
+        if (!uniqueLookup.TableTree.TryFindCachedMemory(rowId, out var cachedRowPayload))
+            return false;
+
+        rowPayload = cachedRowPayload;
+        return true;
+    }
+
+    private static bool TryGetSingleCachedLookupRowPayload(
+        IndexScanOperator indexScan,
+        out ReadOnlyMemory<byte>? rowPayload)
+    {
+        rowPayload = null;
+
+        if (!TryResolveSingleCachedIndexRowId(indexScan, out bool foundRow, out long rowId))
+            return false;
+
+        if (!foundRow)
+            return true;
+
+        if (!indexScan.TableTree.TryFindCachedMemory(rowId, out var cachedRowPayload))
+            return false;
+
+        rowPayload = cachedRowPayload;
+        return true;
+    }
+
+    private static bool TryResolveSingleCachedIndexRowId(
+        IndexScanOperator indexScan,
+        out bool foundRow,
+        out long rowId)
+    {
+        foundRow = false;
+        rowId = 0;
+
+        if (indexScan.IndexStore is not ICacheAwareIndexStore cacheAware ||
+            !cacheAware.TryFindCached(indexScan.SeekValue, out var cachedIndexPayload))
+        {
+            return false;
+        }
+
+        if (cachedIndexPayload is { Length: > 0 } &&
+            indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents &&
+            HashedIndexPayloadCodec.TryGetSingleMatchingRowId(
+                cachedIndexPayload,
+                keyComponents,
+                indexScan.ExpectedKeyTextBytes,
+                out foundRow,
+                out rowId))
+        {
+            return true;
+        }
+
+        if (!TryGetCachedIndexRowIdPayload(indexScan, cachedIndexPayload, out var rowIdPayload))
+            return false;
+
+        if (rowIdPayload.IsEmpty)
+            return true;
+
+        if (RowIdPayloadCodec.GetCount(rowIdPayload.Span) != 1)
+            return false;
+
+        rowId = RowIdPayloadCodec.ReadAt(rowIdPayload.Span, 0);
+        foundRow = true;
+        return true;
+    }
+
+    private static bool TryGetCachedIndexRowIdPayload(
+        IndexScanOperator indexScan,
+        byte[]? payload,
+        out ReadOnlyMemory<byte> rowIdPayload)
+    {
+        rowIdPayload = ReadOnlyMemory<byte>.Empty;
+
+        if (payload is not { Length: > 0 })
+            return true;
+
+        if (indexScan.UsesOrderedTextPayload)
+        {
+            if (indexScan.ExpectedKeyComponents is [var keyComponent] &&
+                keyComponent.Type == DbType.Text &&
+                OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                    payload,
+                    keyComponent.AsText,
+                    out var orderedRowIds))
+            {
+                rowIdPayload = orderedRowIds;
+                return true;
+            }
+
+            return false;
+        }
+
+        if (indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents)
+        {
+            rowIdPayload = HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
+                payload,
+                keyComponents,
+                indexScan.ExpectedKeyTextBytes,
+                out var hashedRowIds)
+                ? hashedRowIds
+                : ReadOnlyMemory<byte>.Empty;
+            return rowIdPayload.Length > 0 || HashedIndexPayloadCodec.IsEncoded(payload);
+        }
+
+        rowIdPayload = payload;
+        return true;
+    }
+
+    private static bool AreStrictlyAscendingUnique(ReadOnlySpan<int> values)
+    {
+        for (int i = 1; i < values.Length; i++)
+        {
+            if (values[i] <= values[i - 1])
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
