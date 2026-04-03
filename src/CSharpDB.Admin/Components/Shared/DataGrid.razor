@@ -318,10 +318,7 @@
 
     private void UpdateFilterDraft(int colIdx, string? value)
     {
-        if (string.IsNullOrEmpty(value))
-            _filterInputs.Remove(colIdx);
-        else
-            _filterInputs[colIdx] = value;
+        _filterInputs[colIdx] = value ?? string.Empty;
     }
 
     private async Task HandleFilterKeyDown(KeyboardEventArgs e, int colIdx)

@@ -10,7 +10,7 @@ namespace CSharpDB.Admin.Forms.Tests.Pages;
 public sealed class DataEntryTests
 {
     [Fact]
-    public async Task GoToRecordAsync_EntersFocusedModeAndLoadsTargetWindow()
+    public async Task GoToRecordAsync_LoadsContainingBrowsePageAndSelectsTargetRecord()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
         await db.ExecuteAsync(
@@ -34,11 +34,15 @@ public sealed class DataEntryTests
         SetField(component, "_goToRecordValue", "80");
         await InvokeNonPublicAsync(component, "GoToRecordAsync");
 
-        Assert.True(GetField<bool>(component, "_isFocusedNavigation"));
+        Assert.False(GetField<bool>(component, "_isFocusedNavigation"));
+        Assert.Equal(4, GetField<int>(component, "_page"));
+        Assert.Equal(4, GetField<int>(component, "_recordPageIndex"));
         Assert.Equal(80L, ReadCurrentRecord(component)["Id"]);
-        Assert.Contains(ReadRecords(component), row => Equals(row["Id"], 80L));
-        Assert.Equal(1, recordService.GetRecordWindowCalls);
-        Assert.Equal(1, recordService.ListRecordPageCalls);
+        Assert.Equal([76L, 77L, 78L, 79L, 80L, 81L, 82L, 83L, 84L, 85L, 86L, 87L, 88L, 89L, 90L, 91L, 92L, 93L, 94L, 95L, 96L, 97L, 98L, 99L, 100L],
+            ReadRecords(component).Select(row => (long)row["Id"]!).ToArray());
+        Assert.Equal(0, recordService.GetRecordWindowCalls);
+        Assert.Equal(1, recordService.GetRecordOrdinalCalls);
+        Assert.Equal(2, recordService.ListRecordPageCalls);
     }
 
     [Fact]
@@ -132,8 +136,7 @@ public sealed class DataEntryTests
             schemaProvider: provider,
             recordService: recordService);
 
-        SetField(component, "_goToRecordValue", "20");
-        await InvokeNonPublicAsync(component, "GoToRecordAsync");
+        await InvokeNonPublicAsync(component, "LoadFocusedRecordWindowAsync", 20L);
 
         await InvokeNonPublicAsync(component, "NextRecord");
         Assert.Equal(21L, ReadCurrentRecord(component)["Id"]);
@@ -207,11 +210,11 @@ public sealed class DataEntryTests
         _ = method.Invoke(instance, null);
     }
 
-    private static async Task InvokeNonPublicAsync(object instance, string methodName)
+    private static async Task InvokeNonPublicAsync(object instance, string methodName, params object?[]? args)
     {
         MethodInfo method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"Method '{methodName}' was not found.");
-        var task = (Task?)method.Invoke(instance, null)
+        var task = (Task?)method.Invoke(instance, args)
             ?? throw new InvalidOperationException($"Method '{methodName}' did not return a task.");
         await task;
     }
@@ -247,6 +250,7 @@ public sealed class DataEntryTests
         public int ListRecordPageCalls { get; private set; }
         public int GetRecordWindowCalls { get; private set; }
         public int GetAdjacentRecordCalls { get; private set; }
+        public int GetRecordOrdinalCalls { get; private set; }
 
         public string GetPrimaryKeyColumn(FormTableDefinition table) => inner.GetPrimaryKeyColumn(table);
 
@@ -277,11 +281,17 @@ public sealed class DataEntryTests
         public Task<List<Dictionary<string, object?>>> ListRecordsAsync(FormTableDefinition table, CancellationToken ct = default)
             => inner.ListRecordsAsync(table, ct);
 
-        public Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
-            => inner.GetRecordOrdinalAsync(table, pkValue, ct);
+        public async Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
+        {
+            GetRecordOrdinalCalls++;
+            return await inner.GetRecordOrdinalAsync(table, pkValue, ct);
+        }
 
-        public Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, string searchField, string searchValue, CancellationToken ct = default)
-            => inner.GetRecordOrdinalAsync(table, pkValue, searchField, searchValue, ct);
+        public async Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, string searchField, string searchValue, CancellationToken ct = default)
+        {
+            GetRecordOrdinalCalls++;
+            return await inner.GetRecordOrdinalAsync(table, pkValue, searchField, searchValue, ct);
+        }
 
         public Task<List<Dictionary<string, object?>>> ListFilteredRecordsAsync(FormTableDefinition table, string filterField, object? filterValue, CancellationToken ct = default)
             => inner.ListFilteredRecordsAsync(table, filterField, filterValue, ct);
