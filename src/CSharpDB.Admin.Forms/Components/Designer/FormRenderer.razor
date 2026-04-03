@@ -83,10 +83,10 @@
                 case "textarea":
                     <textarea class="@(hasError ? "fr-input fr-textarea fr-field-error" : "fr-input fr-textarea")"
                               placeholder="@GetProp(c, "placeholder", "")"
+                              value="@GetFieldValue(fieldName)"
                               readonly="@GetBoolProp(c, "readOnly")"
                               tabindex="@tabIdx"
-                              @onchange="@(e => SetFieldValue(fieldName, e.Value))"
-                              >@GetFieldValue(fieldName)</textarea>
+                              @onchange="@(e => SetFieldValue(fieldName, e.Value))"></textarea>
                     break;
                 case "radio":
                     @if (Choices?.TryGetValue(fieldName ?? "", out var radioChoices) == true && radioChoices is not null)
@@ -159,18 +159,10 @@
 
                     @if (ctTabsRuntime.Count > 0)
                     {
-                        var ctParentValue = ChildRelationResolver.GetPanelParentValue(ctTabsRuntime, Record);
-
-                        @if (ctParentValue is not null)
-                        {
-                            <ChildTabPanel Tabs="ctTabsRuntime"
-                                           ParentKeyValue="@ctParentValue"
-                                           ChildFormTableDefinitions="ChildFormTableDefinitions" />
-                        }
-                        else
-                        {
-                            <div class="fr-datagrid-placeholder">Save the parent record first to see child records.</div>
-                        }
+                        <ChildTabPanel Tabs="ctTabsRuntime"
+                                       ParentRecord="Record"
+                                       ParentTableDefinition="TableDefinition"
+                                       ChildFormTableDefinitions="ChildFormTableDefinitions" />
                     }
                     else
                     {

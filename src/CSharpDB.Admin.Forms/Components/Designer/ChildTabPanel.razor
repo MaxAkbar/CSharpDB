@@ -21,35 +21,40 @@
         <div class="ctp-tab-content">
             @if (_activeTab is not null)
             {
+                var activeParentValue = GetActiveParentValue();
                 var hasChildren = _activeTab.ChildTabs.Count > 0;
-                <ChildDataGrid ChildTableName="@_activeTab.ChildTable"
-                               ForeignKeyField="@_activeTab.ForeignKeyField"
-                               ParentKeyValue="@ParentKeyValue"
-                               VisibleColumns="@_activeTab.VisibleColumns.ToList()"
-                               AllowAdd="_activeTab.AllowAdd"
-                               AllowEdit="_activeTab.AllowEdit"
-                               AllowDelete="_activeTab.AllowDelete"
-                               ChildFormTableDefinition="@GetChildTableDef(_activeTab.ChildTable)"
-                               EnableRowSelection="hasChildren"
-                               OnRowSelected="OnChildRowSelected" />
-
-                @if (hasChildren)
+                @if (activeParentValue is not null)
                 {
-                    @if (_selectedRow is not null)
+                    <ChildDataGrid ChildTableName="@_activeTab.ChildTable"
+                                   ForeignKeyField="@_activeTab.ForeignKeyField"
+                                   ParentKeyValue="@activeParentValue"
+                                   VisibleColumns="@_activeTab.VisibleColumns.ToList()"
+                                   AllowAdd="_activeTab.AllowAdd"
+                                   AllowEdit="_activeTab.AllowEdit"
+                                   AllowDelete="_activeTab.AllowDelete"
+                                   ChildFormTableDefinition="@GetChildTableDef(_activeTab.ChildTable)"
+                                   EnableRowSelection="hasChildren"
+                                   OnRowSelected="OnChildRowSelected" />
+
+                    @if (hasChildren)
                     {
-                        var nestedParentValue = GetNestedParentValue();
-                        @if (nestedParentValue is not null)
+                        @if (_selectedRow is not null)
                         {
                             <ChildTabPanel Tabs="@_activeTab.ChildTabs.ToList()"
-                                           ParentKeyValue="@nestedParentValue"
+                                           ParentRecord="_selectedRow"
+                                           ParentTableDefinition="@GetChildTableDef(_activeTab.ChildTable)"
                                            ChildFormTableDefinitions="ChildFormTableDefinitions"
                                            NestingLevel="@(NestingLevel + 1)" />
                         }
+                        else
+                        {
+                            <div class="ctp-select-prompt">Select a row above to see child records.</div>
+                        }
                     }
-                    else
-                    {
-                        <div class="ctp-select-prompt">Select a row above to see child records.</div>
-                    }
+                }
+                else
+                {
+                    <div class="ctp-select-prompt">Save the parent record first to see child records.</div>
                 }
             }
         </div>
@@ -62,7 +67,8 @@
 
 @code {
     [Parameter, EditorRequired] public List<ChildTabConfig> Tabs { get; set; } = [];
-    [Parameter, EditorRequired] public object? ParentKeyValue { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyDictionary<string, object?>? ParentRecord { get; set; }
+    [Parameter] public FormTableDefinition? ParentTableDefinition { get; set; }
     [Parameter] public IReadOnlyDictionary<string, FormTableDefinition>? ChildFormTableDefinitions { get; set; }
     [Parameter] public int NestingLevel { get; set; }
 
@@ -75,10 +81,12 @@
 
     protected override void OnParametersSet()
     {
+        object? activeParentValue = GetActiveParentValue();
+
         // Reset when parent PK changes (parent record navigation)
-        if (!Equals(_lastParentKeyValue, ParentKeyValue))
+        if (!Equals(_lastParentKeyValue, activeParentValue))
         {
-            _lastParentKeyValue = ParentKeyValue;
+            _lastParentKeyValue = activeParentValue;
             _activeTabIndex = 0;
             _selectedRow = null;
         }
@@ -104,14 +112,8 @@
         StateHasChanged();
     }
 
-    private object? GetNestedParentValue()
-    {
-        if (_selectedRow is null || _activeTab is null || _activeTab.ChildTabs.Count == 0)
-            return null;
-
-        FormTableDefinition? activeChildTableDef = GetChildTableDef(_activeTab.ChildTable);
-        return ChildRelationResolver.GetPanelParentValue(_activeTab.ChildTabs, _selectedRow, activeChildTableDef);
-    }
+    private object? GetActiveParentValue()
+        => ChildRelationResolver.GetParentValue(_activeTab, ParentRecord, ParentTableDefinition);
 
     private FormTableDefinition? GetChildTableDef(string tableName)
     {

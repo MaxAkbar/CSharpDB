@@ -4,6 +4,7 @@
 
 /* ─── Theme: Dark (Tokyo Night-inspired) ─── */
 [data-theme="dark"] {
+    color-scheme: dark;
     --bg-primary: #1a1b26;
     --bg-secondary: #16171f;
     --bg-tertiary: #1f2029;
@@ -52,6 +53,7 @@
 
 /* ─── Theme: Light ─── */
 [data-theme="light"] {
+    color-scheme: light;
     --bg-primary: #ffffff;
     --bg-secondary: #f4f5f7;
     --bg-tertiary: #ebedf0;
@@ -895,9 +897,21 @@ body {
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
     color: var(--text-primary);
+    color-scheme: inherit;
     font-size: 11px;
     font-family: var(--font-ui);
     cursor: pointer;
+}
+
+.page-size-select select:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+}
+
+.page-size-select select option,
+.page-size-select select optgroup {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
 }
 
 .page-controls {

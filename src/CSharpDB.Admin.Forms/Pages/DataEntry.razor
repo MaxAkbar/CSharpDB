@@ -7,7 +7,7 @@
 @inject IValidationInferenceService ValidationService
 @inject IJSRuntime JS
 
-<div class="data-entry-layout">
+<div class="data-entry-layout" @ref="_layoutRef">
     <div class="de-toolbar">
         <span class="de-toolbar-title">@(_form?.Name ?? "Loading...")</span>
         <div class="de-toolbar-sep"></div>
@@ -70,7 +70,8 @@
     else
     {
         <div class="de-form-area">
-            <FormRenderer Form="_form"
+            <FormRenderer @key="_currentRecord"
+                          Form="_form"
                           TableDefinition="_table"
                           Record="_currentRecord"
                           OnFieldChanged="OnFieldChanged"
@@ -84,7 +85,11 @@
 
     @if (_form is not null)
     {
-        <div class="de-record-list">
+        <div class="de-record-resize"
+             title="Resize records pane"
+             @onmousedown="StartRecordPaneResize"
+             @onmousedown:preventDefault></div>
+        <div class="de-record-list" @ref="_recordListRef">
             <div class="de-record-list-header">@GetRecordListHeaderText()</div>
             <div class="de-search-box">
                 <select class="de-search-select"
@@ -133,16 +138,24 @@
 
                     @for (int index = 0; index < _records.Count; index++)
                     {
+                        int recordIndex = index;
                         var record = _records[index];
-                        <div class="@($"de-record-row {(index == _recordPageIndex && !_isNew ? "active" : "")}")"
-                             @onclick="@(() => SelectRecord(index))">
-                            <span class="de-record-idx">@(((_page - 1) * _pageSize) + index + 1).</span>
+                        <div class="@($"de-record-row {(recordIndex == _recordPageIndex && !_isNew ? "active" : "")}")"
+                             @onclick="@(() => SelectRecord(recordIndex))">
+                            <span class="de-record-idx">@GetVisibleRecordIndexLabel(recordIndex)</span>
                             <span class="de-record-summary">@GetRecordSummary(record)</span>
                         </div>
                     }
                 }
             </div>
-            @if (_totalRecords > 0)
+            @if (_isFocusedNavigation)
+            {
+                <div class="pagination-bar de-record-pagination">
+                    <div class="page-info">Focused</div>
+                    <button class="de-btn" @onclick="ReturnToBrowseAsync" disabled="@_recordsLoading">Return to browse</button>
+                </div>
+            }
+            else if (_totalRecords > 0)
             {
                 <div class="pagination-bar de-record-pagination">
                     <div class="page-size-select">
@@ -180,6 +193,9 @@
     private int _page = 1;
     private int _pageSize = 25;
     private int _totalRecords;
+    private bool _isFocusedNavigation;
+    private bool _hasFocusedPreviousRecords;
+    private bool _hasFocusedNextRecords;
     private bool _isNew = true;
     private bool _dirty;
     private bool _saving;
@@ -197,6 +213,11 @@
     private readonly List<ControlDefinition> _computedControls = [];
     private readonly HashSet<string> _computedFieldNames = new(StringComparer.OrdinalIgnoreCase);
     private string? _loadedFormId;
+    private ElementReference _layoutRef;
+    private ElementReference _recordListRef;
+
+    private const int RecordPaneMinWidth = 320;
+    private const int RecordPaneMaxWidth = 720;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
     private int CurrentRecordOrdinal => _isNew || _recordPageIndex < 0 ? 0 : ((_page - 1) * _pageSize) + _recordPageIndex + 1;
@@ -204,8 +225,12 @@
     private bool HasAnySearchInput => HasActiveSearch || !string.IsNullOrWhiteSpace(_searchValue);
     private bool CanApplySearch => !string.IsNullOrWhiteSpace(_searchColumnName) && !string.IsNullOrWhiteSpace(_searchValue);
     private bool HasPersistedCurrentRecord => !_isNew && TryGetPrimaryKeyValue(_currentRecord, out _);
-    private bool CanGoPreviousRecord => _isNew ? _totalRecords > 0 : CurrentRecordOrdinal > 1;
-    private bool CanGoNextRecord => !_isNew && CurrentRecordOrdinal < _totalRecords;
+    private bool CanGoPreviousRecord => _isFocusedNavigation
+        ? !_isNew && (_recordPageIndex > 0 || _hasFocusedPreviousRecords)
+        : (_isNew ? _totalRecords > 0 : CurrentRecordOrdinal > 1);
+    private bool CanGoNextRecord => _isFocusedNavigation
+        ? !_isNew && _recordPageIndex >= 0 && (_recordPageIndex < _records.Count - 1 || _hasFocusedNextRecords)
+        : !_isNew && CurrentRecordOrdinal < _totalRecords;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -216,8 +241,39 @@
         await LoadAsync();
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("resizeInterop.initFormEntryPane", _layoutRef);
+        }
+        catch
+        {
+        }
+    }
+
     public void Dispose()
     {
+    }
+
+    private async Task StartRecordPaneResize(MouseEventArgs e)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "resizeInterop.startFormEntryResize",
+                new { clientX = e.ClientX },
+                _layoutRef,
+                _recordListRef,
+                RecordPaneMinWidth,
+                RecordPaneMaxWidth);
+        }
+        catch
+        {
+        }
     }
 
     private async Task LoadAsync()
@@ -334,6 +390,7 @@
 
     private void NewRecord()
     {
+        ExitFocusedNavigation();
         _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _isNew = true;
         _dirty = false;
@@ -370,10 +427,10 @@
                 Dictionary<string, object?> created = await RecordService.CreateRecordAsync(_table, recordToSave);
                 _currentRecord = CloneRecord(created);
                 _isNew = false;
-
                 if (TryGetPrimaryKeyValue(created, out object? createdPk) && createdPk is not null)
                 {
-                    await NavigateToRecordAsync(createdPk);
+                    ClearSearchState(clearPendingValue: false);
+                    await LoadFocusedRecordWindowAsync(createdPk);
                 }
                 else
                 {
@@ -383,8 +440,7 @@
             else if (TryGetPrimaryKeyValue(_currentRecord, out object? pkValue))
             {
                 Dictionary<string, object?> updated = await RecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
-                _currentRecord = CloneRecord(updated);
-                await NavigateToRecordAsync(pkValue!);
+                UpdateVisibleCurrentRecord(updated);
             }
 
             _dirty = false;
@@ -441,6 +497,9 @@
 
     private Task PrevRecord()
     {
+        if (_isFocusedNavigation)
+            return MoveFocusedRecordAsync(previous: true);
+
         if (_isNew)
             return _totalRecords > 0 ? LoadRecordPageAsync(TotalPages, preferredPageIndex: int.MaxValue) : Task.CompletedTask;
 
@@ -454,6 +513,9 @@
 
     private Task NextRecord()
     {
+        if (_isFocusedNavigation)
+            return MoveFocusedRecordAsync(previous: false);
+
         if (_isNew)
             return Task.CompletedTask;
 
@@ -542,7 +604,7 @@
         }
 
         ClearSearchState(clearPendingValue: true);
-        await NavigateToRecordAsync(parsedValue);
+        await LoadFocusedRecordWindowAsync(parsedValue);
     }
 
     private async Task ApplySearchAsync()
@@ -602,6 +664,7 @@
 
         _recordsLoading = true;
         _error = null;
+        ExitFocusedNavigation();
 
         try
         {
@@ -671,6 +734,90 @@
         return 0;
     }
 
+    private async Task LoadFocusedRecordWindowAsync(object pkValue)
+    {
+        if (_table is null)
+            return;
+
+        _recordsLoading = true;
+        _error = null;
+
+        try
+        {
+            FormRecordWindow? window = await RecordService.GetRecordWindowAsync(_table, pkValue, _pageSize);
+            if (window is null || window.Records.Count == 0)
+            {
+                _error = $"{GetPrimaryKeyLabel()} '{pkValue}' was not found.";
+                return;
+            }
+
+            _records = window.Records.Select(CloneRecord).ToList();
+            _recordPageIndex = Math.Clamp(window.SelectedIndex, 0, _records.Count - 1);
+            _currentRecord = CloneRecord(_records[_recordPageIndex]);
+            _isFocusedNavigation = true;
+            _hasFocusedPreviousRecords = window.HasPreviousRecords;
+            _hasFocusedNextRecords = window.HasNextRecords;
+            _isNew = false;
+            _dirty = false;
+            _undoStack.Clear();
+            _redoStack.Clear();
+            _validationErrors = null;
+
+            if (_computedControls.Count > 0)
+                await EvaluateComputedFields();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load records: {ex.Message}";
+        }
+        finally
+        {
+            _recordsLoading = false;
+        }
+    }
+
+    private async Task MoveFocusedRecordAsync(bool previous)
+    {
+        if (_table is null || _isNew || !TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) || pkValue is null)
+            return;
+
+        if (previous)
+        {
+            if (_recordPageIndex > 0)
+            {
+                await SelectRecord(_recordPageIndex - 1);
+                return;
+            }
+        }
+        else if (_recordPageIndex >= 0 && _recordPageIndex < _records.Count - 1)
+        {
+            await SelectRecord(_recordPageIndex + 1);
+            return;
+        }
+
+        Dictionary<string, object?>? adjacent = await RecordService.GetAdjacentRecordAsync(_table, pkValue, previous);
+        if (adjacent is null || !TryGetPrimaryKeyValue(adjacent, out object? adjacentPk) || adjacentPk is null)
+        {
+            if (previous)
+                _hasFocusedPreviousRecords = false;
+            else
+                _hasFocusedNextRecords = false;
+
+            return;
+        }
+
+        await LoadFocusedRecordWindowAsync(adjacentPk);
+    }
+
+    private Task ReturnToBrowseAsync()
+    {
+        if (_table is null)
+            return Task.CompletedTask;
+
+        object? currentPk = TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) ? pkValue : null;
+        return LoadRecordPageAsync(_page, preferredPk: currentPk);
+    }
+
     private async Task NavigateToRecordAsync(object pkValue)
     {
         if (_table is null)
@@ -696,10 +843,30 @@
         await LoadRecordPageAsync(targetPage, preferredPk: pkValue);
     }
 
+    private void UpdateVisibleCurrentRecord(Dictionary<string, object?> updated)
+    {
+        var clonedRecord = CloneRecord(updated);
+        _currentRecord = clonedRecord;
+        _isNew = false;
+
+        if (_recordPageIndex >= 0 && _recordPageIndex < _records.Count)
+            _records[_recordPageIndex] = CloneRecord(updated);
+    }
+
+    private void ExitFocusedNavigation()
+    {
+        _isFocusedNavigation = false;
+        _hasFocusedPreviousRecords = false;
+        _hasFocusedNextRecords = false;
+    }
+
     private string GetNavigationStatusText()
     {
         if (_recordsLoading)
             return "Loading...";
+
+        if (_isFocusedNavigation && !_isNew)
+            return "Focused";
 
         if (HasActiveSearch && _totalRecords == 0)
             return "No matches";
@@ -719,6 +886,9 @@
 
     private string GetPrintStatusText()
     {
+        if (_isFocusedNavigation && !_isNew)
+            return "Focused record";
+
         if (HasActiveSearch && _totalRecords == 0)
             return "No matching records";
 
@@ -942,7 +1112,15 @@
 
     private string GetGoToRecordPlaceholder() => $"Enter {GetPrimaryKeyLabel()}";
 
-    private string GetRecordListHeaderText() => HasActiveSearch ? $"Matches ({_totalRecords})" : $"Records ({_totalRecords})";
+    private string GetRecordListHeaderText()
+        => _isFocusedNavigation
+            ? "Focused"
+            : HasActiveSearch ? $"Matches ({_totalRecords})" : $"Records ({_totalRecords})";
+
+    private string GetVisibleRecordIndexLabel(int index)
+        => _isFocusedNavigation
+            ? $"{index + 1}."
+            : $"{(((_page - 1) * _pageSize) + index + 1)}.";
 
     private string GetSearchInputPlaceholder()
     {
@@ -957,6 +1135,9 @@
 
     private string GetRecordListEmptyMessage()
     {
+        if (_isFocusedNavigation)
+            return "Focused record not available";
+
         if (HasActiveSearch)
             return "No matching records";
 

@@ -108,13 +108,23 @@
     private string? _editingCol;
     private int _selectedRowIndex = -1;
     private object? _lastParentKeyValue;
+    private string? _lastChildTableName;
+    private string? _lastForeignKeyField;
+    private string? _lastChildTableDefinitionName;
 
     protected override async Task OnParametersSetAsync()
     {
-        // Reload when parent PK value changes (user navigates to different parent record)
-        if (!Equals(_lastParentKeyValue, ParentKeyValue))
+        bool parentChanged = !Equals(_lastParentKeyValue, ParentKeyValue);
+        bool childTableChanged = !string.Equals(_lastChildTableName, ChildTableName, StringComparison.OrdinalIgnoreCase);
+        bool foreignKeyChanged = !string.Equals(_lastForeignKeyField, ForeignKeyField, StringComparison.OrdinalIgnoreCase);
+        bool definitionChanged = !string.Equals(_lastChildTableDefinitionName, ChildFormTableDefinition?.TableName, StringComparison.OrdinalIgnoreCase);
+
+        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged)
         {
             _lastParentKeyValue = ParentKeyValue;
+            _lastChildTableName = ChildTableName;
+            _lastForeignKeyField = ForeignKeyField;
+            _lastChildTableDefinitionName = ChildFormTableDefinition?.TableName;
             await LoadChildRecords();
         }
     }

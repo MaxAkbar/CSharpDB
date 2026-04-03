@@ -106,6 +106,72 @@ public class DbFormRecordServiceTests
     }
 
     [Fact]
+    public async Task GetRecordWindowAsync_ReturnsFocusedWindowAroundRecord()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Events (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Events VALUES (45, 'Forty Five');
+            INSERT INTO Events VALUES (46, 'Forty Six');
+            INSERT INTO Events VALUES (47, 'Forty Seven');
+            INSERT INTO Events VALUES (48, 'Forty Eight');
+            INSERT INTO Events VALUES (49, 'Forty Nine');
+            INSERT INTO Events VALUES (50, 'Fifty');
+            INSERT INTO Events VALUES (51, 'Fifty One');
+            INSERT INTO Events VALUES (52, 'Fifty Two');
+            INSERT INTO Events VALUES (53, 'Fifty Three');
+            INSERT INTO Events VALUES (54, 'Fifty Four');
+            INSERT INTO Events VALUES (55, 'Fifty Five');
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition eventsTable = (await provider.GetTableDefinitionAsync("Events"))!;
+
+        FormRecordWindow? window = await service.GetRecordWindowAsync(eventsTable, 50L, 5, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(window);
+        Assert.Equal([48L, 49L, 50L, 51L, 52L], window!.Records.Select(row => row["Id"]).ToArray());
+        Assert.Equal(2, window.SelectedIndex);
+        Assert.True(window.HasPreviousRecords);
+        Assert.True(window.HasNextRecords);
+    }
+
+    [Fact]
+    public async Task GetAdjacentRecordAsync_ReturnsPreviousAndNextRows()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Events (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Events VALUES (10, 'Ten');
+            INSERT INTO Events VALUES (11, 'Eleven');
+            INSERT INTO Events VALUES (12, 'Twelve');
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition eventsTable = (await provider.GetTableDefinitionAsync("Events"))!;
+
+        Dictionary<string, object?>? previous = await service.GetAdjacentRecordAsync(eventsTable, 11L, previous: true, TestContext.Current.CancellationToken);
+        Dictionary<string, object?>? next = await service.GetAdjacentRecordAsync(eventsTable, 11L, previous: false, TestContext.Current.CancellationToken);
+        Dictionary<string, object?>? missing = await service.GetAdjacentRecordAsync(eventsTable, 10L, previous: true, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(previous);
+        Assert.Equal(10L, previous!["Id"]);
+        Assert.NotNull(next);
+        Assert.Equal(12L, next!["Id"]);
+        Assert.Null(missing);
+    }
+
+    [Fact]
     public async Task GetRecordOrdinalAsync_WithSearchFilter_ReturnsOrdinalWithinMatches()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -132,6 +198,60 @@ public class DbFormRecordServiceTests
         Assert.Equal(0, firstOrdinal);
         Assert.Equal(1, secondOrdinal);
         Assert.Null(filteredOutOrdinal);
+    }
+
+    [Fact]
+    public async Task GetRecordWindowAsync_ForUnsupportedPrimaryKeyType_FallsBackToPagedWindow()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Measurements (
+                Reading REAL PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Measurements VALUES (1.5, 'One');
+            INSERT INTO Measurements VALUES (2.5, 'Two');
+            INSERT INTO Measurements VALUES (3.5, 'Three');
+            INSERT INTO Measurements VALUES (4.5, 'Four');
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition measurements = (await provider.GetTableDefinitionAsync("Measurements"))!;
+
+        FormRecordWindow? window = await service.GetRecordWindowAsync(measurements, 3.5, 2, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(window);
+        Assert.Equal([3.5, 4.5], window!.Records.Select(row => Convert.ToDouble(row["Reading"])).ToArray());
+        Assert.Equal(0, window.SelectedIndex);
+        Assert.True(window.HasPreviousRecords);
+        Assert.False(window.HasNextRecords);
+    }
+
+    [Fact]
+    public async Task GetAdjacentRecordAsync_ForUnsupportedPrimaryKeyType_UsesPagedFallback()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Measurements (
+                Reading REAL PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Measurements VALUES (1.5, 'One');
+            INSERT INTO Measurements VALUES (2.5, 'Two');
+            INSERT INTO Measurements VALUES (3.5, 'Three');
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition measurements = (await provider.GetTableDefinitionAsync("Measurements"))!;
+
+        Dictionary<string, object?>? next = await service.GetAdjacentRecordAsync(measurements, 2.5, previous: false, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(next);
+        Assert.Equal(3.5, Convert.ToDouble(next!["Reading"]));
     }
 
     [Fact]

@@ -107,20 +107,19 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         var db = await GetDatabaseAsync(ct);
         string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
         string normalizedPkColumn = RequireIdentifier(pkColumn, nameof(pkColumn));
+        var schema = db.GetTableSchema(normalizedTableName);
+        if (schema is null || IsInternalTable(normalizedTableName))
+            throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
 
-        await using var result = await db.ExecuteAsync($"SELECT * FROM {normalizedTableName}", ct);
-        int pkIndex = Array.FindIndex(result.Schema, column => string.Equals(column.Name, normalizedPkColumn, StringComparison.OrdinalIgnoreCase));
-        if (pkIndex < 0)
+        if (!schema.Columns.Any(column => string.Equals(column.Name, normalizedPkColumn, StringComparison.OrdinalIgnoreCase)))
             throw new CSharpDbClientException($"Column '{normalizedPkColumn}' was not found in table '{normalizedTableName}'.");
 
-        while (await result.MoveNextAsync(ct))
-        {
-            var row = result.Current;
-            if (ValuesEqual(row[pkIndex], pkValue))
-                return ToRowDictionary(result.Schema, row);
-        }
+        string sql = $"SELECT * FROM {normalizedTableName} WHERE {normalizedPkColumn} = {FormatSqlLiteral(pkValue)}";
+        await using var result = await db.ExecuteAsync(sql, ct);
+        if (!result.IsQuery || !await result.MoveNextAsync(ct))
+            return null;
 
-        return null;
+        return ToRowDictionary(result.Schema, result.Current);
     }
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)

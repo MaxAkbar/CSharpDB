@@ -7,6 +7,8 @@ namespace CSharpDB.Admin.Forms.Services;
 
 public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordService
 {
+    private const int AdjacentLookupPageSize = 1;
+
     public string GetPrimaryKeyColumn(FormTableDefinition table)
     {
         if (table.PrimaryKey.Count != 1)
@@ -17,6 +19,110 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
 
     public Task<Dictionary<string, object?>?> GetRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
         => dbClient.GetRowByPkAsync(table.TableName, GetPrimaryKeyColumn(table), pkValue, ct);
+
+    public async Task<FormRecordWindow?> GetRecordWindowAsync(FormTableDefinition table, object pkValue, int pageSize, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField(table);
+        if (primaryKeyField is null)
+            return await GetRecordWindowFallbackAsync(table, pkValue, pageSize, ct);
+
+        if (!SupportsFocusedNavigationFastPath(primaryKeyField))
+            return await GetRecordWindowFallbackAsync(table, pkValue, pageSize, ct);
+
+        string tableName = FormSql.RequireIdentifier(table.TableName, nameof(table.TableName));
+        string pkColumn = FormSql.RequireIdentifier(primaryKeyField.Name, "primaryKey");
+        string pkLiteral = FormSql.FormatLiteral(pkValue);
+        int fetchLimit = pageSize + 1;
+
+        List<Dictionary<string, object?>> beforeDescending = await ExecuteRowsAsync($"""
+            SELECT *
+            FROM {tableName}
+            WHERE {pkColumn} < {pkLiteral}
+            ORDER BY {pkColumn} DESC
+            LIMIT {fetchLimit};
+            """, ct);
+        List<Dictionary<string, object?>> anchorAndAfter = await ExecuteRowsAsync($"""
+            SELECT *
+            FROM {tableName}
+            WHERE {pkColumn} >= {pkLiteral}
+            ORDER BY {pkColumn}
+            LIMIT {fetchLimit};
+            """, ct);
+
+        int anchorIndexInAfter = FindRecordIndex(anchorAndAfter, pkColumn, pkValue);
+        if (anchorIndexInAfter < 0)
+            return await GetRecordWindowFallbackAsync(table, pkValue, pageSize, ct);
+
+        beforeDescending.Reverse();
+
+        var merged = new List<Dictionary<string, object?>>(beforeDescending.Count + anchorAndAfter.Count);
+        merged.AddRange(beforeDescending);
+        merged.AddRange(anchorAndAfter);
+
+        int anchorIndex = FindRecordIndex(merged, pkColumn, pkValue);
+        if (anchorIndex < 0)
+            return await GetRecordWindowFallbackAsync(table, pkValue, pageSize, ct);
+
+        int start = Math.Max(0, anchorIndex - (pageSize / 2));
+        if (merged.Count - start < pageSize)
+            start = Math.Max(0, merged.Count - pageSize);
+
+        List<Dictionary<string, object?>> windowRows = merged
+            .Skip(start)
+            .Take(pageSize)
+            .ToList();
+        int selectedIndex = anchorIndex - start;
+        int visibleBeforeCount = selectedIndex;
+        int visibleAfterCount = windowRows.Count - selectedIndex - 1;
+        int totalBeforeCount = anchorIndex;
+        int totalAfterCount = merged.Count - anchorIndex - 1;
+
+        return new FormRecordWindow(
+            windowRows,
+            selectedIndex,
+            HasPreviousRecords: totalBeforeCount > visibleBeforeCount,
+            HasNextRecords: totalAfterCount > visibleAfterCount);
+    }
+
+    public async Task<Dictionary<string, object?>?> GetAdjacentRecordAsync(FormTableDefinition table, object pkValue, bool previous, CancellationToken ct = default)
+    {
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField(table);
+        if (primaryKeyField is null)
+            return null;
+
+        if (SupportsFocusedNavigationFastPath(primaryKeyField))
+        {
+            string tableName = FormSql.RequireIdentifier(table.TableName, nameof(table.TableName));
+            string pkColumn = FormSql.RequireIdentifier(primaryKeyField.Name, "primaryKey");
+            string pkLiteral = FormSql.FormatLiteral(pkValue);
+            string op = previous ? "<" : ">";
+            string order = previous ? "DESC" : "ASC";
+
+            List<Dictionary<string, object?>> rows = await ExecuteRowsAsync($"""
+                SELECT *
+                FROM {tableName}
+                WHERE {pkColumn} {op} {pkLiteral}
+                ORDER BY {pkColumn} {order}
+                LIMIT 1;
+                """, ct);
+
+            return rows.Count == 0 ? null : rows[0];
+        }
+
+        int? ordinal = await GetRecordOrdinalAsync(table, pkValue, ct);
+        if (!ordinal.HasValue)
+            return null;
+
+        int targetOrdinal = ordinal.Value + (previous ? -1 : 1);
+        int totalCount = await GetTotalCountAsync(table, ct);
+        if (targetOrdinal < 0 || targetOrdinal >= totalCount)
+            return null;
+
+        FormRecordPage page = await ListRecordPageAsync(table, targetOrdinal + 1, AdjacentLookupPageSize, ct);
+        return page.Records.Count == 0 ? null : page.Records[0];
+    }
 
     public async Task<FormRecordPage> ListRecordPageAsync(FormTableDefinition table, int pageNumber, int pageSize, CancellationToken ct = default)
     {
@@ -212,12 +318,72 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
             : Convert.ToInt32(normalized, CultureInfo.InvariantCulture);
     }
 
+    private async Task<FormRecordWindow?> GetRecordWindowFallbackAsync(FormTableDefinition table, object pkValue, int pageSize, CancellationToken ct)
+    {
+        int? ordinal = await GetRecordOrdinalAsync(table, pkValue, ct);
+        if (!ordinal.HasValue)
+            return null;
+
+        int targetPage = (ordinal.Value / pageSize) + 1;
+        FormRecordPage page = await ListRecordPageAsync(table, targetPage, pageSize, ct);
+        string pkColumn = GetPrimaryKeyColumn(table);
+        int selectedIndex = FindRecordIndex(page.Records, pkColumn, pkValue);
+        if (selectedIndex < 0)
+            return null;
+
+        int visibleBeforeCount = selectedIndex;
+        int visibleAfterCount = page.Records.Count - selectedIndex - 1;
+        int totalBeforeCount = ordinal.Value;
+        int totalAfterCount = page.TotalCount - ordinal.Value - 1;
+
+        return new FormRecordWindow(
+            page.Records.ToList(),
+            selectedIndex,
+            HasPreviousRecords: totalBeforeCount > visibleBeforeCount,
+            HasNextRecords: totalAfterCount > visibleAfterCount);
+    }
+
+    private async Task<int> GetTotalCountAsync(FormTableDefinition table, CancellationToken ct)
+    {
+        string tableName = FormSql.RequireIdentifier(table.TableName, nameof(table.TableName));
+        return await ExecuteCountAsync($"""
+            SELECT COUNT(*) AS RowCount
+            FROM {tableName};
+            """, ct);
+    }
+
     private static string BuildTextSearchWhereClause(FormTableDefinition table, string searchField, string searchValue)
     {
         RequireField(table, searchField);
         string columnName = FormSql.RequireIdentifier(searchField, nameof(searchField));
         string searchPattern = $"%{FormSql.EscapeLikePattern(searchValue)}%";
         return $"TEXT({columnName}) LIKE {FormSql.FormatLiteral(searchPattern)} ESCAPE '!'";
+    }
+
+    private static FormFieldDefinition? GetPrimaryKeyField(FormTableDefinition table)
+    {
+        if (table.PrimaryKey.Count != 1)
+            return null;
+
+        string primaryKey = table.PrimaryKey[0];
+        return table.Fields.FirstOrDefault(field => string.Equals(field.Name, primaryKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool SupportsFocusedNavigationFastPath(FormFieldDefinition primaryKeyField)
+        => primaryKeyField.DataType is FieldDataType.Int64 or FieldDataType.String;
+
+    private static int FindRecordIndex(IReadOnlyList<Dictionary<string, object?>> records, string pkColumn, object pkValue)
+    {
+        for (int i = 0; i < records.Count; i++)
+        {
+            if (!TryGetCaseInsensitive(records[i], pkColumn, out object? candidate))
+                continue;
+
+            if (AreValuesEqual(candidate, pkValue))
+                return i;
+        }
+
+        return -1;
     }
 
     private static Dictionary<string, object?> FilterWriteValues(FormTableDefinition table, Dictionary<string, object?> values, bool includePrimaryKey)
@@ -296,4 +462,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         value = null;
         return false;
     }
+
+    private static bool AreValuesEqual(object? left, object? right)
+        => Equals(FormSql.NormalizeValue(left), FormSql.NormalizeValue(right));
 }

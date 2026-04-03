@@ -190,6 +190,27 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NonUniqueJoin_WithSelectiveTopLevelLeafPredicate_PushesLeafLookupAndPrefersIndexJoin()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSelectiveJoinTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_join_left", ct);
+        await _db.ExecuteAsync("ANALYZE planner_join_right", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT l.id, r.payload FROM planner_join_left l JOIN planner_join_right r ON l.code = r.code WHERE l.id = 42",
+            ct);
+
+        var joinOperator = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(GetRootOperator(result));
+        var outer = GetPrivateField<IOperator>(joinOperator, "_outer");
+        Assert.IsType<PrimaryKeyLookupOperator>(outer);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, row => Assert.Equal(42L, row[0].AsInteger));
+    }
+
+    [Fact]
     public async Task StaleColumnStats_NonUniqueJoin_FallsBackToHashJoin()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -640,6 +661,18 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}.");
         return (T)field.GetValue(target)!;
+    }
+
+    private static TOperator FindOperatorInUnaryChain<TOperator>(IOperator? start)
+        where TOperator : class, IOperator
+    {
+        for (var current = start; current != null; current = current is IUnaryOperatorSource unary ? unary.Source : null)
+        {
+            if (current is TOperator typed)
+                return typed;
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected to find {typeof(TOperator).Name} in unary operator chain.");
     }
 
     private async ValueTask SetupHashBuildSideTablesAsync(CancellationToken ct)

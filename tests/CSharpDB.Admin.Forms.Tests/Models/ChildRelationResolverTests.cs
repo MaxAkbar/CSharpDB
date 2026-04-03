@@ -57,4 +57,23 @@ public class ChildRelationResolverTests
 
         Assert.Equal(42L, value);
     }
+
+    [Fact]
+    public void GetParentValue_UsesRequestedTabParentField_WhenSiblingTabsDiffer()
+    {
+        List<ChildTabConfig> tabs =
+        [
+            new("tab1", "Orders", "Orders", "CustomerId", "Id", [], true, true, true, []),
+            new("tab2", "Payments", "Payments", "TenantId", "TenantId", [], true, true, true, [])
+        ];
+        Dictionary<string, object?> record = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Id"] = 42L,
+            ["TenantId"] = "tenant-0042"
+        };
+
+        object? value = ChildRelationResolver.GetParentValue(tabs[1], record);
+
+        Assert.Equal("tenant-0042", value);
+    }
 }

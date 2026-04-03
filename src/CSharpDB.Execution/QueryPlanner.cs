@@ -2379,7 +2379,10 @@ public sealed class QueryPlanner
     {
         ValidateCorrelatedSelectSupport(stmt);
 
-        var (sourceOp, sourceSchema) = BuildFromOperator(stmt.From, stmt.Where);
+        var (sourceOp, sourceSchema) = BuildFromOperator(
+            stmt.From,
+            stmt.Where,
+            pushDownOuterLocalPredicates: stmt.From is JoinTableRef);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -3153,7 +3156,10 @@ public sealed class QueryPlanner
     private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
     {
         // Build the FROM operator (single table scan, join tree, or view expansion)
-        var (op, schema) = BuildFromOperator(stmt.From, stmt.Where);
+        var (op, schema) = BuildFromOperator(
+            stmt.From,
+            stmt.Where,
+            pushDownOuterLocalPredicates: stmt.From is JoinTableRef);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -5798,7 +5804,10 @@ public sealed class QueryPlanner
     /// Returns the operator and the schema (with qualified column mappings for JOINs).
     /// If the table name references a view, expands the view.
     /// </summary>
-    private (IOperator op, TableSchema schema) BuildFromOperator(TableRef tableRef, Expression? outerWhere = null)
+    private (IOperator op, TableSchema schema) BuildFromOperator(
+        TableRef tableRef,
+        Expression? outerWhere = null,
+        bool pushDownOuterLocalPredicates = false)
     {
         if (tableRef is SimpleTableRef simple)
         {
@@ -5967,16 +5976,28 @@ public sealed class QueryPlanner
                 QualifiedMappings = qualifiedMappings,
             };
 
+            if (pushDownOuterLocalPredicates &&
+                TryExtractLocalJoinLeafPredicate(outerWhere, simple, qualifiedTableSchema, out var localPredicate) &&
+                localPredicate != null)
+            {
+                var indexedLocalOp = TryBuildIndexScan(simple.TableName, localPredicate, qualifiedTableSchema, out var localResidualPredicate);
+                if (indexedLocalOp != null)
+                    op = indexedLocalOp;
+
+                if (localResidualPredicate != null)
+                    TryPushDownSimplePreDecodeFilter(op, localResidualPredicate, qualifiedTableSchema, out _);
+            }
+
             return (op, qualifiedTableSchema);
         }
 
         if (tableRef is JoinTableRef join)
         {
             if (TryReorderInnerJoinChain(join, outerWhere, out var reordered))
-                return BuildFromOperator(reordered);
+                return BuildFromOperator(reordered, outerWhere, pushDownOuterLocalPredicates);
 
-            var (leftOp, leftSchema) = BuildFromOperator(join.Left);
-            var (rightOp, rightSchema) = BuildFromOperator(join.Right);
+            var (leftOp, leftSchema) = BuildFromOperator(join.Left, outerWhere, pushDownOuterLocalPredicates);
+            var (rightOp, rightSchema) = BuildFromOperator(join.Right, outerWhere, pushDownOuterLocalPredicates);
 
             // Build composite schema that inherits all qualified mappings
             var compositeSchema = TableSchema.CreateJoinSchema(leftSchema, rightSchema);
@@ -5998,6 +6019,7 @@ public sealed class QueryPlanner
                 if (TryBuildIndexNestedLoopJoinOperator(
                     rewrittenJoin,
                     rightOp,
+                    leftOp,
                     rightSchema,
                     leftSchema,
                     swappedCompositeSchema,
@@ -6049,6 +6071,7 @@ public sealed class QueryPlanner
             if (TryBuildIndexNestedLoopJoinOperator(
                 join,
                 leftOp,
+                rightOp,
                 leftSchema,
                 rightSchema,
                 compositeSchema,
@@ -6154,6 +6177,50 @@ public sealed class QueryPlanner
 
         reordered = current;
         return true;
+    }
+
+    private static bool TryExtractLocalJoinLeafPredicate(
+        Expression? outerWhere,
+        SimpleTableRef simple,
+        TableSchema qualifiedSchema,
+        out Expression? localPredicate)
+    {
+        localPredicate = null;
+
+        if (outerWhere == null)
+            return false;
+
+        string identifier = simple.Alias ?? simple.TableName;
+        string[] referenceNames = simple.Alias is { Length: > 0 }
+            ? [simple.Alias, simple.TableName]
+            : [simple.TableName];
+
+        var leaves = new[]
+        {
+            new ReorderableJoinLeaf(simple, qualifiedSchema, 1, 0, identifier, referenceNames)
+        };
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(outerWhere, conjuncts);
+
+        var localConjuncts = new List<Expression>();
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryResolveReferencedJoinTables(conjuncts[i], leaves, out var referencedTables) ||
+                referencedTables.Count != 1 ||
+                !referencedTables.Contains(identifier))
+            {
+                continue;
+            }
+
+            localConjuncts.Add(conjuncts[i]);
+        }
+
+        if (localConjuncts.Count == 0)
+            return false;
+
+        localPredicate = CombineConjuncts(localConjuncts);
+        return localPredicate != null;
     }
 
     private void ApplyLocalPredicateRowEstimates(
@@ -6599,6 +6666,7 @@ public sealed class QueryPlanner
     private bool TryBuildIndexNestedLoopJoinOperator(
         JoinTableRef join,
         IOperator leftOp,
+        IOperator rightOp,
         TableSchema leftSchema,
         TableSchema rightSchema,
         TableSchema compositeSchema,
@@ -6725,14 +6793,18 @@ public sealed class QueryPlanner
             orderedRightKeyIndices = selectedRightKeyIndices;
         }
 
-        bool hasOuterEstimate = TryEstimateTableRefRowCount(join.Left, out long outerRows);
-        bool hasInnerEstimate = TryEstimateTableRefRowCount(join.Right, out long innerRows);
+        bool hasOuterEstimate = TryEstimateJoinInputRowCount(leftOp, join.Left, out long outerRows);
+        bool hasInnerEstimate = TryEstimateJoinInputRowCount(rightOp, join.Right, out long innerRows);
         bool hasEstimatedOutputRows = TryEstimateJoinOutputRows(
             join,
             leftSchema,
             rightSchema,
             orderedLeftKeyIndices,
             orderedRightKeyIndices,
+            hasOuterEstimate,
+            outerRows,
+            hasInnerEstimate,
+            innerRows,
             out long estimatedOutputRows);
 
         if (hasOuterEstimate && hasInnerEstimate)
@@ -6797,6 +6869,21 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private bool TryEstimateJoinInputRowCount(IOperator op, TableRef tableRef, out long count)
+    {
+        count = 0;
+
+        if (op is IEstimatedRowCountProvider estimated &&
+            estimated.EstimatedRowCount is int estimatedRowCount &&
+            estimatedRowCount >= 0)
+        {
+            count = estimatedRowCount;
+            return true;
+        }
+
+        return TryEstimateTableRefRowCount(tableRef, out count);
     }
 
     private static bool TryMatchJoinLookupIndex(
@@ -6995,8 +7082,8 @@ public sealed class QueryPlanner
             return false;
         }
 
-        bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
-        bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
+        bool hasLeftEstimate = TryEstimateJoinInputRowCount(leftOp, join.Left, out long leftRows);
+        bool hasRightEstimate = TryEstimateJoinInputRowCount(rightOp, join.Right, out long rightRows);
 
         // Build the smaller estimated side for INNER hash joins to reduce hash table
         // memory and probe work.
@@ -7021,7 +7108,11 @@ public sealed class QueryPlanner
             leftSchema,
             rightSchema,
             leftKeyIndices,
-            rightKeyIndices);
+            rightKeyIndices,
+            hasLeftEstimate,
+            leftRows,
+            hasRightEstimate,
+            rightRows);
 
         hashJoinOp = new HashJoinOperator(
             leftOp,
@@ -7060,11 +7151,12 @@ public sealed class QueryPlanner
         TableSchema rightSchema,
         ReadOnlySpan<int> leftKeyIndices,
         ReadOnlySpan<int> rightKeyIndices,
+        bool hasLeftEstimate,
+        long leftRows,
+        bool hasRightEstimate,
+        long rightRows,
         out long estimatedRows)
     {
-        bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
-        bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
-
         estimatedRows = 0;
         if (!hasLeftEstimate || !hasRightEstimate)
             return false;
@@ -7107,21 +7199,32 @@ public sealed class QueryPlanner
         TableSchema leftSchema,
         TableSchema rightSchema,
         ReadOnlySpan<int> leftKeyIndices = default,
-        ReadOnlySpan<int> rightKeyIndices = default)
+        ReadOnlySpan<int> rightKeyIndices = default,
+        bool? hasLeftEstimateOverride = null,
+        long leftRowsOverride = 0,
+        bool? hasRightEstimateOverride = null,
+        long rightRowsOverride = 0)
     {
+        bool hasLeftEstimate = hasLeftEstimateOverride ?? TryEstimateTableRefRowCount(join.Left, out leftRowsOverride);
+        long leftRows = leftRowsOverride;
+        bool hasRightEstimate = hasRightEstimateOverride ?? TryEstimateTableRefRowCount(join.Right, out rightRowsOverride);
+        long rightRows = rightRowsOverride;
+
         if (TryEstimateJoinOutputRows(
                 join,
                 leftSchema,
                 rightSchema,
                 leftKeyIndices,
                 rightKeyIndices,
+                hasLeftEstimate,
+                leftRows,
+                hasRightEstimate,
+                rightRows,
                 out long estimatedRows))
         {
             return ToCapacityHint(estimatedRows);
         }
 
-        bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
-        bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
         return EstimateJoinOutputRowCount(
             join.JoinType,
             hasLeftEstimate,
