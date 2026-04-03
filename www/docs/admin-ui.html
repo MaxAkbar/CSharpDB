@@ -151,7 +151,7 @@ dotnet run</code></pre>
                     </li>
                     <li>
                         <i class="bi bi-window-stack"></i>
-                        <div><strong>Tab Bar &amp; Content Area</strong><span>Multi-tab workspace. Open as many query, table, storage, pipeline, and procedure tabs as you need. Tabs can be closed individually.</span></div>
+                        <div><strong>Tab Bar &amp; Content Area</strong><span>Multi-tab workspace. Open as many query, table, form, storage, pipeline, and procedure tabs as you need. Tabs can be closed individually.</span></div>
                     </li>
                     <li>
                         <i class="bi bi-info-circle"></i>
@@ -217,6 +217,73 @@ dotnet run</code></pre>
                     <li><strong>Alter Table</strong> &mdash; Expandable section for adding or dropping columns.</li>
                     <li><strong>Indexes</strong> &mdash; Shows existing indexes and provides a form to create new ones (with optional <code>UNIQUE</code> constraint).</li>
                     <li><strong>Triggers</strong> &mdash; Lists existing triggers and provides a form to create <code>BEFORE</code>/<code>AFTER</code> triggers on <code>INSERT</code>, <code>UPDATE</code>, or <code>DELETE</code> events.</li>
+                </ul>
+
+                <!-- ───────── Forms Designer ───────── -->
+                <h2 id="forms-designer">Forms Designer</h2>
+                <p>Create data-entry forms bound to any table or view. Click <strong>New Form</strong> in the toolbar or open an existing form from the <strong>Forms</strong> section of the Object Explorer.</p>
+
+                <img src="../images/admin/form-designer-tab.png" alt="CSharpDB Studio forms designer with toolbox, canvas, and property inspector" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">The visual form designer with control toolbox, design canvas, layers panel, and property inspector.</p>
+
+                <h3>Designer Layout</h3>
+                <p>The designer uses a three-panel layout:</p>
+                <ul>
+                    <li><strong>Toolbox &amp; Layers</strong> (left) &mdash; Drag controls onto the canvas from categorised groups: Layout (Label), Input Controls (Text, Textarea, Number, Date, Checkbox, Radio, Select, Lookup, Computed), and Data (DataGrid, Child Tabs). The Layers panel shows all controls with drag-to-reorder and type icons.</li>
+                    <li><strong>Design Canvas</strong> (centre) &mdash; WYSIWYG surface with absolute positioning, grid snapping, marquee multi-select, and real-time preview rendering. Tab-order badges overlay each control.</li>
+                    <li><strong>Property Inspector</strong> (right) &mdash; Edit control type, position/size, data binding (field + mode), control-specific properties (placeholder, min/max, formula, options), validation overrides, and z-order arrangement.</li>
+                </ul>
+
+                <h3>Toolbar</h3>
+                <table>
+                    <thead>
+                        <tr><th>Action</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Save</strong></td><td>Persist the form definition to the <code>__forms</code> metadata table.</td></tr>
+                        <tr><td><strong>Undo / Redo</strong></td><td>Step through the full edit history.</td></tr>
+                        <tr><td><strong>Delete / Copy / Paste / Duplicate</strong></td><td>Clipboard and removal operations for selected controls.</td></tr>
+                        <tr><td><strong>Tab Order</strong></td><td>Toggle tab-order badge visibility on the canvas.</td></tr>
+                        <tr><td><strong>Mobile / Tablet / Desktop</strong></td><td>Switch responsive breakpoints (375 px, 768 px, 1200 px) with per-breakpoint positioning.</td></tr>
+                        <tr><td><strong>Data Entry</strong></td><td>Open the runtime data-entry view for this form.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Control Types</h3>
+                <table>
+                    <thead>
+                        <tr><th>Control</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Label</strong></td><td>Static text display.</td></tr>
+                        <tr><td><strong>Text / Textarea</strong></td><td>Single-line or multi-line text input with optional placeholder, maxLength, and regex pattern.</td></tr>
+                        <tr><td><strong>Number</strong></td><td>Numeric input with optional min/max validation.</td></tr>
+                        <tr><td><strong>Date</strong></td><td>Date picker.</td></tr>
+                        <tr><td><strong>Checkbox / Radio</strong></td><td>Boolean toggle or radio group with coercion for text- and integer-backed boolean values.</td></tr>
+                        <tr><td><strong>Select</strong></td><td>Dropdown with static options.</td></tr>
+                        <tr><td><strong>Lookup</strong></td><td>Dropdown populated from another table (foreign-key driven).</td></tr>
+                        <tr><td><strong>Computed</strong></td><td>Read-only field with formula evaluation (<code>=Quantity * Price</code>) and child-table aggregates (<code>=SUM(Items.Total)</code>).</td></tr>
+                        <tr><td><strong>DataGrid</strong></td><td>Inline child-table editing with add/edit/delete permissions and FK mapping.</td></tr>
+                        <tr><td><strong>Child Tabs</strong></td><td>Tabbed interface for multiple child tables with nesting support.</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ───────── Form Data Entry ───────── -->
+                <h2 id="form-data-entry">Form Data Entry</h2>
+                <p>Click <strong>Data Entry</strong> in the designer toolbar or open a form from the Object Explorer to enter the runtime data-entry view.</p>
+
+                <img src="../images/admin/form-entry-tab.png" alt="CSharpDB Studio form data entry with record list and navigation" class="screenshot" loading="lazy">
+                <p class="screenshot-caption">Runtime data entry showing the rendered form, record navigation, search, and paginated record list.</p>
+
+                <h3>Features</h3>
+                <ul>
+                    <li><strong>Record navigation</strong> &mdash; Previous / Next buttons with a <strong>Go to [PK]</strong> field for direct primary-key lookup.</li>
+                    <li><strong>New / Save / Delete</strong> &mdash; Full CRUD lifecycle for the bound table (disabled for read-only view sources).</li>
+                    <li><strong>Undo / Redo</strong> &mdash; Record-level change tracking before committing.</li>
+                    <li><strong>Record list</strong> (right pane) &mdash; Paginated, searchable list of all records. Pick a column and type to filter, then click a row to navigate.</li>
+                    <li><strong>Print</strong> &mdash; Render the current record for printing.</li>
+                    <li><strong>Edit Form</strong> &mdash; Jump back to the designer to modify the layout.</li>
+                    <li><strong>Validation</strong> &mdash; Rules inferred from schema (required, maxLength, range, regex, enum) with per-control overrides. Errors display inline next to affected fields.</li>
                 </ul>
 
                 <!-- ───────── Stored Procedures ───────── -->
@@ -322,6 +389,10 @@ dotnet run</code></pre>
                         <a href="storage.html" class="next-step-card">
                             <h4>Storage Internals</h4>
                             <p>B+tree pages, WAL, and file format details</p>
+                        </a>
+                        <a href="#forms-designer" class="next-step-card">
+                            <h4>Forms Designer</h4>
+                            <p>Build data-entry forms with a visual drag-and-drop designer</p>
                         </a>
                     </div>
                 </div>
