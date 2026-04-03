@@ -20,10 +20,10 @@
         }
 
         <select class="toolbar-source-select" value="@_state.TableName" @onchange="OnTableChanged">
-            <option value="">Select source table...</option>
-            @if (_availableTables is not null)
+            <option value="">Select source...</option>
+            @if (_availableSources is not null)
             {
-                @foreach (var tableName in _availableTables)
+                @foreach (var tableName in _availableSources)
                 {
                     <option value="@tableName">@tableName</option>
                 }
@@ -71,7 +71,7 @@
 
     @if (string.IsNullOrWhiteSpace(_state.TableName))
     {
-        <div class="designer-warning">Select a source table before saving this form.</div>
+        <div class="designer-warning">Select a source before saving this form.</div>
     }
 
     <CascadingValue Value="_state" IsFixed="true">
@@ -113,7 +113,7 @@
     private readonly DesignerState _state = new();
     private ElementReference _layoutRef;
     private ElementReference _nameInputRef;
-    private IReadOnlyList<string>? _availableTables;
+    private IReadOnlyList<string>? _availableSources;
     private bool _saving;
     private string? _error;
     private string? _schemaWarning;
@@ -128,7 +128,7 @@
     protected override async Task OnInitializedAsync()
     {
         _state.OnChange += OnStateChanged;
-        _availableTables = await SchemaProvider.ListTableNamesAsync();
+        _availableSources = await SchemaProvider.ListSourceNamesAsync();
         _initialized = true;
     }
 
@@ -208,15 +208,15 @@
 
         try
         {
-            FormTableDefinition? table = await SchemaProvider.GetTableDefinitionAsync(InitialTableName);
-            if (table is null)
+            FormTableDefinition? source = await SchemaProvider.GetTableDefinitionAsync(InitialTableName);
+            if (source is null)
             {
-                _error = $"Table '{InitialTableName}' not found.";
+                _error = $"Source '{InitialTableName}' not found.";
                 LoadBlankDesigner(null);
                 return;
             }
 
-            var generated = FormGenerator.GenerateDefault(table) with { FormId = string.Empty };
+            var generated = FormGenerator.GenerateDefault(source) with { FormId = string.Empty };
             _state.LoadForm(generated);
         }
         catch (Exception ex)
@@ -226,14 +226,14 @@
         }
     }
 
-    private void LoadBlankDesigner(FormTableDefinition? table)
+    private void LoadBlankDesigner(FormTableDefinition? source)
     {
         _state.LoadForm(new FormDefinition(
             string.Empty,
-            table is null ? "Untitled Form" : $"{table.TableName} Form",
-            table?.TableName ?? string.Empty,
+            source is null ? "Untitled Form" : $"{source.TableName} Form",
+            source?.TableName ?? string.Empty,
             1,
-            table?.SourceSchemaSignature ?? string.Empty,
+            source?.SourceSchemaSignature ?? string.Empty,
             new LayoutDefinition("absolute", 8, true, [new Breakpoint("md", 0, null)]),
             []));
     }
@@ -250,18 +250,18 @@
 
         try
         {
-            FormTableDefinition? table = await SchemaProvider.GetTableDefinitionAsync(tableName);
-            if (table is null)
+            FormTableDefinition? source = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            if (source is null)
             {
-                _error = $"Table '{tableName}' not found.";
+                _error = $"Source '{tableName}' not found.";
                 return;
             }
 
-            _state.SetTableContext(table);
+            _state.SetTableContext(source);
             if (string.IsNullOrWhiteSpace(_state.FormId) &&
                 (_state.FormName == "Untitled Form" || _state.Controls.Count == 0))
             {
-                _state.FormName = $"{table.TableName} Form";
+                _state.FormName = $"{source.TableName} Form";
                 _state.NotifyChanged();
             }
 
@@ -269,7 +269,7 @@
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load table schema: {ex.Message}";
+            _error = $"Failed to load source schema: {ex.Message}";
         }
     }
 
@@ -282,7 +282,7 @@
         {
             FormDefinition form = _state.ToFormDefinition();
             if (string.IsNullOrWhiteSpace(form.TableName))
-                throw new InvalidOperationException("Select a source table before saving.");
+                throw new InvalidOperationException("Select a source before saving.");
 
             FormDefinition savedForm;
             if (string.IsNullOrWhiteSpace(form.FormId))
@@ -329,7 +329,7 @@
 
         FormTableDefinition? current = await SchemaProvider.GetTableDefinitionAsync(form.TableName);
         _schemaWarning = current is not null && !string.Equals(current.SourceSchemaSignature, form.SourceSchemaSignature, StringComparison.Ordinal)
-            ? "The source table schema has changed since this form was last saved."
+            ? "The source schema has changed since this form was last saved."
             : null;
     }
 

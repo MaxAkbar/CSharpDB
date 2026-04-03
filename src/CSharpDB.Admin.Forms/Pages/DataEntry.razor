@@ -10,12 +10,16 @@
 <div class="data-entry-layout" @ref="_layoutRef">
     <div class="de-toolbar">
         <span class="de-toolbar-title">@(_form?.Name ?? "Loading...")</span>
+        @if (IsReadOnlySource)
+        {
+            <span class="de-toolbar-label">Read only</span>
+        }
         <div class="de-toolbar-sep"></div>
-        <button class="de-btn de-btn-primary" @onclick="NewRecord" title="New record">+ New</button>
-        <button class="de-btn" @onclick="SaveRecord" disabled="@(!_dirty || _saving)" title="Save record">
+        <button class="de-btn de-btn-primary" @onclick="NewRecord" disabled="@(!SupportsWriteOperations || _saving || _recordsLoading)" title="New record">+ New</button>
+        <button class="de-btn" @onclick="SaveRecord" disabled="@(!SupportsWriteOperations || !_dirty || _saving)" title="Save record">
             @(_saving ? "Saving..." : "Save")
         </button>
-        <button class="de-btn de-btn-danger" @onclick="DeleteRecord" disabled="@(!HasPersistedCurrentRecord)" title="Delete record">Delete</button>
+        <button class="de-btn de-btn-danger" @onclick="DeleteRecord" disabled="@(!SupportsWriteOperations || !HasPersistedCurrentRecord)" title="Delete record">Delete</button>
         <div class="de-toolbar-sep"></div>
         <button class="de-btn" @onclick="UndoRecord" disabled="@(_undoStack.Count == 0)" title="Undo (Ctrl+Z)">Undo</button>
         <button class="de-btn" @onclick="RedoRecord" disabled="@(_redoStack.Count == 0)" title="Redo (Ctrl+Y)">Redo</button>
@@ -23,7 +27,7 @@
         <button class="de-btn" @onclick="PrevRecord" disabled="@(!CanGoPreviousRecord || _recordsLoading)" title="Previous">&#x25C0;</button>
         <span class="de-nav-info">@GetNavigationStatusText()</span>
         <button class="de-btn" @onclick="NextRecord" disabled="@(!CanGoNextRecord || _recordsLoading)" title="Next">&#x25B6;</button>
-        @if (_table is not null)
+        @if (_table is not null && SupportsPrimaryKeyNavigation)
         {
             <div class="de-toolbar-sep"></div>
             <div class="de-toolbar-group">
@@ -224,6 +228,9 @@
     private bool HasActiveSearch => !string.IsNullOrWhiteSpace(_activeSearchColumnName) && !string.IsNullOrWhiteSpace(_activeSearchValue);
     private bool HasAnySearchInput => HasActiveSearch || !string.IsNullOrWhiteSpace(_searchValue);
     private bool CanApplySearch => !string.IsNullOrWhiteSpace(_searchColumnName) && !string.IsNullOrWhiteSpace(_searchValue);
+    private bool SupportsPrimaryKeyNavigation => _table?.HasSinglePrimaryKey == true;
+    private bool SupportsWriteOperations => _table?.SupportsWriteOperations == true && SupportsPrimaryKeyNavigation;
+    private bool IsReadOnlySource => _table is not null && !SupportsWriteOperations;
     private bool HasPersistedCurrentRecord => !_isNew && TryGetPrimaryKeyValue(_currentRecord, out _);
     private bool CanGoPreviousRecord => _isFocusedNavigation
         ? !_isNew && (_recordPageIndex > 0 || _hasFocusedPreviousRecords)
@@ -296,7 +303,7 @@
             _table = await SchemaProvider.GetTableDefinitionAsync(_form.TableName);
             if (_table is null)
             {
-                _error = $"Source table '{_form.TableName}' was not found.";
+                _error = $"Source '{_form.TableName}' was not found.";
                 return;
             }
 
@@ -390,6 +397,9 @@
 
     private void NewRecord()
     {
+        if (!SupportsWriteOperations)
+            return;
+
         ExitFocusedNavigation();
         _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _isNew = true;
@@ -404,6 +414,12 @@
     {
         if (_form is null || _table is null)
             return;
+
+        if (!SupportsWriteOperations)
+        {
+            _error = "This form source is read-only. Create, update, and delete are disabled.";
+            return;
+        }
 
         var errors = ValidationService.Evaluate(_form, _currentRecord);
         if (errors.Count > 0)
@@ -463,6 +479,12 @@
     {
         if (_table is null || !TryGetPrimaryKeyValue(_currentRecord, out object? pkValue))
             return;
+
+        if (!SupportsWriteOperations)
+        {
+            _error = "This form source is read-only. Create, update, and delete are disabled.";
+            return;
+        }
 
         _error = null;
 
@@ -589,7 +611,10 @@
 
         FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
         if (primaryKeyField is null)
+        {
+            _error = "This form source does not expose a single primary key column.";
             return;
+        }
 
         if (!TryParseFieldValue(primaryKeyField, requestedValue, out object? parsedValue, out string? validationError))
         {
@@ -687,7 +712,10 @@
                 if (preserveCurrentRecordWhenEmpty && (_currentRecord.Count > 0 || _isNew))
                     return;
 
-                NewRecord();
+                if (SupportsWriteOperations)
+                    NewRecord();
+                else
+                    ResetCurrentRecordForEmptyReadOnlySource();
                 return;
             }
 
@@ -718,7 +746,7 @@
 
     private int ResolveSelectedRecordIndex(object? preferredPk, int? preferredPageIndex)
     {
-        if (preferredPk is not null && _table is not null)
+        if (preferredPk is not null && _table is not null && _table.HasSinglePrimaryKey)
         {
             string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
             for (int i = 0; i < _records.Count; i++)
@@ -858,6 +886,16 @@
         _isFocusedNavigation = false;
         _hasFocusedPreviousRecords = false;
         _hasFocusedNextRecords = false;
+    }
+
+    private void ResetCurrentRecordForEmptyReadOnlySource()
+    {
+        _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        _isNew = false;
+        _dirty = false;
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _validationErrors = null;
     }
 
     private string GetNavigationStatusText()
@@ -1030,7 +1068,7 @@
     private bool TryGetPrimaryKeyValue(IReadOnlyDictionary<string, object?> record, out object? pkValue)
     {
         pkValue = null;
-        if (_table is null)
+        if (_table is null || !_table.HasSinglePrimaryKey)
             return false;
 
         string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
@@ -1084,7 +1122,7 @@
 
     private FormFieldDefinition? GetPrimaryKeyField()
     {
-        if (_table is null)
+        if (_table is null || !_table.HasSinglePrimaryKey)
             return null;
 
         string primaryKeyColumn = RecordService.GetPrimaryKeyColumn(_table);

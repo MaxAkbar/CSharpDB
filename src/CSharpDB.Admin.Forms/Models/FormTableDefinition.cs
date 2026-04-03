@@ -6,4 +6,10 @@ public sealed record FormTableDefinition(
     IReadOnlyList<FormFieldDefinition> Fields,
     IReadOnlyList<string> PrimaryKey,
     IReadOnlyList<FormForeignKeyDefinition> ForeignKeys,
-    IReadOnlyDictionary<string, object?>? Metadata = null);
+    FormSourceKind SourceKind = FormSourceKind.Table,
+    IReadOnlyDictionary<string, object?>? Metadata = null)
+{
+    public bool HasSinglePrimaryKey => PrimaryKey.Count == 1;
+
+    public bool SupportsWriteOperations => SourceKind == FormSourceKind.Table;
+}

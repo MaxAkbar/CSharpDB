@@ -149,6 +149,47 @@ public sealed class DataEntryTests
         Assert.Equal(33L, ReadCurrentRecord(component)["Id"]);
     }
 
+    [Fact]
+    public async Task ViewBackedForm_LoadsAndSearchesInReadOnlyMode()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Events (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Events VALUES (1, 'Alpha');
+            INSERT INTO Events VALUES (2, 'Beta');
+            INSERT INTO Events VALUES (3, 'Gamma');
+            CREATE VIEW EventNames AS
+            SELECT Name
+            FROM Events;
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var recordService = new CountingFormRecordService(new DbFormRecordService(db.Client));
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("event-names-form", "EventNames"),
+            schemaProvider: provider,
+            recordService: recordService);
+
+        Assert.False(GetField<bool>(component, "_isNew"));
+        Assert.Equal(["Alpha", "Beta", "Gamma"], ReadRecords(component).Select(row => Assert.IsType<string>(row["Name"])).ToArray());
+
+        SetField(component, "_searchColumnName", "Name");
+        SetField(component, "_searchValue", "mm");
+        await InvokeNonPublicAsync(component, "ApplySearchAsync");
+
+        Assert.Equal(["Gamma"], ReadRecords(component).Select(row => Assert.IsType<string>(row["Name"])).ToArray());
+
+        SetField(component, "_goToRecordValue", "1");
+        await InvokeNonPublicAsync(component, "GoToRecordAsync");
+
+        Assert.Equal("This form source does not expose a single primary key column.", GetField<string?>(component, "_error"));
+        Assert.Equal(0, recordService.GetRecordOrdinalCalls);
+    }
+
     private static async Task<DataEntry> CreateComponentAsync(
         FormDefinition form,
         ISchemaProvider schemaProvider,

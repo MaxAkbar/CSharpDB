@@ -196,7 +196,7 @@ public sealed class DbFormRepository(ICSharpDbClient dbClient) : IFormRepository
     private static void ValidateForPersistence(FormDefinition form)
     {
         if (string.IsNullOrWhiteSpace(form.TableName))
-            throw new InvalidOperationException("Forms must be bound to a source table before they can be saved.");
+            throw new InvalidOperationException("Forms must be bound to a source object before they can be saved.");
 
         if (string.IsNullOrWhiteSpace(form.SourceSchemaSignature))
             throw new InvalidOperationException("Forms must include a source schema signature before they can be saved.");

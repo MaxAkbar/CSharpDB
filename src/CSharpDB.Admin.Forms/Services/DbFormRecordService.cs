@@ -130,7 +130,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
         string tableName = FormSql.RequireIdentifier(table.TableName, nameof(table.TableName));
-        string pkColumn = FormSql.RequireIdentifier(GetPrimaryKeyColumn(table), "primaryKey");
+        string orderBySql = BuildOrderBySql(table);
         int totalCount = await ExecuteCountAsync($"""
             SELECT COUNT(*) AS RowCount
             FROM {tableName};
@@ -143,7 +143,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         List<Dictionary<string, object?>> rows = await ExecuteRowsAsync($"""
             SELECT *
             FROM {tableName}
-            ORDER BY {pkColumn}
+            {orderBySql}
             LIMIT {pageSize}
             OFFSET {offset};
             """, ct);
@@ -159,8 +159,8 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         ArgumentException.ThrowIfNullOrWhiteSpace(searchValue);
 
         string tableName = FormSql.RequireIdentifier(table.TableName, nameof(table.TableName));
-        string pkColumn = FormSql.RequireIdentifier(GetPrimaryKeyColumn(table), "primaryKey");
         string whereClause = BuildTextSearchWhereClause(table, searchField, searchValue);
+        string orderBySql = BuildOrderBySql(table);
         int totalCount = await ExecuteCountAsync($"""
             SELECT COUNT(*) AS RowCount
             FROM {tableName}
@@ -175,7 +175,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
             SELECT *
             FROM {tableName}
             WHERE {whereClause}
-            ORDER BY {pkColumn}
+            {orderBySql}
             LIMIT {pageSize}
             OFFSET {offset};
             """, ct);
@@ -187,7 +187,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         => ExecuteRowsAsync($"""
             SELECT *
             FROM {FormSql.RequireIdentifier(table.TableName, nameof(table.TableName))}
-            ORDER BY {FormSql.RequireIdentifier(GetPrimaryKeyColumn(table), "primaryKey")};
+            {BuildOrderBySql(table)};
             """, ct);
 
     public async Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
@@ -249,7 +249,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
             SELECT *
             FROM {FormSql.RequireIdentifier(table.TableName, nameof(table.TableName))}
             WHERE {whereClause}
-            ORDER BY {FormSql.RequireIdentifier(GetPrimaryKeyColumn(table), "primaryKey")};
+            {BuildOrderBySql(table)};
             """;
 
         return ExecuteRowsAsync(sql, ct);
@@ -371,6 +371,34 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
 
     private static bool SupportsFocusedNavigationFastPath(FormFieldDefinition primaryKeyField)
         => primaryKeyField.DataType is FieldDataType.Int64 or FieldDataType.String;
+
+    private static string BuildOrderBySql(FormTableDefinition table)
+    {
+        string clause = BuildOrderByClause(table);
+        return string.IsNullOrWhiteSpace(clause)
+            ? string.Empty
+            : $"ORDER BY {clause}";
+    }
+
+    private static string BuildOrderByClause(FormTableDefinition table)
+    {
+        if (table.HasSinglePrimaryKey)
+            return FormSql.RequireIdentifier(table.PrimaryKey[0], "primaryKey");
+
+        string[] columns = table.Fields
+            .Where(field => field.DataType != FieldDataType.Blob)
+            .Select(field => FormSql.RequireIdentifier(field.Name, nameof(field.Name)))
+            .ToArray();
+
+        if (columns.Length == 0)
+        {
+            columns = table.Fields
+                .Select(field => FormSql.RequireIdentifier(field.Name, nameof(field.Name)))
+                .ToArray();
+        }
+
+        return string.Join(", ", columns);
+    }
 
     private static int FindRecordIndex(IReadOnlyList<Dictionary<string, object?>> records, string pkColumn, object pkValue)
     {

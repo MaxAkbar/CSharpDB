@@ -51,6 +51,29 @@ public class DbSchemaProviderTests
     }
 
     [Fact]
+    public async Task GetTableDefinitionAsync_View_MapsReadOnlyFieldsWithoutPrimaryKey()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await CreateSchemaAsync(db);
+        await db.ExecuteAsync(
+            """
+            CREATE VIEW CustomerSummaries AS
+            SELECT full_name, CreatedAt
+            FROM Customers;
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        FormTableDefinition? view = await provider.GetTableDefinitionAsync("CustomerSummaries");
+
+        Assert.NotNull(view);
+        Assert.Equal(FormSourceKind.View, view!.SourceKind);
+        Assert.Empty(view.PrimaryKey);
+        Assert.False(view.SupportsWriteOperations);
+        Assert.All(view.Fields, field => Assert.True(field.IsReadOnly));
+        Assert.Equal(["full_name", "CreatedAt"], view.Fields.Select(field => field.Name).ToArray());
+    }
+
+    [Fact]
     public async Task ListTableNamesAsync_FiltersMetadataTable()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -67,6 +90,26 @@ public class DbSchemaProviderTests
         Assert.Contains("Orders", tableNames);
         Assert.DoesNotContain(MetadataTableName, tableNames);
         Assert.DoesNotContain("_internal_metrics", tableNames);
+    }
+
+    [Fact]
+    public async Task ListSourceNamesAsync_IncludesViews()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await CreateSchemaAsync(db);
+        await db.ExecuteAsync(
+            """
+            CREATE VIEW CustomerSummaries AS
+            SELECT full_name
+            FROM Customers;
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        IReadOnlyList<string> sourceNames = await provider.ListSourceNamesAsync();
+
+        Assert.Contains("Customers", sourceNames);
+        Assert.Contains("Orders", sourceNames);
+        Assert.Contains("CustomerSummaries", sourceNames);
     }
 
     [Fact]

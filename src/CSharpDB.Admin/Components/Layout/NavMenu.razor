@@ -484,6 +484,7 @@
         {
             new() { Label = "Open", Icon = "bi-eye", OnClick = () => TabManager.OpenViewTab(viewName) },
             new() { Label = "Edit Definition", Icon = "bi-pencil", OnClick = () => { var tab = TabManager.OpenViewTab(viewName); tab.State["ShowSchema"] = true; } },
+            new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: viewName, title: $"{viewName} Form") },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {viewName} LIMIT 50;") },
             ContextMenuItem.Separator(),
