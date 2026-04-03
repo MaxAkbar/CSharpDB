@@ -1,0 +1,45 @@
+@implements IDisposable
+@inject DatabaseClientHolder DbHolder
+@inject TabManagerService TabManager
+
+@if (string.IsNullOrWhiteSpace(Tab.FormId))
+{
+    <div class="empty-state">
+        <i class="bi bi-file-earmark-text"></i>
+        <p>This form entry tab has no form bound to it.</p>
+    </div>
+}
+else
+{
+    <DataEntry @key="_renderKey" FormId="@Tab.FormId" OnOpenDesigner="OpenDesigner" />
+}
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+    private string _renderKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _renderKey = BuildRenderKey();
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
+    }
+
+    public void Dispose()
+    {
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
+    }
+
+    private Task OpenDesigner(string formId)
+    {
+        TabManager.OpenFormDesignerTab(formId, title: Tab.Title);
+        return Task.CompletedTask;
+    }
+
+    private void OnDatabaseChanged()
+    {
+        _renderKey = BuildRenderKey();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}";
+}

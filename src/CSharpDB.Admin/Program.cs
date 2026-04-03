@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Components;
+using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Admin.Services;
 using CSharpDB.Client;
 
@@ -40,6 +41,7 @@ builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
+builder.Services.AddCSharpDbAdminForms();
 
 var app = builder.Build();
 

@@ -1,5 +1,15 @@
 # What's New
 
+## v2.9.0
+
+### Admin Forms Designer and Entry Runtime
+
+- Added an admin-only forms module with a visual form designer, runtime form entry, formula evaluation, validation inference, and JSON-backed form definitions.
+- Integrated Forms into `CSharpDB.Admin` with sidebar navigation, designer/runtime tabs, table actions, and shared admin theming.
+- Added database-backed form persistence through the internal `__forms` metadata table, including schema-signature tracking and active-database reload behavior.
+- Added runtime usability improvements including paged record navigation, go-to-record by primary key, column-based search, manual child-table mapping, and checkbox/radio coercion for text and numeric boolean representations.
+- Added a dedicated `CSharpDB.Admin.Forms.Tests` suite covering repository behavior, schema adaptation, generator/validation rules, runtime record services, serialization, and admin tab wiring.
+
 ## v2.8.0
 
 ### Batch-First SQL Row Transport
@@ -13,4 +23,3 @@
 - Added new design notes for compiled live queries and materialized join read models.
 - Added blog and news pages to the website and refreshed roadmap content to reflect the current shipped surface.
 - Refactored Admin navigation and title-bar plumbing, including a shared database client holder and improved modal input support.
-

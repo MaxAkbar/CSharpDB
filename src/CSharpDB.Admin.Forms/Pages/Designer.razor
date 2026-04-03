@@ -1,0 +1,410 @@
+@using CSharpDB.Admin.Forms.Contracts
+@implements IDisposable
+@inject IFormRepository FormRepository
+@inject ISchemaProvider SchemaProvider
+@inject IFormGenerator FormGenerator
+
+<div class="designer-layout" @onkeydown="OnKeyDown" tabindex="0" @ref="_layoutRef">
+    <div class="designer-toolbar">
+        @if (_editingName)
+        {
+            <input class="toolbar-title-input"
+                   @bind="_editNameValue"
+                   @onblur="CommitNameEdit"
+                   @onkeydown="OnNameKeyDown"
+                   @ref="_nameInputRef" />
+        }
+        else
+        {
+            <span class="toolbar-title toolbar-title-editable" @ondblclick="StartNameEdit">@_state.FormName</span>
+        }
+
+        <select class="toolbar-source-select" value="@_state.TableName" @onchange="OnTableChanged">
+            <option value="">Select source table...</option>
+            @if (_availableTables is not null)
+            {
+                @foreach (var tableName in _availableTables)
+                {
+                    <option value="@tableName">@tableName</option>
+                }
+            }
+        </select>
+
+        <button @onclick="Save" disabled="@(_saving || string.IsNullOrWhiteSpace(_state.TableName))">Save</button>
+        <div class="toolbar-sep"></div>
+        <button @onclick="_state.Undo" disabled="@(!_state.CanUndo)">Undo</button>
+        <button @onclick="_state.Redo" disabled="@(!_state.CanRedo)">Redo</button>
+        <div class="toolbar-sep"></div>
+        <button @onclick="_state.DeleteSelected" disabled="@(_state.SelectedIds.Count == 0)">Delete</button>
+        <div class="toolbar-sep"></div>
+        <button @onclick="_state.CopySelected" disabled="@(_state.SelectedIds.Count == 0)">Copy</button>
+        <button @onclick="_state.PasteClipboard" disabled="@(!_state.HasClipboard)">Paste</button>
+        <button @onclick="_state.DuplicateSelected" disabled="@(_state.SelectedIds.Count == 0)">Duplicate</button>
+        <div class="toolbar-sep"></div>
+        <button class="@(_state.ShowTabOrder ? "toolbar-active" : "")" @onclick="ToggleTabOrder">Tab Order</button>
+        <div class="toolbar-sep"></div>
+        <div class="breakpoint-switcher">
+            <button class="@(_state.ActiveBreakpoint == BpMobile ? "bp-active" : "")"
+                    @onclick="@(() => SetBreakpoint(BpMobile))"
+                    title="Mobile (375px)">Mobile</button>
+            <button class="@(_state.ActiveBreakpoint == BpTablet ? "bp-active" : "")"
+                    @onclick="@(() => SetBreakpoint(BpTablet))"
+                    title="Tablet (768px)">Tablet</button>
+            <button class="@(_state.ActiveBreakpoint == BpDesktop ? "bp-active" : "")"
+                    @onclick="@(() => SetBreakpoint(BpDesktop))"
+                    title="Desktop (1200px)">Desktop</button>
+        </div>
+        <span class="toolbar-info">
+            @_state.Controls.Count controls
+            @if (_state.SelectedIds.Count > 0)
+            {
+                <text> | @_state.SelectedIds.Count selected</text>
+            }
+        </span>
+        <button @onclick="OpenDataEntry" disabled="@string.IsNullOrWhiteSpace(_state.FormId)">&#x25B6; Data Entry</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_schemaWarning))
+    {
+        <div class="designer-warning">@_schemaWarning</div>
+    }
+
+    @if (string.IsNullOrWhiteSpace(_state.TableName))
+    {
+        <div class="designer-warning">Select a source table before saving this form.</div>
+    }
+
+    <CascadingValue Value="_state" IsFixed="true">
+        <div class="left-panel">
+            <Toolbox />
+            <LayersPanel />
+        </div>
+        <DesignCanvas />
+        <PropertyInspector />
+    </CascadingValue>
+</div>
+
+@if (_error is not null)
+{
+    <div style="position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+                background: #d32f2f; color: #fff; padding: 8px 20px; border-radius: 6px;
+                font-size: 13px; z-index: 100; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+        @_error
+        <button style="margin-left:12px; background:transparent; border:none; color:#fff;
+                       cursor:pointer; font-size:16px;" @onclick="() => _error = null">x</button>
+    </div>
+}
+
+@if (_saved)
+{
+    <div style="position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+                background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 6px;
+                font-size: 13px; z-index: 100; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+        Saved!
+    </div>
+}
+
+@code {
+    [Parameter] public string? FormId { get; set; }
+    [Parameter] public string? InitialTableName { get; set; }
+    [Parameter] public EventCallback<FormDefinition> OnFormSaved { get; set; }
+    [Parameter] public EventCallback<string> OnOpenEntry { get; set; }
+
+    private readonly DesignerState _state = new();
+    private ElementReference _layoutRef;
+    private ElementReference _nameInputRef;
+    private IReadOnlyList<string>? _availableTables;
+    private bool _saving;
+    private string? _error;
+    private string? _schemaWarning;
+    private bool _saved;
+    private System.Timers.Timer? _savedTimer;
+    private bool _editingName;
+    private string _editNameValue = string.Empty;
+    private string? _loadedFormId;
+    private string? _loadedInitialTableName;
+    private bool _initialized;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _state.OnChange += OnStateChanged;
+        _availableTables = await SchemaProvider.ListTableNamesAsync();
+        _initialized = true;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_initialized)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(FormId))
+        {
+            if (!string.Equals(_loadedFormId, FormId, StringComparison.Ordinal))
+            {
+                _loadedFormId = FormId;
+                await LoadExistingForm(FormId);
+            }
+
+            return;
+        }
+
+        if (_loadedFormId is not null || !string.Equals(_loadedInitialTableName, InitialTableName, StringComparison.Ordinal))
+        {
+            _loadedFormId = null;
+            _loadedInitialTableName = InitialTableName;
+            await LoadInitialDesigner();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try { await _layoutRef.FocusAsync(); } catch { }
+    }
+
+    public void Dispose()
+    {
+        _state.OnChange -= OnStateChanged;
+        _savedTimer?.Dispose();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task LoadExistingForm(string formId)
+    {
+        _error = null;
+        _schemaWarning = null;
+
+        try
+        {
+            var form = await FormRepository.GetAsync(formId);
+            if (form is null)
+            {
+                _error = $"Form '{formId}' not found.";
+                return;
+            }
+
+            _state.LoadForm(form);
+            await RefreshSchemaWarningAsync(form);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load form: {ex.Message}";
+        }
+    }
+
+    private async Task LoadInitialDesigner()
+    {
+        _error = null;
+        _schemaWarning = null;
+
+        if (string.IsNullOrWhiteSpace(InitialTableName))
+        {
+            LoadBlankDesigner(null);
+            return;
+        }
+
+        try
+        {
+            FormTableDefinition? table = await SchemaProvider.GetTableDefinitionAsync(InitialTableName);
+            if (table is null)
+            {
+                _error = $"Table '{InitialTableName}' not found.";
+                LoadBlankDesigner(null);
+                return;
+            }
+
+            var generated = FormGenerator.GenerateDefault(table) with { FormId = string.Empty };
+            _state.LoadForm(generated);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to initialize designer: {ex.Message}";
+            LoadBlankDesigner(null);
+        }
+    }
+
+    private void LoadBlankDesigner(FormTableDefinition? table)
+    {
+        _state.LoadForm(new FormDefinition(
+            string.Empty,
+            table is null ? "Untitled Form" : $"{table.TableName} Form",
+            table?.TableName ?? string.Empty,
+            1,
+            table?.SourceSchemaSignature ?? string.Empty,
+            new LayoutDefinition("absolute", 8, true, [new Breakpoint("md", 0, null)]),
+            []));
+    }
+
+    private async Task OnTableChanged(ChangeEventArgs e)
+    {
+        string? tableName = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            _state.SetTableContext(null);
+            _schemaWarning = null;
+            return;
+        }
+
+        try
+        {
+            FormTableDefinition? table = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            if (table is null)
+            {
+                _error = $"Table '{tableName}' not found.";
+                return;
+            }
+
+            _state.SetTableContext(table);
+            if (string.IsNullOrWhiteSpace(_state.FormId) &&
+                (_state.FormName == "Untitled Form" || _state.Controls.Count == 0))
+            {
+                _state.FormName = $"{table.TableName} Form";
+                _state.NotifyChanged();
+            }
+
+            _schemaWarning = null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load table schema: {ex.Message}";
+        }
+    }
+
+    private async Task Save()
+    {
+        _saving = true;
+        _error = null;
+
+        try
+        {
+            FormDefinition form = _state.ToFormDefinition();
+            if (string.IsNullOrWhiteSpace(form.TableName))
+                throw new InvalidOperationException("Select a source table before saving.");
+
+            FormDefinition savedForm;
+            if (string.IsNullOrWhiteSpace(form.FormId))
+            {
+                savedForm = await FormRepository.CreateAsync(form);
+            }
+            else
+            {
+                UpdateResult update = await FormRepository.TryUpdateAsync(form.FormId, form.DefinitionVersion, form);
+                savedForm = update switch
+                {
+                    UpdateResult.Ok ok => ok.Doc,
+                    UpdateResult.Conflict => throw new InvalidOperationException("Save conflict: this form was modified elsewhere."),
+                    UpdateResult.NotFound => throw new InvalidOperationException("This form no longer exists."),
+                    _ => throw new InvalidOperationException("Unexpected update result."),
+                };
+            }
+
+            _state.LoadForm(savedForm);
+            _loadedFormId = savedForm.FormId;
+            await RefreshSchemaWarningAsync(savedForm);
+            ShowSavedToast();
+
+            if (OnFormSaved.HasDelegate)
+                await OnFormSaved.InvokeAsync(savedForm);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task RefreshSchemaWarningAsync(FormDefinition form)
+    {
+        if (string.IsNullOrWhiteSpace(form.TableName))
+        {
+            _schemaWarning = null;
+            return;
+        }
+
+        FormTableDefinition? current = await SchemaProvider.GetTableDefinitionAsync(form.TableName);
+        _schemaWarning = current is not null && !string.Equals(current.SourceSchemaSignature, form.SourceSchemaSignature, StringComparison.Ordinal)
+            ? "The source table schema has changed since this form was last saved."
+            : null;
+    }
+
+    private void ShowSavedToast()
+    {
+        _saved = true;
+        _savedTimer?.Dispose();
+        _savedTimer = new System.Timers.Timer(2000) { AutoReset = false };
+        _savedTimer.Elapsed += (_, _) => InvokeAsync(() =>
+        {
+            _saved = false;
+            StateHasChanged();
+        });
+        _savedTimer.Start();
+    }
+
+    private async Task OpenDataEntry()
+    {
+        if (!string.IsNullOrWhiteSpace(_state.FormId) && OnOpenEntry.HasDelegate)
+            await OnOpenEntry.InvokeAsync(_state.FormId);
+    }
+
+    private void ToggleTabOrder()
+    {
+        _state.ShowTabOrder = !_state.ShowTabOrder;
+        _state.NotifyChanged();
+    }
+
+    private const string BpMobile = "mobile";
+    private const string BpTablet = "tablet";
+    private const string BpDesktop = "desktop";
+
+    private void SetBreakpoint(string breakpoint)
+    {
+        _state.ActiveBreakpoint = breakpoint;
+        _state.NotifyChanged();
+    }
+
+    private async Task StartNameEdit()
+    {
+        _editNameValue = _state.FormName;
+        _editingName = true;
+        StateHasChanged();
+        await Task.Yield();
+        try { await _nameInputRef.FocusAsync(); } catch { }
+    }
+
+    private void CommitNameEdit()
+    {
+        _editingName = false;
+        string? trimmed = _editNameValue?.Trim();
+        if (!string.IsNullOrEmpty(trimmed))
+            _state.FormName = trimmed;
+    }
+
+    private void OnNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            CommitNameEdit();
+        else if (e.Key == "Escape")
+            _editingName = false;
+    }
+
+    private void OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.CtrlKey && e.Key == "z") _state.Undo();
+        else if (e.CtrlKey && e.Key == "y") _state.Redo();
+        else if (e.CtrlKey && e.Key == "c") _state.CopySelected();
+        else if (e.CtrlKey && e.Key == "v") _state.PasteClipboard();
+        else if (e.CtrlKey && e.Key == "d") _state.DuplicateSelected();
+        else if (e.Key == "Delete" || e.Key == "Backspace") _state.DeleteSelected();
+        else if (e.Key == "Escape")
+        {
+            _state.ActiveTool = null;
+            _state.ClearSelection();
+        }
+    }
+}

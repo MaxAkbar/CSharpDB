@@ -50,6 +50,14 @@
                             <TableDesignerTab @key="TabManager.ActiveTab.Id"
                                               Tab="TabManager.ActiveTab" />
                             break;
+                        case TabKind.FormDesigner:
+                            <FormDesignerTab @key="TabManager.ActiveTab.Id"
+                                             Tab="TabManager.ActiveTab" />
+                            break;
+                        case TabKind.FormEntry:
+                            <FormEntryTab @key="TabManager.ActiveTab.Id"
+                                          Tab="TabManager.ActiveTab" />
+                            break;
                     }
                 }
             </div>

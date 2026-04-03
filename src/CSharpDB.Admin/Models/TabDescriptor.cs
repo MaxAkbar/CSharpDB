@@ -9,7 +9,9 @@ public enum TabKind
     Procedure,
     Pipeline,
     Storage,
-    TableDesigner
+    TableDesigner,
+    FormDesigner,
+    FormEntry
 }
 
 public sealed class TabDescriptor
@@ -55,5 +57,17 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("PipelinePackageJson", out var v) ? v as string : null;
         set => State["PipelinePackageJson"] = value;
+    }
+
+    public string? FormId
+    {
+        get => State.TryGetValue("FormId", out var v) ? v as string : null;
+        set => State["FormId"] = value;
+    }
+
+    public string? InitialTableName
+    {
+        get => State.TryGetValue("InitialTableName", out var v) ? v as string : null;
+        set => State["InitialTableName"] = value;
     }
 }

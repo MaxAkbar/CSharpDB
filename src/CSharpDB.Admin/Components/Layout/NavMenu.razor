@@ -1,5 +1,7 @@
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
+@inject IFormRepository FormRepository
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
@@ -43,6 +45,35 @@
                              @oncontextmenu:preventDefault>
                             <i class="bi bi-table icon-table"></i>
                             <span class="item-label">@tableName</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("forms")'
+                 @oncontextmenu="e => ShowFormsGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("forms") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-ui-checks-grid icon-view"></i>
+                <span>Forms</span>
+                <span class="group-count">@(_forms?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("forms") && _forms is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var form in FilterForms())
+                    {
+                        var currentForm = form;
+                        <div class="tree-item @(IsActiveForm(currentForm.FormId) ? "active" : "")"
+                             @onclick="() => TabManager.OpenFormDesignerTab(currentForm.FormId, title: currentForm.Name)"
+                             @oncontextmenu="e => ShowFormItemMenu(e, currentForm)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi bi-ui-checks-grid icon-view"></i>
+                            <span class="item-label">@currentForm.Name</span>
+                            <span class="item-hint">@currentForm.TableName</span>
                         </div>
                     }
                 </div>
@@ -238,17 +269,25 @@
     private IReadOnlyList<IndexSchema>? _indexes;
     private IReadOnlyList<TriggerSchema>? _triggers;
     private IReadOnlyList<ProcedureDefinition>? _procedures;
+    private IReadOnlyList<FormDefinition>? _forms;
     private string _searchQuery = string.Empty;
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "system", "views", "procedures" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "forms", "system", "views", "procedures" };
 
     protected override async Task OnInitializedAsync()
     {
         Changes.Changed += OnChanged;
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
         TabManager.StateChanged += OnTabChanged;
         await LoadObjects();
     }
 
     private async void OnChanged()
+    {
+        await LoadObjects();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async void OnDatabaseChanged()
     {
         await LoadObjects();
         await InvokeAsync(StateHasChanged);
@@ -267,6 +306,7 @@
             _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
             _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
             _procedures = (await DbClient.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
+            _forms = (await FormRepository.ListAsync()).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
         catch
         {
@@ -276,6 +316,7 @@
             _indexes = null;
             _triggers = null;
             _procedures = null;
+            _forms = null;
         }
     }
 
@@ -318,6 +359,15 @@
                                    || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
     }
 
+    private IEnumerable<FormDefinition> FilterForms()
+    {
+        if (_forms is null) return Enumerable.Empty<FormDefinition>();
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return _forms;
+        return _forms.Where(form =>
+            form.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+            || form.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
     private IEnumerable<SystemCatalogItem> FilterSystemCatalogItems()
     {
         if (string.IsNullOrWhiteSpace(_searchQuery))
@@ -343,6 +393,12 @@
         var activeTab = TabManager.ActiveTab;
         if (activeTab is null) return false;
         return activeTab.Id == $"{type}:{name}";
+    }
+
+    private bool IsActiveForm(string formId)
+    {
+        var activeTab = TabManager.ActiveTab;
+        return activeTab is not null && string.Equals(activeTab.FormId, formId, StringComparison.Ordinal);
     }
 
     private async Task StartResize(MouseEventArgs e)
@@ -382,11 +438,33 @@
         {
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },
             ContextMenuItem.Separator(),
             new() { Label = "Drop Table", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropTableAsync(tableName) },
+        });
+    }
+
+    private void ShowFormsGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Form", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenFormDesignerTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowFormItemMenu(MouseEventArgs e, FormDefinition form)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Design", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(form.FormId, title: form.Name) },
+            new() { Label = "Open Entry", Icon = "bi-file-earmark-text", OnClick = () => TabManager.OpenFormEntryTab(form.FormId, form.Name) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Delete", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDeleteFormAsync(form) },
         });
     }
 
@@ -521,9 +599,28 @@
         catch (Exception ex) { Toast.Error(ex.Message); }
     }
 
+    private async Task ConfirmDeleteFormAsync(FormDefinition form)
+    {
+        var confirmed = await Modal.ConfirmAsync("Delete Form", $"Are you sure you want to delete form '{form.Name}'?", "Delete", isDanger: true);
+        if (!confirmed) return;
+
+        try
+        {
+            await FormRepository.DeleteAsync(form.FormId);
+            Toast.Success($"Deleted form '{form.Name}'.");
+            TabManager.CloseTabsForForm(form.FormId);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
     public void Dispose()
     {
         Changes.Changed -= OnChanged;
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
         TabManager.StateChanged -= OnTabChanged;
     }
 
