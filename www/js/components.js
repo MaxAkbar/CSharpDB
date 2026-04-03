@@ -136,6 +136,7 @@
                     ${navLink('benchmarks.html', 'benchmarks', 'Benchmarks')}
                     ${navLink('performance.html', 'performance', 'Performance')}
                     ${navLink('api-reference.html', 'api-reference', 'API Reference')}
+                    ${navLink('downloads.html', 'downloads', 'Downloads')}
                     ${navLink('blog/index.html', 'blog', 'Blog')}
                     ${navLink('news/index.html', 'news', 'News')}
                     ${navLink('roadmap.html', 'roadmap', 'Roadmap')}
