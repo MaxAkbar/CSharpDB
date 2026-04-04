@@ -251,6 +251,10 @@ code {
     transition: all 0.2s;
     white-space: nowrap;
 }
+@media (max-width: 1200px) {
+    .nav-link { padding: 8px 8px; font-size: 0.82rem; }
+    .nav-logo { margin-right: 12px; }
+}
 .nav-link:hover { color: var(--text-primary); background: var(--accent-soft); }
 .nav-link.active { color: var(--accent); background: var(--accent-glow); }
 
@@ -1236,7 +1240,7 @@ code {
     }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
     .mobile-toggle { display: flex; }
 
     .nav-links {
@@ -1254,7 +1258,9 @@ code {
     .nav-links.open { display: flex; }
 
     .btn-outline.btn-sm { display: none; }
+}
 
+@media (max-width: 768px) {
     .features-grid { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
 

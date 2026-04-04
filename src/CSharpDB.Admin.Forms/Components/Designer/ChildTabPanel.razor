@@ -1,0 +1,122 @@
+@using CSharpDB.Admin.Forms.Models
+
+<div class="child-tab-panel @(NestingLevel > 0 ? "ctp-nested" : "")">
+    @if (NestingLevel > 0)
+    {
+        <div class="ctp-nested-label">@(_activeTab?.Label ?? "Child") records for selected row</div>
+    }
+
+    @if (Tabs.Count > 0)
+    {
+        <div class="ctp-tab-bar">
+            @for (var i = 0; i < Tabs.Count; i++)
+            {
+                var idx = i;
+                var tab = Tabs[i];
+                <button class="ctp-tab @(idx == _activeTabIndex ? "active" : "")"
+                        @onclick="@(() => SwitchTab(idx))">@tab.Label</button>
+            }
+        </div>
+
+        <div class="ctp-tab-content">
+            @if (_activeTab is not null)
+            {
+                var activeParentValue = GetActiveParentValue();
+                var hasChildren = _activeTab.ChildTabs.Count > 0;
+                @if (activeParentValue is not null)
+                {
+                    <ChildDataGrid ChildTableName="@_activeTab.ChildTable"
+                                   ForeignKeyField="@_activeTab.ForeignKeyField"
+                                   ParentKeyValue="@activeParentValue"
+                                   VisibleColumns="@_activeTab.VisibleColumns.ToList()"
+                                   AllowAdd="_activeTab.AllowAdd"
+                                   AllowEdit="_activeTab.AllowEdit"
+                                   AllowDelete="_activeTab.AllowDelete"
+                                   ChildFormTableDefinition="@GetChildTableDef(_activeTab.ChildTable)"
+                                   EnableRowSelection="hasChildren"
+                                   OnRowSelected="OnChildRowSelected" />
+
+                    @if (hasChildren)
+                    {
+                        @if (_selectedRow is not null)
+                        {
+                            <ChildTabPanel Tabs="@_activeTab.ChildTabs.ToList()"
+                                           ParentRecord="_selectedRow"
+                                           ParentTableDefinition="@GetChildTableDef(_activeTab.ChildTable)"
+                                           ChildFormTableDefinitions="ChildFormTableDefinitions"
+                                           NestingLevel="@(NestingLevel + 1)" />
+                        }
+                        else
+                        {
+                            <div class="ctp-select-prompt">Select a row above to see child records.</div>
+                        }
+                    }
+                }
+                else
+                {
+                    <div class="ctp-select-prompt">Save the parent record first to see child records.</div>
+                }
+            }
+        </div>
+    }
+    else
+    {
+        <div class="ctp-select-prompt">No tabs configured.</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<ChildTabConfig> Tabs { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyDictionary<string, object?>? ParentRecord { get; set; }
+    [Parameter] public FormTableDefinition? ParentTableDefinition { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, FormTableDefinition>? ChildFormTableDefinitions { get; set; }
+    [Parameter] public int NestingLevel { get; set; }
+
+    private int _activeTabIndex;
+    private Dictionary<string, object?>? _selectedRow;
+    private object? _lastParentKeyValue;
+
+    private ChildTabConfig? _activeTab => _activeTabIndex >= 0 && _activeTabIndex < Tabs.Count
+        ? Tabs[_activeTabIndex] : null;
+
+    protected override void OnParametersSet()
+    {
+        object? activeParentValue = GetActiveParentValue();
+
+        // Reset when parent PK changes (parent record navigation)
+        if (!Equals(_lastParentKeyValue, activeParentValue))
+        {
+            _lastParentKeyValue = activeParentValue;
+            _activeTabIndex = 0;
+            _selectedRow = null;
+        }
+
+        // Clamp tab index if tabs changed
+        if (_activeTabIndex >= Tabs.Count)
+        {
+            _activeTabIndex = 0;
+            _selectedRow = null;
+        }
+    }
+
+    private void SwitchTab(int tabIndex)
+    {
+        if (tabIndex == _activeTabIndex) return;
+        _activeTabIndex = tabIndex;
+        _selectedRow = null;
+    }
+
+    private void OnChildRowSelected(Dictionary<string, object?>? row)
+    {
+        _selectedRow = row;
+        StateHasChanged();
+    }
+
+    private object? GetActiveParentValue()
+        => ChildRelationResolver.GetParentValue(_activeTab, ParentRecord, ParentTableDefinition);
+
+    private FormTableDefinition? GetChildTableDef(string tableName)
+    {
+        return ChildFormTableDefinitions?.GetValueOrDefault(tableName);
+    }
+}

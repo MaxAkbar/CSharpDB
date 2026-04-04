@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Working with the Collection API — Blog — CSharpDB</title>
+    <meta name="description" content="Learn how to use the CSharpDB Collection API to store, query, and index typed C# objects without writing SQL.">
+    <link rel="canonical" href="https://csharpdb.com/blog/working-with-collections.html">
+    <meta property="og:title" content="Working with the Collection API">
+    <meta property="og:description" content="Learn how to use the CSharpDB Collection API to store, query, and index typed C# objects without writing SQL.">
+    <meta property="og:url" content="https://csharpdb.com/blog/working-with-collections.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Working with the Collection API",
+        "description": "Learn how to use the CSharpDB Collection API to store, query, and index typed C# objects without writing SQL.",
+        "url": "https://csharpdb.com/blog/working-with-collections.html",
+        "datePublished": "2026-03-31",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Working with the Collection API',
+        description: 'Learn how to use the CSharpDB Collection API to store, query, and index typed C# objects without writing SQL.',
+        keywords: 'CSharpDB collections, document database, NoSQL .NET, path indexes, typed collections',
+        canonicalPath: 'blog/working-with-collections.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Working with the Collection API</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>March 31, 2026</span>
+                    <span>&middot; 7 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>Not every application needs SQL. Sometimes you just want to store and retrieve C# objects by key, with optional indexing for fast lookups. That's what the CSharpDB Collection API is built for.</p>
+                    <p>Collections give you a document-oriented interface on top of the same B+tree storage engine that powers CSharpDB's SQL tables — so you get crash recovery, MVCC isolation, and WAL durability without writing a single SQL statement.</p>
+
+                    <h2>Defining Your Model</h2>
+                    <p>Collections work with any serializable C# type. Records work particularly well:</p>
+                    <div class="code-block" data-title="Models.cs">
+                        <pre><code><span class="kw">public record</span> <span class="tp">Customer</span>(
+    <span class="kw">string</span> Name,
+    <span class="kw">string</span> Email,
+    <span class="tp">Address</span> Address,
+    <span class="kw">string</span>[] Tags
+);
+
+<span class="kw">public record</span> <span class="tp">Address</span>(
+    <span class="kw">string</span> Street,
+    <span class="kw">string</span> City,
+    <span class="kw">string</span> Country
+);</code></pre>
+                    </div>
+
+                    <h2>CRUD Operations</h2>
+                    <p>Every collection is a key-value store where keys are strings and values are your typed objects:</p>
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"shop.db"</span>);
+<span class="kw">var</span> customers = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Customer</span>&gt;(<span class="str">"customers"</span>);
+
+<span class="cm">// Create</span>
+<span class="kw">var</span> alice = <span class="kw">new</span> <span class="tp">Customer</span>(
+    <span class="str">"Alice"</span>, <span class="str">"alice@example.com"</span>,
+    <span class="kw">new</span> <span class="tp">Address</span>(<span class="str">"123 Main St"</span>, <span class="str">"Portland"</span>, <span class="str">"US"</span>),
+    [<span class="str">"premium"</span>, <span class="str">"early-adopter"</span>]
+);
+<span class="kw">await</span> customers.PutAsync(<span class="str">"alice"</span>, alice);
+
+<span class="cm">// Read</span>
+<span class="kw">var</span> customer = <span class="kw">await</span> customers.GetAsync(<span class="str">"alice"</span>);
+Console.WriteLine(customer?.Name); <span class="cm">// "Alice"</span>
+
+<span class="cm">// Update — just put again with the same key</span>
+<span class="kw">var</span> updated = alice <span class="kw">with</span> { Email = <span class="str">"alice@newdomain.com"</span> };
+<span class="kw">await</span> customers.PutAsync(<span class="str">"alice"</span>, updated);
+
+<span class="cm">// Delete</span>
+<span class="kw">await</span> customers.DeleteAsync(<span class="str">"alice"</span>);</code></pre>
+                    </div>
+
+                    <h2>Indexing Properties</h2>
+                    <p>Without indexes, the only way to find documents is by key or by scanning. Indexes let you query by any property:</p>
+                    <div class="code-block" data-title="Program.cs — Indexes">
+                        <pre><code><span class="cm">// Index a top-level property</span>
+<span class="kw">await</span> customers.EnsureIndexAsync(c => c.Email);
+
+<span class="cm">// Index a nested property</span>
+<span class="kw">await</span> customers.EnsureIndexAsync(c => c.Address.City);
+
+<span class="cm">// Query by indexed property</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> match <span class="kw">in</span> customers.FindByIndexAsync(
+    c => c.Address.City, <span class="str">"Portland"</span>))
+{
+    Console.WriteLine(<span class="str">$"{match.Key}: {match.Value.Name}"</span>);
+}</code></pre>
+                    </div>
+                    <p>Indexes are persisted in the database file. <code>EnsureIndexAsync</code> is idempotent — calling it multiple times has no effect if the index already exists.</p>
+
+                    <h2>Scanning and Filtering</h2>
+                    <p>For ad-hoc queries or when you don't have an index, use <code>ScanAsync</code> with LINQ:</p>
+                    <div class="code-block" data-title="Program.cs — Scanning">
+                        <pre><code><span class="cm">// Scan all entries</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> entry <span class="kw">in</span> customers.ScanAsync())
+    Console.WriteLine(<span class="str">$"{entry.Key}: {entry.Value.Name}"</span>);
+
+<span class="cm">// Count entries</span>
+<span class="kw">var</span> count = <span class="kw">await</span> customers.CountAsync();
+Console.WriteLine(<span class="str">$"Total customers: {count}"</span>);</code></pre>
+                    </div>
+
+                    <h2>Mixing SQL and Collections</h2>
+                    <p>Collections and SQL tables coexist in the same database file. You can use both APIs in the same application — SQL for relational data and collections for document-oriented data:</p>
+                    <div class="code-block" data-title="Program.cs — Mixed Usage">
+                        <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// SQL for relational data</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS Orders (
+        Id INTEGER PRIMARY KEY,
+        CustomerId TEXT NOT NULL,
+        Total REAL
+    )"</span>);
+
+<span class="cm">// Collections for document data</span>
+<span class="kw">var</span> profiles = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Customer</span>&gt;(<span class="str">"profiles"</span>);
+<span class="kw">await</span> profiles.PutAsync(<span class="str">"alice"</span>, alice);</code></pre>
+                    </div>
+
+                    <h2>Best Practices</h2>
+                    <ul>
+                        <li><strong>Use meaningful keys.</strong> Keys are your primary access path. Natural keys (email, slug, SKU) are often better than GUIDs.</li>
+                        <li><strong>Index properties you query by.</strong> Without an index, lookups require a full scan.</li>
+                        <li><strong>Keep documents reasonably sized.</strong> Collections are backed by B+tree pages. Very large documents may span multiple overflow pages.</li>
+                        <li><strong>Use records for immutability.</strong> The <code>with</code> expression pattern makes updates clean and predictable.</li>
+                    </ul>
+
+                    <div class="blog-nav">
+                        <a href="getting-started-with-csharpdb.html">&larr; Getting Started</a>
+                        <a href="sql-deep-dive.html">Next: SQL Deep Dive &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>

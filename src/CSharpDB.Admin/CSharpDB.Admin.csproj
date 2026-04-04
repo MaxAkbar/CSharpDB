@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj" />
+    <ProjectReference Include="..\CSharpDB.Admin.Reports\CSharpDB.Admin.Reports.csproj" />
   </ItemGroup>
 
 </Project>

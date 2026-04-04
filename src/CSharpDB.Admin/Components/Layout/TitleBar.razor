@@ -1,6 +1,10 @@
 @inject ThemeService Theme
 @inject TabManagerService TabManager
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
+@inject DatabaseChangeService Changes
+@inject ModalService Modal
+@inject ToastService Toast
 @implements IDisposable
 
 <div class="titlebar">
@@ -12,6 +16,29 @@
              height="24" />
         <span class="titlebar-brand">CSharpDB Studio</span>
         <span class="titlebar-dbname">@("\u2014") @DbClient.DataSource</span>
+    </div>
+    <div class="titlebar-toolbar">
+        <button class="titlebar-action-btn" @onclick="OpenDatabase" title="Open Database">
+            <i class="bi bi-folder2-open"></i> Open Database
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query (Ctrl+N)">
+            <i class="bi bi-plus"></i> New Query
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenTableDesignerTab()" title="New Table">
+            <i class="bi bi-table"></i> New Table
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenFormDesignerTab()" title="New Form">
+            <i class="bi bi-ui-checks-grid"></i> New Form
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenNewProcedureTab()" title="New Procedure">
+            <i class="bi bi-gear-wide-connected"></i> New Procedure
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenPipelineTab()" title="New Pipeline">
+            <i class="bi bi-diagram-3"></i> Pipeline
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenStorageTab()" title="Storage Inspector">
+            <i class="bi bi-hdd-stack"></i> Storage
+        </button>
     </div>
     <div class="titlebar-center">
         <span class="status-dot connected"></span>
@@ -37,13 +64,43 @@
     protected override void OnInitialized()
     {
         Theme.ThemeChanged += OnThemeChanged;
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
     }
 
     private async Task ToggleTheme() => await Theme.ToggleAsync();
     private async Task ToggleSidebar() => await OnToggleSidebar.InvokeAsync();
     private async Task ShowShortcuts() => await OnShowShortcuts.InvokeAsync();
 
-    private void OnThemeChanged() => InvokeAsync(StateHasChanged);
+    private async Task OpenDatabase()
+    {
+        var path = await Modal.PromptAsync(
+            "Open Database",
+            "Enter the path to the database file:",
+            confirmText: "Open",
+            placeholder: @"C:\path\to\database.db",
+            defaultValue: DbClient.DataSource);
 
-    public void Dispose() => Theme.ThemeChanged -= OnThemeChanged;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            await DbHolder.SwitchAsync(path.Trim());
+            Toast.Success($"Opened database '{DbHolder.DataSource}'.");
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to open database: {ex.Message}");
+        }
+    }
+
+    private void OnThemeChanged() => InvokeAsync(StateHasChanged);
+    private void OnDatabaseChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Theme.ThemeChanged -= OnThemeChanged;
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
+    }
 }

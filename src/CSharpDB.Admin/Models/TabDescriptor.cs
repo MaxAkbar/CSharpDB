@@ -9,7 +9,11 @@ public enum TabKind
     Procedure,
     Pipeline,
     Storage,
-    TableDesigner
+    TableDesigner,
+    FormDesigner,
+    FormEntry,
+    ReportDesigner,
+    ReportPreview
 }
 
 public sealed class TabDescriptor
@@ -55,5 +59,41 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("PipelinePackageJson", out var v) ? v as string : null;
         set => State["PipelinePackageJson"] = value;
+    }
+
+    public string? FormId
+    {
+        get => State.TryGetValue("FormId", out var v) ? v as string : null;
+        set => State["FormId"] = value;
+    }
+
+    public string? InitialTableName
+    {
+        get => State.TryGetValue("InitialTableName", out var v) ? v as string : null;
+        set => State["InitialTableName"] = value;
+    }
+
+    public string? ReportId
+    {
+        get => State.TryGetValue("ReportId", out var v) ? v as string : null;
+        set => State["ReportId"] = value;
+    }
+
+    public string? InitialReportSourceKind
+    {
+        get => State.TryGetValue("InitialReportSourceKind", out var v) ? v as string : null;
+        set => State["InitialReportSourceKind"] = value;
+    }
+
+    public string? InitialReportSourceName
+    {
+        get => State.TryGetValue("InitialReportSourceName", out var v) ? v as string : null;
+        set => State["InitialReportSourceName"] = value;
+    }
+
+    public string? ReportDesignerStateJson
+    {
+        get => State.TryGetValue("ReportDesignerStateJson", out var v) ? v as string : null;
+        set => State["ReportDesignerStateJson"] = value;
     }
 }

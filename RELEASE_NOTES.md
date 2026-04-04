@@ -1,31 +1,31 @@
 # What's New
 
-## v2.7.0
+## v2.8.0
 
-### Foreign Key Constraints v1
+### Admin Forms Designer and Entry Runtime
 
-- Added single-column, column-level `REFERENCES` support with optional `ON DELETE CASCADE`.
-- Foreign keys are enforced immediately on `INSERT`, `UPDATE`, and parent-row `DELETE` paths, with internal child-side support indexes to keep parent checks bounded.
-- Added `ALTER TABLE ... DROP CONSTRAINT <name>` for foreign key removal without requiring a full child-table rebuild.
-- Added a first-class foreign-key retrofit migration workflow for older databases across `ICSharpDbClient`, HTTP, gRPC, CLI, and Admin so existing tables can be validated and rewritten with persisted FK metadata.
-- Added foreign-key metadata across SQL and client tooling, including `sys.foreign_keys`, richer `sys.objects`, CLI `.schema`, MCP schema inspection, and ADO.NET `GetSchema("ForeignKeys")`.
+- Added an admin-only forms module with a visual form designer, runtime form entry, formula evaluation, validation inference, and JSON-backed form definitions.
+- Integrated Forms into `CSharpDB.Admin` with sidebar navigation, designer/runtime tabs, table actions, and shared admin theming.
+- Added database-backed form persistence through the internal `__forms` metadata table, including schema-signature tracking and active-database reload behavior.
+- Added runtime usability improvements including paged record navigation, go-to-record by primary key, column-based search, manual child-table mapping, and checkbox/radio coercion for text and numeric boolean representations.
+- Added a dedicated `CSharpDB.Admin.Forms.Tests` suite covering repository behavior, schema adaptation, generator/validation rules, runtime record services, serialization, and admin tab wiring.
 
-## v2.6.0
+### Admin Reports Designer, Preview, and Print
 
-### Multilingual Collations and Ordered Text Indexes
+- Added an admin-only reports module with a banded report designer, preview/runtime rendering, grouping, sorting, totals, and report-only browser print/PDF output.
+- Integrated Reports into `CSharpDB.Admin` with sidebar/object-explorer navigation, report actions, and shared admin-shell wiring.
+- Added database-backed report persistence through `__reports` plus chunked `__report_definition_chunks` storage so larger layouts no longer depend on oversized single-row definitions.
+- Added report usability features including schema-signature drift warnings, auto-fit column layout, and support for table, view, and saved-query report sources.
+- Added a dedicated `CSharpDB.Admin.Reports.Tests` suite covering repository behavior, chunked-definition persistence, schema/source resolution, preview pagination/grouping, and layout helpers.
 
-- Expanded SQL and collection collation support with explicit `BINARY`, `NOCASE`, `NOCASE_AI`, and built-in `ICU:<locale>` options for comparisons, ordering, unique enforcement, and path indexes.
-- Added ordered SQL text index options and planning support, including collation-aware metadata, guardrails, and benchmark coverage for text-heavy index shapes.
-- Stabilized ordered-text overflow handling so large duplicate or prefix-heavy text indexes can spill safely instead of overloading a single index page.
+### Batch-First SQL Row Transport
 
-### Maintenance, Diagnostics, and Admin Hardening
+- The SQL executor now uses an internal batch-first row transport foundation across batch-capable scans, joins, projections, filters, limits, and generic aggregate paths.
+- Shared batch predicate and projection kernels reduce per-row overhead, preserve direct batch storage deeper into execution plans, and lay the groundwork for future vectorized execution work.
+- Batch evaluation and expression-compiler coverage was expanded and hardened for compact-row shapes, numeric-expression predicates, and distinct aggregate fast paths.
 
-- Hardened reindex rebuilds, WAL open failure cleanup, and advisory statistics freshness after reopen so maintenance and recovery paths behave more predictably after index or storage edge cases.
-- Improved the Admin experience for large datasets by reusing table-style pagination and filters in SQL and designer results, making welcome-page row counts on-demand, and clarifying storage-maintenance failures.
-- Tightened storage diagnostics and repair coverage around corrupt indexes, live-database inspection, and maintenance workflows.
+### Docs, Site, and Admin Updates
 
-### Reusable Benchmark Data and Release Validation
-
-- Added `tests/CSharpDB.DataGen`, a JSON-spec-driven data generator for relational, document, and time-series workloads with CSV, JSONL, and direct binary-load output modes.
-- Added focused release benchmark mode plus refreshed benchmark docs and baseline tooling so release validation is easier to reproduce on a clean machine.
-- Reorganized sample and tutorial project paths, refreshed NuGet search metadata, and updated docs and site content to match the current shipped surface.
+- Added new design notes for compiled live queries and materialized join read models.
+- Added blog and news pages to the website and refreshed roadmap content to reflect the current shipped surface.
+- Refactored Admin navigation and title-bar plumbing, including a shared database client holder, improved modal input support, and the integrated Forms/Reports shell wiring.

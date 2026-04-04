@@ -1,0 +1,713 @@
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Components.Designer
+@using CSharpDB.Admin.Forms.Contracts
+@inject ISchemaProvider SchemaProvider
+@implements IDisposable
+
+<div class="property-inspector">
+    <div class="pi-header">Properties</div>
+
+    @if (_selected is null)
+    {
+        <div class="pi-empty">
+            @if (State.SelectedIds.Count > 1)
+            {
+                <p>@State.SelectedIds.Count controls selected</p>
+            }
+            else
+            {
+                <p>Select a control to edit its properties</p>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="pi-section">
+            <div class="pi-section-label">Control</div>
+            <div class="pi-field">
+                <label>Type</label>
+                <select value="@_selected.ControlType" @onchange="OnTypeChanged">
+                    <option value="label">Label</option>
+                    <option value="text">Text</option>
+                    <option value="textarea">Textarea</option>
+                    <option value="number">Number</option>
+                    <option value="date">Date</option>
+                    <option value="checkbox">Checkbox</option>
+                    <option value="radio">Radio</option>
+                    <option value="select">Select</option>
+                    <option value="lookup">Lookup</option>
+                    <option value="computed">Computed</option>
+                    <option value="datagrid">DataGrid</option>
+                    <option value="childtabs">Child Tabs</option>
+                </select>
+            </div>
+            <div class="pi-field">
+                <label>ID</label>
+                <input type="text" value="@_selected.ControlId" readonly class="pi-readonly" />
+            </div>
+        </div>
+
+        <div class="pi-section">
+            <div class="pi-section-label">Position &amp; Size</div>
+            <div class="pi-field-row">
+                <div class="pi-field half">
+                    <label>X</label>
+                    <input type="number" value="@_selected.Rect.X" step="@State.GridSize"
+                           @onchange="@(e => OnRectChanged(e, RectPart.X))" />
+                </div>
+                <div class="pi-field half">
+                    <label>Y</label>
+                    <input type="number" value="@_selected.Rect.Y" step="@State.GridSize"
+                           @onchange="@(e => OnRectChanged(e, RectPart.Y))" />
+                </div>
+            </div>
+            <div class="pi-field-row">
+                <div class="pi-field half">
+                    <label>W</label>
+                    <input type="number" value="@_selected.Rect.Width" step="@State.GridSize" min="24"
+                           @onchange="@(e => OnRectChanged(e, RectPart.W))" />
+                </div>
+                <div class="pi-field half">
+                    <label>H</label>
+                    <input type="number" value="@_selected.Rect.Height" step="@State.GridSize" min="16"
+                           @onchange="@(e => OnRectChanged(e, RectPart.H))" />
+                </div>
+            </div>
+        </div>
+
+        @if (_selected.ControlType is "label" or "checkbox")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Text</div>
+                <div class="pi-field">
+                    <label>Text</label>
+                    <input type="text" value="@GetProp(PropText, string.Empty)"
+                           @onchange="@(e => OnPropChanged(PropText, e.Value))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType is "text" or "textarea" or "number" or "select" or "lookup")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Input</div>
+                <div class="pi-field">
+                    <label>Placeholder</label>
+                    <input type="text" value="@GetProp(PropPlaceholder, string.Empty)"
+                           @onchange="@(e => OnPropChanged(PropPlaceholder, e.Value))" />
+                </div>
+                @if (_selected.ControlType == "text")
+                {
+                    <div class="pi-field">
+                        <label>Max Length</label>
+                        <input type="number" value="@GetProp(PropMaxLength, string.Empty)"
+                               @onchange="@(e => OnPropChanged(PropMaxLength, ParseLong(e.Value)))" />
+                    </div>
+                }
+                <div class="pi-field">
+                    <label>Read Only</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropReadOnly)"
+                           @onchange="@(e => OnPropChanged(PropReadOnly, e.Value))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.Binding is not null)
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Data Binding</div>
+                <div class="pi-field">
+                    <label>Field</label>
+                    @if (_sourceTableDef is not null)
+                    {
+                        <select value="@_selected.Binding.FieldName" @onchange="OnFieldNameChanged">
+                            <option value="">-- Select field --</option>
+                            @if (ShouldRenderMissingBindingFieldOption())
+                            {
+                                <option value="@_selected.Binding.FieldName">@($"{_selected.Binding.FieldName} (missing)")</option>
+                            }
+                            @foreach (var field in _sourceTableDef.Fields)
+                            {
+                                <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                            }
+                        </select>
+                    }
+                    else
+                    {
+                        <input type="text" value="@_selected.Binding.FieldName"
+                               @onchange="OnFieldNameChanged" />
+                    }
+                </div>
+                <div class="pi-field">
+                    <label>Mode</label>
+                    <select value="@_selected.Binding.Mode" @onchange="OnBindingModeChanged">
+                        <option value="TwoWay">Two Way</option>
+                        <option value="OneWay">One Way</option>
+                        <option value="OneWayToSource">One Way to Source</option>
+                    </select>
+                </div>
+                <div class="pi-field">
+                    <label>Tab Order</label>
+                    <input type="number" value="@GetProp(PropTabIndex, string.Empty)" min="0"
+                           @onchange="@(e => OnPropChanged(PropTabIndex, ParseLong(e.Value)))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType == "lookup")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Lookup Configuration</div>
+                <div class="pi-field">
+                    <label>Lookup Table</label>
+                    <select value="@GetProp(PropLookupTable, "")" @onchange="OnLookupTableChanged">
+                        <option value="">-- Select table --</option>
+                        @if (_availableTables is not null)
+                        {
+                            @foreach (var t in _availableTables)
+                            {
+                                <option value="@t">@t</option>
+                            }
+                        }
+                    </select>
+                </div>
+                @if (_lookupTableDef is not null)
+                {
+                    <div class="pi-field">
+                        <label>Display Field</label>
+                        <select value="@GetProp(PropDisplayField, "")" @onchange="@(e => OnPropChanged(PropDisplayField, e.Value))">
+                            <option value="">-- Select field --</option>
+                            @foreach (var f in _lookupTableDef.Fields)
+                            {
+                                <option value="@f.Name">@(f.DisplayName ?? f.Name)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="pi-field">
+                        <label>Value Field</label>
+                        <select value="@GetProp(PropValueField, "")" @onchange="@(e => OnPropChanged(PropValueField, e.Value))">
+                            <option value="">-- Select field --</option>
+                            @foreach (var f in _lookupTableDef.Fields)
+                            {
+                                <option value="@f.Name">@(f.DisplayName ?? f.Name)</option>
+                            }
+                        </select>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_selected.ControlType == "computed")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Formula Configuration</div>
+                <div class="pi-field">
+                    <label>Formula</label>
+                    <input type="text" value="@GetProp(PropFormula, string.Empty)"
+                           placeholder="=Quantity * UnitPrice"
+                           @onchange="@(e => OnPropChanged(PropFormula, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Format</label>
+                    <input type="text" value="@GetProp(PropFormat, string.Empty)"
+                           placeholder="N2, C, P, etc."
+                           @onchange="@(e => OnPropChanged(PropFormat, e.Value))" />
+                </div>
+                <div style="font-size: 10px; color: #999; margin-top: 4px;">
+                    Field: <code>=A * B + C</code><br/>
+                    Aggregate: <code>=SUM(Table.Field)</code>
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType == "datagrid")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Child Table</div>
+                <div class="pi-field">
+                    <label>Table</label>
+                    <select value="@GetProp(PropChildTable, "")" @onchange="OnChildTableChanged">
+                        <option value="">-- Select child table --</option>
+                        @if (_availableTables is not null)
+                        {
+                            @foreach (var t in _availableTables)
+                            {
+                                <option value="@t">@t</option>
+                            }
+                        }
+                    </select>
+                </div>
+
+                @if (_childTableDef is not null)
+                {
+                    var fks = _childTableDef.ForeignKeys
+                        .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    @if (fks.Count > 0)
+                    {
+                        <div class="pi-field">
+                            <label>Foreign Key</label>
+                            <select value="@GetProp(PropForeignKeyName, "")" @onchange="OnForeignKeyChanged">
+                                <option value="">-- Manual mapping --</option>
+                                @foreach (var fk in fks)
+                                {
+                                    var fkLabel = $"{fk.Name} ({string.Join(", ", fk.LocalFields)})";
+                                    <option value="@fk.Name">@fkLabel</option>
+                                }
+                            </select>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="pi-field">
+                            <span style="color: #d32f2f; font-size: 11px;">No FK referencing @State.TableName. Use manual mapping below.</span>
+                        </div>
+                    }
+
+                    <div class="pi-field">
+                        <label>Child Field</label>
+                        <select value="@GetProp(PropForeignKeyField, "")" @onchange="OnManualChildFieldChanged">
+                            <option value="">-- Select child field --</option>
+                            @foreach (var field in _childTableDef.Fields)
+                            {
+                                <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="pi-field">
+                        <label>Parent Field</label>
+                        <select value="@GetProp(PropParentKeyField, "")" @onchange="OnManualParentFieldChanged" disabled="@(_sourceTableDef is null)">
+                            <option value="">-- Select parent field --</option>
+                            @if (_sourceTableDef is not null)
+                            {
+                                @foreach (var field in _sourceTableDef.Fields)
+                                {
+                                    <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                                }
+                            }
+                        </select>
+                    </div>
+
+                    <div class="pi-field">
+                        <label>Visible Columns</label>
+                        @foreach (var field in _childTableDef.Fields)
+                        {
+                            var fn = field.Name;
+                            var isVisible = GetVisibleColumns().Contains(fn);
+                            <label class="pi-column-check">
+                                <input type="checkbox" checked="@isVisible"
+                                       @onchange="@(e => ToggleColumn(fn, e))" />
+                                @(field.DisplayName ?? field.Name)
+                            </label>
+                        }
+                    </div>
+                }
+
+                <div class="pi-field">
+                    <label>Allow Add</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropAllowAdd)"
+                           @onchange="@(e => OnPropChanged(PropAllowAdd, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Allow Edit</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropAllowEdit)"
+                           @onchange="@(e => OnPropChanged(PropAllowEdit, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Allow Delete</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropAllowDelete)"
+                           @onchange="@(e => OnPropChanged(PropAllowDelete, e.Value))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType == "childtabs")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Tab Configuration</div>
+                <TabConfigEditor Tabs="_currentTabs"
+                                 TabsChanged="OnTabsChanged"
+                                 ParentTableName="@(State.TableName ?? "")"
+                                 AvailableTables="_availableTables"
+                                 NestingLevel="0" />
+            </div>
+        }
+
+        <div class="pi-section">
+            <div class="pi-section-label">Arrange</div>
+            <div class="pi-field-row">
+                <button class="pi-btn" @onclick="@(() => State.BringToFront(_selected.ControlId))">Bring Front</button>
+                <button class="pi-btn" @onclick="@(() => State.SendToBack(_selected.ControlId))">Send Back</button>
+            </div>
+            <div class="pi-field-row">
+                <button class="pi-btn" @onclick="@(() => State.MoveUp(_selected.ControlId))">Move Up</button>
+                <button class="pi-btn" @onclick="@(() => State.MoveDown(_selected.ControlId))">Move Down</button>
+            </div>
+        </div>
+
+        @if (State.ActiveBreakpoint != "desktop")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Breakpoint: @State.ActiveBreakpoint</div>
+                <div class="pi-field">
+                    <label>Visible at this breakpoint</label>
+                    <input type="checkbox"
+                           checked="@State.IsVisibleAtBreakpoint(_selected)"
+                           @onchange="@(e => OnVisibilityChanged(e))" />
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [CascadingParameter] public DesignerState State { get; set; } = default!;
+
+    private ControlDefinition? _selected;
+
+    // Property name constants to avoid string literals in Razor attributes
+    private const string PropText = "text";
+    private const string PropPlaceholder = "placeholder";
+    private const string PropMaxLength = "maxLength";
+    private const string PropReadOnly = "readOnly";
+    private const string PropTabIndex = "tabIndex";
+    private const string PropChildTable = "childTable";
+    private const string PropForeignKeyName = "foreignKeyName";
+    private const string PropForeignKeyField = "foreignKeyField";
+    private const string PropParentKeyField = "parentKeyField";
+    private const string PropVisibleColumns = "visibleColumns";
+    private const string PropAllowAdd = "allowAdd";
+    private const string PropAllowEdit = "allowEdit";
+    private const string PropAllowDelete = "allowDelete";
+    private const string PropLookupTable = "lookupTable";
+    private const string PropDisplayField = "displayField";
+    private const string PropValueField = "valueField";
+    private const string PropFormula = "formula";
+    private const string PropFormat = "format";
+
+    private enum RectPart { X, Y, W, H }
+
+    // DataGrid configuration state
+    private IReadOnlyList<string>? _availableTables;
+    private string? _loadedSourceTableName;
+    private FormTableDefinition? _sourceTableDef;
+    private FormTableDefinition? _childTableDef;
+
+    // Lookup configuration state
+    private FormTableDefinition? _lookupTableDef;
+
+    // ChildTabs configuration state
+    private List<ChildTabConfig> _currentTabs = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.OnChange += OnStateChanged;
+        _availableTables = await SchemaProvider.ListTableNamesAsync();
+        await RefreshSourceTableDefinitionAsync();
+    }
+
+    public void Dispose() => State.OnChange -= OnStateChanged;
+
+    private async void OnStateChanged()
+    {
+        var prev = _selected;
+        _selected = State.GetSelectedControl();
+        await RefreshSourceTableDefinitionAsync();
+
+        // Load child table schema when a datagrid is selected
+        if (_selected?.ControlType == "datagrid" && _selected != prev)
+        {
+            var childTable = GetProp(PropChildTable, "");
+            if (!string.IsNullOrEmpty(childTable))
+            {
+                _childTableDef = await SchemaProvider.GetTableDefinitionAsync(childTable);
+                await InvokeAsync(StateHasChanged);
+            }
+            else
+            {
+                _childTableDef = null;
+            }
+        }
+
+        // Load tab config when a childtabs control is selected
+        if (_selected?.ControlType == "childtabs" && _selected != prev)
+        {
+            var tabsVal = _selected.Props.Values.TryGetValue("tabs", out var tv) ? tv : null;
+            _currentTabs = ChildTabConfigMapper.FromPropertyBag(tabsVal);
+            await InvokeAsync(StateHasChanged);
+        }
+
+        // Load lookup table def when a lookup control is selected
+        if (_selected?.ControlType == "lookup" && _selected != prev)
+        {
+            var lookupTable = GetProp(PropLookupTable, "");
+            if (!string.IsNullOrEmpty(lookupTable))
+            {
+                _lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(lookupTable);
+                await InvokeAsync(StateHasChanged);
+            }
+            else
+            {
+                _lookupTableDef = null;
+            }
+        }
+
+        if (_selected?.ControlType != "datagrid")
+            _childTableDef = null;
+
+        if (_selected?.ControlType != "childtabs")
+            _currentTabs = [];
+
+        if (_selected?.ControlType != "lookup")
+            _lookupTableDef = null;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private string GetProp(string key, string fallback)
+    {
+        if (_selected?.Props.Values.TryGetValue(key, out var val) == true && val is not null)
+            return val.ToString() ?? fallback;
+        return fallback;
+    }
+
+    private bool GetBoolProp(string key)
+    {
+        if (_selected?.Props.Values.TryGetValue(key, out var val) == true && val is bool b)
+            return b;
+        return false;
+    }
+
+    private void OnPropChanged(string key, object? value)
+    {
+        if (_selected is null) return;
+        State.UpdateControlProp(_selected.ControlId, key, value);
+    }
+
+    private void OnTypeChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string newType) return;
+        State.UpdateControlType(_selected.ControlId, newType);
+    }
+
+    private void OnRectChanged(ChangeEventArgs e, RectPart part)
+    {
+        if (_selected is null) return;
+        if (!double.TryParse(e.Value?.ToString(), out var v)) return;
+        v = State.Snap(v);
+
+        State.PushUndo();
+        var r = _selected.Rect;
+        var newRect = part switch
+        {
+            RectPart.X => r with { X = Math.Max(0, v) },
+            RectPart.Y => r with { Y = Math.Max(0, v) },
+            RectPart.W => r with { Width = Math.Max(24, v) },
+            RectPart.H => r with { Height = Math.Max(16, v) },
+            _ => r
+        };
+        State.ResizeControl(_selected.ControlId, newRect);
+    }
+
+    private void OnFieldNameChanged(ChangeEventArgs e)
+    {
+        if (_selected?.Binding is null || e.Value is not string fieldName) return;
+        State.UpdateControlBinding(_selected.ControlId,
+            _selected.Binding with { FieldName = fieldName });
+    }
+
+    private void OnBindingModeChanged(ChangeEventArgs e)
+    {
+        if (_selected?.Binding is null || e.Value is not string mode) return;
+        State.UpdateControlBinding(_selected.ControlId,
+            _selected.Binding with { Mode = mode });
+    }
+
+    private void OnVisibilityChanged(ChangeEventArgs e)
+    {
+        if (_selected is null) return;
+        var visible = e.Value is bool b && b;
+        State.SetBreakpointVisibility(_selected.ControlId, visible);
+    }
+
+    private static object? ParseLong(object? value)
+    {
+        if (value is null) return null;
+        var s = value.ToString();
+        if (string.IsNullOrEmpty(s)) return null;
+        return long.TryParse(s, out var l) ? l : null;
+    }
+
+    // ===== DataGrid Configuration Methods =====
+
+    private async Task OnChildTableChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string tableName) return;
+
+        OnPropChanged(PropChildTable, tableName);
+        OnPropChanged(PropForeignKeyField, "");
+        OnPropChanged(PropParentKeyField, "");
+        OnPropChanged(PropForeignKeyName, "");
+        OnPropChanged(PropVisibleColumns, Array.Empty<object?>());
+
+        if (!string.IsNullOrEmpty(tableName))
+        {
+            _childTableDef = await SchemaProvider.GetTableDefinitionAsync(tableName);
+
+            if (_childTableDef is not null)
+            {
+                // Auto-select FK if exactly one references the parent table
+                var matchingFks = _childTableDef.ForeignKeys
+                    .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (matchingFks.Count == 1)
+                {
+                    AutoSelectForeignKey(matchingFks[0]);
+                }
+
+                // Auto-select all non-PK columns as visible
+                var allCols = _childTableDef.Fields
+                    .Where(f => !_childTableDef.PrimaryKey.Contains(f.Name))
+                    .Select(f => (object?)f.Name)
+                    .ToArray();
+                OnPropChanged(PropVisibleColumns, allCols);
+            }
+        }
+        else
+        {
+            _childTableDef = null;
+        }
+    }
+
+    private void AutoSelectForeignKey(FormForeignKeyDefinition fk)
+    {
+        OnPropChanged(PropForeignKeyName, fk.Name);
+        OnPropChanged(PropForeignKeyField, fk.LocalFields[0]);
+        OnPropChanged(PropParentKeyField, fk.ReferencedFields[0]);
+    }
+
+    private void OnForeignKeyChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || _childTableDef is null || e.Value is not string fkName) return;
+        if (string.IsNullOrWhiteSpace(fkName))
+        {
+            OnPropChanged(PropForeignKeyName, "");
+            return;
+        }
+
+        var fk = _childTableDef.ForeignKeys.FirstOrDefault(f => f.Name == fkName);
+        if (fk is not null)
+        {
+            AutoSelectForeignKey(fk);
+        }
+    }
+
+    private void OnManualChildFieldChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string fieldName) return;
+        OnPropChanged(PropForeignKeyName, "");
+        OnPropChanged(PropForeignKeyField, fieldName);
+    }
+
+    private void OnManualParentFieldChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string fieldName) return;
+        OnPropChanged(PropForeignKeyName, "");
+        OnPropChanged(PropParentKeyField, fieldName);
+    }
+
+    private HashSet<string> GetVisibleColumns()
+    {
+        if (_selected?.Props.Values.TryGetValue(PropVisibleColumns, out var val) == true)
+        {
+            if (val is object?[] arr)
+                return arr.Where(x => x is not null).Select(x => x!.ToString()!).ToHashSet();
+            if (val is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.Array)
+                return je.EnumerateArray().Select(el => el.GetString() ?? "").Where(s => s.Length > 0).ToHashSet();
+        }
+        return [];
+    }
+
+    private void ToggleColumn(string fieldName, ChangeEventArgs e)
+    {
+        var current = GetVisibleColumns();
+        if (e.Value is bool b && b)
+            current.Add(fieldName);
+        else
+            current.Remove(fieldName);
+        OnPropChanged(PropVisibleColumns, current.Select(x => (object?)x).ToArray());
+    }
+
+    // ===== Lookup Configuration Methods =====
+
+    private async Task OnLookupTableChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string tableName) return;
+
+        OnPropChanged(PropLookupTable, tableName);
+        OnPropChanged(PropDisplayField, "");
+        OnPropChanged(PropValueField, "");
+
+        if (!string.IsNullOrEmpty(tableName))
+        {
+            _lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(tableName);
+
+            if (_lookupTableDef is not null)
+            {
+                // Auto-select PK as value field
+                if (_lookupTableDef.PrimaryKey.Count > 0)
+                    OnPropChanged(PropValueField, _lookupTableDef.PrimaryKey[0]);
+
+                // Auto-select first non-PK string field as display field
+                var displayField = _lookupTableDef.Fields
+                    .FirstOrDefault(f => f.DataType == FieldDataType.String
+                                         && !_lookupTableDef.PrimaryKey.Contains(f.Name));
+                if (displayField is not null)
+                    OnPropChanged(PropDisplayField, displayField.Name);
+            }
+        }
+        else
+        {
+            _lookupTableDef = null;
+        }
+    }
+
+    // ===== ChildTabs Configuration Methods =====
+
+    private void OnTabsChanged(List<ChildTabConfig> tabs)
+    {
+        _currentTabs = tabs;
+        OnPropChanged("tabs", ChildTabConfigMapper.ToPropertyBag(tabs));
+    }
+
+    private async Task<FormTableDefinition?> LoadTableDefinitionAsync(string? tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+            return null;
+
+        return await SchemaProvider.GetTableDefinitionAsync(tableName);
+    }
+
+    private async Task RefreshSourceTableDefinitionAsync()
+    {
+        if (string.Equals(_loadedSourceTableName, State.TableName, StringComparison.Ordinal))
+            return;
+
+        _loadedSourceTableName = State.TableName;
+        _sourceTableDef = await LoadTableDefinitionAsync(State.TableName);
+    }
+
+    private bool ShouldRenderMissingBindingFieldOption()
+        => _selected?.Binding?.FieldName is { Length: > 0 } fieldName
+            && _sourceTableDef is not null
+            && !_sourceTableDef.Fields.Any(field => string.Equals(field.Name, fieldName, StringComparison.OrdinalIgnoreCase));
+
+    private static string GetFieldOptionLabel(FormFieldDefinition field)
+        => string.Equals(field.DisplayName, field.Name, StringComparison.Ordinal)
+            ? field.Name
+            : string.IsNullOrWhiteSpace(field.DisplayName)
+                ? field.Name
+                : $"{field.DisplayName} ({field.Name})";
+}

@@ -1,0 +1,1300 @@
+@using System.Globalization
+@using CSharpDB.Admin.Forms.Contracts
+@implements IDisposable
+@inject IFormRepository FormRepository
+@inject IFormRecordService RecordService
+@inject ISchemaProvider SchemaProvider
+@inject IValidationInferenceService ValidationService
+@inject IJSRuntime JS
+
+<div class="data-entry-layout" @ref="_layoutRef">
+    <div class="de-toolbar">
+        <span class="de-toolbar-title">@(_form?.Name ?? "Loading...")</span>
+        @if (IsReadOnlySource)
+        {
+            <span class="de-toolbar-label">Read only</span>
+        }
+        <div class="de-toolbar-sep"></div>
+        <button class="de-btn de-btn-primary" @onclick="NewRecord" disabled="@(!SupportsWriteOperations || _saving || _recordsLoading)" title="New record">+ New</button>
+        <button class="de-btn" @onclick="SaveRecord" disabled="@(!SupportsWriteOperations || !_dirty || _saving)" title="Save record">
+            @(_saving ? "Saving..." : "Save")
+        </button>
+        <button class="de-btn de-btn-danger" @onclick="DeleteRecord" disabled="@(!SupportsWriteOperations || !HasPersistedCurrentRecord)" title="Delete record">Delete</button>
+        <div class="de-toolbar-sep"></div>
+        <button class="de-btn" @onclick="UndoRecord" disabled="@(_undoStack.Count == 0)" title="Undo (Ctrl+Z)">Undo</button>
+        <button class="de-btn" @onclick="RedoRecord" disabled="@(_redoStack.Count == 0)" title="Redo (Ctrl+Y)">Redo</button>
+        <div class="de-toolbar-sep"></div>
+        <button class="de-btn" @onclick="PrevRecord" disabled="@(!CanGoPreviousRecord || _recordsLoading)" title="Previous">&#x25C0;</button>
+        <span class="de-nav-info">@GetNavigationStatusText()</span>
+        <button class="de-btn" @onclick="NextRecord" disabled="@(!CanGoNextRecord || _recordsLoading)" title="Next">&#x25B6;</button>
+        @if (_table is not null && SupportsPrimaryKeyNavigation)
+        {
+            <div class="de-toolbar-sep"></div>
+            <div class="de-toolbar-group">
+                <span class="de-toolbar-label">Go to @GetPrimaryKeyLabel()</span>
+                <input type="text"
+                       class="de-toolbar-input"
+                       placeholder="@GetGoToRecordPlaceholder()"
+                       value="@_goToRecordValue"
+                       @oninput="OnGoToRecordInput"
+                       disabled="@_recordsLoading" />
+                <button class="de-btn"
+                        @onclick="GoToRecordAsync"
+                        disabled="@(_recordsLoading || string.IsNullOrWhiteSpace(_goToRecordValue))">
+                    Go
+                </button>
+            </div>
+        }
+        <div style="flex: 1;"></div>
+        @if (_validationErrors?.Count > 0)
+        {
+            <span class="de-error-count">@_validationErrors.Count error(s)</span>
+        }
+        <button class="de-btn" @onclick="PrintRecord" title="Print current record">&#x1F5B6; Print</button>
+        <button class="de-btn" @onclick="OpenDesigner" title="Open in designer">Edit Form</button>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="de-error">
+            @_error
+            <button class="de-error-dismiss" @onclick="@(() => _error = null)">x</button>
+        </div>
+    }
+
+    <div class="de-print-header">
+        <h2>@(_form?.Name ?? "Form")</h2>
+        <p>@(_form?.TableName ?? "") - @GetPrintStatusText()</p>
+    </div>
+
+    @if (_form is null)
+    {
+        <div class="de-loading">Loading form...</div>
+    }
+    else
+    {
+        <div class="de-form-area">
+            <FormRenderer @key="_currentRecord"
+                          Form="_form"
+                          TableDefinition="_table"
+                          Record="_currentRecord"
+                          OnFieldChanged="OnFieldChanged"
+                          BeforeFieldChanged="BeforeFieldChanged"
+                          Choices="_choices"
+                          ValidationErrors="_validationErrors"
+                          ChildFormTableDefinitions="_childTableDefs"
+                          OnChildRowsChanged="OnChildRowsChanged" />
+        </div>
+    }
+
+    @if (_form is not null)
+    {
+        <div class="de-record-resize"
+             title="Resize records pane"
+             @onmousedown="StartRecordPaneResize"
+             @onmousedown:preventDefault></div>
+        <div class="de-record-list" @ref="_recordListRef">
+            <div class="de-record-list-header">@GetRecordListHeaderText()</div>
+            <div class="de-search-box">
+                <select class="de-search-select"
+                        value="@_searchColumnName"
+                        @onchange="OnSearchColumnChanged"
+                        disabled="@(_recordsLoading || GetSearchableFields().Count == 0)">
+                    @foreach (var field in GetSearchableFields())
+                    {
+                        <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                    }
+                </select>
+                <input type="text"
+                       class="de-search-input"
+                       placeholder="@GetSearchInputPlaceholder()"
+                       value="@_searchValue"
+                       @oninput="OnSearchValueInput"
+                       disabled="@(_recordsLoading || GetSearchableFields().Count == 0)" />
+                <div class="de-search-actions">
+                    <button class="de-btn"
+                            @onclick="ApplySearchAsync"
+                            disabled="@(_recordsLoading || !CanApplySearch)">
+                        Search
+                    </button>
+                    <button class="de-btn"
+                            @onclick="ClearSearchAsync"
+                            disabled="@(_recordsLoading || !HasAnySearchInput)">
+                        Clear
+                    </button>
+                </div>
+                @if (HasActiveSearch)
+                {
+                    <div class="de-search-status">Searching @GetSearchStatusFieldLabel() for "@_activeSearchValue"</div>
+                }
+            </div>
+            <div class="de-record-list-body">
+                @if (_recordsLoading)
+                {
+                    <div class="de-search-empty">Loading records...</div>
+                }
+                else
+                {
+                    if (_records.Count == 0)
+                    {
+                        <div class="de-search-empty">@GetRecordListEmptyMessage()</div>
+                    }
+
+                    @for (int index = 0; index < _records.Count; index++)
+                    {
+                        int recordIndex = index;
+                        var record = _records[index];
+                        <div class="@($"de-record-row {(recordIndex == _recordPageIndex && !_isNew ? "active" : "")}")"
+                             @onclick="@(() => SelectRecord(recordIndex))">
+                            <span class="de-record-idx">@GetVisibleRecordIndexLabel(recordIndex)</span>
+                            <span class="de-record-summary">@GetRecordSummary(record)</span>
+                        </div>
+                    }
+                }
+            </div>
+            @if (_isFocusedNavigation)
+            {
+                <div class="pagination-bar de-record-pagination">
+                    <div class="page-info">Focused</div>
+                    <button class="de-btn" @onclick="ReturnToBrowseAsync" disabled="@_recordsLoading">Return to browse</button>
+                </div>
+            }
+            else if (_totalRecords > 0)
+            {
+                <div class="pagination-bar de-record-pagination">
+                    <div class="page-size-select">
+                        <select value="@_pageSize" @onchange="OnPageSizeChanged" disabled="@_recordsLoading">
+                            <option value="10">10 rows</option>
+                            <option value="25">25 rows</option>
+                            <option value="50">50 rows</option>
+                            <option value="100">100 rows</option>
+                        </select>
+                    </div>
+                    <div class="page-controls">
+                        <button class="page-btn" disabled="@(_page <= 1 || _recordsLoading)" @onclick="() => GoToPage(1)">&laquo;</button>
+                        <button class="page-btn" disabled="@(_page <= 1 || _recordsLoading)" @onclick="() => GoToPage(_page - 1)">&lsaquo;</button>
+                        <span class="page-info">Page @_page of @TotalPages</span>
+                        <button class="page-btn" disabled="@(_page >= TotalPages || _recordsLoading)" @onclick="() => GoToPage(_page + 1)">&rsaquo;</button>
+                        <button class="page-btn" disabled="@(_page >= TotalPages || _recordsLoading)" @onclick="() => GoToPage(TotalPages)">&raquo;</button>
+                    </div>
+                    <div class="row-count">@_totalRecords rows</div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string FormId { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> OnOpenDesigner { get; set; }
+
+    private FormDefinition? _form;
+    private FormTableDefinition? _table;
+    private List<Dictionary<string, object?>> _records = [];
+    private Dictionary<string, object?> _currentRecord = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<string, IReadOnlyList<EnumChoice>>? _choices;
+    private int _recordPageIndex = -1;
+    private int _page = 1;
+    private int _pageSize = 25;
+    private int _totalRecords;
+    private bool _isFocusedNavigation;
+    private bool _hasFocusedPreviousRecords;
+    private bool _hasFocusedNextRecords;
+    private bool _isNew = true;
+    private bool _dirty;
+    private bool _saving;
+    private bool _recordsLoading;
+    private string? _error;
+    private string _goToRecordValue = string.Empty;
+    private string _searchColumnName = string.Empty;
+    private string _searchValue = string.Empty;
+    private string? _activeSearchColumnName;
+    private string? _activeSearchValue;
+    private readonly Stack<Dictionary<string, object?>> _undoStack = new();
+    private readonly Stack<Dictionary<string, object?>> _redoStack = new();
+    private Dictionary<string, string>? _validationErrors;
+    private readonly Dictionary<string, FormTableDefinition> _childTableDefs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<ControlDefinition> _computedControls = [];
+    private readonly HashSet<string> _computedFieldNames = new(StringComparer.OrdinalIgnoreCase);
+    private string? _loadedFormId;
+    private ElementReference _layoutRef;
+    private ElementReference _recordListRef;
+
+    private const int RecordPaneMinWidth = 320;
+    private const int RecordPaneMaxWidth = 720;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
+    private int CurrentRecordOrdinal => _isNew || _recordPageIndex < 0 ? 0 : ((_page - 1) * _pageSize) + _recordPageIndex + 1;
+    private bool HasActiveSearch => !string.IsNullOrWhiteSpace(_activeSearchColumnName) && !string.IsNullOrWhiteSpace(_activeSearchValue);
+    private bool HasAnySearchInput => HasActiveSearch || !string.IsNullOrWhiteSpace(_searchValue);
+    private bool CanApplySearch => !string.IsNullOrWhiteSpace(_searchColumnName) && !string.IsNullOrWhiteSpace(_searchValue);
+    private bool SupportsPrimaryKeyNavigation => _table?.HasSinglePrimaryKey == true;
+    private bool SupportsWriteOperations => _table?.SupportsWriteOperations == true && SupportsPrimaryKeyNavigation;
+    private bool IsReadOnlySource => _table is not null && !SupportsWriteOperations;
+    private bool HasPersistedCurrentRecord => !_isNew && TryGetPrimaryKeyValue(_currentRecord, out _);
+    private bool CanGoPreviousRecord => _isFocusedNavigation
+        ? !_isNew && (_recordPageIndex > 0 || _hasFocusedPreviousRecords)
+        : (_isNew ? _totalRecords > 0 : CurrentRecordOrdinal > 1);
+    private bool CanGoNextRecord => _isFocusedNavigation
+        ? !_isNew && _recordPageIndex >= 0 && (_recordPageIndex < _records.Count - 1 || _hasFocusedNextRecords)
+        : !_isNew && CurrentRecordOrdinal < _totalRecords;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.IsNullOrWhiteSpace(FormId) || string.Equals(_loadedFormId, FormId, StringComparison.Ordinal))
+            return;
+
+        _loadedFormId = FormId;
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("resizeInterop.initFormEntryPane", _layoutRef);
+        }
+        catch
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+    }
+
+    private async Task StartRecordPaneResize(MouseEventArgs e)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "resizeInterop.startFormEntryResize",
+                new { clientX = e.ClientX },
+                _layoutRef,
+                _recordListRef,
+                RecordPaneMinWidth,
+                RecordPaneMaxWidth);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        _validationErrors = null;
+        _childTableDefs.Clear();
+        _computedControls.Clear();
+        _computedFieldNames.Clear();
+
+        try
+        {
+            _form = await FormRepository.GetAsync(FormId);
+            if (_form is null)
+            {
+                _error = $"Form '{FormId}' not found.";
+                return;
+            }
+
+            _table = await SchemaProvider.GetTableDefinitionAsync(_form.TableName);
+            if (_table is null)
+            {
+                _error = $"Source '{_form.TableName}' was not found.";
+                return;
+            }
+
+            _choices = await LoadChoicesAsync(_form, _table);
+            await LoadChildTableDefinitionsAsync(_form);
+            CacheComputedControls(_form);
+
+            InitializeSearchState();
+            _page = 1;
+            await LoadRecordPageAsync(_page);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load form entry: {ex.Message}";
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<EnumChoice>>> LoadChoicesAsync(FormDefinition form, FormTableDefinition table)
+    {
+        var choices = new Dictionary<string, IReadOnlyList<EnumChoice>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var field in table.Fields)
+        {
+            if (field.Choices is { Count: > 0 })
+                choices[field.Name] = field.Choices;
+        }
+
+        foreach (var control in form.Controls.Where(control => control.ControlType == "lookup"))
+        {
+            string? bindingField = control.Binding?.FieldName;
+            string? lookupTableName = control.Props.Values.TryGetValue("lookupTable", out var lookupTable) ? lookupTable?.ToString() : null;
+            string? displayField = control.Props.Values.TryGetValue("displayField", out var display) ? display?.ToString() : null;
+            string? valueField = control.Props.Values.TryGetValue("valueField", out var value) ? value?.ToString() : null;
+
+            if (string.IsNullOrWhiteSpace(bindingField) ||
+                string.IsNullOrWhiteSpace(lookupTableName) ||
+                string.IsNullOrWhiteSpace(displayField) ||
+                string.IsNullOrWhiteSpace(valueField))
+            {
+                continue;
+            }
+
+            FormTableDefinition? lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(lookupTableName);
+            if (lookupTableDef is null)
+                continue;
+
+            List<Dictionary<string, object?>> lookupRows = await RecordService.ListRecordsAsync(lookupTableDef);
+            var enumChoices = lookupRows
+                .Select(row => new EnumChoice(LookupField(row, valueField), LookupField(row, displayField)))
+                .Where(choice => !string.IsNullOrWhiteSpace(choice.Value))
+                .ToList();
+
+            choices[bindingField] = enumChoices;
+        }
+
+        return choices;
+    }
+
+    private async Task LoadChildTableDefinitionsAsync(FormDefinition form)
+    {
+        var childTableNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var control in form.Controls.Where(control => control.ControlType == "datagrid"))
+        {
+            if (control.Props.Values.TryGetValue("childTable", out var tableName) && tableName?.ToString() is { Length: > 0 } childTable)
+                childTableNames.Add(childTable);
+        }
+
+        foreach (var control in form.Controls.Where(control => control.ControlType == "childtabs"))
+        {
+            var tabsValue = control.Props.Values.TryGetValue("tabs", out var tabs) ? tabs : null;
+            ChildTabConfigMapper.CollectChildTableNames(ChildTabConfigMapper.FromPropertyBag(tabsValue), childTableNames);
+        }
+
+        foreach (var childTableName in childTableNames)
+        {
+            FormTableDefinition? childTable = await SchemaProvider.GetTableDefinitionAsync(childTableName);
+            if (childTable is not null)
+                _childTableDefs[childTableName] = childTable;
+        }
+    }
+
+    private void CacheComputedControls(FormDefinition form)
+    {
+        foreach (var control in form.Controls.Where(control => control.ControlType == "computed" && control.Binding?.FieldName is { Length: > 0 }))
+        {
+            _computedControls.Add(control);
+            _computedFieldNames.Add(control.Binding!.FieldName);
+        }
+    }
+
+    private void NewRecord()
+    {
+        if (!SupportsWriteOperations)
+            return;
+
+        ExitFocusedNavigation();
+        _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        _isNew = true;
+        _dirty = false;
+        _recordPageIndex = -1;
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _validationErrors = null;
+    }
+
+    private async Task SaveRecord()
+    {
+        if (_form is null || _table is null)
+            return;
+
+        if (!SupportsWriteOperations)
+        {
+            _error = "This form source is read-only. Create, update, and delete are disabled.";
+            return;
+        }
+
+        var errors = ValidationService.Evaluate(_form, _currentRecord);
+        if (errors.Count > 0)
+        {
+            _validationErrors = errors.ToDictionary(error => error.FieldName, error => error.Message, StringComparer.OrdinalIgnoreCase);
+            _error = $"Please fix {errors.Count} validation error(s) before saving.";
+            return;
+        }
+
+        _saving = true;
+        _error = null;
+
+        try
+        {
+            var recordToSave = CloneRecord(_currentRecord);
+            foreach (string computedField in _computedFieldNames)
+                recordToSave.Remove(computedField);
+
+            if (_isNew)
+            {
+                Dictionary<string, object?> created = await RecordService.CreateRecordAsync(_table, recordToSave);
+                _currentRecord = CloneRecord(created);
+                _isNew = false;
+                if (TryGetPrimaryKeyValue(created, out object? createdPk) && createdPk is not null)
+                {
+                    ClearSearchState(clearPendingValue: false);
+                    await LoadFocusedRecordWindowAsync(createdPk);
+                }
+                else
+                {
+                    await LoadRecordPageAsync(_page);
+                }
+            }
+            else if (TryGetPrimaryKeyValue(_currentRecord, out object? pkValue))
+            {
+                Dictionary<string, object?> updated = await RecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
+                UpdateVisibleCurrentRecord(updated);
+            }
+
+            _dirty = false;
+            _validationErrors = null;
+
+            if (_computedControls.Count > 0)
+                await EvaluateComputedFields();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteRecord()
+    {
+        if (_table is null || !TryGetPrimaryKeyValue(_currentRecord, out object? pkValue))
+            return;
+
+        if (!SupportsWriteOperations)
+        {
+            _error = "This form source is read-only. Create, update, and delete are disabled.";
+            return;
+        }
+
+        _error = null;
+
+        try
+        {
+            int preferredPageIndex = _recordPageIndex;
+            await RecordService.DeleteRecordAsync(_table, pkValue!);
+            await LoadRecordPageAsync(_page, preferredPageIndex: preferredPageIndex);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    private async Task SelectRecord(int index)
+    {
+        if (index < 0 || index >= _records.Count)
+            return;
+
+        _recordPageIndex = index;
+        _currentRecord = CloneRecord(_records[index]);
+        _isNew = false;
+        _dirty = false;
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _validationErrors = null;
+
+        if (_computedControls.Count > 0)
+            await EvaluateComputedFields();
+    }
+
+    private Task PrevRecord()
+    {
+        if (_isFocusedNavigation)
+            return MoveFocusedRecordAsync(previous: true);
+
+        if (_isNew)
+            return _totalRecords > 0 ? LoadRecordPageAsync(TotalPages, preferredPageIndex: int.MaxValue) : Task.CompletedTask;
+
+        if (_recordPageIndex > 0)
+            return SelectRecord(_recordPageIndex - 1);
+
+        return _page > 1
+            ? LoadRecordPageAsync(_page - 1, preferredPageIndex: int.MaxValue)
+            : Task.CompletedTask;
+    }
+
+    private Task NextRecord()
+    {
+        if (_isFocusedNavigation)
+            return MoveFocusedRecordAsync(previous: false);
+
+        if (_isNew)
+            return Task.CompletedTask;
+
+        if (_recordPageIndex < _records.Count - 1)
+            return SelectRecord(_recordPageIndex + 1);
+
+        return _page < TotalPages
+            ? LoadRecordPageAsync(_page + 1)
+            : Task.CompletedTask;
+    }
+
+    private void BeforeFieldChanged(string fieldName)
+    {
+        _undoStack.Push(CloneRecord(_currentRecord));
+        _redoStack.Clear();
+    }
+
+    private async Task OnFieldChanged(string fieldName)
+    {
+        _dirty = true;
+        _validationErrors?.Remove(fieldName);
+        if (_computedControls.Count > 0)
+            await EvaluateComputedFields();
+        StateHasChanged();
+    }
+
+    private void UndoRecord()
+    {
+        if (_undoStack.Count == 0)
+            return;
+
+        _redoStack.Push(CloneRecord(_currentRecord));
+        _currentRecord = _undoStack.Pop();
+        _dirty = _undoStack.Count > 0;
+        StateHasChanged();
+    }
+
+    private void RedoRecord()
+    {
+        if (_redoStack.Count == 0)
+            return;
+
+        _undoStack.Push(CloneRecord(_currentRecord));
+        _currentRecord = _redoStack.Pop();
+        _dirty = true;
+        StateHasChanged();
+    }
+
+    private async Task OpenDesigner()
+    {
+        if (!string.IsNullOrWhiteSpace(FormId) && OnOpenDesigner.HasDelegate)
+            await OnOpenDesigner.InvokeAsync(FormId);
+    }
+
+    private Task PrintRecord() => JS.InvokeVoidAsync("window.print").AsTask();
+
+    private void OnGoToRecordInput(ChangeEventArgs e) => _goToRecordValue = e.Value?.ToString() ?? string.Empty;
+
+    private void OnSearchColumnChanged(ChangeEventArgs e) => _searchColumnName = e.Value?.ToString() ?? string.Empty;
+
+    private void OnSearchValueInput(ChangeEventArgs e) => _searchValue = e.Value?.ToString() ?? string.Empty;
+
+    private async Task GoToRecordAsync()
+    {
+        if (_table is null)
+            return;
+
+        string requestedValue = _goToRecordValue.Trim();
+        if (string.IsNullOrWhiteSpace(requestedValue))
+            return;
+
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
+        if (primaryKeyField is null)
+        {
+            _error = "This form source does not expose a single primary key column.";
+            return;
+        }
+
+        if (!TryParseFieldValue(primaryKeyField, requestedValue, out object? parsedValue, out string? validationError))
+        {
+            _error = validationError;
+            return;
+        }
+
+        if (parsedValue is null)
+        {
+            _error = $"'{requestedValue}' is not a valid {GetPrimaryKeyLabel()} value.";
+            return;
+        }
+
+        ClearSearchState(clearPendingValue: true);
+        await NavigateToRecordAsync(parsedValue);
+    }
+
+    private async Task ApplySearchAsync()
+    {
+        if (_table is null)
+            return;
+
+        string requestedValue = _searchValue.Trim();
+        if (string.IsNullOrWhiteSpace(_searchColumnName) || string.IsNullOrWhiteSpace(requestedValue))
+        {
+            _error = "Select a column and enter a search value.";
+            return;
+        }
+
+        _activeSearchColumnName = _searchColumnName;
+        _activeSearchValue = requestedValue;
+        _searchValue = requestedValue;
+        _page = 1;
+        _error = null;
+
+        await LoadRecordPageAsync(1, preserveCurrentRecordWhenEmpty: _currentRecord.Count > 0 || _isNew);
+    }
+
+    private async Task ClearSearchAsync()
+    {
+        object? currentPk = null;
+        bool hasCurrentPk = TryGetPrimaryKeyValue(_currentRecord, out currentPk) && currentPk is not null;
+
+        ClearSearchState(clearPendingValue: true);
+        _error = null;
+
+        if (hasCurrentPk)
+        {
+            await NavigateToRecordAsync(currentPk!);
+            return;
+        }
+
+        await LoadRecordPageAsync(1);
+    }
+
+    private async Task OnPageSizeChanged(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out int newPageSize) || newPageSize <= 0 || newPageSize == _pageSize)
+            return;
+
+        _pageSize = newPageSize;
+        await LoadRecordPageAsync(1);
+    }
+
+    private Task GoToPage(int pageNumber)
+        => pageNumber == _page ? Task.CompletedTask : LoadRecordPageAsync(pageNumber);
+
+    private async Task LoadRecordPageAsync(int pageNumber, object? preferredPk = null, int? preferredPageIndex = null, bool preserveCurrentRecordWhenEmpty = false)
+    {
+        if (_table is null)
+            return;
+
+        _recordsLoading = true;
+        _error = null;
+        ExitFocusedNavigation();
+
+        try
+        {
+            FormRecordPage page = HasActiveSearch
+                ? await RecordService.SearchRecordPageAsync(_table, _activeSearchColumnName!, _activeSearchValue!, pageNumber, _pageSize)
+                : await RecordService.ListRecordPageAsync(_table, pageNumber, _pageSize);
+            _records = page.Records.Select(CloneRecord).ToList();
+            _page = page.PageNumber;
+            _pageSize = page.PageSize;
+            _totalRecords = page.TotalCount;
+
+            if (_records.Count == 0)
+            {
+                _recordPageIndex = -1;
+                _dirty = false;
+                _undoStack.Clear();
+                _redoStack.Clear();
+                _validationErrors = null;
+
+                if (preserveCurrentRecordWhenEmpty && (_currentRecord.Count > 0 || _isNew))
+                    return;
+
+                if (SupportsWriteOperations)
+                    NewRecord();
+                else
+                    ResetCurrentRecordForEmptyReadOnlySource();
+                return;
+            }
+
+            int selectedIndex = ResolveSelectedRecordIndex(preferredPk, preferredPageIndex);
+            _recordPageIndex = selectedIndex;
+            _currentRecord = CloneRecord(_records[selectedIndex]);
+            _isNew = false;
+            _dirty = false;
+            _undoStack.Clear();
+            _redoStack.Clear();
+            _validationErrors = null;
+
+            if (_computedControls.Count > 0)
+                await EvaluateComputedFields();
+        }
+        catch (Exception ex)
+        {
+            _records = [];
+            _totalRecords = 0;
+            _recordPageIndex = -1;
+            _error = $"Failed to load records: {ex.Message}";
+        }
+        finally
+        {
+            _recordsLoading = false;
+        }
+    }
+
+    private int ResolveSelectedRecordIndex(object? preferredPk, int? preferredPageIndex)
+    {
+        if (preferredPk is not null && _table is not null && _table.HasSinglePrimaryKey)
+        {
+            string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+            for (int i = 0; i < _records.Count; i++)
+            {
+                if (TryGetFieldValue(_records[i], pkColumn, out object? candidatePk) && AreValuesEqual(candidatePk, preferredPk))
+                    return i;
+            }
+        }
+
+        if (preferredPageIndex is int requestedIndex)
+            return Math.Clamp(requestedIndex, 0, _records.Count - 1);
+
+        return 0;
+    }
+
+    private async Task LoadFocusedRecordWindowAsync(object pkValue)
+    {
+        if (_table is null)
+            return;
+
+        _recordsLoading = true;
+        _error = null;
+
+        try
+        {
+            FormRecordWindow? window = await RecordService.GetRecordWindowAsync(_table, pkValue, _pageSize);
+            if (window is null || window.Records.Count == 0)
+            {
+                _error = $"{GetPrimaryKeyLabel()} '{pkValue}' was not found.";
+                return;
+            }
+
+            _records = window.Records.Select(CloneRecord).ToList();
+            _recordPageIndex = Math.Clamp(window.SelectedIndex, 0, _records.Count - 1);
+            _currentRecord = CloneRecord(_records[_recordPageIndex]);
+            _isFocusedNavigation = true;
+            _hasFocusedPreviousRecords = window.HasPreviousRecords;
+            _hasFocusedNextRecords = window.HasNextRecords;
+            _isNew = false;
+            _dirty = false;
+            _undoStack.Clear();
+            _redoStack.Clear();
+            _validationErrors = null;
+
+            if (_computedControls.Count > 0)
+                await EvaluateComputedFields();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load records: {ex.Message}";
+        }
+        finally
+        {
+            _recordsLoading = false;
+        }
+    }
+
+    private async Task MoveFocusedRecordAsync(bool previous)
+    {
+        if (_table is null || _isNew || !TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) || pkValue is null)
+            return;
+
+        if (previous)
+        {
+            if (_recordPageIndex > 0)
+            {
+                await SelectRecord(_recordPageIndex - 1);
+                return;
+            }
+        }
+        else if (_recordPageIndex >= 0 && _recordPageIndex < _records.Count - 1)
+        {
+            await SelectRecord(_recordPageIndex + 1);
+            return;
+        }
+
+        Dictionary<string, object?>? adjacent = await RecordService.GetAdjacentRecordAsync(_table, pkValue, previous);
+        if (adjacent is null || !TryGetPrimaryKeyValue(adjacent, out object? adjacentPk) || adjacentPk is null)
+        {
+            if (previous)
+                _hasFocusedPreviousRecords = false;
+            else
+                _hasFocusedNextRecords = false;
+
+            return;
+        }
+
+        await LoadFocusedRecordWindowAsync(adjacentPk);
+    }
+
+    private Task ReturnToBrowseAsync()
+    {
+        if (_table is null)
+            return Task.CompletedTask;
+
+        object? currentPk = TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) ? pkValue : null;
+        return LoadRecordPageAsync(_page, preferredPk: currentPk);
+    }
+
+    private async Task NavigateToRecordAsync(object pkValue)
+    {
+        if (_table is null)
+            return;
+
+        int? ordinal = HasActiveSearch
+            ? await RecordService.GetRecordOrdinalAsync(_table, pkValue, _activeSearchColumnName!, _activeSearchValue!)
+            : await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+
+        if (ordinal is null && HasActiveSearch)
+        {
+            ClearSearchState(clearPendingValue: false);
+            ordinal = await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+        }
+
+        if (ordinal is null)
+        {
+            _error = $"{GetPrimaryKeyLabel()} '{pkValue}' was not found.";
+            return;
+        }
+
+        int targetPage = (ordinal.Value / _pageSize) + 1;
+        await LoadRecordPageAsync(targetPage, preferredPk: pkValue);
+    }
+
+    private void UpdateVisibleCurrentRecord(Dictionary<string, object?> updated)
+    {
+        var clonedRecord = CloneRecord(updated);
+        _currentRecord = clonedRecord;
+        _isNew = false;
+
+        if (_recordPageIndex >= 0 && _recordPageIndex < _records.Count)
+            _records[_recordPageIndex] = CloneRecord(updated);
+    }
+
+    private void ExitFocusedNavigation()
+    {
+        _isFocusedNavigation = false;
+        _hasFocusedPreviousRecords = false;
+        _hasFocusedNextRecords = false;
+    }
+
+    private void ResetCurrentRecordForEmptyReadOnlySource()
+    {
+        _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        _isNew = false;
+        _dirty = false;
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _validationErrors = null;
+    }
+
+    private string GetNavigationStatusText()
+    {
+        if (_recordsLoading)
+            return "Loading...";
+
+        if (_isFocusedNavigation && !_isNew)
+            return "Focused";
+
+        if (HasActiveSearch && _totalRecords == 0)
+            return "No matches";
+
+        if (_isNew)
+            return HasActiveSearch
+                ? (_totalRecords == 0 ? "No matches" : $"New after {_totalRecords} matches")
+                : (_totalRecords == 0 ? "New record" : "New");
+
+        if (_totalRecords == 0)
+            return HasPersistedCurrentRecord ? "Current record" : "No records";
+
+        return HasActiveSearch
+            ? $"{CurrentRecordOrdinal} / {_totalRecords} matches"
+            : $"{CurrentRecordOrdinal} / {_totalRecords}";
+    }
+
+    private string GetPrintStatusText()
+    {
+        if (_isFocusedNavigation && !_isNew)
+            return "Focused record";
+
+        if (HasActiveSearch && _totalRecords == 0)
+            return "No matching records";
+
+        if (_isNew)
+            return HasActiveSearch
+                ? $"New record after {_totalRecords} matches"
+                : (_totalRecords == 0 ? "New record" : $"New record after {_totalRecords}");
+
+        if (_totalRecords == 0)
+            return HasPersistedCurrentRecord ? "Current record" : "No records";
+
+        return HasActiveSearch
+            ? $"Record {CurrentRecordOrdinal} of {_totalRecords} matches"
+            : $"Record {CurrentRecordOrdinal} of {_totalRecords}";
+    }
+
+    private string GetRecordSummary(Dictionary<string, object?> record)
+    {
+        string? primaryKey = _table?.PrimaryKey.FirstOrDefault();
+        var parts = record
+            .Where(entry => !string.Equals(entry.Key, primaryKey, StringComparison.OrdinalIgnoreCase) && entry.Value is not null)
+            .Take(3)
+            .Select(entry => entry.Value?.ToString() ?? string.Empty)
+            .Where(text => text.Length > 0);
+
+        string summary = string.Join(" | ", parts);
+        return summary.Length > 60 ? summary[..57] + "..." : summary;
+    }
+
+    private async Task OnChildRowsChanged()
+    {
+        if (_computedControls.Count > 0)
+        {
+            await EvaluateComputedFields();
+            StateHasChanged();
+        }
+    }
+
+    private async Task EvaluateComputedFields()
+    {
+        foreach (var control in _computedControls)
+        {
+            string fieldName = control.Binding!.FieldName;
+            string? formula = control.Props.Values.TryGetValue("formula", out var formulaValue) ? formulaValue?.ToString() : null;
+            if (string.IsNullOrWhiteSpace(formula))
+                continue;
+
+            if (FormulaEvaluator.TryParseAggregate(formula, out var function, out var childTableName, out var aggregateField))
+            {
+                if (!_childTableDefs.TryGetValue(childTableName, out var childTableDefinition))
+                {
+                    _currentRecord[fieldName] = null;
+                    continue;
+                }
+
+                var childMapping = FindChildMapping(childTableName);
+                if (string.IsNullOrWhiteSpace(childMapping.ForeignKeyField) ||
+                    string.IsNullOrWhiteSpace(childMapping.ParentKeyField) ||
+                    !TryGetFieldValue(_currentRecord, childMapping.ParentKeyField, out object? parentValue) ||
+                    parentValue is null)
+                {
+                    _currentRecord[fieldName] = null;
+                    continue;
+                }
+
+                List<Dictionary<string, object?>> childRows = await RecordService.ListFilteredRecordsAsync(
+                    childTableDefinition,
+                    childMapping.ForeignKeyField,
+                    parentValue);
+                var values = childRows.Select(row =>
+                {
+                    string raw = LookupField(row, aggregateField);
+                    return double.TryParse(raw, out var number) ? (double?)number : null;
+                });
+
+                _currentRecord[fieldName] = FormulaEvaluator.EvaluateAggregate(function, values);
+            }
+            else
+            {
+                _currentRecord[fieldName] = FormulaEvaluator.Evaluate(formula, field =>
+                {
+                    if (TryGetFieldValue(_currentRecord, field, out object? value) && value is not null)
+                    {
+                        if (value is double d) return d;
+                        if (value is long l) return l;
+                        if (value is int i) return i;
+                        if (double.TryParse(value.ToString(), out var parsed)) return parsed;
+                    }
+
+                    return null;
+                });
+            }
+        }
+    }
+
+    private (string? ForeignKeyField, string? ParentKeyField) FindChildMapping(string childTableName)
+    {
+        if (_form is null)
+            return (null, null);
+
+        foreach (var control in _form.Controls.Where(control => control.ControlType == "datagrid"))
+        {
+            string? configuredChildTable = control.Props.Values.TryGetValue("childTable", out var tableName) ? tableName?.ToString() : null;
+            if (!string.Equals(configuredChildTable, childTableName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string? foreignKeyField = control.Props.Values.TryGetValue("foreignKeyField", out var fk) ? fk?.ToString() : null;
+            string? parentKeyField = control.Props.Values.TryGetValue("parentKeyField", out var pk) ? pk?.ToString() : null;
+            if (!string.IsNullOrWhiteSpace(foreignKeyField) && !string.IsNullOrWhiteSpace(parentKeyField))
+                return (foreignKeyField, parentKeyField);
+        }
+
+        foreach (var control in _form.Controls.Where(control => control.ControlType == "childtabs"))
+        {
+            var tabsValue = control.Props.Values.TryGetValue("tabs", out var tabs) ? tabs : null;
+            var mapping = FindChildMapping(ChildTabConfigMapper.FromPropertyBag(tabsValue), childTableName);
+            if (!string.IsNullOrWhiteSpace(mapping.ForeignKeyField) && !string.IsNullOrWhiteSpace(mapping.ParentKeyField))
+                return mapping;
+        }
+
+        return (null, null);
+    }
+
+    private static (string? ForeignKeyField, string? ParentKeyField) FindChildMapping(IReadOnlyList<ChildTabConfig> tabs, string childTableName)
+    {
+        foreach (var tab in tabs)
+        {
+            if (string.Equals(tab.ChildTable, childTableName, StringComparison.OrdinalIgnoreCase))
+                return (tab.ForeignKeyField, tab.ParentKeyField);
+
+            var nested = FindChildMapping(tab.ChildTabs, childTableName);
+            if (!string.IsNullOrWhiteSpace(nested.ForeignKeyField) && !string.IsNullOrWhiteSpace(nested.ParentKeyField))
+                return nested;
+        }
+
+        return (null, null);
+    }
+
+    private bool TryGetPrimaryKeyValue(IReadOnlyDictionary<string, object?> record, out object? pkValue)
+    {
+        pkValue = null;
+        if (_table is null || !_table.HasSinglePrimaryKey)
+            return false;
+
+        string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+        return TryGetFieldValue(record, pkColumn, out pkValue) && pkValue is not null;
+    }
+
+    private static bool TryGetFieldValue(IReadOnlyDictionary<string, object?> record, string fieldName, out object? value)
+    {
+        if (record.TryGetValue(fieldName, out value))
+            return true;
+
+        string? key = record.Keys.FirstOrDefault(candidate => string.Equals(candidate, fieldName, StringComparison.OrdinalIgnoreCase));
+        if (key is not null && record.TryGetValue(key, out value))
+            return true;
+
+        value = null;
+        return false;
+    }
+
+    private void InitializeSearchState()
+    {
+        _goToRecordValue = string.Empty;
+        _searchValue = string.Empty;
+        _activeSearchColumnName = null;
+        _activeSearchValue = null;
+        _searchColumnName = GetDefaultSearchFieldName() ?? string.Empty;
+    }
+
+    private void ClearSearchState(bool clearPendingValue)
+    {
+        _activeSearchColumnName = null;
+        _activeSearchValue = null;
+        if (clearPendingValue)
+            _searchValue = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(_searchColumnName))
+            _searchColumnName = GetDefaultSearchFieldName() ?? string.Empty;
+    }
+
+    private IReadOnlyList<FormFieldDefinition> GetSearchableFields()
+    {
+        if (_table is null)
+            return [];
+
+        FormFieldDefinition[] searchable = _table.Fields
+            .Where(field => field.DataType != FieldDataType.Blob)
+            .ToArray();
+
+        return searchable.Length > 0 ? searchable : _table.Fields;
+    }
+
+    private FormFieldDefinition? GetPrimaryKeyField()
+    {
+        if (_table is null || !_table.HasSinglePrimaryKey)
+            return null;
+
+        string primaryKeyColumn = RecordService.GetPrimaryKeyColumn(_table);
+        return _table.Fields.FirstOrDefault(field => string.Equals(field.Name, primaryKeyColumn, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string? GetDefaultSearchFieldName()
+    {
+        IReadOnlyList<FormFieldDefinition> searchableFields = GetSearchableFields();
+        if (searchableFields.Count == 0)
+            return null;
+
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
+        return searchableFields
+            .FirstOrDefault(field => !string.Equals(field.Name, primaryKeyField?.Name, StringComparison.OrdinalIgnoreCase))
+            ?.Name
+            ?? searchableFields[0].Name;
+    }
+
+    private string GetPrimaryKeyLabel()
+    {
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
+        return primaryKeyField is null ? "record" : GetFieldCaption(primaryKeyField);
+    }
+
+    private string GetGoToRecordPlaceholder() => $"Enter {GetPrimaryKeyLabel()}";
+
+    private string GetRecordListHeaderText()
+        => _isFocusedNavigation
+            ? "Focused"
+            : HasActiveSearch ? $"Matches ({_totalRecords})" : $"Records ({_totalRecords})";
+
+    private string GetVisibleRecordIndexLabel(int index)
+        => _isFocusedNavigation
+            ? $"{index + 1}."
+            : $"{(((_page - 1) * _pageSize) + index + 1)}.";
+
+    private string GetSearchInputPlaceholder()
+    {
+        if (string.IsNullOrWhiteSpace(_searchColumnName))
+            return "Enter search value";
+
+        return $"Search {GetFieldCaption(_searchColumnName)}";
+    }
+
+    private string GetSearchStatusFieldLabel()
+        => string.IsNullOrWhiteSpace(_activeSearchColumnName) ? "records" : GetFieldCaption(_activeSearchColumnName!);
+
+    private string GetRecordListEmptyMessage()
+    {
+        if (_isFocusedNavigation)
+            return "Focused record not available";
+
+        if (HasActiveSearch)
+            return "No matching records";
+
+        return _totalRecords == 0 ? "No records" : "No records on this page";
+    }
+
+    private string GetFieldCaption(string fieldName)
+    {
+        FormFieldDefinition? field = _table?.Fields.FirstOrDefault(candidate => string.Equals(candidate.Name, fieldName, StringComparison.OrdinalIgnoreCase));
+        return field is null ? fieldName : GetFieldCaption(field);
+    }
+
+    private static string GetFieldCaption(FormFieldDefinition field)
+        => string.IsNullOrWhiteSpace(field.DisplayName) ? field.Name : field.DisplayName;
+
+    private static string GetFieldOptionLabel(FormFieldDefinition field)
+    {
+        string caption = GetFieldCaption(field);
+        return string.Equals(caption, field.Name, StringComparison.OrdinalIgnoreCase)
+            ? field.Name
+            : $"{caption} ({field.Name})";
+    }
+
+    private static bool TryParseFieldValue(FormFieldDefinition field, string rawValue, out object? parsedValue, out string? validationError)
+    {
+        string trimmedValue = rawValue.Trim();
+
+        switch (field.DataType)
+        {
+            case FieldDataType.Int32:
+                if (int.TryParse(trimmedValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int int32Value))
+                {
+                    parsedValue = int32Value;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Int64:
+                if (long.TryParse(trimmedValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out long int64Value))
+                {
+                    parsedValue = int64Value;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Decimal:
+                if (decimal.TryParse(trimmedValue, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal decimalValue))
+                {
+                    parsedValue = decimalValue;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Double:
+                if (double.TryParse(trimmedValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double doubleValue))
+                {
+                    parsedValue = doubleValue;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Boolean:
+                if (bool.TryParse(trimmedValue, out bool boolValue))
+                {
+                    parsedValue = boolValue;
+                    validationError = null;
+                    return true;
+                }
+
+                if (trimmedValue is "1" or "0")
+                {
+                    parsedValue = trimmedValue == "1";
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Guid:
+                if (Guid.TryParse(trimmedValue, out Guid guidValue))
+                {
+                    parsedValue = guidValue;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.Date:
+                if (DateOnly.TryParse(trimmedValue, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly dateValue))
+                {
+                    parsedValue = dateValue.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    validationError = null;
+                    return true;
+                }
+                break;
+            case FieldDataType.DateTime:
+                if (DateTime.TryParse(trimmedValue, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind | DateTimeStyles.AllowWhiteSpaces, out DateTime dateTimeValue))
+                {
+                    parsedValue = dateTimeValue;
+                    validationError = null;
+                    return true;
+                }
+                break;
+            default:
+                parsedValue = trimmedValue;
+                validationError = null;
+                return true;
+        }
+
+        parsedValue = null;
+        validationError = $"'{rawValue}' is not a valid {GetFieldCaption(field)} value.";
+        return false;
+    }
+
+    private static bool AreValuesEqual(object? left, object? right)
+        => Equals(FormSql.NormalizeValue(left), FormSql.NormalizeValue(right));
+
+    private static Dictionary<string, object?> CloneRecord(IReadOnlyDictionary<string, object?> record)
+        => new(record, StringComparer.OrdinalIgnoreCase);
+
+    private static string LookupField(IReadOnlyDictionary<string, object?> record, string fieldName)
+        => TryGetFieldValue(record, fieldName, out object? value) && value is not null
+            ? value.ToString() ?? string.Empty
+            : string.Empty;
+}

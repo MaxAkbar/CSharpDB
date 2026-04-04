@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>CLI Reference — CSharpDB</title>
-    <meta name="description" content="CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.">
+    <meta name="description" content="CSharpDB CLI reference — interactive REPL, remote connectivity, meta-commands, storage diagnostics, maintenance, ETL pipelines, and examples.">
     <link rel="canonical" href="https://csharpdb.com/docs/cli.html">
     <meta property="og:title" content="CLI Reference — CSharpDB">
-    <meta property="og:description" content="CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.">
+    <meta property="og:description" content="CSharpDB CLI reference — interactive REPL, remote connectivity, meta-commands, storage diagnostics, maintenance, ETL pipelines, and examples.">
     <meta property="og:url" content="https://csharpdb.com/docs/cli.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "CLI Reference",
-        "description": "CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.",
+        "description": "CSharpDB CLI reference — interactive REPL, remote connectivity, meta-commands, storage diagnostics, maintenance, ETL pipelines, and examples.",
         "url": "https://csharpdb.com/docs/cli.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'CLI Reference',
-        description: 'CSharpDB CLI reference — interactive REPL, meta-commands, SQL introspection, storage inspector commands, and examples.',
-        keywords: 'CSharpDB CLI, REPL, meta-commands, SQL introspection, storage inspector, command line',
+        description: 'CSharpDB CLI reference — interactive REPL, remote connectivity, meta-commands, storage diagnostics, maintenance, ETL pipelines, and examples.',
+        keywords: 'CSharpDB CLI, REPL, meta-commands, SQL introspection, storage inspector, ETL pipeline, remote connectivity, command line',
         canonicalPath: 'docs/cli.html',
         ogType: 'article',
     };
@@ -47,12 +47,24 @@
                 <nav class="doc-toc">
                     <h4>On This Page</h4>
                     <ul>
-                        <li><a href="#running-the-cli">Running the CLI</a></li>
-                        <li><a href="#interactive-usage">Interactive Usage</a></li>
+                        <li><a href="#installation">Installation</a></li>
+                        <li><a href="#running-the-cli">Running the CLI</a>
+                            <ul>
+                                <li><a href="#interactive-repl">Interactive REPL</a></li>
+                                <li><a href="#remote-connectivity">Remote Connectivity</a></li>
+                                <li><a href="#command-mode">Command Mode</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#interactive-usage">Interactive Usage</a>
+                            <ul>
+                                <li><a href="#output-formatting">Output Formatting</a></li>
+                            </ul>
+                        </li>
                         <li><a href="#meta-commands">Meta-Commands</a>
                             <ul>
                                 <li><a href="#database-introspection">Database Introspection</a></li>
                                 <li><a href="#transaction-management">Transaction Management</a></li>
+                                <li><a href="#database-maintenance">Database Maintenance</a></li>
                                 <li><a href="#mode-toggles">Mode Toggles</a></li>
                                 <li><a href="#file-execution">File Execution</a></li>
                                 <li><a href="#general">General</a></li>
@@ -61,6 +73,14 @@
                         <li><a href="#foreign-key-retrofit-migration">Foreign-Key Retrofit Migration</a></li>
                         <li><a href="#sql-introspection">SQL Introspection (sys.*)</a></li>
                         <li><a href="#storage-inspector-commands">Storage Inspector Commands</a></li>
+                        <li><a href="#maintenance-commands">Maintenance Commands</a></li>
+                        <li><a href="#etl-pipeline-commands">ETL Pipeline Commands</a>
+                            <ul>
+                                <li><a href="#pipeline-execution">Pipeline Execution</a></li>
+                                <li><a href="#pipeline-catalog">Pipeline Catalog</a></li>
+                                <li><a href="#pipeline-run-management">Pipeline Run Management</a></li>
+                            </ul>
+                        </li>
                         <li><a href="#examples">Examples</a></li>
                         <li><a href="#see-also">See Also</a></li>
                     </ul>
@@ -69,24 +89,72 @@
 
             <div class="doc-content">
                 <h1>CSharpDB CLI Reference</h1>
-                <p>The CSharpDB CLI (<code>CSharpDB.Cli</code>) is an interactive REPL for working with CSharpDB databases from the terminal. It supports SQL execution, meta-commands for introspection, transaction management, and batch file execution.</p>
+                <p>The CSharpDB CLI (<code>CSharpDB.Cli</code>) is an interactive REPL for working with CSharpDB databases from the terminal. It supports SQL execution, meta-commands for introspection, transaction management, batch file execution, storage diagnostics, maintenance operations, and ETL pipeline management.</p>
 
+                <!-- ───────── Installation ───────── -->
+                <h2 id="installation">Installation</h2>
+                <p>Build the CLI from source to produce the <code>csharpdb</code> executable. Requires <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 SDK</a>.</p>
+                <div class="code-block" data-title="Bash"><pre><code># Build framework-dependent (requires .NET 10 runtime on target)
+dotnet publish src/CSharpDB.Cli -c Release -o ./publish
+
+# Build self-contained (no runtime required on target)
+dotnet publish src/CSharpDB.Cli -c Release -r win-x64 --self-contained -o ./publish
+
+# Build self-contained for Linux
+dotnet publish src/CSharpDB.Cli -c Release -r linux-x64 --self-contained -o ./publish</code></pre></div>
+                <p>The output directory will contain the <code>csharpdb</code> executable (or <code>csharpdb.exe</code> on Windows). Add it to your <code>PATH</code> for global access. See the <a href="../downloads.html#cli">Downloads page</a> for all platform targets.</p>
+
+                <!-- ───────── Running the CLI ───────── -->
                 <h2 id="running-the-cli">Running the CLI</h2>
+
+                <h3 id="interactive-repl">Interactive REPL (default)</h3>
                 <div class="code-block" data-title="Bash"><pre><code># Open or create a database
-dotnet run --project src/CSharpDB.Cli -- mydata.db
+csharpdb mydata.db
 
 # Without arguments, uses csharpdb.db in the current directory
-dotnet run --project src/CSharpDB.Cli</code></pre></div>
+csharpdb</code></pre></div>
 
-                <p>The CLI also supports command mode (non-REPL) for storage diagnostics and maintenance:</p>
-                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- inspect mydata.db
-dotnet run --project src/CSharpDB.Cli -- inspect-page mydata.db 5 --hex
-dotnet run --project src/CSharpDB.Cli -- check-wal mydata.db
-dotnet run --project src/CSharpDB.Cli -- check-indexes mydata.db --json
-dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only</code></pre></div>
+                <h3 id="remote-connectivity">Remote Connectivity</h3>
+                <p>Connect to a remote CSharpDB server instead of a local file:</p>
+                <div class="code-block" data-title="Bash"><pre><code># Connect via HTTP (REST API)
+csharpdb -- --endpoint http://localhost:61818
 
-                <p>If the first argument is one of <code>inspect</code>, <code>inspect-page</code>, <code>check-wal</code>, <code>check-indexes</code>, or <code>migrate-foreign-keys</code>, command mode runs. Otherwise, the CLI opens REPL mode using the first argument as the database path.</p>
+# Connect via gRPC (Daemon)
+csharpdb -- --endpoint https://localhost:49995 --transport grpc
 
+# Connect via Named Pipes
+csharpdb -- --endpoint mypipe --transport namedpipes</code></pre></div>
+
+                <table>
+                    <thead>
+                        <tr><th>Flag</th><th>Aliases</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>--endpoint &lt;uri&gt;</code></td><td><code>--server</code></td><td>Remote server URI</td></tr>
+                        <tr><td><code>--transport &lt;type&gt;</code></td><td>&mdash;</td><td>Connection transport: <code>direct</code> (default), <code>http</code>, <code>grpc</code>, <code>namedpipes</code> (aliases: <code>named-pipes</code>, <code>pipe</code>, <code>npipe</code>)</td></tr>
+                    </tbody>
+                </table>
+
+                <p><strong>Constraints:</strong></p>
+                <ul>
+                    <li>Cannot specify both a positional database path and <code>--endpoint</code>.</li>
+                    <li>Non-direct transports (<code>http</code>, <code>grpc</code>, <code>namedpipes</code>) require <code>--endpoint</code>.</li>
+                    <li>If an <code>http://</code> or <code>https://</code> endpoint is given without <code>--transport</code>, HTTP is inferred.</li>
+                </ul>
+
+                <h3 id="command-mode">Command Mode</h3>
+                <p>If the first argument is a recognised command name, the CLI runs that command and exits instead of entering the REPL:</p>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb -- inspect mydata.db
+csharpdb -- inspect-page mydata.db 5 --hex
+csharpdb -- check-wal mydata.db
+csharpdb -- check-indexes mydata.db --json
+csharpdb -- maintenance-report mydata.db
+csharpdb -- reindex mydata.db --all
+csharpdb -- vacuum mydata.db
+csharpdb -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only
+csharpdb -- etl run mydata.db pipeline.json</code></pre></div>
+
+                <!-- ───────── Interactive Usage ───────── -->
                 <h2 id="interactive-usage">Interactive Usage</h2>
                 <p>The REPL displays a <code>csdb&gt;</code> prompt. Enter SQL statements followed by a semicolon, or use dot-prefixed meta-commands:</p>
                 <div class="code-block" data-title="Text"><pre><code>csdb&gt; CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER);
@@ -105,8 +173,24 @@ csdb&gt; SELECT * FROM users;
 
 csdb&gt; .quit</code></pre></div>
 
-                <p>Multi-line SQL is supported — the REPL waits for a semicolon before executing. Trigger bodies (<code>BEGIN ... END;</code>) are handled correctly.</p>
+                <p>Multi-line SQL is supported &mdash; the REPL waits for a semicolon before executing. The continuation prompt changes to <code>...&gt;</code>. Trigger bodies (<code>BEGIN ... END;</code>) are handled correctly as single statements.</p>
 
+                <h3 id="output-formatting">Output Formatting</h3>
+                <p>Query results are rendered as Unicode box-drawing tables with ANSI colour coding:</p>
+                <table>
+                    <thead>
+                        <tr><th>Type</th><th>Colour</th><th>Example</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>INTEGER</code> / <code>REAL</code></td><td>Yellow</td><td><code>42</code>, <code>3.14</code></td></tr>
+                        <tr><td><code>TEXT</code></td><td>Green</td><td><code>Alice</code></td></tr>
+                        <tr><td><code>BLOB</code></td><td>Magenta</td><td><code>BLOB(128 bytes)</code></td></tr>
+                        <tr><td><code>NULL</code></td><td>Dim italic</td><td><code>NULL</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Column widths are capped at 40 characters; longer values are truncated with <code>&hellip;</code>. Numeric columns are right-aligned; text columns are left-aligned.</p>
+
+                <!-- ───────── Meta-Commands ───────── -->
                 <h2 id="meta-commands">Meta-Commands</h2>
                 <p>All meta-commands start with a dot (<code>.</code>). They are case-insensitive.</p>
 
@@ -116,13 +200,13 @@ csdb&gt; .quit</code></pre></div>
                         <tr><th>Command</th><th>Description</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>.info</code></td><td>Show database status: table, index, view, trigger, and collection counts</td></tr>
+                        <tr><td><code>.info</code></td><td>Show database status: table, index, view, trigger, and collection counts, plus current modes</td></tr>
                         <tr><td><code>.tables [PATTERN|--all]</code></td><td>List tables. By default, collection backing tables are hidden. Use a pattern to filter or <code>--all</code> to include internal tables.</td></tr>
-                        <tr><td><code>.schema [TABLE|--all]</code></td><td>Show the CREATE TABLE schema for one or all tables</td></tr>
-                        <tr><td><code>.indexes [TABLE]</code></td><td>List indexes, optionally filtered by table name</td></tr>
+                        <tr><td><code>.schema [TABLE|--all]</code></td><td>Show the CREATE TABLE schema for one or all tables. Includes columns, types, constraints, IDENTITY, and foreign key definitions.</td></tr>
+                        <tr><td><code>.indexes [TABLE]</code></td><td>List indexes, optionally filtered by table name. Shows name, table, columns, and UNIQUE flag.</td></tr>
                         <tr><td><code>.views</code></td><td>List all views</td></tr>
                         <tr><td><code>.view &lt;NAME&gt;</code></td><td>Show the CREATE VIEW SQL for a specific view</td></tr>
-                        <tr><td><code>.triggers [TABLE]</code></td><td>List triggers, optionally filtered by table name</td></tr>
+                        <tr><td><code>.triggers [TABLE]</code></td><td>List triggers, optionally filtered by table name. Shows name, timing, event, and target table.</td></tr>
                         <tr><td><code>.trigger &lt;NAME&gt;</code></td><td>Show the CREATE TRIGGER SQL for a specific trigger</td></tr>
                         <tr><td><code>.collections</code></td><td>List document collections (NoSQL API)</td></tr>
                     </tbody>
@@ -134,12 +218,23 @@ csdb&gt; .quit</code></pre></div>
                         <tr><th>Command</th><th>Description</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>.begin</code></td><td>Begin an explicit transaction</td></tr>
+                        <tr><td><code>.begin</code></td><td>Begin an explicit transaction. Disables snapshot mode.</td></tr>
                         <tr><td><code>.commit</code></td><td>Commit the current transaction</td></tr>
                         <tr><td><code>.rollback</code></td><td>Rollback the current transaction</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="database-maintenance">Database Maintenance</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
                         <tr><td><code>.checkpoint</code></td><td>Flush WAL pages to the main database file</td></tr>
-                        <tr><td><code>.backup &lt;FILE&gt; [--with-manifest]</code></td><td>Write a committed snapshot backup to a file, optionally with a JSON manifest</td></tr>
+                        <tr><td><code>.backup &lt;FILE&gt; [--with-manifest]</code></td><td>Write a committed snapshot backup to a file, optionally with a JSON manifest (SHA-256, byte count, page count, change counter)</td></tr>
                         <tr><td><code>.restore &lt;FILE&gt; [--validate-only]</code></td><td>Validate a source snapshot or restore it into the current database file; for remote transports the path is resolved on the target host</td></tr>
+                        <tr><td><code>.reindex [--all|--table &lt;name&gt;|--index &lt;name&gt;] [--force-corrupt-rebuild]</code></td><td>Rebuild indexes. <code>--all</code> (default) rebuilds all indexes. <code>--force-corrupt-rebuild</code> recovers corrupt index trees.</td></tr>
+                        <tr><td><code>.vacuum</code></td><td>Rewrite the database file to reclaim free pages. Shows before/after byte and page counts.</td></tr>
                         <tr><td><code>.migrate-fks &lt;SPEC.json&gt; [--validate-only] [--backup &lt;FILE&gt;]</code></td><td>Validate or apply foreign-key retrofit migration for existing tables; for remote transports, paths resolve on the connected host</td></tr>
                     </tbody>
                 </table>
@@ -150,9 +245,9 @@ csdb&gt; .quit</code></pre></div>
                         <tr><th>Command</th><th>Description</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>.timing [on|off|status]</code></td><td>Toggle query timing output (shows execution time in milliseconds)</td></tr>
-                        <tr><td><code>.snapshot [on|off|status]</code></td><td>Toggle snapshot (read-only) mode for SELECT queries. When enabled, queries use a frozen point-in-time view that is unaffected by concurrent writes.</td></tr>
-                        <tr><td><code>.syncpoint [on|off|status]</code></td><td>Toggle the sync fast path for primary key lookups. When enabled, cached PK lookups bypass the async pipeline for lower latency.</td></tr>
+                        <tr><td><code>.timing [on|off|status]</code></td><td>Toggle query timing output (shows execution time in milliseconds). Defaults to on.</td></tr>
+                        <tr><td><code>.snapshot [on|off|status]</code></td><td>Toggle snapshot (read-only) mode for SELECT queries. When enabled, queries use a frozen point-in-time view that is unaffected by concurrent writes. Local direct access only.</td></tr>
+                        <tr><td><code>.syncpoint [on|off|status]</code></td><td>Toggle the sync fast path for primary key lookups. When enabled, cached PK lookups bypass the async pipeline for lower latency. Local direct access only.</td></tr>
                     </tbody>
                 </table>
 
@@ -162,7 +257,7 @@ csdb&gt; .quit</code></pre></div>
                         <tr><th>Command</th><th>Description</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>.read &lt;FILE&gt;</code></td><td>Execute all SQL statements from a file. Statements are separated by semicolons. Results and errors are printed as they execute.</td></tr>
+                        <tr><td><code>.read &lt;FILE&gt;</code></td><td>Execute all SQL statements from a file. Statements are separated by semicolons. Results and errors are printed as they execute. Reports pass/fail counts.</td></tr>
                     </tbody>
                 </table>
 
@@ -177,6 +272,7 @@ csdb&gt; .quit</code></pre></div>
                     </tbody>
                 </table>
 
+                <!-- ───────── Foreign-Key Retrofit Migration ───────── -->
                 <h2 id="foreign-key-retrofit-migration">Foreign-Key Retrofit Migration</h2>
                 <p>Use the retrofit workflow when an older database file already contains valid parent/child data but does not yet persist FK metadata:</p>
                 <div class="code-block" data-title="JSON"><pre><code>{
@@ -194,7 +290,7 @@ csdb&gt; .quit</code></pre></div>
 }</code></pre></div>
 
                 <p>Validate only:</p>
-                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Cli -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only</code></pre></div>
+                <div class="code-block" data-title="Bash"><pre><code>csharpdb -- migrate-foreign-keys mydata.db --spec fk-spec.json --validate-only</code></pre></div>
 
                 <p>Apply from the REPL:</p>
                 <div class="code-block" data-title="Text"><pre><code>csdb&gt; .migrate-fks fk-spec.json --backup pre-fk.backup.db</code></pre></div>
@@ -206,6 +302,7 @@ csdb&gt; .quit</code></pre></div>
                     <li>For HTTP or gRPC transports, the spec path and backup path are resolved on the connected host.</li>
                 </ul>
 
+                <!-- ───────── SQL Introspection ───────── -->
                 <h2 id="sql-introspection">SQL Introspection (<code>sys.*</code>)</h2>
                 <p>You can query metadata with SQL in addition to dot-commands:</p>
                 <div class="code-block" data-title="SQL"><pre><code>SELECT * FROM sys.tables ORDER BY table_name;
@@ -220,14 +317,20 @@ SELECT * FROM sys.saved_queries ORDER BY name;</code></pre></div>
                 <p>Underscored aliases are supported: <code>sys_tables</code>, <code>sys_columns</code>, <code>sys_indexes</code>, <code>sys_foreign_keys</code>, <code>sys_views</code>, <code>sys_triggers</code>, <code>sys_objects</code>, <code>sys_saved_queries</code>.</p>
                 <p><code>sys.columns</code> includes <code>is_identity</code> (0/1) in addition to <code>is_primary_key</code>.</p>
 
+                <!-- ───────── Storage Inspector Commands ───────── -->
                 <h2 id="storage-inspector-commands">Storage Inspector Commands</h2>
-                <p>These commands are read-only and return deterministic exit codes for automation:</p>
-                <ul>
-                    <li><code>0</code>: no warnings/errors</li>
-                    <li><code>1</code>: warnings present, no errors</li>
-                    <li><code>2</code>: errors present</li>
-                    <li><code>64</code>: invalid CLI usage</li>
-                </ul>
+                <p>These read-only commands diagnose database files and return deterministic exit codes for automation:</p>
+                <table>
+                    <thead>
+                        <tr><th>Exit Code</th><th>Meaning</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>0</code></td><td>No warnings or errors</td></tr>
+                        <tr><td><code>1</code></td><td>Warnings present, no errors</td></tr>
+                        <tr><td><code>2</code></td><td>Errors present</td></tr>
+                        <tr><td><code>64</code></td><td>Invalid CLI usage</td></tr>
+                    </tbody>
+                </table>
 
                 <table>
                     <thead>
@@ -243,6 +346,81 @@ SELECT * FROM sys.saved_queries ORDER BY name;</code></pre></div>
 
                 <p>See <a href="storage-inspector.html">Storage Inspector</a> for full rule IDs and JSON contract details.</p>
 
+                <!-- ───────── Maintenance Commands ───────── -->
+                <h2 id="maintenance-commands">Maintenance Commands</h2>
+                <p>Standalone maintenance operations that run outside the REPL. All support <code>--json</code> for machine-readable output and use the same exit codes as inspector commands.</p>
+
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>maintenance-report &lt;dbfile&gt; [--json]</code></td><td>Show space usage, fragmentation metrics, and page distribution</td></tr>
+                        <tr><td><code>reindex &lt;dbfile&gt; [--all|--table &lt;name&gt;|--index &lt;name&gt;] [--force-corrupt-rebuild] [--json]</code></td><td>Rebuild indexes. <code>--force-corrupt-rebuild</code> recovers corrupt index trees.</td></tr>
+                        <tr><td><code>vacuum &lt;dbfile&gt; [--json]</code></td><td>Rewrite database file to reclaim free pages. Reports before/after byte and page counts.</td></tr>
+                        <tr><td><code>migrate-foreign-keys &lt;dbfile&gt; --spec &lt;json-file&gt; [--validate-only] [--backup &lt;file&gt;] [--json]</code></td><td>Validate or apply foreign-key retrofit migration</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block" data-title="Bash"><pre><code># Generate a maintenance report
+csharpdb -- maintenance-report mydata.db
+
+# Rebuild all indexes
+csharpdb -- reindex mydata.db --all
+
+# Rebuild indexes for a specific table
+csharpdb -- reindex mydata.db --table users
+
+# Recover a corrupt index
+csharpdb -- reindex mydata.db --index idx_users_name --force-corrupt-rebuild
+
+# Compact the database file
+csharpdb -- vacuum mydata.db</code></pre></div>
+
+                <!-- ───────── ETL Pipeline Commands ───────── -->
+                <h2 id="etl-pipeline-commands">ETL Pipeline Commands</h2>
+                <p>Manage and execute ETL pipelines from the command line. All pipeline commands are prefixed with <code>etl</code>.</p>
+
+                <h3 id="pipeline-execution">Pipeline Execution</h3>
+                <div class="code-block" data-title="Bash"><pre><code># Validate a pipeline package without executing
+csharpdb -- etl validate mydata.db pipeline.json
+
+# Simulate execution without writing to the destination
+csharpdb -- etl dry-run mydata.db pipeline.json
+
+# Execute the full pipeline and commit results
+csharpdb -- etl run mydata.db pipeline.json</code></pre></div>
+
+                <h3 id="pipeline-catalog">Pipeline Catalog</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>etl list &lt;dbfile&gt; [--json]</code></td><td>List all pipeline runs with status, mode, and name</td></tr>
+                        <tr><td><code>etl pipelines &lt;dbfile&gt; [--json]</code></td><td>List all stored pipelines with version and revision info</td></tr>
+                        <tr><td><code>etl revisions &lt;dbfile&gt; &lt;name&gt; [--json]</code></td><td>List all revisions of a specific pipeline</td></tr>
+                        <tr><td><code>etl import &lt;dbfile&gt; &lt;packagefile&gt; [--name &lt;name&gt;] [--json]</code></td><td>Import a pipeline package into the database. <code>--name</code> overrides the pipeline name.</td></tr>
+                        <tr><td><code>etl export &lt;dbfile&gt; &lt;name&gt; &lt;packagefile&gt;</code></td><td>Export a stored pipeline to a package file</td></tr>
+                        <tr><td><code>etl export-revision &lt;dbfile&gt; &lt;name&gt; &lt;revision&gt; &lt;packagefile&gt;</code></td><td>Export a specific pipeline revision to a package file</td></tr>
+                        <tr><td><code>etl delete &lt;dbfile&gt; &lt;name&gt;</code></td><td>Delete a stored pipeline</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 id="pipeline-run-management">Pipeline Run Management</h3>
+                <table>
+                    <thead>
+                        <tr><th>Command</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>etl status &lt;dbfile&gt; &lt;runId&gt; [--json]</code></td><td>Get status of a specific pipeline run</td></tr>
+                        <tr><td><code>etl run-package &lt;dbfile&gt; &lt;runId&gt; [--json]</code></td><td>Get the package definition used for a run</td></tr>
+                        <tr><td><code>etl rejects &lt;dbfile&gt; &lt;runId&gt; [--json]</code></td><td>Get rejected rows from a pipeline run</td></tr>
+                        <tr><td><code>etl resume &lt;dbfile&gt; &lt;runId&gt; [--json]</code></td><td>Resume a failed or incomplete pipeline run</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ───────── Examples ───────── -->
                 <h2 id="examples">Examples</h2>
 
                 <h3>Introspection</h3>
@@ -301,13 +479,52 @@ csdb&gt; SELECT COUNT(*) FROM users;
 csdb&gt; .snapshot off
 Snapshot mode disabled.</code></pre></div>
 
+                <h3>Remote Connectivity</h3>
+                <div class="code-block" data-title="Bash"><pre><code># Connect to the REST API
+csharpdb -- --endpoint http://localhost:61818
+
+# Connect to the gRPC daemon
+csharpdb -- --endpoint https://localhost:49995 --transport grpc</code></pre></div>
+
+                <h3>Maintenance</h3>
+                <div class="code-block" data-title="Text"><pre><code>csdb&gt; .vacuum
+Vacuum complete. Before: 40960 bytes (10 pages) &rarr; After: 32768 bytes (8 pages)
+
+csdb&gt; .reindex --table users
+Rebuilt 2 index(es).
+
+csdb&gt; .backup mydata.backup.db --with-manifest
+Backup written to mydata.backup.db
+Manifest written to mydata.backup.db.manifest.json</code></pre></div>
+
+                <h3>ETL Pipelines</h3>
+                <div class="code-block" data-title="Bash"><pre><code># Import and run a pipeline
+csharpdb -- etl import mydata.db pipeline.json
+csharpdb -- etl run mydata.db pipeline.json
+
+# Check run history
+csharpdb -- etl list mydata.db</code></pre></div>
+
+                <!-- ───────── See Also ───────── -->
                 <h2 id="see-also">See Also</h2>
-                <ul>
-                    <li><a href="../getting-started.html">Getting Started Tutorial</a> — C# API walkthrough with code examples</li>
-                    <li><a href="rest-api.html">REST API Reference</a> — HTTP endpoint documentation</li>
-                    <li><a href="faq.html">FAQ</a> — Common setup and troubleshooting answers</li>
-                    <li><a href="samples.html">Sample Datasets</a> — SQL scripts to load test data</li>
-                </ul>
+                <div class="next-steps-grid">
+                    <a href="../getting-started.html" class="next-step-card">
+                        <h4>Getting Started</h4>
+                        <p>C# API walkthrough with code examples</p>
+                    </a>
+                    <a href="rest-api.html" class="next-step-card">
+                        <h4>REST API Reference</h4>
+                        <p>HTTP endpoint documentation</p>
+                    </a>
+                    <a href="storage-inspector.html" class="next-step-card">
+                        <h4>Storage Inspector</h4>
+                        <p>Full rule IDs and JSON contract details</p>
+                    </a>
+                    <a href="faq.html" class="next-step-card">
+                        <h4>FAQ</h4>
+                        <p>Common setup and troubleshooting answers</p>
+                    </a>
+                </div>
             </div>
         </div>
     </main>

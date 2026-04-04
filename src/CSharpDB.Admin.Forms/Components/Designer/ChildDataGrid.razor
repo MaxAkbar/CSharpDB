@@ -1,0 +1,321 @@
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Contracts
+@inject IFormRecordService RecordService
+
+<div class="child-datagrid">
+    <div class="cdg-toolbar">
+        <span class="cdg-title">@ChildTableName (@_rows.Count)</span>
+        @if (AllowAdd)
+        {
+            <button class="cdg-btn cdg-btn-add" @onclick="AddRow" disabled="@_saving">+ New</button>
+        }
+    </div>
+
+    @if (_loading)
+    {
+        <div class="cdg-loading">Loading...</div>
+    }
+    else if (_error is not null)
+    {
+        <div class="cdg-error">@_error</div>
+    }
+    else
+    {
+        <div class="cdg-table-wrapper">
+            <table class="cdg-table">
+                <thead>
+                    <tr>
+                        @foreach (var col in VisibleColumns)
+                        {
+                            var displayName = GetColumnDisplayName(col);
+                            <th>@displayName</th>
+                        }
+                        @if (AllowDelete)
+                        {
+                            <th class="cdg-action-col"></th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var i = 0; i < _rows.Count; i++)
+                    {
+                        var rowIdx = i;
+                        var row = _rows[i];
+                        <tr class="@GetRowClass(rowIdx)" @onclick="@(() => SelectRow(rowIdx))">
+                            @foreach (var col in VisibleColumns)
+                            {
+                                var colName = col;
+                                var cellValue = GetCellValue(row, colName);
+                                var isEditing = AllowEdit && rowIdx == _editingRow && colName == _editingCol;
+
+                                @if (isEditing)
+                                {
+                                    <td class="cdg-cell cdg-cell-editing">
+                                        <input type="text" class="cdg-cell-input" value="@cellValue"
+                                               @onchange="@(e => OnCellChanged(rowIdx, colName, e.Value))"
+                                               @onblur="StopEditing" />
+                                    </td>
+                                }
+                                else
+                                {
+                                    <td class="cdg-cell" @ondblclick="@(() => StartEditing(rowIdx, colName))">
+                                        @(string.IsNullOrEmpty(cellValue) ? "\u00A0" : cellValue)
+                                    </td>
+                                }
+                            }
+                            @if (AllowDelete)
+                            {
+                                <td class="cdg-cell cdg-action-col">
+                                    <button class="cdg-btn-delete" @onclick="@(() => DeleteRow(rowIdx))"
+                                            title="Delete row">&#x2715;</button>
+                                </td>
+                            }
+                        </tr>
+                    }
+
+                    @if (_rows.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="@(VisibleColumns.Count + (AllowDelete ? 1 : 0))" class="cdg-empty">
+                                No child records.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ChildTableName { get; set; } = "";
+    [Parameter, EditorRequired] public string ForeignKeyField { get; set; } = "";
+    [Parameter, EditorRequired] public object? ParentKeyValue { get; set; }
+    [Parameter] public List<string> VisibleColumns { get; set; } = [];
+    [Parameter] public bool AllowAdd { get; set; } = true;
+    [Parameter] public bool AllowEdit { get; set; } = true;
+    [Parameter] public bool AllowDelete { get; set; } = true;
+    [Parameter] public FormTableDefinition? ChildFormTableDefinition { get; set; }
+    [Parameter] public bool EnableRowSelection { get; set; }
+    [Parameter] public EventCallback<Dictionary<string, object?>?> OnRowSelected { get; set; }
+    [Parameter] public EventCallback OnRowsChanged { get; set; }
+
+    private List<Dictionary<string, object?>> _rows = [];
+    private bool _loading = true;
+    private bool _saving;
+    private string? _error;
+    private int _editingRow = -1;
+    private string? _editingCol;
+    private int _selectedRowIndex = -1;
+    private object? _lastParentKeyValue;
+    private string? _lastChildTableName;
+    private string? _lastForeignKeyField;
+    private string? _lastChildTableDefinitionName;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        bool parentChanged = !Equals(_lastParentKeyValue, ParentKeyValue);
+        bool childTableChanged = !string.Equals(_lastChildTableName, ChildTableName, StringComparison.OrdinalIgnoreCase);
+        bool foreignKeyChanged = !string.Equals(_lastForeignKeyField, ForeignKeyField, StringComparison.OrdinalIgnoreCase);
+        bool definitionChanged = !string.Equals(_lastChildTableDefinitionName, ChildFormTableDefinition?.TableName, StringComparison.OrdinalIgnoreCase);
+
+        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged)
+        {
+            _lastParentKeyValue = ParentKeyValue;
+            _lastChildTableName = ChildTableName;
+            _lastForeignKeyField = ForeignKeyField;
+            _lastChildTableDefinitionName = ChildFormTableDefinition?.TableName;
+            await LoadChildRecords();
+        }
+    }
+
+    private async Task LoadChildRecords()
+    {
+        _loading = true;
+        _error = null;
+        _editingRow = -1;
+        _editingCol = null;
+        _selectedRowIndex = -1;
+        if (OnRowSelected.HasDelegate)
+            await OnRowSelected.InvokeAsync(null);
+        try
+        {
+            if (ChildFormTableDefinition is null)
+            {
+                _rows = [];
+                return;
+            }
+
+            _rows = await RecordService.ListFilteredRecordsAsync(ChildFormTableDefinition, ForeignKeyField, ParentKeyValue);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load: {ex.Message}";
+            _rows = [];
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task AddRow()
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            if (ChildFormTableDefinition is null)
+                throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
+
+            var newRow = new Dictionary<string, object?>
+            {
+                [ForeignKeyField] = ParentKeyValue
+            };
+            var created = await RecordService.CreateRecordAsync(ChildFormTableDefinition, newRow);
+            _rows.Add(created);
+            if (OnRowsChanged.HasDelegate)
+                await OnRowsChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Add failed: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void StartEditing(int rowIdx, string colName)
+    {
+        if (!AllowEdit) return;
+        _editingRow = rowIdx;
+        _editingCol = colName;
+    }
+
+    private void StopEditing()
+    {
+        _editingRow = -1;
+        _editingCol = null;
+    }
+
+    private async Task OnCellChanged(int rowIdx, string colName, object? newValue)
+    {
+        if (rowIdx < 0 || rowIdx >= _rows.Count) return;
+        var row = _rows[rowIdx];
+        row[colName] = newValue;
+
+        // Persist immediately
+        var pk = GetPk(row);
+        if (pk is not null)
+        {
+            try
+            {
+                if (ChildFormTableDefinition is null)
+                    throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
+
+                var updated = await RecordService.UpdateRecordAsync(ChildFormTableDefinition, pk, row);
+                _rows[rowIdx] = updated;
+                if (OnRowsChanged.HasDelegate)
+                    await OnRowsChanged.InvokeAsync();
+            }
+            catch (Exception ex)
+            {
+                _error = $"Save failed: {ex.Message}";
+            }
+        }
+        StopEditing();
+    }
+
+    private async Task DeleteRow(int rowIdx)
+    {
+        if (rowIdx < 0 || rowIdx >= _rows.Count) return;
+        var row = _rows[rowIdx];
+        var pk = GetPk(row);
+        if (pk is null) return;
+
+        _error = null;
+        try
+        {
+            if (ChildFormTableDefinition is null)
+                throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
+
+            await RecordService.DeleteRecordAsync(ChildFormTableDefinition, pk);
+            _rows.RemoveAt(rowIdx);
+            if (OnRowsChanged.HasDelegate)
+                await OnRowsChanged.InvokeAsync();
+            if (_editingRow == rowIdx) StopEditing();
+            if (_selectedRowIndex == rowIdx)
+            {
+                _selectedRowIndex = -1;
+                await OnRowSelected.InvokeAsync(null);
+            }
+            else if (_selectedRowIndex > rowIdx)
+            {
+                _selectedRowIndex--;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    private object? GetPk(Dictionary<string, object?> record)
+    {
+        // Use child table PK field if available
+        if (ChildFormTableDefinition?.PrimaryKey is { Count: > 0 } pkFields)
+        {
+            var pkField = pkFields[0];
+            if (record.TryGetValue(pkField, out var pkVal))
+                return pkVal;
+        }
+        // Fallback to common patterns
+        if (record.TryGetValue("id", out var id)) return id;
+        if (record.TryGetValue("Id", out id)) return id;
+        return null;
+    }
+
+    private async Task SelectRow(int rowIdx)
+    {
+        if (!EnableRowSelection) return;
+        if (_selectedRowIndex == rowIdx)
+        {
+            _selectedRowIndex = -1;
+            await OnRowSelected.InvokeAsync(null);
+        }
+        else
+        {
+            _selectedRowIndex = rowIdx;
+            await OnRowSelected.InvokeAsync(rowIdx >= 0 && rowIdx < _rows.Count ? _rows[rowIdx] : null);
+        }
+    }
+
+    private string GetRowClass(int rowIdx)
+    {
+        var classes = new List<string>();
+        if (EnableRowSelection && rowIdx == _selectedRowIndex) classes.Add("cdg-selected");
+        if (rowIdx == _editingRow) classes.Add("cdg-editing");
+        return string.Join(" ", classes);
+    }
+
+    private static string GetCellValue(Dictionary<string, object?> row, string colName)
+    {
+        if (row.TryGetValue(colName, out var v)) return v?.ToString() ?? "";
+        // Case-insensitive fallback
+        var key = row.Keys.FirstOrDefault(k => string.Equals(k, colName, StringComparison.OrdinalIgnoreCase));
+        if (key is not null && row.TryGetValue(key, out v)) return v?.ToString() ?? "";
+        return "";
+    }
+
+    private string GetColumnDisplayName(string fieldName)
+    {
+        if (ChildFormTableDefinition is not null)
+        {
+            var field = ChildFormTableDefinition.Fields.FirstOrDefault(f => f.Name == fieldName);
+            if (field?.DisplayName is not null) return field.DisplayName;
+        }
+        return fieldName;
+    }
+}

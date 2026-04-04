@@ -1,0 +1,298 @@
+@using CSharpDB.Admin.Forms.Models
+
+<div class="form-renderer" style="position: relative; min-height: 500px;">
+    @foreach (var control in Form.Controls)
+    {
+        var c = control;
+        var fieldName = c.Binding?.FieldName;
+        var tabIdx = GetTabIndex(c);
+        var hasError = fieldName is not null && ValidationErrors?.ContainsKey(fieldName) == true;
+        var errorMsg = hasError ? ValidationErrors![fieldName!] : null;
+        var inputClass = hasError ? "fr-input fr-field-error" : "fr-input";
+        <div style="@($"position: absolute; left: {c.Rect.X}px; top: {c.Rect.Y}px; width: {c.Rect.Width}px; height: {c.Rect.Height}px;")">
+            @switch (c.ControlType)
+            {
+                case "label":
+                    <span class="fr-label">@GetProp(c, "text", "Label")</span>
+                    break;
+                case "text":
+                    <input type="text"
+                           class="@inputClass"
+                           placeholder="@GetProp(c, "placeholder", "")"
+                           value="@GetFieldValue(fieldName)"
+                           readonly="@GetBoolProp(c, "readOnly")"
+                           tabindex="@tabIdx"
+                           @onchange="@(e => SetFieldValue(fieldName, e.Value))" />
+                    break;
+                case "number":
+                    <input type="number"
+                           class="@inputClass"
+                           placeholder="@GetProp(c, "placeholder", "")"
+                           value="@GetFieldValue(fieldName)"
+                           readonly="@GetBoolProp(c, "readOnly")"
+                           tabindex="@tabIdx"
+                           @onchange="@(e => SetFieldValue(fieldName, ParseNumber(e.Value)))" />
+                    break;
+                case "date":
+                    <input type="date"
+                           class="@inputClass"
+                           value="@GetDateValue(fieldName)"
+                           readonly="@GetBoolProp(c, "readOnly")"
+                           tabindex="@tabIdx"
+                           @onchange="@(e => SetFieldValue(fieldName, e.Value))" />
+                    break;
+                case "checkbox":
+                    <label class="fr-checkbox">
+                        <input type="checkbox"
+                               checked="@GetCheckboxFieldValue(fieldName)"
+                               tabindex="@tabIdx"
+                               @onchange="@(e => SetCheckboxFieldValue(fieldName, e.Value is bool b && b))" />
+                        <span>@GetProp(c, "text", fieldName ?? "Checkbox")</span>
+                    </label>
+                    break;
+                case "select":
+                    <select class="@inputClass"
+                            value="@GetFieldValue(fieldName)"
+                            tabindex="@tabIdx"
+                            @onchange="@(e => SetFieldValue(fieldName, e.Value))">
+                        <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
+                        @if (Choices?.TryGetValue(fieldName ?? "", out var choices) == true && choices is not null)
+                        {
+                            @foreach (var ch in choices)
+                            {
+                                <option value="@ch.Value">@ch.Label</option>
+                            }
+                        }
+                    </select>
+                    break;
+                case "lookup":
+                    <select class="@inputClass"
+                            value="@GetFieldValue(fieldName)"
+                            tabindex="@tabIdx"
+                            @onchange="@(e => SetFieldValue(fieldName, e.Value))">
+                        <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
+                        @if (Choices?.TryGetValue(fieldName ?? "", out var lookupChoices) == true && lookupChoices is not null)
+                        {
+                            @foreach (var ch in lookupChoices)
+                            {
+                                <option value="@ch.Value">@ch.Label</option>
+                            }
+                        }
+                    </select>
+                    break;
+                case "textarea":
+                    <textarea class="@(hasError ? "fr-input fr-textarea fr-field-error" : "fr-input fr-textarea")"
+                              placeholder="@GetProp(c, "placeholder", "")"
+                              value="@GetFieldValue(fieldName)"
+                              readonly="@GetBoolProp(c, "readOnly")"
+                              tabindex="@tabIdx"
+                              @onchange="@(e => SetFieldValue(fieldName, e.Value))"></textarea>
+                    break;
+                case "radio":
+                    @if (Choices?.TryGetValue(fieldName ?? "", out var radioChoices) == true && radioChoices is not null)
+                    {
+                        <div class="fr-radio-group">
+                            @foreach (var ch in radioChoices)
+                            {
+                                var val = ch.Value;
+                                <label class="fr-radio">
+                                    <input type="radio"
+                                           name="@($"radio_{c.ControlId}")"
+                                           value="@val"
+                                           checked="@IsRadioChoiceSelected(fieldName, val)"
+                                           tabindex="@tabIdx"
+                                           @onchange="@(e => SetRadioFieldValue(fieldName, val))" />
+                                    <span>@ch.Label</span>
+                                </label>
+                            }
+                        </div>
+                    }
+                    break;
+                case "computed":
+                    var computedValue = GetFieldValue(fieldName);
+                    var computedFormat = GetProp(c, "format", "");
+                    var displayValue = computedValue;
+                    if (!string.IsNullOrEmpty(computedFormat) && double.TryParse(computedValue, out var numVal))
+                    {
+                        try { displayValue = numVal.ToString(computedFormat); } catch { }
+                    }
+                    <input type="text"
+                           class="fr-input fr-computed"
+                           value="@displayValue"
+                           readonly
+                           tabindex="@tabIdx" />
+                    break;
+                case "datagrid":
+                    var dgChildTable = GetProp(c, "childTable", "");
+                    var dgFkField = GetProp(c, "foreignKeyField", "");
+                    var dgPkField = GetProp(c, "parentKeyField", "");
+                    var dgColumns = GetListProp(c, "visibleColumns");
+                    var dgAllowAdd = GetBoolProp(c, "allowAdd");
+                    var dgAllowEdit = GetBoolProp(c, "allowEdit");
+                    var dgAllowDelete = GetBoolProp(c, "allowDelete");
+                    var parentPkValue = GetFieldObjectValue(dgPkField);
+
+                    @if (!string.IsNullOrEmpty(dgChildTable) && !string.IsNullOrEmpty(dgFkField) && parentPkValue is not null)
+                    {
+                        <ChildDataGrid ChildTableName="@dgChildTable"
+                                       ForeignKeyField="@dgFkField"
+                                       ParentKeyValue="@parentPkValue"
+                                       VisibleColumns="dgColumns"
+                                       AllowAdd="dgAllowAdd"
+                                       AllowEdit="dgAllowEdit"
+                                       AllowDelete="dgAllowDelete"
+                                       ChildFormTableDefinition="@(ChildFormTableDefinitions?.GetValueOrDefault(dgChildTable))"
+                                       OnRowsChanged="OnChildRowsChanged" />
+                    }
+                    else if (parentPkValue is null && !string.IsNullOrEmpty(dgChildTable))
+                    {
+                        <div class="fr-datagrid-placeholder">Save the parent record first to see child records.</div>
+                    }
+                    else
+                    {
+                        <div class="fr-datagrid-placeholder">DataGrid not configured.</div>
+                    }
+                    break;
+                case "childtabs":
+                    var ctTabsRuntime = ChildTabConfigMapper.FromPropertyBag(
+                        c.Props.Values.TryGetValue("tabs", out var ctRtVal) ? ctRtVal : null);
+
+                    @if (ctTabsRuntime.Count > 0)
+                    {
+                        <ChildTabPanel Tabs="ctTabsRuntime"
+                                       ParentRecord="Record"
+                                       ParentTableDefinition="TableDefinition"
+                                       ChildFormTableDefinitions="ChildFormTableDefinitions" />
+                    }
+                    else
+                    {
+                        <div class="fr-datagrid-placeholder">Child Tabs not configured.</div>
+                    }
+                    break;
+                default:
+                    <span class="fr-label">[@c.ControlType]</span>
+                    break;
+            }
+            @if (errorMsg is not null)
+            {
+                <div class="fr-error-message">@errorMsg</div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FormDefinition Form { get; set; } = default!;
+    [Parameter] public FormTableDefinition? TableDefinition { get; set; }
+    [Parameter, EditorRequired] public Dictionary<string, object?> Record { get; set; } = default!;
+    [Parameter] public EventCallback<string> OnFieldChanged { get; set; }
+    [Parameter] public EventCallback<string> BeforeFieldChanged { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, IReadOnlyList<EnumChoice>>? Choices { get; set; }
+    [Parameter] public Dictionary<string, string>? ValidationErrors { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, FormTableDefinition>? ChildFormTableDefinitions { get; set; }
+    [Parameter] public EventCallback OnChildRowsChanged { get; set; }
+
+    private string GetFieldValue(string? fieldName)
+    {
+        if (fieldName is null) return "";
+        if (Record.TryGetValue(fieldName, out var val)) return val?.ToString() ?? "";
+        // Case-insensitive fallback for key lookup
+        var key = Record.Keys.FirstOrDefault(k => string.Equals(k, fieldName, StringComparison.OrdinalIgnoreCase));
+        if (key is not null && Record.TryGetValue(key, out val)) return val?.ToString() ?? "";
+        return "";
+    }
+
+    private object? GetFieldObjectValue(string? fieldName)
+    {
+        if (fieldName is null)
+            return null;
+
+        if (Record.TryGetValue(fieldName, out var value))
+            return value;
+
+        string? key = Record.Keys.FirstOrDefault(candidate => string.Equals(candidate, fieldName, StringComparison.OrdinalIgnoreCase));
+        return key is not null && Record.TryGetValue(key, out value) ? value : null;
+    }
+
+    private string GetDateValue(string? fieldName)
+    {
+        var raw = GetFieldValue(fieldName);
+        if (DateTime.TryParse(raw, out var dt))
+            return dt.ToString("yyyy-MM-dd");
+        return raw;
+    }
+
+    private bool GetCheckboxFieldValue(string? fieldName)
+        => FormControlValueConverter.ToBoolean(GetFieldObjectValue(fieldName));
+
+    private bool IsRadioChoiceSelected(string? fieldName, string? choiceValue)
+        => FormControlValueConverter.ChoiceMatchesValue(GetFieldObjectValue(fieldName), choiceValue, GetFieldDefinition(fieldName));
+
+    private void SetCheckboxFieldValue(string? fieldName, bool isChecked)
+        => SetFieldValue(fieldName, FormControlValueConverter.ConvertCheckboxValue(isChecked, GetFieldDefinition(fieldName)));
+
+    private void SetRadioFieldValue(string? fieldName, string? choiceValue)
+        => SetFieldValue(fieldName, FormControlValueConverter.ConvertChoiceValue(choiceValue, GetFieldDefinition(fieldName)));
+
+    private void SetFieldValue(string? fieldName, object? value)
+    {
+        if (fieldName is null) return;
+        BeforeFieldChanged.InvokeAsync(fieldName);
+        Record[fieldName] = value;
+        OnFieldChanged.InvokeAsync(fieldName);
+    }
+
+    private FormFieldDefinition? GetFieldDefinition(string? fieldName)
+        => fieldName is null
+            ? null
+            : TableDefinition?.Fields.FirstOrDefault(field => string.Equals(field.Name, fieldName, StringComparison.OrdinalIgnoreCase));
+
+    private static int GetTabIndex(ControlDefinition c)
+    {
+        if (c.Props.Values.TryGetValue("tabIndex", out var val))
+        {
+            if (val is int i) return i;
+            if (val is long l) return (int)l;
+            if (val is double d) return (int)d;
+            if (val is System.Text.Json.JsonElement je && je.TryGetInt32(out var ji)) return ji;
+            if (int.TryParse(val?.ToString(), out var parsed)) return parsed;
+        }
+        return 0;
+    }
+
+    private static string GetProp(ControlDefinition c, string key, string fallback)
+    {
+        if (c.Props.Values.TryGetValue(key, out var val) && val is string s)
+            return s;
+        return fallback;
+    }
+
+    private static List<string> GetListProp(ControlDefinition c, string key)
+    {
+        if (c.Props.Values.TryGetValue(key, out var val))
+        {
+            if (val is object?[] arr)
+                return arr.Where(x => x is not null).Select(x => x!.ToString()!).ToList();
+            if (val is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.Array)
+                return je.EnumerateArray().Select(e => e.GetString() ?? "").ToList();
+        }
+        return [];
+    }
+
+    private static bool GetBoolProp(ControlDefinition c, string key)
+    {
+        if (c.Props.Values.TryGetValue(key, out var val) && val is bool b)
+            return b;
+        return false;
+    }
+
+    private static object? ParseNumber(object? value)
+    {
+        if (value is null) return null;
+        var s = value.ToString();
+        if (string.IsNullOrEmpty(s)) return null;
+        if (long.TryParse(s, out var l)) return l;
+        if (double.TryParse(s, out var d)) return d;
+        return s;
+    }
+}

@@ -1,0 +1,132 @@
+@using CSharpDB.Admin.Reports.Contracts
+@inject IReportRepository ReportRepository
+@inject IReportPreviewService ReportPreviewService
+@inject IJSRuntime JS
+
+<div class="report-preview-root">
+    <div class="report-preview-toolbar">
+        <span class="report-preview-title">@(_report?.Name ?? "Report Preview")</span>
+        <span class="report-toolbar-spacer"></span>
+        <button @onclick="ReloadAsync">Refresh</button>
+        <button @onclick="PrintAsync" disabled="@(_preview is null)">Print</button>
+        <button @onclick="OpenDesignerAsync" disabled="@string.IsNullOrWhiteSpace(ReportId)">Designer</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="report-error">@_error</div>
+    }
+    else if (_preview is null)
+    {
+        <div class="report-empty-state">Loading report preview...</div>
+    }
+    else
+    {
+        if (!string.IsNullOrWhiteSpace(_preview.WarningMessage))
+        {
+            <div class="report-warning">@_preview.WarningMessage</div>
+        }
+
+        <div class="report-preview-meta">
+            <span>@_preview.TotalRows rows</span>
+            <span>@_preview.Pages.Count pages</span>
+            @if (_preview.IsTruncated)
+            {
+                <span>Truncated</span>
+            }
+        </div>
+
+        <div class="report-pages" @ref="_pagesElement">
+            @foreach (var page in _preview.Pages)
+            {
+                var localPage = page;
+                <div class="report-page">
+                    <div class="report-page-surface">
+                        @foreach (var band in localPage.Bands)
+                        {
+                            var localBand = band;
+                            <section class="report-render-band" style="@($"height:{localBand.Height}px;")">
+                                @foreach (var control in localBand.Controls)
+                                {
+                                    <div class="report-render-control @GetRenderClass(control)" style="@RenderStyle(control)">
+                                        @if (control.ControlType is ReportControlType.Label or ReportControlType.BoundText or ReportControlType.CalculatedText)
+                                        {
+                                            <span>@control.Text</span>
+                                        }
+                                    </div>
+                                }
+                            </section>
+                        }
+                    </div>
+                    <div class="report-page-number">Page @localPage.PageNumber</div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string ReportId { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> OnOpenDesigner { get; set; }
+
+    private ReportDefinition? _report;
+    private ReportPreviewResult? _preview;
+    private string? _error;
+    private string? _loadedReportId;
+    private ElementReference _pagesElement;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ReportId) || string.Equals(_loadedReportId, ReportId, StringComparison.Ordinal))
+            return;
+
+        _loadedReportId = ReportId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        _preview = null;
+        _report = null;
+
+        try
+        {
+            _report = await ReportRepository.GetAsync(ReportId);
+            if (_report is null)
+            {
+                _error = $"Report '{ReportId}' was not found.";
+                return;
+            }
+
+            _preview = await ReportPreviewService.BuildPreviewAsync(_report);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private Task ReloadAsync() => LoadAsync();
+
+    private Task PrintAsync()
+        => _preview is null
+            ? Task.CompletedTask
+            : JS.InvokeVoidAsync("reportInterop.printPages", _pagesElement, _report?.Name ?? "Report Preview").AsTask();
+
+    private Task OpenDesignerAsync()
+        => OnOpenDesigner.HasDelegate ? OnOpenDesigner.InvokeAsync(ReportId) : Task.CompletedTask;
+
+    private static string RenderStyle(ReportRenderedControl control)
+        => $"left:{control.Rect.X}px;top:{control.Rect.Y}px;width:{control.Rect.Width}px;height:{Math.Max(control.Rect.Height, control.ControlType == ReportControlType.Line ? 2 : 0)}px;";
+
+    private static string GetRenderClass(ReportRenderedControl control)
+        => control.ControlType switch
+        {
+            ReportControlType.Line => "line",
+            ReportControlType.Box => "box",
+            ReportControlType.BoundText => "bound-text",
+            ReportControlType.CalculatedText => "calc-text",
+            _ => "label",
+        };
+}

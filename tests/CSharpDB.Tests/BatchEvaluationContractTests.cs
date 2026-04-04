@@ -256,6 +256,754 @@ public class BatchEvaluationContractTests
     }
 
     [Fact]
+    public void BatchPlanCompiler_BindsTextColumnProjection()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression[] projections =
+        [
+            new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate: null, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 2);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(20)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 2);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal("10", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("20", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextNumericExpressionProjection()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression[] projections =
+        [
+            new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments =
+                [
+                    new BinaryExpression
+                    {
+                        Op = BinaryOp.Plus,
+                        Left = new ColumnRefExpression { ColumnName = "score" },
+                        Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+                    },
+                ],
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate: null, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 2);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(20)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 2);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal("15", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("25", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedColumnFilterAndProjection()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.NotEquals,
+            Left = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+            Right = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "10" },
+        };
+        Expression[] projections =
+        [
+            new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.Null]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal("20", destination.GetRowSpan(0)[0].AsText);
+        Assert.Equal("NULL", destination.GetRowSpan(1)[0].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.Equals,
+            Left = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+            Right = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "20" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10), DbValue.FromInteger(100)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(20), DbValue.FromInteger(200)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(30), DbValue.FromInteger(300)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(1, written);
+        Assert.Equal(20L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(200L, destination.GetRowSpan(0)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedNumericExpressionFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.Equals,
+            Left = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments =
+                [
+                    new BinaryExpression
+                    {
+                        Op = BinaryOp.Plus,
+                        Left = new ColumnRefExpression { ColumnName = "score" },
+                        Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+                    },
+                ],
+            },
+            Right = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "25" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(1, written);
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(20L, destination.GetRowSpan(0)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedNumericExpressionInFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments =
+                [
+                    new BinaryExpression
+                    {
+                        Op = BinaryOp.Plus,
+                        Left = new ColumnRefExpression { ColumnName = "score" },
+                        Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+                    },
+                ],
+            },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "15" },
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "35" },
+            ],
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(1L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(10L, destination.GetRowSpan(0)[1].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(30L, destination.GetRowSpan(1)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedNumericExpressionRangeFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments =
+                [
+                    new BinaryExpression
+                    {
+                        Op = BinaryOp.Plus,
+                        Left = new ColumnRefExpression { ColumnName = "score" },
+                        Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+                    },
+                ],
+            },
+            Low = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "20" },
+            High = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "30" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(1, written);
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(20L, destination.GetRowSpan(0)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedNumericExpressionLikeFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new LikeExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments =
+                [
+                    new BinaryExpression
+                    {
+                        Op = BinaryOp.Plus,
+                        Left = new ColumnRefExpression { ColumnName = "score" },
+                        Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+                    },
+                ],
+            },
+            Pattern = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "2%" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(1, written);
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(20L, destination.GetRowSpan(0)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNumericExpressionInFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "score" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+            },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 15L },
+                new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 35L },
+            ],
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(1L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(10L, destination.GetRowSpan(0)[1].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(30L, destination.GetRowSpan(1)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNumericExpressionRangeFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "score" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+            },
+            Low = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 20L },
+            High = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 30L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(1, written);
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(20L, destination.GetRowSpan(0)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedInFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "10" },
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "NULL" },
+            ],
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.Null]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(10L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.True(destination.GetRowSpan(1)[0].IsNull);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextInPushdownFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "category", Type = DbType.Text, Nullable = true },
+            ],
+        };
+
+        Expression predicate = new InExpression
+        {
+            Operand = new ColumnRefExpression { ColumnName = "category" },
+            Values =
+            [
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "Beta" },
+                new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "Gamma" },
+            ],
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+        Assert.Single(plan!.PushdownFilters);
+        Assert.Equal(BatchPushdownFilterKind.TextIn, plan.PushdownFilters[0].Kind);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromText("Alpha")]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromText("Beta")]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromText("Gamma")]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.Null]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 4);
+        int written = plan.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal("Beta", destination.GetRowSpan(0)[1].AsText);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal("Gamma", destination.GetRowSpan(1)[1].AsText);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedRangeFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BetweenExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+            Low = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "15" },
+            High = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "30" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(15)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(20)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(3, written);
+        Assert.Equal(15L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(20L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(30L, destination.GetRowSpan(2)[0].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsTextifiedLikeFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new LikeExpression
+        {
+            Operand = new FunctionCallExpression
+            {
+                FunctionName = "TEXT",
+                Arguments = [new ColumnRefExpression { ColumnName = "id" }],
+            },
+            Pattern = new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = "%5%" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 1, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(15)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(25)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(15L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(25L, destination.GetRowSpan(1)[0].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsIntegerDivisionExpressionFilterPlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_expr_filter",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.Equals,
+            Left = new BinaryExpression
+            {
+                Op = BinaryOp.Divide,
+                Left = new ColumnRefExpression { ColumnName = "score" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+            },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 1L },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateFilter(predicate, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(1)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(2)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(3)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(4)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(2L, destination.GetRowSpan(0)[1].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[1].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNestedArithmeticFilterAndProjection()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_nested_expr",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression computedExpression = new BinaryExpression
+        {
+            Op = BinaryOp.Multiply,
+            Left = new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "score" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 5L },
+            },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 2L },
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = computedExpression,
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 50L },
+        };
+        Expression[] projections =
+        [
+            new ColumnRefExpression { ColumnName = "id" },
+            computedExpression,
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 3);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 2, capacity: 3);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(50L, destination.GetRowSpan(0)[1].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+        Assert.Equal(70L, destination.GetRowSpan(1)[1].AsInteger);
+    }
+
+    [Fact]
     public async Task FilterProjectionOperator_BatchPlanPath_UsesSpecializedPlan()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -709,6 +1457,110 @@ public class BatchEvaluationContractTests
     }
 
     [Fact]
+    public void BatchPlanCompiler_BindsOrPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_or",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "value", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.Or,
+            Left = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "value" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 10L },
+            },
+            Right = new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = new ColumnRefExpression { ColumnName = "value" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 30L },
+            },
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "id" }], schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(40)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 0, 2 }, selection.AsSpan().ToArray());
+        Assert.Equal(1L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(3L, destination.GetRowSpan(1)[0].AsInteger);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsNotOrPredicate()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_not_or",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "value", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new UnaryExpression
+        {
+            Op = TokenType.Not,
+            Operand = new BinaryExpression
+            {
+                Op = BinaryOp.Or,
+                Left = new BinaryExpression
+                {
+                    Op = BinaryOp.Equals,
+                    Left = new ColumnRefExpression { ColumnName = "value" },
+                    Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 10L },
+                },
+                Right = new BinaryExpression
+                {
+                    Op = BinaryOp.Equals,
+                    Left = new ColumnRefExpression { ColumnName = "value" },
+                    Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 30L },
+                },
+            },
+        };
+
+        var plan = BatchPlanCompiler.TryCreate(predicate, [new ColumnRefExpression { ColumnName = "id" }], schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(40)]);
+
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 4);
+        int written = plan!.Execute(source, selection, destination);
+
+        Assert.Equal(2, written);
+        Assert.Equal(new[] { 1, 3 }, selection.AsSpan().ToArray());
+        Assert.Equal(2L, destination.GetRowSpan(0)[0].AsInteger);
+        Assert.Equal(4L, destination.GetRowSpan(1)[0].AsInteger);
+    }
+
+    [Fact]
     public void BatchPlanCompiler_BindsScalarCountStarAggregatePlan()
     {
         var schema = new TableSchema
@@ -837,6 +1689,56 @@ public class BatchEvaluationContractTests
         plan.Accumulate(source);
 
         Assert.Equal(27.5d, plan.GetResult().AsReal);
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BindsScalarExpressionSumAggregatePlan()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench_sum_expr",
+            Columns =
+            [
+                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false },
+                new ColumnDefinition { Name = "score", Type = DbType.Integer, Nullable = false },
+            ],
+        };
+
+        Expression predicate = new BinaryExpression
+        {
+            Op = BinaryOp.GreaterOrEqual,
+            Left = new ColumnRefExpression { ColumnName = "score" },
+            Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 20L },
+        };
+
+        Expression aggregateExpression = new BinaryExpression
+        {
+            Op = BinaryOp.Plus,
+            Left = new ColumnRefExpression { ColumnName = "id" },
+            Right = new ColumnRefExpression { ColumnName = "score" },
+        };
+
+        var plan = BatchPlanCompiler.TryCreateScalarAggregate(
+            predicate,
+            functionName: "SUM",
+            aggregateExpression,
+            isCountStar: false,
+            isDistinct: false,
+            schema);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.PushdownFilters);
+
+        var source = new RowBatch(columnCount: 2, capacity: 4);
+        source.CopyRowFrom(0, [DbValue.FromInteger(1), DbValue.FromInteger(10)]);
+        source.CopyRowFrom(1, [DbValue.FromInteger(2), DbValue.FromInteger(20)]);
+        source.CopyRowFrom(2, [DbValue.FromInteger(3), DbValue.FromInteger(30)]);
+        source.CopyRowFrom(3, [DbValue.FromInteger(4), DbValue.FromInteger(40)]);
+
+        plan.Reset();
+        plan.Accumulate(source);
+
+        Assert.Equal(99L, plan.GetResult().AsInteger);
     }
 
     [Fact]

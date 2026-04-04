@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Reports",
+        "description": "CSharpDB Admin Reports — visual banded-report designer with grouping, sorting, expressions, aggregate functions, and printable preview.",
+        "url": "https://csharpdb.com/docs/reports.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Reports',
+        description: 'CSharpDB Admin Reports — visual banded-report designer with grouping, sorting, expressions, aggregate functions, and printable preview.',
+        keywords: 'CSharpDB reports, report designer, banded reports, data reports, print preview, aggregates',
+        canonicalPath: 'docs/reports.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Reports</h1>
+                <p class="lead">Design and preview printable, banded reports from any table, view, or saved query — with grouping, sorting, expressions, aggregate functions, and configurable page layout.</p>
+
+                <!-- ───────── Overview ───────── -->
+                <h2 id="overview">Overview</h2>
+                <p>The Reports module is a Blazor-based reporting system integrated into the CSharpDB Admin UI. It provides a WYSIWYG designer for creating banded reports and a paginated preview with browser printing support.</p>
+                <ul>
+                    <li><strong>Data sources</strong> &mdash; tables, views, and saved queries</li>
+                    <li><strong>Banded layout</strong> &mdash; report header/footer, page header/footer, group header/footer, and detail bands</li>
+                    <li><strong>Controls</strong> &mdash; Label, BoundText, CalculatedText, Line, and Box</li>
+                    <li><strong>Expressions</strong> &mdash; arithmetic, field references, and aggregate functions (SUM, COUNT, AVG, MIN, MAX)</li>
+                    <li><strong>Grouping &amp; sorting</strong> &mdash; multi-level data grouping with ascending/descending sort direction</li>
+                    <li><strong>Page settings</strong> &mdash; Letter/A4 paper size, portrait/landscape orientation, configurable margins</li>
+                    <li><strong>Preview &amp; print</strong> &mdash; paginated preview up to 10,000 rows / 250 pages with browser print support</li>
+                </ul>
+
+                <!-- ───────── Designer ───────── -->
+                <h2 id="designer">Report Designer</h2>
+                <p>Open the designer from the <strong>Reports</strong> section of the Object Explorer or click <strong>New Report</strong> in the toolbar. The designer provides a multi-panel layout for building reports visually.</p>
+
+                <h3>Toolbox</h3>
+                <p>Drag controls from the toolbox onto any report band:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Control</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Label</strong></td><td>Static text with configurable font size, weight, and alignment.</td></tr>
+                        <tr><td><strong>BoundText</strong></td><td>Displays a field value with optional .NET format string (e.g. <code>C2</code> for currency, <code>yyyy-MM-dd</code> for dates).</td></tr>
+                        <tr><td><strong>CalculatedText</strong></td><td>Evaluates expressions with field references, arithmetic, and aggregate functions. Supports optional prefix text.</td></tr>
+                        <tr><td><strong>Line</strong></td><td>Horizontal or vertical line for visual separation.</td></tr>
+                        <tr><td><strong>Box</strong></td><td>Rectangle shape for grouping or highlighting areas.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Report Bands</h3>
+                <p>Reports use a banded layout where each band controls when its contents are rendered:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Band</th><th>When Rendered</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Report Header</strong></td><td>Once at the beginning of the report.</td></tr>
+                        <tr><td><strong>Page Header</strong></td><td>At the top of every page.</td></tr>
+                        <tr><td><strong>Group Header</strong></td><td>At the start of each group break.</td></tr>
+                        <tr><td><strong>Detail</strong></td><td>Once for every data row.</td></tr>
+                        <tr><td><strong>Group Footer</strong></td><td>At the end of each group.</td></tr>
+                        <tr><td><strong>Page Footer</strong></td><td>At the bottom of every page.</td></tr>
+                        <tr><td><strong>Report Footer</strong></td><td>Once at the end of the report.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Grouping &amp; Sorting</h3>
+                <p>Use the <strong>Groups</strong> panel to define grouping levels. Each group specifies a field and sort direction (ascending or descending). When groups are defined, the report engine automatically creates group header and footer bands. Use the <strong>Sorts</strong> panel to add additional sort levels beyond the group ordering.</p>
+
+                <h3>Page Settings</h3>
+                <p>Configure paper size (<strong>Letter</strong> or <strong>A4</strong>), orientation (<strong>Portrait</strong> or <strong>Landscape</strong>), and margins. These settings control pagination in the preview and affect printed output.</p>
+
+                <h3>Canvas Interaction</h3>
+                <ul>
+                    <li><strong>Drag</strong> controls to reposition them within a band.</li>
+                    <li><strong>Resize</strong> using corner/edge handles.</li>
+                    <li><strong>Select</strong> a control to edit its properties in the property inspector.</li>
+                    <li><strong>Z-order</strong> &mdash; Bring to Front / Send to Back arrangement.</li>
+                    <li><strong>Generate</strong> &mdash; Auto-generate a default layout from the data source fields.</li>
+                </ul>
+
+                <!-- ───────── Expressions ───────── -->
+                <h2 id="expressions">Expressions &amp; Aggregates</h2>
+                <p>CalculatedText controls evaluate expressions prefixed with <code>=</code>. Expressions support field references, arithmetic operators, and aggregate functions.</p>
+
+                <h3>Field References</h3>
+                <p>Reference fields using bracket notation (<code>[FieldName]</code>) or simple identifiers. Field values are resolved from the current data row.</p>
+
+                <h3>Arithmetic</h3>
+                <p>Standard operators: <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code></p>
+                <div class="code-block" data-title="Expression">
+                    <pre><code>=Price * Quantity
+=[UnitPrice] * [Qty] - [Discount]</code></pre>
+                </div>
+
+                <h3>Aggregate Functions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>SUM(field)</code></td><td>Sum of all values in the current scope.</td></tr>
+                        <tr><td><code>COUNT(field)</code></td><td>Count of non-null values.</td></tr>
+                        <tr><td><code>AVG(field)</code></td><td>Average of all values.</td></tr>
+                        <tr><td><code>MIN(field)</code></td><td>Minimum value.</td></tr>
+                        <tr><td><code>MAX(field)</code></td><td>Maximum value.</td></tr>
+                    </tbody>
+                </table>
+                <p>Aggregates are typically placed in group footer or report footer bands to summarize grouped data.</p>
+
+                <h3>Special Expressions</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Expression</th><th>Value</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>=PageNumber</code></td><td>Current page number.</td></tr>
+                        <tr><td><code>=PrintDate</code></td><td>Current date/time when the report is rendered.</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- ───────── Data Sources ───────── -->
+                <h2 id="data-sources">Data Sources</h2>
+                <p>Reports can be bound to three types of data sources:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Source</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Table</strong></td><td>Direct table data with all columns available as fields.</td></tr>
+                        <tr><td><strong>View</strong></td><td>Database view output.</td></tr>
+                        <tr><td><strong>Saved Query</strong></td><td>A pre-built SQL query saved in the system catalog.</td></tr>
+                    </tbody>
+                </table>
+                <p>Each source provides field metadata including data types, nullability, and display names. The designer detects schema changes since the report was created and displays a warning if fields have changed.</p>
+
+                <!-- ───────── Format Strings ───────── -->
+                <h2 id="formatting">Formatting</h2>
+                <p>BoundText and CalculatedText controls accept standard .NET format strings:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Format</th><th>Example Output</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>C2</code></td><td>$1,234.56 (currency)</td></tr>
+                        <tr><td><code>N0</code></td><td>1,235 (number, no decimals)</td></tr>
+                        <tr><td><code>P1</code></td><td>85.3% (percentage)</td></tr>
+                        <tr><td><code>yyyy-MM-dd</code></td><td>2026-04-03 (date)</td></tr>
+                    </tbody>
+                </table>
+                <p>Text alignment (left, center, right), font size, and font weight are configurable per control.</p>
+
+                <!-- ───────── Preview & Print ───────── -->
+                <h2 id="preview">Preview &amp; Print</h2>
+                <p>The preview renders the report with live data from the bound source. It displays paginated output with page navigation controls.</p>
+                <ul>
+                    <li><strong>Page navigation</strong> &mdash; Browse through rendered pages.</li>
+                    <li><strong>Print</strong> &mdash; Send the report to the browser's print dialog via JavaScript interop.</li>
+                    <li><strong>Refresh</strong> &mdash; Re-render with the latest data.</li>
+                    <li><strong>Edit</strong> &mdash; Jump back to the designer to modify the layout.</li>
+                </ul>
+                <p>Preview limits: 10,000 rows and 250 pages maximum. A truncation indicator is shown if limits are exceeded.</p>
+
+                <!-- ───────── Storage ───────── -->
+                <h2 id="storage">Report Storage</h2>
+                <p>Report definitions are stored in the <code>__reports</code> metadata table with the report layout serialized as JSON in <code>__report_definition_chunks</code>. The system supports:</p>
+                <ul>
+                    <li>CRUD operations (create, read, update, delete)</li>
+                    <li>Optimistic concurrency with version tracking</li>
+                    <li>Listing reports by source type and name</li>
+                </ul>
+
+                <!-- ───────── Next Steps ───────── -->
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="admin-ui.html" class="next-step-card">
+                            <h4>Admin UI Guide</h4>
+                            <p>Full guide to CSharpDB Studio features</p>
+                        </a>
+                        <a href="sql.html" class="next-step-card">
+                            <h4>SQL Reference</h4>
+                            <p>Full SQL syntax and statement reference</p>
+                        </a>
+                        <a href="ecosystem.html" class="next-step-card">
+                            <h4>Tools &amp; Ecosystem</h4>
+                            <p>CLI, API, SDK, and the full toolkit</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

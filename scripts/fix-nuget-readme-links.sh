@@ -51,7 +51,6 @@ for readme in "$@"; do
         "docs/deployment/README.md"                       => "docs/deployment.html",
         "docs/low-latency-durable-writes/README.md"       => "docs/low-latency-writes.html",
         "docs/pub-sub-events/README.md"                   => "docs/pub-sub-events.html",
-        "docs/sql-batched-row-transport/README.md"         => "docs/sql-batched-transport.html",
         "docs/storage/README.md"                          => "docs/storage-engine.html",
         "docs/user-defined-functions/README.md"            => "docs/user-defined-functions.html",
         "docs/tutorials/README.md"                         => "docs/tutorials/index.html",

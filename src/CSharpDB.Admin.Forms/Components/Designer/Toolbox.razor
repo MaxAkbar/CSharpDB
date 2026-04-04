@@ -1,0 +1,175 @@
+@using CSharpDB.Admin.Forms.Components.Designer
+@implements IDisposable
+
+<div class="toolbox">
+    <div class="toolbox-header">Toolbox</div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Select</div>
+        <button class="@ToolClass(null)"
+                @onclick="@(() => SetTool(null))"
+                title="Select and move controls">
+            <span class="toolbox-icon">&#x2196;</span> Pointer
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Layout</div>
+        <button class="@ToolClass(ToolLabel)"
+                @onclick="@(() => SetTool(ToolLabel))"
+                title="Static text label">
+            <span class="toolbox-icon">A</span> Label
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Input Controls</div>
+        <button class="@ToolClass(ToolText)"
+                @onclick="@(() => SetTool(ToolText))"
+                title="Text input field">
+            <span class="toolbox-icon">&#x2328;</span> Text
+        </button>
+        <button class="@ToolClass(ToolTextarea)"
+                @onclick="@(() => SetTool(ToolTextarea))"
+                title="Multi-line text area">
+            <span class="toolbox-icon">&#x2263;</span> Textarea
+        </button>
+        <button class="@ToolClass(ToolNumber)"
+                @onclick="@(() => SetTool(ToolNumber))"
+                title="Number input field">
+            <span class="toolbox-icon">#</span> Number
+        </button>
+        <button class="@ToolClass(ToolDate)"
+                @onclick="@(() => SetTool(ToolDate))"
+                title="Date picker">
+            <span class="toolbox-icon">&#x1F4C5;</span> Date
+        </button>
+        <button class="@ToolClass(ToolCheckbox)"
+                @onclick="@(() => SetTool(ToolCheckbox))"
+                title="Checkbox">
+            <span class="toolbox-icon">&#x2611;</span> Checkbox
+        </button>
+        <button class="@ToolClass(ToolRadio)"
+                @onclick="@(() => SetTool(ToolRadio))"
+                title="Radio button group">
+            <span class="toolbox-icon">&#x25C9;</span> Radio
+        </button>
+        <button class="@ToolClass(ToolSelect)"
+                @onclick="@(() => SetTool(ToolSelect))"
+                title="Dropdown select">
+            <span class="toolbox-icon">&#x25BE;</span> Select
+        </button>
+        <button class="@ToolClass(ToolLookup)"
+                @onclick="@(() => SetTool(ToolLookup))"
+                title="Lookup combo box (loads from table)">
+            <span class="toolbox-icon">&#x1F50D;</span> Lookup
+        </button>
+        <button class="@ToolClass(ToolComputed)"
+                @onclick="@(() => SetTool(ToolComputed))"
+                title="Computed field (formula-based)">
+            <span class="toolbox-icon">&#x03A3;</span> Computed
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Data</div>
+        <button class="@ToolClass(ToolDatagrid)"
+                @onclick="@(() => SetTool(ToolDatagrid))"
+                title="Child table data grid">
+            <span class="toolbox-icon">&#x2637;</span> DataGrid
+        </button>
+        <button class="@ToolClass(ToolChildTabs)"
+                @onclick="@(() => SetTool(ToolChildTabs))"
+                title="Tab-based child forms with nesting">
+            <span class="toolbox-icon">&#x2630;</span> Child Tabs
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Clipboard</div>
+        <button class="toolbox-item" @onclick="State.CopySelected"
+                disabled="@(State.SelectedIds.Count == 0)" title="Copy (Ctrl+C)">
+            <span class="toolbox-icon">&#x2398;</span> Copy
+        </button>
+        <button class="toolbox-item" @onclick="State.PasteClipboard"
+                disabled="@(!State.HasClipboard)" title="Paste (Ctrl+V)">
+            <span class="toolbox-icon">&#x2399;</span> Paste
+        </button>
+        <button class="toolbox-item" @onclick="State.DuplicateSelected"
+                disabled="@(State.SelectedIds.Count == 0)" title="Duplicate (Ctrl+D)">
+            <span class="toolbox-icon">&#x2750;</span> Duplicate
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Align</div>
+        <button class="toolbox-item" @onclick="State.AlignSelectedLeft"
+                disabled="@(State.SelectedIds.Count < 2)" title="Align Left">
+            <span class="toolbox-icon">&#x2590;</span> Left
+        </button>
+        <button class="toolbox-item" @onclick="State.AlignSelectedRight"
+                disabled="@(State.SelectedIds.Count < 2)" title="Align Right">
+            <span class="toolbox-icon">&#x258C;</span> Right
+        </button>
+        <button class="toolbox-item" @onclick="State.AlignSelectedTop"
+                disabled="@(State.SelectedIds.Count < 2)" title="Align Top">
+            <span class="toolbox-icon">&#x2594;</span> Top
+        </button>
+        <button class="toolbox-item" @onclick="State.AlignSelectedBottom"
+                disabled="@(State.SelectedIds.Count < 2)" title="Align Bottom">
+            <span class="toolbox-icon">&#x2581;</span> Bottom
+        </button>
+        <button class="toolbox-item" @onclick="State.DistributeHorizontally"
+                disabled="@(State.SelectedIds.Count < 3)" title="Distribute Horizontally">
+            <span class="toolbox-icon">&#x2194;</span> Dist H
+        </button>
+        <button class="toolbox-item" @onclick="State.DistributeVertically"
+                disabled="@(State.SelectedIds.Count < 3)" title="Distribute Vertically">
+            <span class="toolbox-icon">&#x2195;</span> Dist V
+        </button>
+    </div>
+
+    <div class="toolbox-group">
+        <div class="toolbox-group-label">Actions</div>
+        <button class="toolbox-item" @onclick="State.Undo" disabled="@(!State.CanUndo)" title="Undo (Ctrl+Z)">
+            <span class="toolbox-icon">&#x21A9;</span> Undo
+        </button>
+        <button class="toolbox-item" @onclick="State.Redo" disabled="@(!State.CanRedo)" title="Redo (Ctrl+Y)">
+            <span class="toolbox-icon">&#x21AA;</span> Redo
+        </button>
+        <button class="toolbox-item" @onclick="State.DeleteSelected"
+                disabled="@(State.SelectedIds.Count == 0)" title="Delete (Del)">
+            <span class="toolbox-icon">&#x2715;</span> Delete
+        </button>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] public DesignerState State { get; set; } = default!;
+
+    private const string ToolLabel = "label";
+    private const string ToolText = "text";
+    private const string ToolTextarea = "textarea";
+    private const string ToolNumber = "number";
+    private const string ToolDate = "date";
+    private const string ToolCheckbox = "checkbox";
+    private const string ToolRadio = "radio";
+    private const string ToolSelect = "select";
+    private const string ToolDatagrid = "datagrid";
+    private const string ToolChildTabs = "childtabs";
+    private const string ToolLookup = "lookup";
+    private const string ToolComputed = "computed";
+
+    protected override void OnInitialized() => State.OnChange += OnStateChanged;
+    public void Dispose() => State.OnChange -= OnStateChanged;
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private string ToolClass(string? tool) =>
+        "toolbox-item" + (State.ActiveTool == tool ? " active" : "");
+
+    private void SetTool(string? tool)
+    {
+        State.ActiveTool = tool;
+        State.NotifyChanged();
+    }
+}

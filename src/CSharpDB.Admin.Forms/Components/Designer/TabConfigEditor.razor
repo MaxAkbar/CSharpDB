@@ -1,0 +1,320 @@
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Contracts
+@inject ISchemaProvider SchemaProvider
+
+<div class="tce-container">
+    @for (var i = 0; i < Tabs.Count; i++)
+    {
+        var idx = i;
+        var tab = Tabs[i];
+        var isExpanded = _expandedTabs.Contains(tab.Id);
+        <div class="tce-tab-entry">
+            <div class="tce-tab-header">
+                <button class="tce-btn tce-toggle" @onclick="@(() => ToggleExpand(tab.Id))">
+                    @(isExpanded ? "▼" : "▶")
+                </button>
+                <span class="tce-tab-label">@(string.IsNullOrEmpty(tab.Label) ? $"Tab {idx + 1}" : tab.Label)</span>
+                <button class="tce-btn tce-btn-remove" @onclick="@(() => RemoveTab(idx))" title="Remove tab">✕</button>
+            </div>
+
+            @if (isExpanded)
+            {
+                <div class="tce-tab-body">
+                    <div class="tce-field">
+                        <label>Label</label>
+                        <input type="text" value="@tab.Label"
+                               @onchange="@(e => UpdateTab(idx, tab with { Label = e.Value?.ToString() ?? "" }))" />
+                    </div>
+                    <div class="tce-field">
+                        <label>Child Table</label>
+                        <select value="@tab.ChildTable" @onchange="@(e => OnTabTableChanged(idx, tab, e.Value?.ToString() ?? ""))">
+                            <option value="">-- Select table --</option>
+                            @if (AvailableTables is not null)
+                            {
+                                @foreach (var t in AvailableTables)
+                                {
+                                    <option value="@t">@t</option>
+                                }
+                            }
+                        </select>
+                    </div>
+
+                    @if (_tabTableDefs.TryGetValue(tab.Id, out var tabDef) && tabDef is not null)
+                    {
+                        var fks = tabDef.ForeignKeys
+                            .Where(fk => string.Equals(fk.ReferencedTable, ParentTableName, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        @if (fks.Count > 0)
+                        {
+                            <div class="tce-field">
+                                <label>Foreign Key</label>
+                                <select value="@GetSelectedForeignKeyName(tabDef, tab)" @onchange="@(e => OnTabFkChanged(idx, tab, tabDef, e.Value?.ToString() ?? ""))">
+                                    <option value="">-- Manual mapping --</option>
+                                    @foreach (var fk in fks)
+                                    {
+                                        <option value="@fk.Name">@fk.Name (@string.Join(", ", fk.LocalFields))</option>
+                                    }
+                                </select>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="tce-field">
+                                <span style="color: #d32f2f; font-size: 11px;">No FK referencing @ParentTableName. Use manual mapping below.</span>
+                            </div>
+                        }
+
+                        <div class="tce-field">
+                            <label>Child Field</label>
+                            <select value="@tab.ForeignKeyField" @onchange="@(e => OnTabChildFieldChanged(idx, tab, e.Value?.ToString() ?? ""))">
+                                <option value="">-- Select child field --</option>
+                                @foreach (var field in tabDef.Fields)
+                                {
+                                    <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="tce-field">
+                            <label>Parent Field</label>
+                            <select value="@tab.ParentKeyField" @onchange="@(e => OnTabParentFieldChanged(idx, tab, e.Value?.ToString() ?? ""))" disabled="@(_parentTableDef is null)">
+                                <option value="">-- Select parent field --</option>
+                                @if (_parentTableDef is not null)
+                                {
+                                    @foreach (var field in _parentTableDef.Fields)
+                                    {
+                                        <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                                    }
+                                }
+                            </select>
+                        </div>
+
+                        <div class="tce-field">
+                            <label>Visible Columns</label>
+                            @foreach (var field in tabDef.Fields)
+                            {
+                                var fn = field.Name;
+                                var isVisible = tab.VisibleColumns.Contains(fn);
+                                <label class="pi-column-check">
+                                    <input type="checkbox" checked="@isVisible"
+                                           @onchange="@(e => ToggleTabColumn(idx, tab, fn, e))" />
+                                    @(field.DisplayName ?? field.Name)
+                                </label>
+                            }
+                        </div>
+
+                        <div class="tce-field">
+                            <label><input type="checkbox" checked="@tab.AllowAdd"
+                                          @onchange="@(e => UpdateTab(idx, tab with { AllowAdd = e.Value is bool b && b }))" /> Allow Add</label>
+                        </div>
+                        <div class="tce-field">
+                            <label><input type="checkbox" checked="@tab.AllowEdit"
+                                          @onchange="@(e => UpdateTab(idx, tab with { AllowEdit = e.Value is bool b && b }))" /> Allow Edit</label>
+                        </div>
+                        <div class="tce-field">
+                            <label><input type="checkbox" checked="@tab.AllowDelete"
+                                          @onchange="@(e => UpdateTab(idx, tab with { AllowDelete = e.Value is bool b && b }))" /> Allow Delete</label>
+                        </div>
+
+                        @if (NestingLevel < 5)
+                        {
+                            <div class="tce-child-tabs">
+                                <div class="tce-field">
+                                    <label>Nested Child Tabs</label>
+                                </div>
+                                <TabConfigEditor Tabs="@tab.ChildTabs.ToList()"
+                                                 TabsChanged="@(newChildren => OnNestedTabsChanged(idx, tab, newChildren))"
+                                                 ParentTableName="@tab.ChildTable"
+                                                 AvailableTables="AvailableTables"
+                                                 NestingLevel="@(NestingLevel + 1)" />
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    <button class="tce-btn tce-btn-add" @onclick="AddTab">+ Add Tab</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<ChildTabConfig> Tabs { get; set; } = [];
+    [Parameter] public EventCallback<List<ChildTabConfig>> TabsChanged { get; set; }
+    [Parameter] public string ParentTableName { get; set; } = "";
+    [Parameter] public IReadOnlyList<string>? AvailableTables { get; set; }
+    [Parameter] public int NestingLevel { get; set; }
+
+    private readonly HashSet<string> _expandedTabs = [];
+    private readonly Dictionary<string, FormTableDefinition?> _tabTableDefs = [];
+    private string? _loadedParentTableName;
+    private FormTableDefinition? _parentTableDef;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.Equals(_loadedParentTableName, ParentTableName, StringComparison.Ordinal))
+        {
+            _loadedParentTableName = ParentTableName;
+            _parentTableDef = string.IsNullOrWhiteSpace(ParentTableName)
+                ? null
+                : await SchemaProvider.GetTableDefinitionAsync(ParentTableName);
+        }
+
+        // Load table definitions for any tabs that have a child table set
+        foreach (var tab in Tabs)
+        {
+            if (!string.IsNullOrEmpty(tab.ChildTable) && !_tabTableDefs.ContainsKey(tab.Id))
+            {
+                _tabTableDefs[tab.Id] = await SchemaProvider.GetTableDefinitionAsync(tab.ChildTable);
+            }
+        }
+    }
+
+    private void ToggleExpand(string tabId)
+    {
+        if (!_expandedTabs.Remove(tabId))
+            _expandedTabs.Add(tabId);
+    }
+
+    private async Task AddTab()
+    {
+        var newTab = new ChildTabConfig(
+            Id: Guid.NewGuid().ToString("N"),
+            Label: $"Tab {Tabs.Count + 1}",
+            ChildTable: "",
+            ForeignKeyField: "",
+            ParentKeyField: "",
+            VisibleColumns: [],
+            AllowAdd: true,
+            AllowEdit: true,
+            AllowDelete: true,
+            ChildTabs: []);
+        _expandedTabs.Add(newTab.Id);
+        Tabs.Add(newTab);
+        await TabsChanged.InvokeAsync(Tabs);
+    }
+
+    private async Task RemoveTab(int idx)
+    {
+        if (idx >= 0 && idx < Tabs.Count)
+        {
+            var id = Tabs[idx].Id;
+            _expandedTabs.Remove(id);
+            _tabTableDefs.Remove(id);
+            Tabs.RemoveAt(idx);
+            await TabsChanged.InvokeAsync(Tabs);
+        }
+    }
+
+    private async Task UpdateTab(int idx, ChildTabConfig updated)
+    {
+        if (idx >= 0 && idx < Tabs.Count)
+        {
+            Tabs[idx] = updated;
+            await TabsChanged.InvokeAsync(Tabs);
+        }
+    }
+
+    private async Task OnTabTableChanged(int idx, ChildTabConfig tab, string tableName)
+    {
+        FormTableDefinition? def = null;
+        if (!string.IsNullOrEmpty(tableName))
+        {
+            def = await SchemaProvider.GetTableDefinitionAsync(tableName);
+        }
+        _tabTableDefs[tab.Id] = def;
+
+        var fkField = "";
+        var pkField = "";
+        List<string> visibleCols = [];
+
+        if (def is not null)
+        {
+            // Auto-detect FK
+            var matchingFks = def.ForeignKeys
+                .Where(fk => string.Equals(fk.ReferencedTable, ParentTableName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matchingFks.Count == 1)
+            {
+                fkField = matchingFks[0].LocalFields[0];
+                pkField = matchingFks[0].ReferencedFields[0];
+            }
+
+            // Auto-select non-PK columns
+            visibleCols = def.Fields
+                .Where(f => !def.PrimaryKey.Contains(f.Name))
+                .Select(f => f.Name)
+                .ToList();
+        }
+
+        var updated = tab with
+        {
+            ChildTable = tableName,
+            ForeignKeyField = fkField,
+            ParentKeyField = pkField,
+            VisibleColumns = visibleCols,
+            ChildTabs = []
+        };
+        await UpdateTab(idx, updated);
+    }
+
+    private async Task OnTabFkChanged(int idx, ChildTabConfig tab, FormTableDefinition tabDef, string fkFieldValue)
+    {
+        if (string.IsNullOrWhiteSpace(fkFieldValue))
+            return;
+
+        var fk = tabDef.ForeignKeys.FirstOrDefault(f => string.Equals(f.Name, fkFieldValue, StringComparison.Ordinal));
+        if (fk is not null)
+        {
+            await UpdateTab(idx, tab with
+            {
+                ForeignKeyField = fk.LocalFields[0],
+                ParentKeyField = fk.ReferencedFields[0]
+            });
+        }
+    }
+
+    private Task OnTabChildFieldChanged(int idx, ChildTabConfig tab, string fieldName)
+        => UpdateTab(idx, tab with { ForeignKeyField = fieldName });
+
+    private Task OnTabParentFieldChanged(int idx, ChildTabConfig tab, string fieldName)
+        => UpdateTab(idx, tab with { ParentKeyField = fieldName });
+
+    private async Task ToggleTabColumn(int idx, ChildTabConfig tab, string fieldName, ChangeEventArgs e)
+    {
+        var cols = tab.VisibleColumns.ToList();
+        if (e.Value is bool b && b)
+        {
+            if (!cols.Contains(fieldName)) cols.Add(fieldName);
+        }
+        else
+        {
+            cols.Remove(fieldName);
+        }
+        await UpdateTab(idx, tab with { VisibleColumns = cols });
+    }
+
+    private async Task OnNestedTabsChanged(int idx, ChildTabConfig tab, List<ChildTabConfig> newChildren)
+    {
+        await UpdateTab(idx, tab with { ChildTabs = newChildren });
+    }
+
+    private static string GetSelectedForeignKeyName(FormTableDefinition tabDef, ChildTabConfig tab)
+    {
+        FormForeignKeyDefinition? matchingForeignKey = tabDef.ForeignKeys.FirstOrDefault(fk =>
+            fk.LocalFields.Count > 0 &&
+            fk.ReferencedFields.Count > 0 &&
+            string.Equals(fk.LocalFields[0], tab.ForeignKeyField, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(fk.ReferencedFields[0], tab.ParentKeyField, StringComparison.OrdinalIgnoreCase));
+
+        return matchingForeignKey?.Name ?? string.Empty;
+    }
+
+    private static string GetFieldOptionLabel(FormFieldDefinition field)
+        => string.Equals(field.DisplayName, field.Name, StringComparison.Ordinal)
+            ? field.Name
+            : string.IsNullOrWhiteSpace(field.DisplayName)
+                ? field.Name
+                : $"{field.DisplayName} ({field.Name})";
+}

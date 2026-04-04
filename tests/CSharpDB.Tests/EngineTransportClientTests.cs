@@ -159,4 +159,46 @@ public sealed class EngineTransportClientTests
                 File.Delete(dbPath + ".wal");
         }
     }
+
+    [Fact]
+    public async Task GetRowByPkAsync_UsesTargetedLookupForExistingAndMissingRows()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE Users (
+                    Id INTEGER PRIMARY KEY,
+                    Name TEXT NOT NULL
+                );
+                INSERT INTO Users VALUES (1, 'Ada');
+                INSERT INTO Users VALUES (2, 'Grace');
+                INSERT INTO Users VALUES (3, 'Linus');
+                """,
+                TestContext.Current.CancellationToken);
+
+            Dictionary<string, object?>? first = await client.GetRowByPkAsync("Users", "Id", 1L, TestContext.Current.CancellationToken);
+            Dictionary<string, object?>? middle = await client.GetRowByPkAsync("Users", "Id", 2L, TestContext.Current.CancellationToken);
+            Dictionary<string, object?>? last = await client.GetRowByPkAsync("Users", "Id", 3L, TestContext.Current.CancellationToken);
+            Dictionary<string, object?>? missing = await client.GetRowByPkAsync("Users", "Id", 99L, TestContext.Current.CancellationToken);
+
+            Assert.NotNull(first);
+            Assert.Equal("Ada", first!["Name"]);
+            Assert.NotNull(middle);
+            Assert.Equal("Grace", middle!["Name"]);
+            Assert.NotNull(last);
+            Assert.Equal("Linus", last!["Name"]);
+            Assert.Null(missing);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
 }

@@ -1,0 +1,451 @@
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Components.Designer
+@implements IDisposable
+
+<div class="design-canvas-wrapper">
+    <div class="design-canvas"
+         @ref="_canvasRef"
+         style="@($"cursor: {CanvasCursor}; min-width: {State.GetCanvasWidth()}px;")"
+         @onpointerdown="OnCanvasPointerDown"
+         @onpointermove="OnCanvasPointerMove"
+         @onpointerup="OnCanvasPointerUp"
+         @onpointerdown:preventDefault="@(State.IsDragging || State.IsResizing)">
+
+        @if (_isMarquee)
+        {
+            var mx = Math.Min(_marqueeStartX, _marqueeEndX);
+            var my = Math.Min(_marqueeStartY, _marqueeEndY);
+            var mw = Math.Abs(_marqueeEndX - _marqueeStartX);
+            var mh = Math.Abs(_marqueeEndY - _marqueeStartY);
+            <div class="marquee-rect"
+                 style="@($"left:{mx}px;top:{my}px;width:{mw}px;height:{mh}px;")"></div>
+        }
+
+        @foreach (var control in State.Controls)
+        {
+            if (!State.IsVisibleAtBreakpoint(control)) continue;
+            var isSelected = State.SelectedIds.Contains(control.ControlId);
+            var c = control; // capture for lambda
+            var effectiveRect = State.GetEffectiveRect(c);
+            <div class="@($"design-item {(isSelected ? "selected" : "")}")"
+                 style="@($"left: {effectiveRect.X}px; top: {effectiveRect.Y}px; width: {effectiveRect.Width}px; height: {effectiveRect.Height}px;")"
+                 @onpointerdown="e => OnItemPointerDown(e, c)"
+                 @onpointerdown:stopPropagation="true">
+
+                @if (State.ShowTabOrder && c.Binding is not null)
+                {
+                    var tabIdx = GetTabIndex(c);
+                    @if (tabIdx > 0)
+                    {
+                        <div class="tab-order-badge">@tabIdx</div>
+                    }
+                }
+
+                <div class="design-item-content">
+                    @switch (c.ControlType)
+                    {
+                        case "label":
+                            <span class="preview-label">@GetProp(c, "text", "Label")</span>
+                            break;
+                        case "text":
+                            <input type="text" class="preview-input" placeholder="@GetProp(c, "placeholder", "Text")" disabled />
+                            break;
+                        case "number":
+                            <input type="number" class="preview-input" placeholder="@GetProp(c, "placeholder", "0")" disabled />
+                            break;
+                        case "date":
+                            <input type="date" class="preview-input" disabled />
+                            break;
+                        case "checkbox":
+                            <label class="preview-checkbox">
+                                <input type="checkbox" disabled />
+                                <span>@GetProp(c, "text", c.Binding?.FieldName ?? "Checkbox")</span>
+                            </label>
+                            break;
+                        case "select":
+                            <select class="preview-input" disabled>
+                                <option>@GetProp(c, "placeholder", "-- Select --")</option>
+                            </select>
+                            break;
+                        case "lookup":
+                            var lkTable = GetProp(c, "lookupTable", "");
+                            <select class="preview-input" disabled>
+                                <option>@(string.IsNullOrEmpty(lkTable) ? GetProp(c, "placeholder", "-- Select --") : $"Lookup: {lkTable}")</option>
+                            </select>
+                            break;
+                        case "computed":
+                            var formula = GetProp(c, "formula", "");
+                            <input type="text" class="preview-input preview-computed"
+                                   placeholder="@(string.IsNullOrEmpty(formula) ? "Computed" : formula)"
+                                   disabled />
+                            break;
+                        case "textarea":
+                            <textarea class="preview-input" style="resize: none;" placeholder="@GetProp(c, "placeholder", "Text area")" disabled></textarea>
+                            break;
+                        case "radio":
+                            <span class="preview-label">&#x25C9; @(c.Binding?.FieldName ?? "Radio Group")</span>
+                            break;
+                        case "datagrid":
+                            var childTbl = GetProp(c, "childTable", "");
+                            var dgCols = GetListProp(c, "visibleColumns");
+                            <div class="preview-datagrid">
+                                <div class="preview-datagrid-header">
+                                    <span class="preview-datagrid-icon">&#x2637;</span>
+                                    @(string.IsNullOrEmpty(childTbl) ? "DataGrid (not configured)" : $"DataGrid: {childTbl}")
+                                </div>
+                                <div class="preview-datagrid-body">
+                                    <div class="preview-datagrid-row header-row">
+                                        @{
+                                            var previewCols = dgCols.Count > 0 ? dgCols : new List<string> { "Column 1", "Column 2", "Column 3" };
+                                        }
+                                        @foreach (var col in previewCols)
+                                        {
+                                            <div class="preview-datagrid-cell">@col</div>
+                                        }
+                                    </div>
+                                    <div class="preview-datagrid-row">
+                                        @foreach (var col in previewCols)
+                                        {
+                                            <div class="preview-datagrid-cell">&nbsp;</div>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                            break;
+                        case "childtabs":
+                            var ctTabs = ChildTabConfigMapper.FromPropertyBag(
+                                c.Props.Values.TryGetValue("tabs", out var ctVal) ? ctVal : null);
+                            <div class="preview-childtabs">
+                                <div class="preview-childtabs-header">
+                                    <span class="preview-datagrid-icon">&#x2630;</span>
+                                    @(ctTabs.Count == 0 ? "Child Tabs (no tabs configured)" : "Child Tabs")
+                                </div>
+                                @if (ctTabs.Count > 0)
+                                {
+                                    <div class="preview-childtabs-tabbar">
+                                        @foreach (var tab in ctTabs)
+                                        {
+                                            <div class="preview-childtabs-tab">@(string.IsNullOrEmpty(tab.Label) ? tab.ChildTable : tab.Label)</div>
+                                        }
+                                    </div>
+                                    <div class="preview-childtabs-body">
+                                        <div class="preview-datagrid-row header-row">
+                                            @{
+                                                var firstTab = ctTabs[0];
+                                                var tabCols = firstTab.VisibleColumns.Count > 0
+                                                    ? firstTab.VisibleColumns.ToList()
+                                                    : new List<string> { "Column 1", "Column 2", "Column 3" };
+                                            }
+                                            @foreach (var col in tabCols)
+                                            {
+                                                <div class="preview-datagrid-cell">@col</div>
+                                            }
+                                        </div>
+                                        <div class="preview-datagrid-row">
+                                            @foreach (var col in tabCols)
+                                            {
+                                                <div class="preview-datagrid-cell">&nbsp;</div>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="preview-childtabs-empty">Configure tabs in the property inspector</div>
+                                }
+                            </div>
+                            break;
+                        default:
+                            <span class="preview-label">[@c.ControlType]</span>
+                            break;
+                    }
+                </div>
+
+                @if (isSelected)
+                {
+                    @foreach (var h in _handles)
+                    {
+                        var handle = h;
+                        <div class="@($"resize-handle {handle}")"
+                             @onpointerdown="e => OnResizePointerDown(e, c, handle)"
+                             @onpointerdown:stopPropagation="true"></div>
+                    }
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] public DesignerState State { get; set; } = default!;
+
+    private ElementReference _canvasRef;
+    private static readonly string[] _handles = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+    // Marquee selection state
+    private bool _isMarquee;
+    private double _marqueeStartX, _marqueeStartY;
+    private double _marqueeEndX, _marqueeEndY;
+    private bool _marqueeShift;
+
+    protected override void OnInitialized() => State.OnChange += OnStateChanged;
+    public void Dispose() => State.OnChange -= OnStateChanged;
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private string CanvasCursor => State.ActiveTool != null ? "crosshair" :
+                                    State.IsDragging ? "grabbing" :
+                                    State.IsResizing ? "nwse-resize" :
+                                    _isMarquee ? "crosshair" : "default";
+
+    private static string GetProp(ControlDefinition c, string key, string fallback)
+    {
+        if (c.Props.Values.TryGetValue(key, out var val) && val is string s)
+            return s;
+        return fallback;
+    }
+
+    private static List<string> GetListProp(ControlDefinition c, string key)
+    {
+        if (c.Props.Values.TryGetValue(key, out var val))
+        {
+            if (val is object?[] arr)
+                return arr.Where(x => x is not null).Select(x => x!.ToString()!).ToList();
+            if (val is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.Array)
+                return je.EnumerateArray().Select(e => e.GetString() ?? "").ToList();
+        }
+        return [];
+    }
+
+    private void OnCanvasPointerDown(PointerEventArgs e)
+    {
+        if (e.Button != 0) return;
+
+        if (State.ActiveTool is not null)
+        {
+            PlaceNewControl(e);
+            return;
+        }
+
+        // Start marquee selection on empty canvas
+        _isMarquee = true;
+        _marqueeStartX = e.OffsetX;
+        _marqueeStartY = e.OffsetY;
+        _marqueeEndX = e.OffsetX;
+        _marqueeEndY = e.OffsetY;
+        _marqueeShift = e.ShiftKey;
+
+        if (!e.ShiftKey)
+            State.ClearSelection();
+    }
+
+    private void PlaceNewControl(PointerEventArgs e)
+    {
+        var x = State.Snap(e.OffsetX);
+        var y = State.Snap(e.OffsetY);
+        var controlType = State.ActiveTool!;
+
+        var (width, height) = controlType switch
+        {
+            "label" => (180.0, 34.0),
+            "checkbox" => (200.0, 34.0),
+            "textarea" => (320.0, 80.0),
+            "radio" => (200.0, 80.0),
+            "datagrid" => (560.0, 200.0),
+            "childtabs" => (600.0, 280.0),
+            _ => (320.0, 34.0)
+        };
+
+        var props = new Dictionary<string, object?>();
+        if (controlType == "label")
+            props["text"] = "Label";
+        if (controlType == "checkbox")
+            props["text"] = "Checkbox";
+        if (controlType == "datagrid")
+        {
+            props["childTable"] = "";
+            props["foreignKeyField"] = "";
+            props["parentKeyField"] = "";
+            props["foreignKeyName"] = "";
+            props["visibleColumns"] = Array.Empty<object?>();
+            props["allowAdd"] = true;
+            props["allowDelete"] = true;
+            props["allowEdit"] = true;
+        }
+        if (controlType == "childtabs")
+        {
+            props["tabs"] = Array.Empty<object?>();
+        }
+        if (controlType == "lookup")
+        {
+            props["lookupTable"] = "";
+            props["displayField"] = "";
+            props["valueField"] = "";
+            props["placeholder"] = "-- Select --";
+        }
+        if (controlType == "computed")
+        {
+            props["formula"] = "";
+            props["format"] = "";
+        }
+
+        var control = new ControlDefinition(
+            ControlId: Guid.NewGuid().ToString("N"),
+            ControlType: controlType,
+            Rect: new Rect(x, y, width, height),
+            Binding: (controlType is "label" or "datagrid" or "childtabs") ? null : new BindingDefinition("", "TwoWay"),
+            Props: new PropertyBag(props),
+            ValidationOverride: null);
+
+        State.AddControl(control);
+        State.ActiveTool = null; // Return to pointer mode after placement
+    }
+
+    private void OnItemPointerDown(PointerEventArgs e, ControlDefinition control)
+    {
+        if (e.Button != 0) return;
+
+        // Select
+        State.SelectControl(control.ControlId, e.ShiftKey);
+
+        // Start drag using effective rect for breakpoint
+        var effectiveRect = State.GetEffectiveRect(control);
+        State.PushUndo();
+        State.IsDragging = true;
+        State.DraggingControlId = control.ControlId;
+        State.DragStartPointerX = e.ClientX;
+        State.DragStartPointerY = e.ClientY;
+        State.DragOriginX = effectiveRect.X;
+        State.DragOriginY = effectiveRect.Y;
+    }
+
+    private void OnResizePointerDown(PointerEventArgs e, ControlDefinition control, string handle)
+    {
+        if (e.Button != 0) return;
+
+        State.PushUndo();
+        State.IsResizing = true;
+        State.ResizingControlId = control.ControlId;
+        State.ResizeHandle = handle;
+        State.ResizeOriginRect = State.GetEffectiveRect(control);
+        State.ResizeStartPointerX = e.ClientX;
+        State.ResizeStartPointerY = e.ClientY;
+    }
+
+    private void OnCanvasPointerMove(PointerEventArgs e)
+    {
+        if (State.IsDragging && State.DraggingControlId is not null)
+        {
+            var dx = e.ClientX - State.DragStartPointerX;
+            var dy = e.ClientY - State.DragStartPointerY;
+            var newX = State.Snap(State.DragOriginX + dx);
+            var newY = State.Snap(State.DragOriginY + dy);
+            newX = Math.Max(0, newX);
+            newY = Math.Max(0, newY);
+            State.MoveControlForBreakpoint(State.DraggingControlId, newX, newY);
+        }
+        else if (State.IsResizing && State.ResizingControlId is not null && State.ResizeOriginRect is not null)
+        {
+            ApplyResize(e);
+        }
+        else if (_isMarquee)
+        {
+            _marqueeEndX = e.OffsetX;
+            _marqueeEndY = e.OffsetY;
+        }
+    }
+
+    private void OnCanvasPointerUp(PointerEventArgs e)
+    {
+        if (_isMarquee)
+        {
+            FinalizeMarquee();
+            _isMarquee = false;
+        }
+
+        State.IsDragging = false;
+        State.DraggingControlId = null;
+        State.IsResizing = false;
+        State.ResizingControlId = null;
+        State.ResizeHandle = null;
+        State.ResizeOriginRect = null;
+    }
+
+    private void FinalizeMarquee()
+    {
+        var x1 = Math.Min(_marqueeStartX, _marqueeEndX);
+        var y1 = Math.Min(_marqueeStartY, _marqueeEndY);
+        var x2 = Math.Max(_marqueeStartX, _marqueeEndX);
+        var y2 = Math.Max(_marqueeStartY, _marqueeEndY);
+
+        // Skip degenerate click (< 3x3 px)
+        if (x2 - x1 < 3 && y2 - y1 < 3) return;
+
+        foreach (var c in State.Controls)
+        {
+            if (!State.IsVisibleAtBreakpoint(c)) continue;
+            // Check intersection using effective rect
+            var er = State.GetEffectiveRect(c);
+            var cx1 = er.X;
+            var cy1 = er.Y;
+            var cx2 = er.X + er.Width;
+            var cy2 = er.Y + er.Height;
+
+            if (cx1 < x2 && cx2 > x1 && cy1 < y2 && cy2 > y1)
+            {
+                State.SelectedIds.Add(c.ControlId);
+            }
+        }
+
+        State.NotifyChanged();
+    }
+
+    private static int GetTabIndex(ControlDefinition c)
+    {
+        if (c.Props.Values.TryGetValue("tabIndex", out var val))
+        {
+            if (val is int i) return i;
+            if (val is long l) return (int)l;
+            if (val is double d) return (int)d;
+            if (val is System.Text.Json.JsonElement je && je.TryGetInt32(out var ji)) return ji;
+            if (int.TryParse(val?.ToString(), out var parsed)) return parsed;
+        }
+        return 0;
+    }
+
+    private void ApplyResize(PointerEventArgs e)
+    {
+        var o = State.ResizeOriginRect!;
+        var dx = e.ClientX - State.ResizeStartPointerX;
+        var dy = e.ClientY - State.ResizeStartPointerY;
+        var handle = State.ResizeHandle!;
+
+        double x = o.X, y = o.Y, w = o.Width, h = o.Height;
+
+        if (handle.Contains('w'))
+        {
+            x = State.Snap(o.X + dx);
+            w = o.Width + (o.X - x);
+        }
+        if (handle.Contains('e'))
+        {
+            w = State.Snap(o.Width + dx);
+        }
+        if (handle is "n" or "nw" or "ne")
+        {
+            y = State.Snap(o.Y + dy);
+            h = o.Height + (o.Y - y);
+        }
+        if (handle is "s" or "sw" or "se")
+        {
+            h = State.Snap(o.Height + dy);
+        }
+
+        // Enforce minimums
+        if (w < 24) { w = 24; if (handle.Contains('w')) x = o.X + o.Width - 24; }
+        if (h < 16) { h = 16; if (handle is "n" or "nw" or "ne") y = o.Y + o.Height - 16; }
+        x = Math.Max(0, x);
+        y = Math.Max(0, y);
+
+        State.ResizeControlForBreakpoint(State.ResizingControlId!, new Rect(x, y, w, h));
+    }
+}

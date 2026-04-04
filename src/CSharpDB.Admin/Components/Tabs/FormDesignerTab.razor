@@ -1,0 +1,51 @@
+@implements IDisposable
+@inject DatabaseClientHolder DbHolder
+@inject DatabaseChangeService Changes
+@inject TabManagerService TabManager
+
+<CSharpDB.Admin.Forms.Pages.Designer @key="_renderKey"
+                                     FormId="@Tab.FormId"
+                                     InitialTableName="@Tab.InitialTableName"
+                                     OnFormSaved="OnFormSaved"
+                                     OnOpenEntry="OpenEntry" />
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+    private string _renderKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _renderKey = BuildRenderKey();
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
+    }
+
+    public void Dispose()
+    {
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
+    }
+
+    private Task OnFormSaved(FormDefinition form)
+    {
+        Tab.FormId = form.FormId;
+        Tab.InitialTableName = form.TableName;
+        Tab.Title = form.Name;
+        Tab.Icon = "bi-ui-checks-grid";
+        TabManager.ActivateTab(Tab.Id);
+        Changes.NotifyChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task OpenEntry(string formId)
+    {
+        TabManager.OpenFormEntryTab(formId, Tab.Title);
+        return Task.CompletedTask;
+    }
+
+    private void OnDatabaseChanged()
+    {
+        _renderKey = BuildRenderKey();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}";
+}

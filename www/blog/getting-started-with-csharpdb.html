@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Getting Started with CSharpDB — Blog — CSharpDB</title>
+    <meta name="description" content="A step-by-step tutorial on installing CSharpDB, creating databases, running SQL, using the Collection API, and configuring the storage engine.">
+    <link rel="canonical" href="https://csharpdb.com/blog/getting-started-with-csharpdb.html">
+    <meta property="og:title" content="Getting Started with CSharpDB">
+    <meta property="og:description" content="A step-by-step tutorial on installing CSharpDB, creating databases, running SQL, using the Collection API, and configuring the storage engine.">
+    <meta property="og:url" content="https://csharpdb.com/blog/getting-started-with-csharpdb.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Getting Started with CSharpDB",
+        "description": "A step-by-step tutorial on installing CSharpDB, creating databases, running SQL, using the Collection API, and configuring the storage engine.",
+        "url": "https://csharpdb.com/blog/getting-started-with-csharpdb.html",
+        "datePublished": "2026-03-31",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 {
+            margin-top: 48px;
+            margin-bottom: 16px;
+        }
+        .blog-post-content h3 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        .blog-post-content p {
+            margin-bottom: 16px;
+        }
+        .blog-post-content .code-block {
+            margin: 20px 0 24px;
+        }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Getting Started with CSharpDB',
+        description: 'A step-by-step tutorial on installing CSharpDB, creating databases, running SQL, using the Collection API, and configuring the storage engine.',
+        keywords: 'CSharpDB tutorial, getting started, .NET database, embedded database, SQL, Collection API',
+        canonicalPath: 'blog/getting-started-with-csharpdb.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Getting Started with CSharpDB</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Tutorial</span>
+                    <span>March 31, 2026</span>
+                    <span>&middot; 8 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB is a zero-dependency embedded database engine for .NET. It gives you full SQL support, a typed Collection API, and a low-level storage engine — all in a single NuGet package with no native binaries to manage.</p>
+                    <p>In this tutorial, you'll go from installation to running queries in under five minutes.</p>
+
+                    <h2>Prerequisites</h2>
+                    <p>You need the <strong>.NET 10 SDK</strong> (or later) installed. Any project type works — console app, ASP.NET, MAUI, Blazor, or a class library.</p>
+
+                    <h2>Step 1: Install the Package</h2>
+                    <p>Add CSharpDB to your project via the .NET CLI:</p>
+                    <div class="code-block" data-title="Terminal">
+                        <pre><code>dotnet add package CSharpDB</code></pre>
+                    </div>
+                    <p>This meta-package pulls in the storage engine, SQL engine, Collection API, ADO.NET provider, and diagnostics. If you only need a subset, you can install individual packages like <code>CSharpDB.Storage</code>, <code>CSharpDB.Engine</code>, or <code>CSharpDB.Data</code>.</p>
+
+                    <h2>Step 2: Create a Database and Run SQL</h2>
+                    <p>The simplest way to use CSharpDB is through the <code>Database</code> class in <code>CSharpDB.Engine</code>. It opens (or creates) a single-file database and lets you execute SQL directly:</p>
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="cm">// Open or create a database file</span>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// Create a table</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">@"
+    CREATE TABLE IF NOT EXISTS Products (
+        Id    INTEGER PRIMARY KEY,
+        Name  TEXT NOT NULL,
+        Price REAL
+    )"</span>);
+
+<span class="cm">// Insert data</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO Products VALUES (1, 'Widget', 9.99)"</span>);
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO Products VALUES (2, 'Gadget', 24.99)"</span>);
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"INSERT INTO Products VALUES (3, 'Doohickey', 4.50)"</span>);
+
+<span class="cm">// Query and read results</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT Name, Price FROM Products WHERE Price > 5 ORDER BY Price DESC"</span>);
+
+<span class="kw">while</span> (<span class="kw">await</span> results.MoveNextAsync())
+{
+    <span class="kw">var</span> name  = results.Current[<span class="num">0</span>].AsText;
+    <span class="kw">var</span> price = results.Current[<span class="num">1</span>].AsReal;
+    Console.WriteLine(<span class="str">$"{name}: ${price:F2}"</span>);
+}</code></pre>
+                    </div>
+                    <p>Output:</p>
+                    <div class="code-block" data-title="Output">
+                        <pre><code>Gadget: $24.99
+Widget: $9.99</code></pre>
+                    </div>
+                    <p>That's it — no connection strings, no server process, no configuration files. The database is a single <code>.db</code> file on disk with write-ahead logging and crash recovery built in.</p>
+
+                    <h2>Step 3: Use ADO.NET for Familiar Patterns</h2>
+                    <p>If you prefer the standard .NET data access pattern with <code>DbConnection</code> and <code>DbCommand</code>, CSharpDB includes a full ADO.NET provider:</p>
+                    <div class="code-block" data-title="Program.cs — ADO.NET">
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=myapp.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">"SELECT Name, Price FROM Products WHERE Price > @min"</span>;
+cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParameter</span>(<span class="str">"@min"</span>, <span class="num">5.0</span>));
+
+<span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+<span class="kw">while</span> (<span class="kw">await</span> reader.ReadAsync())
+{
+    Console.WriteLine(<span class="str">$"{reader.GetString(0)}: ${reader.GetDouble(1):F2}"</span>);
+}</code></pre>
+                    </div>
+                    <p>The ADO.NET provider supports parameterized queries, connection pooling, transactions, and <code>GetSchema()</code> for ORM/tooling compatibility.</p>
+
+                    <h2>Step 4: Store Objects with the Collection API</h2>
+                    <p>Don't need SQL? The Collection API lets you store and retrieve typed C# objects with zero mapping code:</p>
+                    <div class="code-block" data-title="Program.cs — Collections">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">string</span>[] Tags);
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+<span class="kw">var</span> products = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Product</span>&gt;(<span class="str">"products"</span>);
+
+<span class="cm">// Store objects by key</span>
+<span class="kw">await</span> products.PutAsync(<span class="str">"widget"</span>, <span class="kw">new</span>(<span class="str">"Widget"</span>, <span class="num">9.99</span>, [<span class="str">"tools"</span>, <span class="str">"hardware"</span>]));
+<span class="kw">await</span> products.PutAsync(<span class="str">"gadget"</span>, <span class="kw">new</span>(<span class="str">"Gadget"</span>, <span class="num">24.99</span>, [<span class="str">"electronics"</span>]));
+
+<span class="cm">// Retrieve by key</span>
+<span class="kw">var</span> widget = <span class="kw">await</span> products.GetAsync(<span class="str">"widget"</span>);
+Console.WriteLine(<span class="str">$"{widget!.Name}: ${widget.Price:F2}"</span>);
+
+<span class="cm">// Create an index on a property</span>
+<span class="kw">await</span> products.EnsureIndexAsync(p => p.Name);
+
+<span class="cm">// Query by indexed property</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> match <span class="kw">in</span> products.FindByIndexAsync(p => p.Name, <span class="str">"Gadget"</span>))
+    Console.WriteLine(<span class="str">$"Found: {match.Key}"</span>);
+
+<span class="cm">// Scan all entries</span>
+<span class="kw">await foreach</span> (<span class="kw">var</span> entry <span class="kw">in</span> products.ScanAsync())
+    Console.WriteLine(<span class="str">$"{entry.Key}: {entry.Value.Name}"</span>);</code></pre>
+                    </div>
+                    <p>Collections support nested path indexes, array-element indexes, and multiple index types — all backed by the same B+tree storage engine.</p>
+
+                    <h2>Step 5: Choose Your Database Mode</h2>
+                    <p>CSharpDB supports three modes depending on your performance and durability needs:</p>
+                    <div class="code-block" data-title="Program.cs — Database Modes">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+
+<span class="cm">// 1. Disk-based (default) — full durability with WAL</span>
+<span class="kw">await using var</span> disk = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
+
+<span class="cm">// 2. In-memory — fastest, no persistence</span>
+<span class="kw">await using var</span> mem = <span class="kw">await</span> <span class="tp">Database</span>.OpenInMemoryAsync();
+
+<span class="cm">// 3. Hybrid — hot tables in memory, durable checkpoint to disk</span>
+<span class="kw">await using var</span> hybrid = <span class="kw">await</span> <span class="tp">Database</span>.OpenHybridAsync(
+    <span class="str">"myapp.db"</span>,
+    <span class="kw">new</span> <span class="tp">DatabaseOptions</span>(),
+    <span class="kw">new</span> <span class="tp">HybridDatabaseOptions</span>
+    {
+        PersistenceMode = <span class="tp">HybridPersistenceMode</span>.IncrementalDurable,
+        HotTableNames = [<span class="str">"Sessions"</span>, <span class="str">"Cache"</span>]
+    });</code></pre>
+                    </div>
+
+                    <h2>Step 6: Full-Text Search</h2>
+                    <p>CSharpDB includes built-in full-text search with tokenization, stemming, and relevance ranking:</p>
+                    <div class="code-block" data-title="Program.cs — Full-Text Search">
+                        <pre><code><span class="cm">// Create a full-text index on the Name column</span>
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"CREATE FULLTEXT INDEX idx_ft_name ON Products(Name)"</span>);
+
+<span class="cm">// Search with ranking</span>
+<span class="kw">await using var</span> results = <span class="kw">await</span> db.ExecuteAsync(
+    <span class="str">"SELECT Name, Price FROM Products WHERE MATCH(Name, 'widget gadget')"</span>);
+
+<span class="kw">while</span> (<span class="kw">await</span> results.MoveNextAsync())
+    Console.WriteLine(results.Current[<span class="num">0</span>].AsText);</code></pre>
+                    </div>
+
+                    <h2>What's Next?</h2>
+                    <p>You now have a fully working CSharpDB setup. Here are some paths to explore:</p>
+                    <ul>
+                        <li><strong><a href="../docs/sql.html">SQL Reference</a></strong> — JOINs, aggregates, CTEs, subqueries, and all supported syntax</li>
+                        <li><strong><a href="../docs/collections.html">Collections API</a></strong> — Deep dive into indexes, nested paths, and scanning</li>
+                        <li><strong><a href="../docs/pipelines.html">ETL Pipelines</a></strong> — Build data transformation workflows</li>
+                        <li><strong><a href="../docs/ecosystem.html">Tools &amp; Ecosystem</a></strong> — CLI, Admin UI, REST API, gRPC, and MCP server</li>
+                        <li><strong><a href="../performance.html">Performance Guide</a></strong> — Optimize CSharpDB for your workload</li>
+                    </ul>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="working-with-collections.html">Next: Working with Collections &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>
