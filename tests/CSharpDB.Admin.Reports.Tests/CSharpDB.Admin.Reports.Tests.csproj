@@ -23,13 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Admin.Reports\CSharpDB.Admin.Reports.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Client\CSharpDB.Client.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Reference Include="CSharpDB.Admin">
-      <HintPath>..\..\src\CSharpDB.Admin\obj\Debug\net10.0\CSharpDB.Admin.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
+    <ProjectReference Include="..\..\src\CSharpDB.Admin\CSharpDB.Admin.csproj" />
   </ItemGroup>
 
 </Project>
