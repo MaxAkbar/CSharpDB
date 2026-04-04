@@ -111,7 +111,7 @@ public class DbFormRepositoryTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsBlankTableName()
+    public async Task CreateAsync_RejectsBlankSourceObjectName()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
         var repository = new DbFormRepository(db.Client);
@@ -119,7 +119,7 @@ public class DbFormRepositoryTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             repository.CreateAsync(CreateForm("f1", "", "Broken", "sig:missing")));
 
-        Assert.Contains("source table", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("source object", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
