@@ -1,0 +1,67 @@
+@using CSharpDB.Admin.Reports.Models
+@implements IDisposable
+@inject DatabaseClientHolder DbHolder
+@inject DatabaseChangeService Changes
+@inject TabManagerService TabManager
+
+<CSharpDB.Admin.Reports.Pages.Designer @key="_renderKey"
+                                       ReportId="@Tab.ReportId"
+                                       InitialSourceKind="@ParseSourceKind(Tab.InitialReportSourceKind)"
+                                       InitialSourceName="@Tab.InitialReportSourceName"
+                                       DraftJson="@Tab.ReportDesignerStateJson"
+                                       OnDraftChanged="OnDraftChanged"
+                                       OnReportSaved="OnReportSaved"
+                                       OnOpenPreview="OpenPreview" />
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+    private string _renderKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _renderKey = BuildRenderKey();
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
+    }
+
+    public void Dispose()
+    {
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
+    }
+
+    private Task OnDraftChanged(string? draftJson)
+    {
+        Tab.ReportDesignerStateJson = draftJson;
+        return Task.CompletedTask;
+    }
+
+    private Task OnReportSaved(ReportDefinition report)
+    {
+        Tab.ReportId = report.ReportId;
+        Tab.Title = report.Name;
+        Tab.Icon = "bi-file-earmark-richtext";
+        Tab.InitialReportSourceKind = report.Source.Kind.ToString();
+        Tab.InitialReportSourceName = report.Source.Name;
+        Tab.ReportDesignerStateJson = null;
+        TabManager.ActivateTab(Tab.Id);
+        Changes.NotifyChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task OpenPreview(string reportId)
+    {
+        TabManager.OpenReportPreviewTab(reportId, Tab.Title);
+        return Task.CompletedTask;
+    }
+
+    private void OnDatabaseChanged()
+    {
+        Tab.ReportDesignerStateJson = null;
+        _renderKey = BuildRenderKey();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private static ReportSourceKind? ParseSourceKind(string? value)
+        => Enum.TryParse<ReportSourceKind>(value, out var kind) ? kind : null;
+
+    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}";
+}

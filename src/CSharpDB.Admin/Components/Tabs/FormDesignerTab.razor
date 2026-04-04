@@ -3,11 +3,11 @@
 @inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 
-<Designer @key="_renderKey"
-          FormId="@Tab.FormId"
-          InitialTableName="@Tab.InitialTableName"
-          OnFormSaved="OnFormSaved"
-          OnOpenEntry="OpenEntry" />
+<CSharpDB.Admin.Forms.Pages.Designer @key="_renderKey"
+                                     FormId="@Tab.FormId"
+                                     InitialTableName="@Tab.InitialTableName"
+                                     OnFormSaved="OnFormSaved"
+                                     OnOpenEntry="OpenEntry" />
 
 @code {
     [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;

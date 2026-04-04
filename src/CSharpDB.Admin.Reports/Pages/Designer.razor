@@ -1,0 +1,1038 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Reports.Contracts
+@inject IReportRepository ReportRepository
+@inject IReportSourceProvider SourceProvider
+@inject IReportGenerator ReportGenerator
+
+<div class="report-designer-root">
+    <div class="report-designer-toolbar">
+        <input class="report-title-input" value="@_report.Name" @onchange="OnNameChanged" placeholder="Report name" />
+        <select class="report-source-select" value="@SelectedSourceValue" @onchange="OnSourceChanged">
+            <option value="">Select source...</option>
+            @foreach (var source in _sourceOptions)
+            {
+                <option value="@ToSourceValue(source.Kind, source.Name)">@source.DisplayLabel</option>
+            }
+        </select>
+        <button @onclick="SaveAsync" disabled="@(!_canSave || _saving)">Save</button>
+        <button @onclick="PreviewAsync" disabled="@(string.IsNullOrWhiteSpace(_report.ReportId) || _saving)">Preview</button>
+        <button @onclick="AutoFitColumnsAsync" disabled="@(_saving || !_canSave)">Auto Fit Columns</button>
+        <span class="report-toolbar-spacer"></span>
+        <span class="report-toolbar-info">@DisplayPageSettings</span>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_schemaWarning))
+    {
+        <div class="report-warning">@_schemaWarning</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="report-error">@_error</div>
+    }
+
+    <div class="report-designer-layout">
+        <aside class="report-designer-left">
+            <div class="report-panel">
+                <div class="report-panel-title">Toolbox</div>
+                @foreach (ReportControlType tool in Enum.GetValues<ReportControlType>())
+                {
+                    <button class="report-tool-btn @(tool == _activeTool ? "active" : "")" @onclick="() => SelectTool(tool)">
+                        @tool
+                    </button>
+                }
+                <button class="report-tool-btn @(_activeTool is null ? "active" : "")" @onclick="() => _activeTool = null">Pointer</button>
+            </div>
+
+            <div class="report-panel">
+                <div class="report-panel-title">Groups</div>
+                <div class="report-inline-form">
+                    <select value="@_newGroupField" @onchange="e => _newGroupField = e.Value?.ToString() ?? string.Empty">
+                        <option value="">Select field...</option>
+                        @foreach (var field in SourceFields)
+                        {
+                            <option value="@field.Name">@GetFieldLabel(field.Name)</option>
+                        }
+                    </select>
+                    <button @onclick="AddGroup" disabled="@string.IsNullOrWhiteSpace(_newGroupField)">Add</button>
+                </div>
+                @foreach (var group in _report.Groups)
+                {
+                    <div class="report-list-item">
+                        <span>@GetFieldLabel(group.FieldName)</span>
+                        <label><input type="checkbox" checked="@group.Descending" @onchange="e => ToggleGroupDirection(group.GroupId, e.Value is bool b && b)" /> Desc</label>
+                        <button @onclick="() => RemoveGroup(group.GroupId)">x</button>
+                    </div>
+                }
+            </div>
+
+            <div class="report-panel">
+                <div class="report-panel-title">Sorts</div>
+                <div class="report-inline-form">
+                    <select value="@_newSortField" @onchange="e => _newSortField = e.Value?.ToString() ?? string.Empty">
+                        <option value="">Select field...</option>
+                        @foreach (var field in SourceFields)
+                        {
+                            <option value="@field.Name">@GetFieldLabel(field.Name)</option>
+                        }
+                    </select>
+                    <button @onclick="AddSort" disabled="@string.IsNullOrWhiteSpace(_newSortField)">Add</button>
+                </div>
+                @foreach (var sort in _report.Sorts)
+                {
+                    <div class="report-list-item">
+                        <span>@GetFieldLabel(sort.FieldName)</span>
+                        <label><input type="checkbox" checked="@sort.Descending" @onchange="e => ToggleSortDirection(sort.FieldName, e.Value is bool b && b)" /> Desc</label>
+                        <button @onclick="() => RemoveSort(sort.FieldName)">x</button>
+                    </div>
+                }
+            </div>
+        </aside>
+
+        <main class="report-designer-center">
+            @foreach (var band in DisplayBands)
+            {
+                var localBand = band;
+                <section class="report-band-section">
+                    <div class="report-band-header">
+                        <span>@GetBandTitle(localBand)</span>
+                        <input type="number" value="@localBand.Height" min="20" step="4" @onchange="e => UpdateBandHeight(localBand.BandId, e.Value?.ToString())" />
+                    </div>
+                    <div class="report-band-paper" style="@($"width:{PaperWidthPx}px;height:{localBand.Height}px;")">
+                        <div class="report-band-margin report-band-margin-left" style="@($"width:{MarginLeftPx}px;")"></div>
+                        <div class="report-band-canvas @(IsBandSelected(localBand.BandId) ? "selected" : "")"
+                             style="@($"width:{CanvasWidthPx}px;height:{localBand.Height}px;")"
+                             @onpointerdown="e => OnBandPointerDown(e, localBand.BandId)"
+                             @onpointermove="e => OnBandPointerMove(e, localBand.BandId)"
+                             @onpointerup="e => OnBandPointerUp(e, localBand.BandId)">
+                            @foreach (var control in localBand.Controls)
+                            {
+                                var localControl = control;
+                                bool isSelected = IsControlSelected(localBand.BandId, localControl.ControlId);
+                                <div class="report-design-control @(isSelected ? "selected" : "")"
+                                     style="@ControlStyle(localControl)"
+                                     @onpointerdown="e => OnControlPointerDown(e, localBand.BandId, localControl.ControlId)"
+                                     @onpointerdown:stopPropagation="true">
+                                    @switch (localControl.ControlType)
+                                    {
+                                        case ReportControlType.Label:
+                                            <span>@GetControlPreviewText(localControl)</span>
+                                            break;
+                                        case ReportControlType.BoundText:
+                                            <span class="mono-cell">@GetControlPreviewText(localControl)</span>
+                                            break;
+                                        case ReportControlType.CalculatedText:
+                                            <span class="mono-cell">@GetControlPreviewText(localControl)</span>
+                                            break;
+                                        case ReportControlType.Line:
+                                            <div class="report-preview-line"></div>
+                                            break;
+                                        case ReportControlType.Box:
+                                            <div class="report-preview-box"></div>
+                                            break;
+                                    }
+                                    @if (isSelected)
+                                    {
+                                        <div class="report-resize-handle"
+                                             @onpointerdown="e => OnResizePointerDown(e, localBand.BandId, localControl.ControlId)"
+                                             @onpointerdown:stopPropagation="true"></div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                        <div class="report-band-margin report-band-margin-right" style="@($"width:{MarginRightPx}px;")"></div>
+                    </div>
+                </section>
+            }
+        </main>
+
+        <aside class="report-designer-right">
+            <div class="report-panel">
+                <div class="report-panel-title">Page Settings</div>
+                <label>Paper
+                    <select value="@_report.PageSettings.PaperSize" @onchange="OnPaperSizeChanged">
+                        <option value="Letter">Letter</option>
+                        <option value="A4">A4</option>
+                    </select>
+                </label>
+                <label>Orientation
+                    <select value="@_report.PageSettings.Orientation" @onchange="OnOrientationChanged">
+                        <option value="Portrait">Portrait</option>
+                        <option value="Landscape">Landscape</option>
+                    </select>
+                </label>
+                <label>Left Margin <input type="number" step="0.1" value="@_report.PageSettings.MarginLeftInches" @onchange='e => UpdateMargin("Left", e.Value?.ToString())' /></label>
+                <label>Top Margin <input type="number" step="0.1" value="@_report.PageSettings.MarginTopInches" @onchange='e => UpdateMargin("Top", e.Value?.ToString())' /></label>
+                <label>Right Margin <input type="number" step="0.1" value="@_report.PageSettings.MarginRightInches" @onchange='e => UpdateMargin("Right", e.Value?.ToString())' /></label>
+                <label>Bottom Margin <input type="number" step="0.1" value="@_report.PageSettings.MarginBottomInches" @onchange='e => UpdateMargin("Bottom", e.Value?.ToString())' /></label>
+            </div>
+
+            <div class="report-panel">
+                <div class="report-panel-title">Selection</div>
+                @if (SelectedControl is null)
+                {
+                    <p>Select a control to edit properties.</p>
+                }
+                else
+                {
+                    <div class="report-control-type-badge">@SelectedControl.ControlType</div>
+                    <div class="report-properties-grid">
+                        <label>X <input type="number" value="@SelectedControl.Rect.X" step="4" @onchange='e => UpdateRect("X", e.Value?.ToString())' /></label>
+                        <label>Y <input type="number" value="@SelectedControl.Rect.Y" step="4" @onchange='e => UpdateRect("Y", e.Value?.ToString())' /></label>
+                        <label>W <input type="number" value="@SelectedControl.Rect.Width" step="4" @onchange='e => UpdateRect("Width", e.Value?.ToString())' /></label>
+                        <label>H <input type="number" value="@SelectedControl.Rect.Height" step="4" @onchange='e => UpdateRect("Height", e.Value?.ToString())' /></label>
+                    </div>
+
+                    @if (SelectedControl.ControlType == ReportControlType.Label)
+                    {
+                        <label>Text
+                            <input type="text" value="@(LookupProp(SelectedControl.Props, "text") ?? string.Empty)" @onchange='e => UpdateProp("text", e.Value?.ToString())' />
+                        </label>
+                    }
+
+                    @if (SelectedControl.ControlType == ReportControlType.BoundText)
+                    {
+                        <label>Field
+                            <select value="@(SelectedControl.BoundFieldName ?? string.Empty)" @onchange='e => UpdateBoundField(e.Value?.ToString())'>
+                                <option value="">Select field...</option>
+                                @foreach (var field in SourceFields)
+                                {
+                                    <option value="@field.Name">@GetFieldLabel(field.Name)</option>
+                                }
+                            </select>
+                        </label>
+                        <label>Format
+                            <input type="text" value="@(SelectedControl.FormatString ?? string.Empty)" @onchange='e => UpdateFormat(e.Value?.ToString())' placeholder="e.g. C2 or yyyy-MM-dd" />
+                        </label>
+                    }
+
+                    @if (SelectedControl.ControlType == ReportControlType.CalculatedText)
+                    {
+                        <label>Expression
+                            <input type="text" value="@(SelectedControl.Expression ?? string.Empty)" @onchange='e => UpdateExpression(e.Value?.ToString())' placeholder="=PageNumber, =SUM(Total), =Price * Qty" />
+                        </label>
+                        <label>Prefix
+                            <input type="text" value="@(LookupProp(SelectedControl.Props, "prefix") ?? string.Empty)" @onchange='e => UpdateProp("prefix", e.Value?.ToString())' />
+                        </label>
+                        <label>Format
+                            <input type="text" value="@(SelectedControl.FormatString ?? string.Empty)" @onchange='e => UpdateFormat(e.Value?.ToString())' placeholder="e.g. N2 or g" />
+                        </label>
+                    }
+
+                    @if (SelectedControl.ControlType is ReportControlType.Label or ReportControlType.BoundText or ReportControlType.CalculatedText)
+                    {
+                        <label>Text Align
+                            <select value="@(LookupProp(SelectedControl.Props, "textAlign") ?? "left")" @onchange='e => UpdateProp("textAlign", e.Value?.ToString())'>
+                                <option value="left">Left</option>
+                                <option value="center">Center</option>
+                                <option value="right">Right</option>
+                            </select>
+                        </label>
+                        <div class="report-properties-grid">
+                            <label>Font Size
+                                <input type="number" step="1" min="8" value="@(LookupProp(SelectedControl.Props, "fontSize") ?? string.Empty)" @onchange='e => UpdateProp("fontSize", e.Value?.ToString())' />
+                            </label>
+                            <label>Weight
+                                <input type="text" value="@(LookupProp(SelectedControl.Props, "fontWeight") ?? string.Empty)" @onchange='e => UpdateProp("fontWeight", e.Value?.ToString())' placeholder="400, 600, bold" />
+                            </label>
+                        </div>
+                    }
+
+                    <div class="report-selection-actions">
+                        <button @onclick="BringForward">Bring To Front</button>
+                        <button @onclick="SendBackward">Send To Back</button>
+                        <button class="danger" @onclick="DeleteSelectedControl">Delete</button>
+                    </div>
+                }
+            </div>
+        </aside>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? ReportId { get; set; }
+    [Parameter] public ReportSourceKind? InitialSourceKind { get; set; }
+    [Parameter] public string? InitialSourceName { get; set; }
+    [Parameter] public string? DraftJson { get; set; }
+    [Parameter] public EventCallback<string?> OnDraftChanged { get; set; }
+    [Parameter] public EventCallback<ReportDefinition> OnReportSaved { get; set; }
+    [Parameter] public EventCallback<string> OnOpenPreview { get; set; }
+
+    private ReportDefinition _report = CreateBlankReport();
+    private ReportSourceDefinition? _currentSource;
+    private IReadOnlyList<ReportSourceReferenceItem> _sourceOptions = [];
+    private string? _error;
+    private string? _schemaWarning;
+    private bool _saving;
+    private string _newGroupField = string.Empty;
+    private string _newSortField = string.Empty;
+    private ReportControlType? _activeTool;
+    private string? _selectedBandId;
+    private string? _selectedControlId;
+    private string? _loadedReportId;
+    private string? _loadedDraftJson;
+    private string? _loadedInitialSourceKey;
+    private bool _canSave;
+
+    private string? _dragBandId;
+    private string? _dragControlId;
+    private double _dragStartX;
+    private double _dragStartY;
+    private Rect? _dragOriginRect;
+
+    private string? _resizeBandId;
+    private string? _resizeControlId;
+    private double _resizeStartX;
+    private double _resizeStartY;
+    private Rect? _resizeOriginRect;
+
+    private IReadOnlyList<ReportFieldDefinition> SourceFields => _currentSource?.Fields ?? [];
+    private string SelectedSourceValue => string.IsNullOrWhiteSpace(_report.Source.Name) ? string.Empty : ToSourceValue(_report.Source.Kind, _report.Source.Name);
+    private string DisplayPageSettings => $"{_report.PageSettings.PaperSize} / {_report.PageSettings.Orientation} / {_report.PageSettings.MarginLeftInches:0.0}\" margins";
+    private double CanvasWidthPx => GetCanvasWidth(_report.PageSettings);
+    private double PaperWidthPx => GetPaperWidthPx(_report.PageSettings);
+    private double MarginLeftPx => _report.PageSettings.MarginLeftInches * ReportLayoutUtilities.PixelsPerInch;
+    private double MarginRightPx => _report.PageSettings.MarginRightInches * ReportLayoutUtilities.PixelsPerInch;
+    private ReportControlDefinition? SelectedControl => GetSelectedControl();
+    private IReadOnlyList<ReportBandDefinition> DisplayBands => BuildBandSequence(_report);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _sourceOptions = await SourceProvider.ListSourceReferencesAsync();
+        _canSave = false;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        string? initialKey = InitialSourceKind.HasValue && !string.IsNullOrWhiteSpace(InitialSourceName)
+            ? $"{InitialSourceKind}:{InitialSourceName}"
+            : null;
+
+        if (!string.IsNullOrWhiteSpace(DraftJson) && !string.Equals(_loadedDraftJson, DraftJson, StringComparison.Ordinal))
+        {
+            if (TryLoadDraft(DraftJson!))
+            {
+                _loadedDraftJson = DraftJson;
+                _loadedReportId = ReportId;
+                await RefreshSourceContextAsync();
+                await RefreshSchemaWarningAsync();
+                return;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(ReportId) && !string.Equals(_loadedReportId, ReportId, StringComparison.Ordinal))
+        {
+            _loadedDraftJson = null;
+            _loadedReportId = ReportId;
+            await LoadExistingAsync(ReportId);
+            return;
+        }
+
+        if (_loadedReportId is null && !string.Equals(_loadedInitialSourceKey, initialKey, StringComparison.Ordinal))
+        {
+            _loadedInitialSourceKey = initialKey;
+            await LoadInitialAsync();
+        }
+    }
+
+    private async Task LoadExistingAsync(string reportId)
+    {
+        _error = null;
+        ReportDefinition? loaded = await ReportRepository.GetAsync(reportId);
+        if (loaded is null)
+        {
+            _error = $"Report '{reportId}' was not found.";
+            return;
+        }
+
+        _report = loaded;
+        _selectedBandId = null;
+        _selectedControlId = null;
+        await RefreshSourceContextAsync();
+        await RefreshSchemaWarningAsync();
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        _error = null;
+        _selectedBandId = null;
+        _selectedControlId = null;
+
+        if (!InitialSourceKind.HasValue || string.IsNullOrWhiteSpace(InitialSourceName))
+        {
+            _report = CreateBlankReport();
+            _currentSource = null;
+            _canSave = false;
+            await PublishDraftAsync();
+            return;
+        }
+
+        ReportSourceDefinition? source = await SourceProvider.GetSourceDefinitionAsync(new ReportSourceReference(InitialSourceKind.Value, InitialSourceName));
+        if (source is null)
+        {
+            _report = CreateBlankReport();
+            _currentSource = null;
+            _error = $"Source '{InitialSourceName}' was not found.";
+            _canSave = false;
+            await PublishDraftAsync();
+            return;
+        }
+
+        _currentSource = source;
+        _report = ReportGenerator.GenerateDefault(source) with { ReportId = string.Empty };
+        _canSave = true;
+        await RefreshSchemaWarningAsync();
+        await PublishDraftAsync();
+    }
+
+    private bool TryLoadDraft(string draftJson)
+    {
+        try
+        {
+            ReportDefinition? loaded = JsonSerializer.Deserialize<ReportDefinition>(draftJson, JsonDefaults.Options);
+            if (loaded is null)
+                return false;
+
+            _report = loaded;
+            _selectedBandId = null;
+            _selectedControlId = null;
+            _canSave = !string.IsNullOrWhiteSpace(_report.Source.Name);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task RefreshSourceContextAsync()
+    {
+        _currentSource = string.IsNullOrWhiteSpace(_report.Source.Name)
+            ? null
+            : await SourceProvider.GetSourceDefinitionAsync(_report.Source);
+        _canSave = _currentSource is not null;
+    }
+
+    private async Task RefreshSchemaWarningAsync()
+    {
+        if (_currentSource is null || string.IsNullOrWhiteSpace(_report.SourceSchemaSignature))
+        {
+            _schemaWarning = null;
+            return;
+        }
+
+        _schemaWarning = string.Equals(_currentSource.SourceSchemaSignature, _report.SourceSchemaSignature, StringComparison.Ordinal)
+            ? null
+            : "The source schema has changed since this report was last saved.";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_currentSource is null)
+            return;
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            ReportDefinition toSave = _report with { SourceSchemaSignature = _currentSource.SourceSchemaSignature };
+            ReportDefinition saved;
+            if (string.IsNullOrWhiteSpace(toSave.ReportId))
+            {
+                saved = await ReportRepository.CreateAsync(toSave);
+            }
+            else
+            {
+                ReportUpdateResult result = await ReportRepository.TryUpdateAsync(toSave.ReportId, toSave.DefinitionVersion, toSave);
+                saved = result switch
+                {
+                    ReportUpdateResult.Ok ok => ok.Doc,
+                    ReportUpdateResult.Conflict => throw new InvalidOperationException("Save conflict: this report was modified elsewhere."),
+                    ReportUpdateResult.NotFound => throw new InvalidOperationException("This report no longer exists."),
+                    _ => throw new InvalidOperationException("Unexpected update result."),
+                };
+            }
+
+            _report = saved;
+            _loadedDraftJson = null;
+            if (OnDraftChanged.HasDelegate)
+                await OnDraftChanged.InvokeAsync(null);
+            if (OnReportSaved.HasDelegate)
+                await OnReportSaved.InvokeAsync(saved);
+
+            await RefreshSchemaWarningAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private Task PreviewAsync()
+        => OnOpenPreview.HasDelegate && !string.IsNullOrWhiteSpace(_report.ReportId)
+            ? OnOpenPreview.InvokeAsync(_report.ReportId)
+            : Task.CompletedTask;
+
+    private async Task OnSourceChanged(ChangeEventArgs e)
+    {
+        string raw = e.Value?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            _report = CreateBlankReport();
+            _currentSource = null;
+            _canSave = false;
+            await PublishDraftAsync();
+            return;
+        }
+
+        if (!TryParseSourceValue(raw, out ReportSourceReference sourceReference))
+            return;
+
+        ReportSourceDefinition? source = await SourceProvider.GetSourceDefinitionAsync(sourceReference);
+        if (source is null)
+        {
+            _error = $"Source '{sourceReference.Name}' could not be loaded.";
+            return;
+        }
+
+        ReportDefinition generated = ReportGenerator.GenerateDefault(source) with
+        {
+            ReportId = _report.ReportId,
+            DefinitionVersion = _report.DefinitionVersion,
+            Name = string.IsNullOrWhiteSpace(_report.Name) || _report.Name.EndsWith(" Report", StringComparison.Ordinal)
+                ? $"{source.DisplayName} Report"
+                : _report.Name,
+        };
+
+        _currentSource = source;
+        _report = generated;
+        _selectedBandId = null;
+        _selectedControlId = null;
+        _canSave = true;
+        await RefreshSchemaWarningAsync();
+        await PublishDraftAsync();
+    }
+
+    private Task OnNameChanged(ChangeEventArgs e)
+    {
+        _report = _report with { Name = e.Value?.ToString()?.Trim() ?? string.Empty };
+        return PublishDraftAsync();
+    }
+
+    private Task AutoFitColumnsAsync()
+    {
+        _report = ReportLayoutUtilities.AutoFitColumns(_report);
+        return PublishDraftAsync();
+    }
+
+    private void SelectTool(ReportControlType tool) => _activeTool = tool;
+
+    private async Task OnBandPointerDown(PointerEventArgs e, string bandId)
+    {
+        _selectedBandId = bandId;
+        _selectedControlId = null;
+
+        if (_activeTool is null)
+        {
+            await PublishDraftAsync(false);
+            return;
+        }
+
+        AddControl(bandId, e.OffsetX, e.OffsetY, _activeTool.Value);
+        _activeTool = null;
+        await PublishDraftAsync();
+    }
+
+    private void OnControlPointerDown(PointerEventArgs e, string bandId, string controlId)
+    {
+        _selectedBandId = bandId;
+        _selectedControlId = controlId;
+
+        ReportControlDefinition? control = FindControl(bandId, controlId);
+        if (control is null)
+            return;
+
+        _dragBandId = bandId;
+        _dragControlId = controlId;
+        _dragStartX = e.ClientX;
+        _dragStartY = e.ClientY;
+        _dragOriginRect = control.Rect;
+    }
+
+    private void OnResizePointerDown(PointerEventArgs e, string bandId, string controlId)
+    {
+        _selectedBandId = bandId;
+        _selectedControlId = controlId;
+
+        ReportControlDefinition? control = FindControl(bandId, controlId);
+        if (control is null)
+            return;
+
+        _resizeBandId = bandId;
+        _resizeControlId = controlId;
+        _resizeStartX = e.ClientX;
+        _resizeStartY = e.ClientY;
+        _resizeOriginRect = control.Rect;
+    }
+
+    private async Task OnBandPointerMove(PointerEventArgs e, string bandId)
+    {
+        if (_dragBandId == bandId && _dragControlId is not null && _dragOriginRect is not null)
+        {
+            double dx = e.ClientX - _dragStartX;
+            double dy = e.ClientY - _dragStartY;
+            UpdateControlRect(bandId, _dragControlId, _dragOriginRect with
+            {
+                X = Snap(Math.Max(0, _dragOriginRect.X + dx)),
+                Y = Snap(Math.Max(0, _dragOriginRect.Y + dy)),
+            }, persist: false);
+            await InvokeAsync(StateHasChanged);
+        }
+
+        if (_resizeBandId == bandId && _resizeControlId is not null && _resizeOriginRect is not null)
+        {
+            double dx = e.ClientX - _resizeStartX;
+            double dy = e.ClientY - _resizeStartY;
+            UpdateControlRect(bandId, _resizeControlId, _resizeOriginRect with
+            {
+                Width = Math.Max(20, Snap(_resizeOriginRect.Width + dx)),
+                Height = Math.Max(20, Snap(_resizeOriginRect.Height + dy)),
+            }, persist: false);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task OnBandPointerUp(PointerEventArgs e, string bandId)
+    {
+        bool changed = _dragBandId == bandId || _resizeBandId == bandId;
+        _dragBandId = null;
+        _dragControlId = null;
+        _dragOriginRect = null;
+        _resizeBandId = null;
+        _resizeControlId = null;
+        _resizeOriginRect = null;
+
+        if (changed)
+            await PublishDraftAsync();
+    }
+
+    private void AddControl(string bandId, double x, double y, ReportControlType type)
+    {
+        Rect rect = type switch
+        {
+            ReportControlType.Line => new Rect(Snap(x), Snap(y), 120, 2),
+            ReportControlType.Box => new Rect(Snap(x), Snap(y), 120, 40),
+            _ => new Rect(Snap(x), Snap(y), 140, 24),
+        };
+
+        string? expression = type == ReportControlType.CalculatedText ? "=PageNumber" : null;
+        string? boundField = type == ReportControlType.BoundText ? SourceFields.FirstOrDefault()?.Name : null;
+        var props = new Dictionary<string, object?>();
+        if (type == ReportControlType.Label)
+            props["text"] = "Label";
+
+        ReportControlDefinition control = new(
+            Guid.NewGuid().ToString("N"),
+            type,
+            bandId,
+            rect,
+            boundField,
+            expression,
+            null,
+            new PropertyBag(props));
+
+        UpdateBand(bandId, band => band with { Controls = band.Controls.Concat([control]).ToArray() });
+        _selectedBandId = bandId;
+        _selectedControlId = control.ControlId;
+    }
+
+    private void AddGroup()
+    {
+        if (string.IsNullOrWhiteSpace(_newGroupField) || _report.Groups.Any(group => string.Equals(group.FieldName, _newGroupField, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        string groupId = Guid.NewGuid().ToString("N");
+        ReportGroupDefinition group = new(groupId, _newGroupField);
+        string groupFieldExpression = WrapFieldReference(_newGroupField);
+
+        _report = _report with
+        {
+            Groups = _report.Groups.Concat([group]).ToArray(),
+            Bands = _report.Bands.Concat(
+            [
+                new ReportBandDefinition($"group-header:{groupId}", ReportBandKind.GroupHeader, 28, groupId,
+                [
+                    new ReportControlDefinition(Guid.NewGuid().ToString("N"), ReportControlType.BoundText, $"group-header:{groupId}", new Rect(20, 2, 220, 24), _newGroupField, null, null, PropertyBag.Empty)
+                ]),
+                new ReportBandDefinition($"group-footer:{groupId}", ReportBandKind.GroupFooter, 28, groupId,
+                [
+                    new ReportControlDefinition(Guid.NewGuid().ToString("N"), ReportControlType.CalculatedText, $"group-footer:{groupId}", new Rect(20, 2, 220, 24), null, $"=COUNT({groupFieldExpression})", null, new PropertyBag(new Dictionary<string, object?> { ["prefix"] = "Count: " }))
+                ])
+            ]).ToArray(),
+        };
+
+        _newGroupField = string.Empty;
+        _ = PublishDraftAsync();
+    }
+
+    private void RemoveGroup(string groupId)
+    {
+        _report = _report with
+        {
+            Groups = _report.Groups.Where(group => !string.Equals(group.GroupId, groupId, StringComparison.Ordinal)).ToArray(),
+            Bands = _report.Bands.Where(band => !string.Equals(band.GroupId, groupId, StringComparison.Ordinal)).ToArray(),
+        };
+
+        _ = PublishDraftAsync();
+    }
+
+    private void ToggleGroupDirection(string groupId, bool descending)
+    {
+        _report = _report with
+        {
+            Groups = _report.Groups.Select(group => string.Equals(group.GroupId, groupId, StringComparison.Ordinal) ? group with { Descending = descending } : group).ToArray(),
+        };
+
+        _ = PublishDraftAsync();
+    }
+
+    private void AddSort()
+    {
+        if (string.IsNullOrWhiteSpace(_newSortField) || _report.Sorts.Any(sort => string.Equals(sort.FieldName, _newSortField, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        _report = _report with
+        {
+            Sorts = _report.Sorts.Concat([new ReportSortDefinition(_newSortField)]).ToArray(),
+        };
+
+        _newSortField = string.Empty;
+        _ = PublishDraftAsync();
+    }
+
+    private void RemoveSort(string fieldName)
+    {
+        _report = _report with
+        {
+            Sorts = _report.Sorts.Where(sort => !string.Equals(sort.FieldName, fieldName, StringComparison.OrdinalIgnoreCase)).ToArray(),
+        };
+
+        _ = PublishDraftAsync();
+    }
+
+    private void ToggleSortDirection(string fieldName, bool descending)
+    {
+        _report = _report with
+        {
+            Sorts = _report.Sorts.Select(sort => string.Equals(sort.FieldName, fieldName, StringComparison.OrdinalIgnoreCase) ? sort with { Descending = descending } : sort).ToArray(),
+        };
+
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateBandHeight(string bandId, string? rawValue)
+    {
+        if (!double.TryParse(rawValue, out double height))
+            return;
+
+        UpdateBand(bandId, band => band with { Height = Math.Max(20, height) });
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateRect(string part, string? rawValue)
+    {
+        if (SelectedControl is null || _selectedBandId is null || !double.TryParse(rawValue, out double value))
+            return;
+
+        Rect rect = SelectedControl.Rect;
+        rect = part switch
+        {
+            "X" => rect with { X = Math.Max(0, Snap(value)) },
+            "Y" => rect with { Y = Math.Max(0, Snap(value)) },
+            "Width" => rect with { Width = Math.Max(20, Snap(value)) },
+            "Height" => rect with { Height = Math.Max(20, Snap(value)) },
+            _ => rect,
+        };
+
+        UpdateControlRect(_selectedBandId, SelectedControl.ControlId, rect, persist: true);
+    }
+
+    private void UpdateBoundField(string? fieldName)
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateControl(_selectedBandId, SelectedControl.ControlId, control => control with { BoundFieldName = fieldName });
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateExpression(string? expression)
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateControl(_selectedBandId, SelectedControl.ControlId, control => control with { Expression = expression });
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateFormat(string? format)
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateControl(_selectedBandId, SelectedControl.ControlId, control => control with { FormatString = format });
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateProp(string key, object? value)
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        var nextValues = new Dictionary<string, object?>(SelectedControl.Props.Values, StringComparer.OrdinalIgnoreCase)
+        {
+            [key] = value?.ToString(),
+        };
+        UpdateControl(_selectedBandId, SelectedControl.ControlId, control => control with { Props = new PropertyBag(nextValues) });
+        _ = PublishDraftAsync();
+    }
+
+    private void BringForward()
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateBand(_selectedBandId, band =>
+        {
+            List<ReportControlDefinition> controls = band.Controls.ToList();
+            int index = controls.FindIndex(control => control.ControlId == SelectedControl.ControlId);
+            if (index >= 0)
+            {
+                ReportControlDefinition control = controls[index];
+                controls.RemoveAt(index);
+                controls.Add(control);
+            }
+
+            return band with { Controls = controls.ToArray() };
+        });
+        _ = PublishDraftAsync();
+    }
+
+    private void SendBackward()
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateBand(_selectedBandId, band =>
+        {
+            List<ReportControlDefinition> controls = band.Controls.ToList();
+            int index = controls.FindIndex(control => control.ControlId == SelectedControl.ControlId);
+            if (index >= 0)
+            {
+                ReportControlDefinition control = controls[index];
+                controls.RemoveAt(index);
+                controls.Insert(0, control);
+            }
+
+            return band with { Controls = controls.ToArray() };
+        });
+        _ = PublishDraftAsync();
+    }
+
+    private void DeleteSelectedControl()
+    {
+        if (SelectedControl is null || _selectedBandId is null)
+            return;
+
+        UpdateBand(_selectedBandId, band => band with { Controls = band.Controls.Where(control => control.ControlId != SelectedControl.ControlId).ToArray() });
+        _selectedControlId = null;
+        _ = PublishDraftAsync();
+    }
+
+    private void OnPaperSizeChanged(ChangeEventArgs e)
+    {
+        _report = _report with { PageSettings = _report.PageSettings with { PaperSize = e.Value?.ToString() ?? "Letter" } };
+        _ = PublishDraftAsync();
+    }
+
+    private void OnOrientationChanged(ChangeEventArgs e)
+    {
+        _report = _report with { PageSettings = _report.PageSettings with { Orientation = e.Value?.ToString() ?? "Portrait" } };
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateMargin(string side, string? rawValue)
+    {
+        if (!double.TryParse(rawValue, out double margin))
+            return;
+
+        margin = Math.Max(0, margin);
+        ReportPageSettings settings = side switch
+        {
+            "Left" => _report.PageSettings with { MarginLeftInches = margin },
+            "Top" => _report.PageSettings with { MarginTopInches = margin },
+            "Right" => _report.PageSettings with { MarginRightInches = margin },
+            "Bottom" => _report.PageSettings with { MarginBottomInches = margin },
+            _ => _report.PageSettings,
+        };
+
+        _report = _report with { PageSettings = settings };
+        _ = PublishDraftAsync();
+    }
+
+    private void UpdateBand(string bandId, Func<ReportBandDefinition, ReportBandDefinition> update)
+    {
+        _report = _report with
+        {
+            Bands = _report.Bands.Select(band => string.Equals(band.BandId, bandId, StringComparison.Ordinal) ? update(band) : band).ToArray(),
+        };
+    }
+
+    private void UpdateControl(string bandId, string controlId, Func<ReportControlDefinition, ReportControlDefinition> update)
+    {
+        UpdateBand(bandId, band => band with
+        {
+            Controls = band.Controls.Select(control => control.ControlId == controlId ? update(control) : control).ToArray(),
+        });
+    }
+
+    private void UpdateControlRect(string bandId, string controlId, Rect rect, bool persist)
+    {
+        UpdateControl(bandId, controlId, control => control with { Rect = rect });
+        if (persist)
+            _ = PublishDraftAsync();
+    }
+
+    private async Task PublishDraftAsync(bool notify = true)
+    {
+        if (!notify || !OnDraftChanged.HasDelegate)
+        {
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        string draft = JsonSerializer.Serialize(_report, JsonDefaults.Options);
+        _loadedDraftJson = draft;
+        await OnDraftChanged.InvokeAsync(draft);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static ReportDefinition CreateBlankReport()
+        => new(
+            string.Empty,
+            "Untitled Report",
+            new ReportSourceReference(ReportSourceKind.Table, string.Empty),
+            1,
+            string.Empty,
+            ReportPageSettings.DefaultLetterPortrait,
+            [],
+            [],
+            [
+                new ReportBandDefinition("report-header", ReportBandKind.ReportHeader, 40, null, []),
+                new ReportBandDefinition("page-header", ReportBandKind.PageHeader, 30, null, []),
+                new ReportBandDefinition("detail", ReportBandKind.Detail, 28, null, []),
+                new ReportBandDefinition("page-footer", ReportBandKind.PageFooter, 26, null, []),
+                new ReportBandDefinition("report-footer", ReportBandKind.ReportFooter, 24, null, []),
+            ]);
+
+    private static IReadOnlyList<ReportBandDefinition> BuildBandSequence(ReportDefinition report)
+    {
+        var ordered = new List<ReportBandDefinition>();
+        AddIfPresent(ReportBandKind.ReportHeader);
+        AddIfPresent(ReportBandKind.PageHeader);
+        foreach (ReportGroupDefinition group in report.Groups)
+            AddIfPresent(ReportBandKind.GroupHeader, group.GroupId);
+        AddIfPresent(ReportBandKind.Detail);
+        foreach (ReportGroupDefinition group in report.Groups.Reverse())
+            AddIfPresent(ReportBandKind.GroupFooter, group.GroupId);
+        AddIfPresent(ReportBandKind.PageFooter);
+        AddIfPresent(ReportBandKind.ReportFooter);
+        return ordered;
+
+        void AddIfPresent(ReportBandKind kind, string? groupId = null)
+        {
+            ReportBandDefinition? band = report.Bands.FirstOrDefault(item => item.BandKind == kind && string.Equals(item.GroupId, groupId, StringComparison.Ordinal));
+            if (band is not null)
+                ordered.Add(band);
+        }
+    }
+
+    private ReportControlDefinition? GetSelectedControl()
+        => _selectedBandId is null || _selectedControlId is null ? null : FindControl(_selectedBandId, _selectedControlId);
+
+    private ReportControlDefinition? FindControl(string bandId, string controlId)
+        => _report.Bands.FirstOrDefault(band => band.BandId == bandId)?.Controls.FirstOrDefault(control => control.ControlId == controlId);
+
+    private bool IsBandSelected(string bandId) => string.Equals(_selectedBandId, bandId, StringComparison.Ordinal) && _selectedControlId is null;
+    private bool IsControlSelected(string bandId, string controlId) => string.Equals(_selectedBandId, bandId, StringComparison.Ordinal) && string.Equals(_selectedControlId, controlId, StringComparison.Ordinal);
+
+    private string ControlStyle(ReportControlDefinition control)
+        => $"left:{control.Rect.X}px;top:{control.Rect.Y}px;width:{control.Rect.Width}px;height:{Math.Max(control.ControlType == ReportControlType.Line ? 2 : control.Rect.Height, 2)}px;";
+
+    private string GetControlPreviewText(ReportControlDefinition control)
+        => control.ControlType switch
+        {
+            ReportControlType.Label => LookupProp(control.Props, "text") ?? "Label",
+            ReportControlType.BoundText => $"[{GetFieldLabel(control.BoundFieldName)}]",
+            ReportControlType.CalculatedText => control.Expression ?? "=Expr",
+            _ => string.Empty,
+        };
+
+    private string GetFieldLabel(string? fieldName)
+        => SourceFields.FirstOrDefault(field => string.Equals(field.Name, fieldName, StringComparison.OrdinalIgnoreCase))?.DisplayName
+           ?? fieldName
+           ?? "(unbound)";
+
+    private string GetBandTitle(ReportBandDefinition band)
+    {
+        string suffix = string.IsNullOrWhiteSpace(band.GroupId)
+            ? string.Empty
+            : _report.Groups.FirstOrDefault(group => string.Equals(group.GroupId, band.GroupId, StringComparison.Ordinal)) is { } group
+                ? $" - {GetFieldLabel(group.FieldName)}"
+                : string.Empty;
+        return $"{band.BandKind}{suffix}";
+    }
+
+    private static string ToSourceValue(ReportSourceKind kind, string name) => $"{kind}|{name}";
+
+    private static bool TryParseSourceValue(string value, out ReportSourceReference source)
+    {
+        source = new ReportSourceReference(ReportSourceKind.Table, string.Empty);
+        int separator = value.IndexOf('|');
+        if (separator <= 0 || separator >= value.Length - 1)
+            return false;
+
+        if (!Enum.TryParse(value[..separator], out ReportSourceKind kind))
+            return false;
+
+        source = new ReportSourceReference(kind, value[(separator + 1)..]);
+        return true;
+    }
+
+    private static string? LookupProp(PropertyBag props, string key)
+        => props.Values.TryGetValue(key, out object? value) ? value?.ToString() : null;
+
+    private static double GetCanvasWidth(ReportPageSettings settings)
+        => ReportLayoutUtilities.GetUsablePageWidth(settings);
+
+    private static double GetPaperWidthPx(ReportPageSettings settings)
+    {
+        double widthInches = settings.PaperSize.Equals("A4", StringComparison.OrdinalIgnoreCase) ? 8.27 : 8.5;
+        double heightInches = settings.PaperSize.Equals("A4", StringComparison.OrdinalIgnoreCase) ? 11.69 : 11.0;
+        if (settings.Orientation.Equals("Landscape", StringComparison.OrdinalIgnoreCase))
+            (widthInches, heightInches) = (heightInches, widthInches);
+        return widthInches * ReportLayoutUtilities.PixelsPerInch;
+    }
+
+    private static double Snap(double value) => Math.Round(value / 4.0) * 4.0;
+
+    private static string WrapFieldReference(string fieldName)
+        => fieldName.Length > 0 && (char.IsLetter(fieldName[0]) || fieldName[0] == '_') && fieldName.All(ch => char.IsLetterOrDigit(ch) || ch == '_')
+            ? fieldName
+            : $"[{fieldName}]";
+}

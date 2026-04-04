@@ -7,6 +7,7 @@ public sealed class TabManagerService
     private readonly List<TabDescriptor> _tabs = new();
     private int _queryCounter;
     private int _formDesignerCounter;
+    private int _reportDesignerCounter;
 
     public IReadOnlyList<TabDescriptor> Tabs => _tabs;
     public TabDescriptor? ActiveTab { get; private set; }
@@ -209,6 +210,53 @@ public sealed class TabManagerService
     public void CloseTabsForForm(string formId)
     {
         var toClose = _tabs.Where(t => string.Equals(t.FormId, formId, StringComparison.Ordinal)).ToList();
+        foreach (var tab in toClose)
+            CloseTab(tab.Id);
+    }
+
+    public TabDescriptor OpenReportDesignerTab(string? reportId = null, string? sourceKind = null, string? sourceName = null, string? title = null)
+    {
+        TabDescriptor tab;
+        if (!string.IsNullOrWhiteSpace(reportId))
+        {
+            tab = new TabDescriptor($"report-designer:{reportId}", title ?? "Report Designer", "bi-file-earmark-richtext", TabKind.ReportDesigner)
+            {
+                ReportId = reportId,
+            };
+        }
+        else
+        {
+            int num = Interlocked.Increment(ref _reportDesignerCounter);
+            tab = new TabDescriptor($"report-designer:new:{num}", title ?? "New Report", "bi-file-earmark-richtext", TabKind.ReportDesigner)
+            {
+                InitialReportSourceKind = sourceKind,
+                InitialReportSourceName = sourceName,
+            };
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceKind))
+            tab.InitialReportSourceKind = sourceKind;
+        if (!string.IsNullOrWhiteSpace(sourceName))
+            tab.InitialReportSourceName = sourceName;
+
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public TabDescriptor OpenReportPreviewTab(string reportId, string? title = null)
+    {
+        var tab = new TabDescriptor($"report-preview:{reportId}", title ?? "Report Preview", "bi-printer", TabKind.ReportPreview)
+        {
+            ReportId = reportId,
+        };
+
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public void CloseTabsForReport(string reportId)
+    {
+        var toClose = _tabs.Where(t => string.Equals(t.ReportId, reportId, StringComparison.Ordinal)).ToList();
         foreach (var tab in toClose)
             CloseTab(tab.Id);
     }

@@ -1,0 +1,45 @@
+@implements IDisposable
+@inject DatabaseClientHolder DbHolder
+@inject TabManagerService TabManager
+
+@if (string.IsNullOrWhiteSpace(Tab.ReportId))
+{
+    <div class="empty-state">
+        <i class="bi bi-printer"></i>
+        <p>This report preview tab has no report bound to it.</p>
+    </div>
+}
+else
+{
+    <CSharpDB.Admin.Reports.Pages.Preview @key="_renderKey" ReportId="@Tab.ReportId" OnOpenDesigner="OpenDesigner" />
+}
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+    private string _renderKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _renderKey = BuildRenderKey();
+        DbHolder.DatabaseChanged += OnDatabaseChanged;
+    }
+
+    public void Dispose()
+    {
+        DbHolder.DatabaseChanged -= OnDatabaseChanged;
+    }
+
+    private Task OpenDesigner(string reportId)
+    {
+        TabManager.OpenReportDesignerTab(reportId, title: Tab.Title);
+        return Task.CompletedTask;
+    }
+
+    private void OnDatabaseChanged()
+    {
+        _renderKey = BuildRenderKey();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}";
+}

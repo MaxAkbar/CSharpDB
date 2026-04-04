@@ -2,6 +2,7 @@
 @inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject IFormRepository FormRepository
+@inject IReportRepository ReportRepository
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
@@ -74,6 +75,35 @@
                             <i class="bi bi-ui-checks-grid icon-view"></i>
                             <span class="item-label">@currentForm.Name</span>
                             <span class="item-hint">@currentForm.TableName</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("reports")'
+                 @oncontextmenu="e => ShowReportsGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("reports") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-file-earmark-richtext icon-view"></i>
+                <span>Reports</span>
+                <span class="group-count">@(_reports?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("reports") && _reports is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var report in FilterReports())
+                    {
+                        var currentReport = report;
+                        <div class="tree-item @(IsActiveReport(currentReport.ReportId) ? "active" : "")"
+                             @onclick="() => TabManager.OpenReportDesignerTab(currentReport.ReportId, title: currentReport.Name)"
+                             @oncontextmenu="e => ShowReportItemMenu(e, currentReport)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi bi-file-earmark-richtext icon-view"></i>
+                            <span class="item-label">@currentReport.Name</span>
+                            <span class="item-hint">@currentReport.Source.Name</span>
                         </div>
                     }
                 </div>
@@ -270,8 +300,9 @@
     private IReadOnlyList<TriggerSchema>? _triggers;
     private IReadOnlyList<ProcedureDefinition>? _procedures;
     private IReadOnlyList<FormDefinition>? _forms;
+    private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "forms", "system", "views", "procedures" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "forms", "reports", "system", "views", "procedures" };
 
     protected override async Task OnInitializedAsync()
     {
@@ -307,6 +338,7 @@
             _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
             _procedures = (await DbClient.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
             _forms = (await FormRepository.ListAsync()).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            _reports = (await ReportRepository.ListAsync()).OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
         catch
         {
@@ -317,6 +349,7 @@
             _triggers = null;
             _procedures = null;
             _forms = null;
+            _reports = null;
         }
     }
 
@@ -368,6 +401,15 @@
             || form.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
+    private IEnumerable<ReportDefinition> FilterReports()
+    {
+        if (_reports is null) return Enumerable.Empty<ReportDefinition>();
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return _reports;
+        return _reports.Where(report =>
+            report.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+            || report.Source.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
     private IEnumerable<SystemCatalogItem> FilterSystemCatalogItems()
     {
         if (string.IsNullOrWhiteSpace(_searchQuery))
@@ -399,6 +441,12 @@
     {
         var activeTab = TabManager.ActiveTab;
         return activeTab is not null && string.Equals(activeTab.FormId, formId, StringComparison.Ordinal);
+    }
+
+    private bool IsActiveReport(string reportId)
+    {
+        var activeTab = TabManager.ActiveTab;
+        return activeTab is not null && string.Equals(activeTab.ReportId, reportId, StringComparison.Ordinal);
     }
 
     private async Task StartResize(MouseEventArgs e)
@@ -439,6 +487,7 @@
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
+            new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },
@@ -468,6 +517,27 @@
         });
     }
 
+    private void ShowReportsGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Report", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenReportDesignerTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowReportItemMenu(MouseEventArgs e, ReportDefinition report)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Design", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(report.ReportId, title: report.Name) },
+            new() { Label = "Preview", Icon = "bi-printer", OnClick = () => TabManager.OpenReportPreviewTab(report.ReportId, report.Name) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Delete", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDeleteReportAsync(report) },
+        });
+    }
+
     private void ShowViewsGroupMenu(MouseEventArgs e)
     {
         ShowContextMenu(e, new List<ContextMenuItem>
@@ -485,6 +555,7 @@
             new() { Label = "Open", Icon = "bi-eye", OnClick = () => TabManager.OpenViewTab(viewName) },
             new() { Label = "Edit Definition", Icon = "bi-pencil", OnClick = () => { var tab = TabManager.OpenViewTab(viewName); tab.State["ShowSchema"] = true; } },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: viewName, title: $"{viewName} Form") },
+            new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.View.ToString(), sourceName: viewName, title: $"{viewName} Report") },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {viewName} LIMIT 50;") },
             ContextMenuItem.Separator(),
@@ -610,6 +681,24 @@
             await FormRepository.DeleteAsync(form.FormId);
             Toast.Success($"Deleted form '{form.Name}'.");
             TabManager.CloseTabsForForm(form.FormId);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task ConfirmDeleteReportAsync(ReportDefinition report)
+    {
+        var confirmed = await Modal.ConfirmAsync("Delete Report", $"Are you sure you want to delete report '{report.Name}'?", "Delete", isDanger: true);
+        if (!confirmed) return;
+
+        try
+        {
+            await ReportRepository.DeleteAsync(report.ReportId);
+            Toast.Success($"Deleted report '{report.Name}'.");
+            TabManager.CloseTabsForReport(report.ReportId);
             Changes.NotifyChanged();
         }
         catch (Exception ex)

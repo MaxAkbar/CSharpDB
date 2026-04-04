@@ -11,7 +11,9 @@ public enum TabKind
     Storage,
     TableDesigner,
     FormDesigner,
-    FormEntry
+    FormEntry,
+    ReportDesigner,
+    ReportPreview
 }
 
 public sealed class TabDescriptor
@@ -69,5 +71,29 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("InitialTableName", out var v) ? v as string : null;
         set => State["InitialTableName"] = value;
+    }
+
+    public string? ReportId
+    {
+        get => State.TryGetValue("ReportId", out var v) ? v as string : null;
+        set => State["ReportId"] = value;
+    }
+
+    public string? InitialReportSourceKind
+    {
+        get => State.TryGetValue("InitialReportSourceKind", out var v) ? v as string : null;
+        set => State["InitialReportSourceKind"] = value;
+    }
+
+    public string? InitialReportSourceName
+    {
+        get => State.TryGetValue("InitialReportSourceName", out var v) ? v as string : null;
+        set => State["InitialReportSourceName"] = value;
+    }
+
+    public string? ReportDesignerStateJson
+    {
+        get => State.TryGetValue("ReportDesignerStateJson", out var v) ? v as string : null;
+        set => State["ReportDesignerStateJson"] = value;
     }
 }

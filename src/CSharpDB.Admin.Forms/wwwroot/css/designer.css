@@ -156,8 +156,8 @@
     min-height: 900px;
     background-color: #fff;
     background-image:
-        linear-gradient(to right, #f5f5f5 1px, transparent 1px),
-        linear-gradient(to bottom, #f5f5f5 1px, transparent 1px);
+        linear-gradient(90deg, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+        linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px);
     background-size: 8px 8px;
     margin: 16px;
     box-shadow: 0 2px 12px rgba(0,0,0,0.12);
@@ -169,7 +169,7 @@
 .design-item {
     position: absolute;
     box-sizing: border-box;
-    border: 1px solid transparent;
+    border: 1px solid #a0a0a0;
     cursor: grab;
     transition: border-color 0.1s;
 }
@@ -204,7 +204,7 @@
 .preview-input {
     width: 100%;
     height: 100%;
-    border: 1px solid #ccc;
+    border: 1px solid #a0a0a0;
     border-radius: 3px;
     padding: 2px 6px;
     font-size: 12px;
@@ -1485,8 +1485,8 @@
     --fd-bg-elevated: var(--bg-elevated, #24253a);
     --fd-bg-hover: var(--bg-hover, #292a3e);
     --fd-bg-active: var(--bg-active, #33345a);
-    --fd-border: var(--border-color, #2a2b3d);
-    --fd-border-light: var(--border-light, #363750);
+    --fd-border: #3d3e58;
+    --fd-border-light: #4a4b6a;
     --fd-text: var(--text-primary, #c0caf5);
     --fd-text-secondary: var(--text-secondary, #7982a9);
     --fd-text-muted: var(--text-muted, #565f89);
@@ -1740,17 +1740,20 @@
 .design-canvas {
     background-color: var(--fd-bg-elevated);
     background-image:
-        linear-gradient(to right, color-mix(in srgb, var(--fd-border-light) 45%, transparent) 1px, transparent 1px),
-        linear-gradient(to bottom, color-mix(in srgb, var(--fd-border-light) 45%, transparent) 1px, transparent 1px);
+        linear-gradient(to right, color-mix(in srgb, var(--fd-border-light) 70%, transparent) 1px, transparent 1px),
+        linear-gradient(to bottom, color-mix(in srgb, var(--fd-border-light) 70%, transparent) 1px, transparent 1px);
     box-shadow: var(--fd-shadow);
 }
 
 .de-form-area,
 .child-datagrid,
 .preview-datagrid,
-.preview-childtabs,
-.design-canvas {
+.preview-childtabs {
     background: var(--fd-bg-elevated);
+    color: var(--fd-text);
+}
+
+.design-canvas {
     color: var(--fd-text);
 }
 
@@ -1805,6 +1808,10 @@
     background: var(--fd-accent-soft) !important;
     color: var(--fd-accent) !important;
     border-color: var(--fd-accent);
+}
+
+.design-item {
+    border-color: var(--fd-border-light);
 }
 
 .design-item:hover,
