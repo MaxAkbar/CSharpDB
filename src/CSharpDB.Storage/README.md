@@ -90,7 +90,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Treat this as a measure-first preset rather than a new baseline. In the latest `durable-sql-batching` median-of-3 run, analyzed single-row durable SQL measured about `267.8 ops/sec` on `UseWriteOptimizedPreset()` and about `261.4 ops/sec` on `UseLowLatencyDurableWritePreset()`. The current biggest durable ingest win is still explicit transaction batching, not the low-latency preset by itself.
+Treat this as a measure-first preset rather than a new baseline. The preset now deliberately separates exact committed-row durability from advisory planner-stat persistence: committed user rows remain WAL-durable per commit, while `sys.table_stats.row_count_is_exact` and stale column-stat tracking make any deferred planner metadata explicit after reopen/recovery. In the latest `durable-sql-batching` median-of-3 run, analyzed single-row durable SQL measured about `267.8 ops/sec` on `UseWriteOptimizedPreset()` and about `261.4 ops/sec` on `UseLowLatencyDurableWritePreset()`. The current biggest durable ingest win is still explicit transaction batching, not the low-latency preset by itself.
 
 If you want to experiment with durable group commit, the storage builder now exposes `UseDurableCommitBatchWindow(...)`:
 
@@ -107,7 +107,7 @@ var options = new DatabaseOptions()
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the stable March 28 concurrent median-of-3 rerun, `250us` was the best `4`-writer row at about `553.4 commits/sec` and the narrow best pure batch-window `8`-writer row at about `1070.4 commits/sec`, while the single-writer harness still regressed to about `267.2 ops/sec`. This should remain an opt-in knob for measured in-process contention rather than a new default.
+Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the stable March 28 concurrent median-of-3 rerun, `250us` was the best `4`-writer row at about `553.4 commits/sec` and the narrow best pure batch-window `8`-writer row at about `1070.4 commits/sec`, while the single-writer harness still regressed to about `267.2 ops/sec`. This should remain an opt-in knob for measured in-process contention rather than a new default. When you test it, look at queue depth, commits per flush, and latency percentiles in addition to raw throughput.
 
 For sustained file-backed ingest, the builder also exposes `UseWalPreallocationChunkBytes(...)`:
 
@@ -196,7 +196,7 @@ using var reader = db.CreateReaderSession();
 await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM bench");
 ```
 
-Separately from durable flush tuning, the storage write path now does partial async I/O batching on its own. Direct `AppendFramesAndCommitAsync(...)` already writes WAL frames in chunks, checkpoint copies already batch contiguous page writes back into the main database file, and repeated `AppendFrameAsync(...)` calls inside one transaction are now staged and emitted as chunked WAL writes at `CommitAsync(...)` time. The remaining roadmap work here is to audit the other batch/export paths and decide which ones are worth batching further.
+Separately from durable flush tuning, the storage write path now does partial async I/O batching on its own. Direct `AppendFramesAndCommitAsync(...)` already writes WAL frames in chunks, checkpoint copies already batch contiguous page writes back into the main database file, repeated `AppendFrameAsync(...)` calls inside one transaction are now staged and emitted as chunked WAL writes at `CommitAsync(...)` time, and the snapshot/export-style copy paths now share one batched storage-device copy helper. The remaining roadmap work here is to audit the remaining export/rewrite paths and decide which ones are worth batching further.
 
 The current crash-level durability coverage is process-based rather than mock-based. The test suite now verifies recovery after a real process crash at four points: immediately after commit returns, at checkpoint start, after checkpoint page copies have been flushed to the main DB file, and after WAL checkpoint finalization but before pager state refresh completes.
 

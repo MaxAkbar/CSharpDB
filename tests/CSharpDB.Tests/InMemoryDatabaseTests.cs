@@ -149,11 +149,12 @@ public sealed class InMemoryDatabaseTests : IDisposable
 
         await using var reopened = await Database.OpenAsync(filePath, options, Ct);
         await using var statsResult = await reopened.ExecuteAsync(
-            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_export'",
+            "SELECT row_count, row_count_is_exact, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_export'",
             Ct);
         var statsRow = Assert.Single(await statsResult.ToListAsync(Ct));
         Assert.Equal(2L, statsRow[0].AsInteger);
         Assert.Equal(1L, statsRow[1].AsInteger);
+        Assert.Equal(1L, statsRow[2].AsInteger);
 
         await using var staleColumnStats = await reopened.ExecuteAsync(
             "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'stats_export' AND is_stale = 1",

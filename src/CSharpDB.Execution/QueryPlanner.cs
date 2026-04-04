@@ -15,6 +15,32 @@ namespace CSharpDB.Execution;
 public sealed class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
+    private const int AnalyzeHistogramBucketCount = 16;
+    private const int AnalyzeFrequentValueCount = 8;
+    private const int MaxJoinReorderDpLeafCount = 6;
+
+    private sealed class AnalyzedTableStatisticsResult
+    {
+        public required long RowCount { get; init; }
+        public required ColumnStatistics[] Columns { get; init; }
+        public required ColumnDistributionStatistics[] ColumnDistributions { get; init; }
+        public required IndexPrefixStatistics[] IndexPrefixes { get; init; }
+    }
+
+    private sealed class AnalyzeIndexPrefixPlan
+    {
+        public required IndexSchema Index { get; init; }
+        public required int[] ColumnIndices { get; init; }
+        public required HashSet<string>[] PrefixDistinctKeys { get; init; }
+    }
+
+    private sealed class JoinOrderState
+    {
+        public required List<ReorderableJoinLeaf> OrderedLeaves { get; init; }
+        public required HashSet<string> SelectedIds { get; init; }
+        public required long EstimatedRows { get; init; }
+        public required long TotalCost { get; init; }
+    }
 
     private readonly record struct ReorderableJoinLeaf(
         SimpleTableRef TableRef,
@@ -114,6 +140,7 @@ public sealed class QueryPlanner
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "row_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "row_count_is_exact", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "has_stale_columns", Type = DbType.Integer, Nullable = false },
     ];
 
@@ -1820,14 +1847,16 @@ public sealed class QueryPlanner
 
         var schema = GetSchema(tableName);
         var tree = _catalog.GetTableTree(tableName, _pager);
-        var columnStats = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
-        long rowCount = columnStats.RowCount;
+        var statistics = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
+        long rowCount = statistics.RowCount;
         await _catalog.SetTableRowCountAsync(tableName, rowCount, ct);
-        await _catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.Columns, ct);
+        await _catalog.ReplaceColumnStatisticsAsync(tableName, statistics.Columns, ct);
+        await _catalog.ReplaceColumnDistributionStatisticsAsync(tableName, statistics.ColumnDistributions, ct);
+        await _catalog.ReplaceIndexPrefixStatisticsForTableAsync(tableName, statistics.IndexPrefixes, ct);
         await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
     }
 
-    private async ValueTask<(long RowCount, ColumnStatistics[] Columns)> CollectColumnStatisticsAsync(
+    private async ValueTask<AnalyzedTableStatisticsResult> CollectColumnStatisticsAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
@@ -1835,10 +1864,13 @@ public sealed class QueryPlanner
     {
         int columnCount = schema.Columns.Count;
         var distinctSets = new HashSet<DbValue>[columnCount];
+        var valueFrequencies = new Dictionary<DbValue, long>[columnCount];
+        var sampledValues = new List<DbValue>[columnCount];
         var nonNullCounts = new long[columnCount];
         var minValues = new DbValue[columnCount];
         var maxValues = new DbValue[columnCount];
         var hasValues = new bool[columnCount];
+        var indexPrefixPlans = BuildAnalyzeIndexPrefixPlans(schema, _catalog.GetIndexesForTable(tableName));
 
         int? scanCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
         var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
@@ -1857,6 +1889,12 @@ public sealed class QueryPlanner
 
                 nonNullCounts[i]++;
                 (distinctSets[i] ??= new HashSet<DbValue>()).Add(value);
+                (sampledValues[i] ??= new List<DbValue>()).Add(value);
+
+                var frequencies = valueFrequencies[i] ??= new Dictionary<DbValue, long>();
+                frequencies[value] = frequencies.TryGetValue(value, out long existingCount)
+                    ? existingCount + 1
+                    : 1;
 
                 if (!hasValues[i])
                 {
@@ -1871,12 +1909,36 @@ public sealed class QueryPlanner
                 if (DbValue.Compare(value, maxValues[i]) > 0)
                     maxValues[i] = value;
             }
+
+            for (int planIndex = 0; planIndex < indexPrefixPlans.Count; planIndex++)
+            {
+                var plan = indexPrefixPlans[planIndex];
+                for (int prefixLength = 1; prefixLength <= plan.ColumnIndices.Length; prefixLength++)
+                {
+                    bool hasNull = false;
+                    for (int componentIndex = 0; componentIndex < prefixLength; componentIndex++)
+                    {
+                        if (row[plan.ColumnIndices[componentIndex]].IsNull)
+                        {
+                            hasNull = true;
+                            break;
+                        }
+                    }
+
+                    if (hasNull)
+                        break;
+
+                    plan.PrefixDistinctKeys[prefixLength - 1].Add(
+                        EncodeCompositeStatisticsPrefix(row, plan.ColumnIndices, prefixLength));
+                }
+            }
         }
 
-        var result = new ColumnStatistics[columnCount];
+        var columnStatistics = new ColumnStatistics[columnCount];
+        var columnDistributions = new ColumnDistributionStatistics[columnCount];
         for (int i = 0; i < columnCount; i++)
         {
-            result[i] = new ColumnStatistics
+            columnStatistics[i] = new ColumnStatistics
             {
                 TableName = tableName,
                 ColumnName = schema.Columns[i].Name,
@@ -1886,9 +1948,180 @@ public sealed class QueryPlanner
                 MaxValue = hasValues[i] ? maxValues[i] : DbValue.Null,
                 IsStale = false,
             };
+
+            columnDistributions[i] = new ColumnDistributionStatistics
+            {
+                TableName = tableName,
+                ColumnName = schema.Columns[i].Name,
+                FrequentValues = BuildFrequentValues(valueFrequencies[i]),
+                HistogramBuckets = BuildHistogramBuckets(sampledValues[i]),
+            };
         }
 
-        return (rowCount, result);
+        return new AnalyzedTableStatisticsResult
+        {
+            RowCount = rowCount,
+            Columns = columnStatistics,
+            ColumnDistributions = columnDistributions,
+            IndexPrefixes = BuildIndexPrefixStatistics(tableName, indexPrefixPlans),
+        };
+    }
+
+    private static List<AnalyzeIndexPrefixPlan> BuildAnalyzeIndexPrefixPlans(
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> indexes)
+    {
+        var plans = new List<AnalyzeIndexPrefixPlan>();
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var index = indexes[i];
+            if (index.Kind != IndexKind.Sql ||
+                index.State != IndexState.Ready ||
+                index.Columns.Count <= 1)
+            {
+                continue;
+            }
+
+            var columnIndices = new int[index.Columns.Count];
+            bool allColumnsResolved = true;
+            for (int columnIndex = 0; columnIndex < index.Columns.Count; columnIndex++)
+            {
+                int resolvedIndex = schema.GetColumnIndex(index.Columns[columnIndex]);
+                if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
+                {
+                    allColumnsResolved = false;
+                    break;
+                }
+
+                columnIndices[columnIndex] = resolvedIndex;
+            }
+
+            if (!allColumnsResolved)
+                continue;
+
+            var prefixDistinctKeys = new HashSet<string>[columnIndices.Length];
+            for (int prefixLength = 0; prefixLength < prefixDistinctKeys.Length; prefixLength++)
+                prefixDistinctKeys[prefixLength] = new HashSet<string>(StringComparer.Ordinal);
+
+            plans.Add(new AnalyzeIndexPrefixPlan
+            {
+                Index = index,
+                ColumnIndices = columnIndices,
+                PrefixDistinctKeys = prefixDistinctKeys,
+            });
+        }
+
+        return plans;
+    }
+
+    private static FrequentValueStatistics[] BuildFrequentValues(Dictionary<DbValue, long>? frequencies)
+    {
+        if (frequencies == null || frequencies.Count == 0)
+            return Array.Empty<FrequentValueStatistics>();
+
+        return frequencies
+            .Where(static pair => pair.Value > 1)
+            .OrderByDescending(static pair => pair.Value)
+            .ThenBy(static pair => pair.Key, Comparer<DbValue>.Create(static (left, right) => DbValue.Compare(left, right)))
+            .Take(AnalyzeFrequentValueCount)
+            .Select(static pair => new FrequentValueStatistics
+            {
+                Value = pair.Key,
+                RowCount = pair.Value,
+            })
+            .ToArray();
+    }
+
+    private static HistogramBucketStatistics[] BuildHistogramBuckets(List<DbValue>? values)
+    {
+        if (values == null || values.Count == 0)
+            return Array.Empty<HistogramBucketStatistics>();
+
+        values.Sort(static (left, right) => DbValue.Compare(left, right));
+        int bucketCount = Math.Min(AnalyzeHistogramBucketCount, values.Count);
+        int bucketSize = (int)DivideRoundUp(values.Count, bucketCount);
+        var buckets = new List<HistogramBucketStatistics>(bucketCount);
+
+        for (int start = 0; start < values.Count; start += bucketSize)
+        {
+            int endExclusive = Math.Min(values.Count, start + bucketSize);
+            buckets.Add(new HistogramBucketStatistics
+            {
+                LowerBound = values[start],
+                UpperBound = values[endExclusive - 1],
+                RowCount = endExclusive - start,
+            });
+        }
+
+        return buckets.ToArray();
+    }
+
+    private static IndexPrefixStatistics[] BuildIndexPrefixStatistics(
+        string tableName,
+        IReadOnlyList<AnalyzeIndexPrefixPlan> plans)
+    {
+        if (plans.Count == 0)
+            return Array.Empty<IndexPrefixStatistics>();
+
+        var statistics = new List<IndexPrefixStatistics>(plans.Count);
+        for (int i = 0; i < plans.Count; i++)
+        {
+            var plan = plans[i];
+            var prefixDistinctCounts = new long[plan.PrefixDistinctKeys.Length];
+            for (int prefixLength = 0; prefixLength < plan.PrefixDistinctKeys.Length; prefixLength++)
+                prefixDistinctCounts[prefixLength] = plan.PrefixDistinctKeys[prefixLength].Count;
+
+            statistics.Add(new IndexPrefixStatistics
+            {
+                IndexName = plan.Index.IndexName,
+                TableName = tableName,
+                PrefixColumns = plan.Index.Columns.ToArray(),
+                PrefixDistinctCounts = prefixDistinctCounts,
+            });
+        }
+
+        return statistics.ToArray();
+    }
+
+    private static string EncodeCompositeStatisticsPrefix(
+        DbValue[] row,
+        IReadOnlyList<int> columnIndices,
+        int prefixLength)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < prefixLength; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+
+            AppendCompositeStatisticsValue(builder, row[columnIndices[i]]);
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendCompositeStatisticsValue(StringBuilder builder, DbValue value)
+    {
+        builder.Append((int)value.Type).Append(':');
+        switch (value.Type)
+        {
+            case DbType.Null:
+                break;
+            case DbType.Integer:
+                builder.Append(value.AsInteger);
+                break;
+            case DbType.Real:
+                builder.Append(BitConverter.DoubleToInt64Bits(value.AsReal));
+                break;
+            case DbType.Text:
+                builder.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(value.AsText)));
+                break;
+            case DbType.Blob:
+                builder.Append(Convert.ToBase64String(value.AsBlob));
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported statistics value type '{value.Type}'.");
+        }
     }
 
     /// <summary>
@@ -6122,8 +6355,20 @@ public sealed class QueryPlanner
         ApplyLocalPredicateRowEstimates(leaves, predicates, outerWhere);
 
         var originalOrder = leaves.OrderBy(static l => l.OriginalIndex).Select(static l => l.Identifier).ToArray();
-        if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out var orderedLeaves))
+        List<ReorderableJoinLeaf> orderedLeaves;
+        if (TryChooseBoundedInnerJoinOrder(leaves, predicates, out orderedLeaves))
+        {
+            var boundedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
+            if (originalOrder.SequenceEqual(boundedOrder, StringComparer.OrdinalIgnoreCase) &&
+                !TryChooseGreedyInnerJoinOrder(leaves, predicates, out orderedLeaves))
+            {
+                return false;
+            }
+        }
+        else if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out orderedLeaves))
+        {
             return false;
+        }
 
         var reorderedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
         if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
@@ -6415,6 +6660,143 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private bool TryChooseBoundedInnerJoinOrder(
+        List<ReorderableJoinLeaf> leaves,
+        List<ReorderableJoinPredicate> predicates,
+        out List<ReorderableJoinLeaf> orderedLeaves)
+    {
+        orderedLeaves = new List<ReorderableJoinLeaf>(leaves.Count);
+
+        if (leaves.Count < 4 || leaves.Count > MaxJoinReorderDpLeafCount)
+            return false;
+
+        var states = new Dictionary<int, JoinOrderState>();
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            states[1 << i] = new JoinOrderState
+            {
+                OrderedLeaves = [leaves[i]],
+                SelectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { leaves[i].Identifier },
+                EstimatedRows = leaves[i].RowCount,
+                TotalCost = leaves[i].RowCount,
+            };
+        }
+
+        int fullMask = (1 << leaves.Count) - 1;
+        for (int subsetSize = 2; subsetSize <= leaves.Count; subsetSize++)
+        {
+            for (int mask = 1; mask <= fullMask; mask++)
+            {
+                if (CountBits(mask) != subsetSize)
+                    continue;
+
+                JoinOrderState? bestState = null;
+                long bestTotalCost = long.MaxValue;
+                long bestEstimate = long.MaxValue;
+                long bestLastRowCount = long.MaxValue;
+                int bestLastOriginalIndex = int.MaxValue;
+
+                for (int leafIndex = 0; leafIndex < leaves.Count; leafIndex++)
+                {
+                    int leafMask = 1 << leafIndex;
+                    if ((mask & leafMask) == 0)
+                        continue;
+
+                    int previousMask = mask & ~leafMask;
+                    if (previousMask == 0 || !states.TryGetValue(previousMask, out var previousState))
+                        continue;
+
+                    var candidate = leaves[leafIndex];
+                    if (!TryEstimateNextJoinStep(
+                            leaves,
+                            predicates,
+                            previousState.OrderedLeaves,
+                            previousState.SelectedIds,
+                            previousState.EstimatedRows,
+                            candidate,
+                            out long estimatedRows))
+                    {
+                        continue;
+                    }
+
+                    long totalCost = SafeAdd(previousState.TotalCost, estimatedRows);
+
+                    if (bestState != null &&
+                        totalCost > bestTotalCost)
+                    {
+                        continue;
+                    }
+
+                    if (bestState != null &&
+                        totalCost == bestTotalCost &&
+                        estimatedRows > bestEstimate)
+                    {
+                        continue;
+                    }
+
+                    if (bestState != null &&
+                        totalCost == bestTotalCost &&
+                        estimatedRows == bestEstimate &&
+                        (candidate.RowCount > bestLastRowCount ||
+                         (candidate.RowCount == bestLastRowCount && candidate.OriginalIndex >= bestLastOriginalIndex)))
+                    {
+                        continue;
+                    }
+
+                    var ordered = new List<ReorderableJoinLeaf>(previousState.OrderedLeaves.Count + 1);
+                    ordered.AddRange(previousState.OrderedLeaves);
+                    ordered.Add(candidate);
+
+                    var selectedIds = new HashSet<string>(previousState.SelectedIds, StringComparer.OrdinalIgnoreCase)
+                    {
+                        candidate.Identifier
+                    };
+
+                    bestState = new JoinOrderState
+                    {
+                        OrderedLeaves = ordered,
+                        SelectedIds = selectedIds,
+                        EstimatedRows = estimatedRows,
+                        TotalCost = totalCost,
+                    };
+                    bestTotalCost = totalCost;
+                    bestEstimate = estimatedRows;
+                    bestLastRowCount = candidate.RowCount;
+                    bestLastOriginalIndex = candidate.OriginalIndex;
+                }
+
+                if (bestState != null)
+                    states[mask] = bestState;
+            }
+        }
+
+        if (!states.TryGetValue(fullMask, out var finalState))
+            return false;
+
+        orderedLeaves = finalState.OrderedLeaves;
+        return true;
+    }
+
+    private static int CountBits(int value)
+    {
+        int count = 0;
+        while (value != 0)
+        {
+            value &= value - 1;
+            count++;
+        }
+
+        return count;
+    }
+
+    private static long SafeAdd(long left, long right)
+    {
+        if (left >= long.MaxValue - right)
+            return long.MaxValue;
+
+        return left + right;
     }
 
     private bool TryEstimateNextJoinStep(
@@ -7565,7 +7947,7 @@ public sealed class QueryPlanner
         long estimatedRows = 0;
         long tableRowCount = 0;
         bool hasEstimatedRows = !matchedIndex.IsUnique &&
-            TryEstimateLookupRowCount(tableName, columnName, out estimatedRows, out tableRowCount);
+            TryEstimateLookupRowCount(tableName, columnName, lookupLiteral, out estimatedRows, out tableRowCount);
 
         candidate = new LookupCandidate(
             lookupValue,
@@ -7584,13 +7966,14 @@ public sealed class QueryPlanner
         return true;
     }
 
-    private bool TryEstimateLookupRowCount(string tableName, string columnName, out long estimatedRows, out long tableRowCount)
+    private bool TryEstimateLookupRowCount(string tableName, string columnName, DbValue lookupValue, out long estimatedRows, out long tableRowCount)
     {
         return CardinalityEstimator.TryEstimateLookupRowCount(
             _tableRowCountProvider,
             _catalog,
             tableName,
             columnName,
+            lookupValue,
             out estimatedRows,
             out tableRowCount);
     }
@@ -11329,6 +11712,7 @@ public sealed class QueryPlanner
             [
                 DbValue.FromText(stats.TableName),
                 DbValue.FromInteger(stats.RowCount),
+                DbValue.FromInteger(stats.RowCountIsExact ? 1 : 0),
                 DbValue.FromInteger(stats.HasStaleColumns ? 1 : 0),
             ]);
         }

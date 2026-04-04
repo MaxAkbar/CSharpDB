@@ -32,7 +32,7 @@ Use this table first. Most CSharpDB performance wins come from choosing the righ
 | Ephemeral cache or periodic snapshot workflow | In-memory + `SaveToFileAsync` when needed | Biggest write throughput win by far |
 | Burst of related SQL reads | Reuse one `ReaderSession` per reader burst | Snapshot reuse is much cheaper than per-query session creation |
 | Ordered/range SQL queries | Build indexes for the filter/sort columns and project only what you need | Covered and compact paths are major wins |
-| Join/reporting workload | Add join indexes and run `ANALYZE` after bulk changes | Planner can use stats for build-side choice, selective lookups, and limited reordering |
+| Join/reporting workload | Add join indexes and run `ANALYZE` after bulk changes | Planner can use histograms, heavy hitters, composite-prefix stats, build-side choice, selective lookups, and bounded small-chain reordering |
 | Write-heavy ingest | `UseWriteOptimizedPreset()` plus explicit transaction batching | Batching is the biggest durable-write lever in the current suite |
 | Document/path queries | `Collection<T>` + `EnsureIndexAsync(...)` on fields and paths you query | Indexed collection paths are fast; unindexed predicate scans are not |
 | ADO.NET app with frequent opens | Enable pooling explicitly | Pooling dominates open/close overhead in the current provider benchmarks |

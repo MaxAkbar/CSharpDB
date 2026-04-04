@@ -30,6 +30,7 @@ internal static class CardinalityEstimator
         SchemaCatalog catalog,
         string tableName,
         string columnName,
+        DbValue lookupValue,
         out long estimatedRows,
         out long tableRowCount)
     {
@@ -44,7 +45,13 @@ internal static class CardinalityEstimator
             return false;
         }
 
-        estimatedRows = Math.Max(1, DivideRoundUp(tableRowCount, stats.DistinctCount));
+        estimatedRows = EstimateDiscreteValueRowCount(
+            catalog,
+            tableName,
+            columnName,
+            stats,
+            tableRowCount,
+            [lookupValue]);
         return true;
     }
 
@@ -70,8 +77,18 @@ internal static class CardinalityEstimator
 
         double combinedSelectivity = 1d;
         bool usedStats = false;
+        HashSet<int>? compositeCoveredColumns = null;
+        if (TryEstimateCompositePrefixSelectivity(catalog, schema, tableRowCount, constraintsByColumn, out double compositeSelectivity, out compositeCoveredColumns))
+        {
+            combinedSelectivity *= Math.Clamp(compositeSelectivity, 0d, 1d);
+            usedStats = true;
+        }
+
         foreach (var (columnIndex, constraint) in constraintsByColumn)
         {
+            if (compositeCoveredColumns?.Contains(columnIndex) == true)
+                continue;
+
             if (!TryEstimateColumnConstraintSelectivity(catalog, schema, tableRowCount, columnIndex, constraint, out double selectivity))
                 continue;
 
@@ -111,6 +128,21 @@ internal static class CardinalityEstimator
             string.Equals(rightSchema.TableName, "joined", StringComparison.OrdinalIgnoreCase))
         {
             return false;
+        }
+
+        if (leftKeyIndices.Length > 1 &&
+            TryEstimateCompositeEqualityJoinRowCount(
+                catalog,
+                joinType,
+                leftSchema,
+                rightSchema,
+                leftKeyIndices,
+                rightKeyIndices,
+                leftRows,
+                rightRows,
+                out estimatedRows))
+        {
+            return true;
         }
 
         long maxDistinctProduct = 1;
@@ -266,7 +298,8 @@ internal static class CardinalityEstimator
 
         if (constraint.AllowedValues is { } allowedValues)
         {
-            int matchingValueCount = CountAllowedValues(constraint, allowedValues);
+            DbValue[] matchingValues = GetMatchingAllowedValues(constraint, allowedValues);
+            int matchingValueCount = matchingValues.Length;
             if (matchingValueCount <= 0)
             {
                 selectivity = minimumSelectivity;
@@ -288,8 +321,17 @@ internal static class CardinalityEstimator
                 return true;
             }
 
-            double distinctFraction = (double)matchingValueCount / Math.Max(stats.DistinctCount, 1);
-            selectivity = Math.Clamp(Math.Max(distinctFraction * nonNullFraction, minimumSelectivity), minimumSelectivity, 1d);
+            long estimatedRows = EstimateDiscreteValueRowCount(
+                catalog,
+                schema.TableName,
+                columnName,
+                stats,
+                tableRowCount,
+                matchingValues);
+            selectivity = Math.Clamp(
+                Math.Max((double)estimatedRows / Math.Max(tableRowCount, 1), minimumSelectivity),
+                minimumSelectivity,
+                1d);
             return true;
         }
 
@@ -305,8 +347,15 @@ internal static class CardinalityEstimator
 
         if (hasRangeConstraint)
         {
-            if (!hasFreshStats || !TryEstimateRangeSelectivity(stats, constraint, out double rangeSelectivity))
+            double rangeSelectivity;
+            if (!hasFreshStats)
                 return false;
+
+            if (!TryEstimateHistogramRangeSelectivity(catalog, schema.TableName, columnName, stats, constraint, out rangeSelectivity) &&
+                !TryEstimateRangeSelectivity(stats, constraint, out rangeSelectivity))
+            {
+                return false;
+            }
 
             baseSelectivity = Math.Max(0d, rangeSelectivity) * nonNullFraction;
             usedStats = true;
@@ -338,6 +387,427 @@ internal static class CardinalityEstimator
             return false;
 
         selectivity = Math.Clamp(Math.Max(baseSelectivity, minimumSelectivity), minimumSelectivity, 1d);
+        return true;
+    }
+
+    private static long EstimateDiscreteValueRowCount(
+        SchemaCatalog catalog,
+        string tableName,
+        string columnName,
+        ColumnStatistics stats,
+        long tableRowCount,
+        IReadOnlyList<DbValue> values)
+    {
+        if (values.Count == 0)
+            return 1;
+
+        if (!catalog.TryGetFreshColumnDistributionStatistics(tableName, columnName, out var distribution) ||
+            distribution.FrequentValues.Count == 0)
+        {
+            long averageRowsPerValue = Math.Max(1, DivideRoundUp(stats.NonNullCount, Math.Max(stats.DistinctCount, 1)));
+            return Math.Clamp(
+                SafeMultiply(averageRowsPerValue, values.Count),
+                1,
+                Math.Max(tableRowCount, 1));
+        }
+
+        long matchedHeavyRows = 0;
+        int matchedHeavyValueCount = 0;
+        long totalHeavyRows = 0;
+        int heavyValueCount = 0;
+
+        for (int i = 0; i < distribution.FrequentValues.Count; i++)
+        {
+            var heavy = distribution.FrequentValues[i];
+            totalHeavyRows += heavy.RowCount;
+            heavyValueCount++;
+
+            for (int valueIndex = 0; valueIndex < values.Count; valueIndex++)
+            {
+                if (DbValue.Compare(heavy.Value, values[valueIndex]) != 0)
+                    continue;
+
+                matchedHeavyRows += heavy.RowCount;
+                matchedHeavyValueCount++;
+                break;
+            }
+        }
+
+        int remainingRequestedValues = Math.Max(values.Count - matchedHeavyValueCount, 0);
+        long remainingDistinct = Math.Max(stats.DistinctCount - heavyValueCount, 0);
+        long remainingRows = Math.Max(stats.NonNullCount - totalHeavyRows, 0);
+        long averageRemainingRowsPerValue = remainingDistinct > 0
+            ? DivideRoundUp(remainingRows, remainingDistinct)
+            : 0;
+
+        long estimatedRows = matchedHeavyRows;
+        if (remainingRequestedValues > 0)
+        {
+            estimatedRows += SafeMultiply(
+                Math.Min(remainingRequestedValues, (int)Math.Min(remainingDistinct, int.MaxValue)),
+                Math.Max(averageRemainingRowsPerValue, 1));
+        }
+
+        if (estimatedRows <= 0)
+        {
+            long averageRowsPerValue = Math.Max(1, DivideRoundUp(stats.NonNullCount, Math.Max(stats.DistinctCount, 1)));
+            estimatedRows = SafeMultiply(averageRowsPerValue, values.Count);
+        }
+
+        return Math.Clamp(estimatedRows, 1, Math.Max(tableRowCount, 1));
+    }
+
+    private static DbValue[] GetMatchingAllowedValues(ColumnConstraint constraint, HashSet<DbValue> allowedValues)
+    {
+        if (allowedValues.Count == 0)
+            return Array.Empty<DbValue>();
+
+        var values = new List<DbValue>(allowedValues.Count);
+        foreach (DbValue value in allowedValues)
+        {
+            if (ConstraintAllowsEquality(constraint, value))
+                values.Add(value);
+        }
+
+        return values.ToArray();
+    }
+
+    private static bool TryEstimateCompositePrefixSelectivity(
+        SchemaCatalog catalog,
+        TableSchema schema,
+        long tableRowCount,
+        IReadOnlyDictionary<int, ColumnConstraint> constraintsByColumn,
+        out double selectivity,
+        out HashSet<int>? coveredColumns)
+    {
+        selectivity = 0d;
+        coveredColumns = null;
+
+        if (constraintsByColumn.Count < 2 || tableRowCount <= 0)
+            return false;
+
+        long bestEstimatedRows = long.MaxValue;
+        HashSet<int>? bestCoveredColumns = null;
+
+        foreach (var index in catalog.GetIndexesForTable(schema.TableName))
+        {
+            if (!catalog.TryGetFreshIndexPrefixStatistics(index.IndexName, out var prefixStats) ||
+                prefixStats.PrefixDistinctCounts.Count < 2)
+            {
+                continue;
+            }
+
+            int maxPrefixLength = Math.Min(index.Columns.Count, prefixStats.PrefixDistinctCounts.Count);
+            for (int prefixLength = 2; prefixLength <= maxPrefixLength; prefixLength++)
+            {
+                long combinationCount = 1;
+                var prefixCoveredColumns = new HashSet<int>();
+                bool canEstimate = true;
+
+                for (int prefixIndex = 0; prefixIndex < prefixLength; prefixIndex++)
+                {
+                    int columnIndex = schema.GetColumnIndex(index.Columns[prefixIndex]);
+                    if (columnIndex < 0 ||
+                        !constraintsByColumn.TryGetValue(columnIndex, out var constraint) ||
+                        !TryCountDiscreteConstraintValues(constraint, out int discreteValueCount))
+                    {
+                        canEstimate = false;
+                        break;
+                    }
+
+                    combinationCount = SafeMultiply(combinationCount, discreteValueCount);
+                    prefixCoveredColumns.Add(columnIndex);
+                }
+
+                if (!canEstimate)
+                    continue;
+
+                long distinctCount = prefixStats.PrefixDistinctCounts[prefixLength - 1];
+                if (distinctCount <= 0)
+                    continue;
+
+                long estimatedRows = DivideRoundUp(
+                    SafeMultiply(tableRowCount, Math.Max(combinationCount, 1)),
+                    distinctCount);
+                estimatedRows = Math.Clamp(estimatedRows, 1, tableRowCount);
+
+                if (estimatedRows < bestEstimatedRows ||
+                    (estimatedRows == bestEstimatedRows && prefixCoveredColumns.Count > (bestCoveredColumns?.Count ?? 0)))
+                {
+                    bestEstimatedRows = estimatedRows;
+                    bestCoveredColumns = prefixCoveredColumns;
+                }
+            }
+        }
+
+        if (bestCoveredColumns == null)
+            return false;
+
+        coveredColumns = bestCoveredColumns;
+        selectivity = Math.Clamp((double)bestEstimatedRows / Math.Max(tableRowCount, 1), MinimumSelectivity(tableRowCount), 1d);
+        return true;
+    }
+
+    private static bool TryCountDiscreteConstraintValues(ColumnConstraint constraint, out int valueCount)
+    {
+        valueCount = 0;
+        if (!TryExtractDiscreteAllowedValues(constraint, out var values) || values.Count == 0)
+            return false;
+
+        valueCount = values.Count;
+        return true;
+    }
+
+    private static bool TryEstimateCompositeEqualityJoinRowCount(
+        SchemaCatalog catalog,
+        JoinType joinType,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
+        ReadOnlySpan<int> leftKeyIndices,
+        ReadOnlySpan<int> rightKeyIndices,
+        long leftRows,
+        long rightRows,
+        out long estimatedRows)
+    {
+        estimatedRows = 0;
+
+        if (!TryGetMatchingPrefixDistinctCount(catalog, leftSchema, leftKeyIndices, out long leftDistinctCount) ||
+            !TryGetMatchingPrefixDistinctCount(catalog, rightSchema, rightKeyIndices, out long rightDistinctCount))
+        {
+            return false;
+        }
+
+        double nonNullFactor = 1d;
+        for (int i = 0; i < leftKeyIndices.Length; i++)
+        {
+            string leftColumnName = leftSchema.Columns[leftKeyIndices[i]].Name;
+            string rightColumnName = rightSchema.Columns[rightKeyIndices[i]].Name;
+            if (!catalog.TryGetFreshColumnStatistics(leftSchema.TableName, leftColumnName, out var leftStats) ||
+                !catalog.TryGetFreshColumnStatistics(rightSchema.TableName, rightColumnName, out var rightStats))
+            {
+                return false;
+            }
+
+            double leftNonNullFraction = Math.Clamp((double)leftStats.NonNullCount / Math.Max(leftRows, 1), 0d, 1d);
+            double rightNonNullFraction = Math.Clamp((double)rightStats.NonNullCount / Math.Max(rightRows, 1), 0d, 1d);
+            nonNullFactor *= leftNonNullFraction * rightNonNullFraction;
+        }
+
+        long joinDomain = Math.Max(Math.Max(leftDistinctCount, rightDistinctCount), 1);
+        joinDomain = Math.Clamp(joinDomain, 1, Math.Max(Math.Max(leftRows, rightRows), 1));
+
+        long crossRows = SafeMultiply(leftRows, rightRows);
+        long baseInnerEstimate = DivideRoundUp(crossRows, joinDomain);
+        long adjustedInnerEstimate = Math.Max(1, (long)Math.Ceiling(baseInnerEstimate * Math.Clamp(nonNullFactor, 0d, 1d)));
+        adjustedInnerEstimate = Math.Min(adjustedInnerEstimate, crossRows);
+
+        estimatedRows = joinType switch
+        {
+            JoinType.Inner => adjustedInnerEstimate,
+            JoinType.LeftOuter => Math.Max(leftRows, adjustedInnerEstimate),
+            JoinType.RightOuter => Math.Max(rightRows, adjustedInnerEstimate),
+            _ => adjustedInnerEstimate,
+        };
+
+        return true;
+    }
+
+    private static bool TryGetMatchingPrefixDistinctCount(
+        SchemaCatalog catalog,
+        TableSchema schema,
+        ReadOnlySpan<int> keyIndices,
+        out long distinctCount)
+    {
+        distinctCount = 0;
+        if (keyIndices.Length == 0)
+            return false;
+
+        foreach (var index in catalog.GetIndexesForTable(schema.TableName))
+        {
+            if (!catalog.TryGetFreshIndexPrefixStatistics(index.IndexName, out var prefixStats) ||
+                prefixStats.PrefixColumns.Count < keyIndices.Length ||
+                prefixStats.PrefixDistinctCounts.Count < keyIndices.Length)
+            {
+                continue;
+            }
+
+            bool matches = true;
+            for (int i = 0; i < keyIndices.Length; i++)
+            {
+                int columnIndex = keyIndices[i];
+                if (columnIndex < 0 ||
+                    columnIndex >= schema.Columns.Count ||
+                    !string.Equals(prefixStats.PrefixColumns[i], schema.Columns[columnIndex].Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (!matches)
+                continue;
+
+            distinctCount = Math.Max(distinctCount, prefixStats.PrefixDistinctCounts[keyIndices.Length - 1]);
+        }
+
+        return distinctCount > 0;
+    }
+
+    private static bool TryEstimateHistogramRangeSelectivity(
+        SchemaCatalog catalog,
+        string tableName,
+        string columnName,
+        ColumnStatistics stats,
+        ColumnConstraint constraint,
+        out double selectivity)
+    {
+        selectivity = 0d;
+
+        if (!catalog.TryGetFreshColumnDistributionStatistics(tableName, columnName, out var distribution) ||
+            distribution.HistogramBuckets.Count == 0 ||
+            stats.NonNullCount <= 0)
+        {
+            return false;
+        }
+
+        double matchedRows = 0d;
+        bool usedBucket = false;
+        for (int i = 0; i < distribution.HistogramBuckets.Count; i++)
+        {
+            if (!TryEstimateHistogramBucketOverlap(distribution.HistogramBuckets[i], constraint, out double overlapFraction))
+                return false;
+
+            if (overlapFraction <= 0d)
+                continue;
+
+            matchedRows += distribution.HistogramBuckets[i].RowCount * overlapFraction;
+            usedBucket = true;
+        }
+
+        if (!usedBucket)
+        {
+            selectivity = 0d;
+            return true;
+        }
+
+        selectivity = Math.Clamp(matchedRows / Math.Max(stats.NonNullCount, 1), 0d, 1d);
+        return true;
+    }
+
+    private static bool TryEstimateHistogramBucketOverlap(
+        HistogramBucketStatistics bucket,
+        ColumnConstraint constraint,
+        out double overlapFraction)
+    {
+        overlapFraction = 0d;
+
+        if (bucket.LowerBound.IsNull || bucket.UpperBound.IsNull)
+            return false;
+
+        return bucket.LowerBound.Type switch
+        {
+            DbType.Integer when bucket.UpperBound.Type == DbType.Integer
+                => TryEstimateIntegerHistogramBucketOverlap(bucket, constraint, out overlapFraction),
+            DbType.Integer or DbType.Real when bucket.UpperBound.Type is DbType.Integer or DbType.Real
+                => TryEstimateRealHistogramBucketOverlap(bucket, constraint, out overlapFraction),
+            _ => false,
+        };
+    }
+
+    private static bool TryEstimateIntegerHistogramBucketOverlap(
+        HistogramBucketStatistics bucket,
+        ColumnConstraint constraint,
+        out double overlapFraction)
+    {
+        overlapFraction = 0d;
+
+        long bucketLower = bucket.LowerBound.AsInteger;
+        long bucketUpper = bucket.UpperBound.AsInteger;
+        if (bucketUpper < bucketLower)
+            return false;
+
+        long effectiveLower = bucketLower;
+        long effectiveUpper = bucketUpper;
+        if (constraint.LowerBound is DbValue lower)
+        {
+            if (lower.Type != DbType.Integer)
+                return false;
+
+            long value = lower.AsInteger;
+            if (!constraint.LowerInclusive && value < long.MaxValue)
+                value++;
+            effectiveLower = Math.Max(effectiveLower, value);
+        }
+
+        if (constraint.UpperBound is DbValue upper)
+        {
+            if (upper.Type != DbType.Integer)
+                return false;
+
+            long value = upper.AsInteger;
+            if (!constraint.UpperInclusive && value > long.MinValue)
+                value--;
+            effectiveUpper = Math.Min(effectiveUpper, value);
+        }
+
+        if (effectiveUpper < effectiveLower)
+        {
+            overlapFraction = 0d;
+            return true;
+        }
+
+        double bucketSpan = (double)bucketUpper - bucketLower + 1d;
+        double overlapSpan = (double)effectiveUpper - effectiveLower + 1d;
+        overlapFraction = Math.Clamp(overlapSpan / Math.Max(bucketSpan, 1d), 0d, 1d);
+        return true;
+    }
+
+    private static bool TryEstimateRealHistogramBucketOverlap(
+        HistogramBucketStatistics bucket,
+        ColumnConstraint constraint,
+        out double overlapFraction)
+    {
+        overlapFraction = 0d;
+
+        double bucketLower = bucket.LowerBound.AsReal;
+        double bucketUpper = bucket.UpperBound.AsReal;
+        if (bucketUpper < bucketLower)
+            return false;
+
+        double effectiveLower = bucketLower;
+        double effectiveUpper = bucketUpper;
+
+        if (constraint.LowerBound is DbValue lower)
+        {
+            if (lower.Type is not (DbType.Integer or DbType.Real))
+                return false;
+
+            effectiveLower = Math.Max(effectiveLower, lower.AsReal);
+        }
+
+        if (constraint.UpperBound is DbValue upper)
+        {
+            if (upper.Type is not (DbType.Integer or DbType.Real))
+                return false;
+
+            effectiveUpper = Math.Min(effectiveUpper, upper.AsReal);
+        }
+
+        if (effectiveUpper < effectiveLower)
+        {
+            overlapFraction = 0d;
+            return true;
+        }
+
+        double bucketSpan = bucketUpper - bucketLower;
+        if (bucketSpan <= 0d)
+        {
+            overlapFraction = 1d;
+            return true;
+        }
+
+        double overlapSpan = effectiveUpper - effectiveLower;
+        overlapFraction = Math.Clamp(overlapSpan / bucketSpan, 0d, 1d);
         return true;
     }
 

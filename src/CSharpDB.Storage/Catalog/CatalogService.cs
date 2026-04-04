@@ -16,6 +16,8 @@ internal sealed class CatalogService
     private const long TriggerCatalogSentinel = long.MaxValue - 2;
     private const long TableStatsCatalogSentinel = long.MaxValue - 3;
     private const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
+    private const long ColumnDistributionStatsCatalogSentinel = long.MaxValue - 5;
+    private const long IndexPrefixStatsCatalogSentinel = long.MaxValue - 6;
 
     private readonly Pager _pager;
     private readonly ISchemaSerializer _schemaSerializer;
@@ -47,11 +49,17 @@ internal sealed class CatalogService
     private readonly Dictionary<string, ColumnStatistics> _columnStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyColumnStatistics = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ColumnStatistics[]> _columnStatsByTableSnapshot = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ColumnDistributionStatistics> _columnDistributionStatsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ColumnDistributionStatistics[]> _columnDistributionStatsByTable = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IndexPrefixStatistics> _indexPrefixStatsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IndexPrefixStatistics[]> _indexPrefixStatsByTable = new(StringComparer.OrdinalIgnoreCase);
     private uint _persistedIndexCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedViewCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTableStatsCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedColumnStatsCatalogRootPage = PageConstants.NullPageId;
+    private uint _persistedColumnDistributionStatsCatalogRootPage = PageConstants.NullPageId;
+    private uint _persistedIndexPrefixStatsCatalogRootPage = PageConstants.NullPageId;
 
     // Index catalog
     private BTree? _indexCatalogTree;
@@ -74,6 +82,10 @@ internal sealed class CatalogService
 
     // Column statistics catalog
     private BTree? _columnStatsCatalogTree;
+
+    // Internal planner distribution catalogs
+    private BTree? _columnDistributionStatsCatalogTree;
+    private BTree? _indexPrefixStatsCatalogTree;
 
     private CatalogService(
         Pager pager,
@@ -161,11 +173,15 @@ internal sealed class CatalogService
         _triggerCatalogTree = null;
         _tableStatsCatalogTree = null;
         _columnStatsCatalogTree = null;
+        _columnDistributionStatsCatalogTree = null;
+        _indexPrefixStatsCatalogTree = null;
         _persistedIndexCatalogRootPage = PageConstants.NullPageId;
         _persistedViewCatalogRootPage = PageConstants.NullPageId;
         _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
         _persistedTableStatsCatalogRootPage = PageConstants.NullPageId;
         _persistedColumnStatsCatalogRootPage = PageConstants.NullPageId;
+        _persistedColumnDistributionStatsCatalogRootPage = PageConstants.NullPageId;
+        _persistedIndexPrefixStatsCatalogRootPage = PageConstants.NullPageId;
 
         _cache.Clear();
         _tableRootPages.Clear();
@@ -184,6 +200,10 @@ internal sealed class CatalogService
         _columnStatsCache.Clear();
         _dirtyColumnStatistics.Clear();
         _columnStatsByTableSnapshot.Clear();
+        _columnDistributionStatsCache.Clear();
+        _columnDistributionStatsByTable.Clear();
+        _indexPrefixStatsCache.Clear();
+        _indexPrefixStatsByTable.Clear();
 
         _indexesSnapshot = Array.Empty<IndexSchema>();
         _viewNamesSnapshot = Array.Empty<string>();
@@ -297,6 +317,38 @@ internal sealed class CatalogService
         _pager.SchemaRootPage = _catalogTree.RootPageId;
     }
 
+    private async ValueTask EnsureColumnDistributionStatsCatalogTreeAsync(CancellationToken ct = default)
+    {
+        if (_columnDistributionStatsCatalogTree != null) return;
+
+        await EnsureCatalogTreeAsync(ct);
+        uint rootPage = await BTree.CreateNewAsync(_pager, ct);
+        _columnDistributionStatsCatalogTree = new BTree(_pager, rootPage);
+
+        var payload = new byte[4];
+        BitConverter.TryWriteBytes(payload, rootPage);
+        try { await _catalogTree!.DeleteAsync(ColumnDistributionStatsCatalogSentinel, ct); } catch { }
+        await _catalogTree!.InsertAsync(ColumnDistributionStatsCatalogSentinel, payload, ct);
+        _persistedColumnDistributionStatsCatalogRootPage = rootPage;
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
+    }
+
+    private async ValueTask EnsureIndexPrefixStatsCatalogTreeAsync(CancellationToken ct = default)
+    {
+        if (_indexPrefixStatsCatalogTree != null) return;
+
+        await EnsureCatalogTreeAsync(ct);
+        uint rootPage = await BTree.CreateNewAsync(_pager, ct);
+        _indexPrefixStatsCatalogTree = new BTree(_pager, rootPage);
+
+        var payload = new byte[4];
+        BitConverter.TryWriteBytes(payload, rootPage);
+        try { await _catalogTree!.DeleteAsync(IndexPrefixStatsCatalogSentinel, ct); } catch { }
+        await _catalogTree!.InsertAsync(IndexPrefixStatsCatalogSentinel, payload, ct);
+        _persistedIndexPrefixStatsCatalogRootPage = rootPage;
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
+    }
+
     private async ValueTask LoadAllAsync(CancellationToken ct = default)
     {
         var cursor = _catalogTree!.CreateCursor();
@@ -339,6 +391,22 @@ internal sealed class CatalogService
                 uint columnStatsRootPage = _catalogStore.ReadRootPage(cursor.CurrentValue.Span);
                 _columnStatsCatalogTree = new BTree(_pager, columnStatsRootPage);
                 _persistedColumnStatsCatalogRootPage = columnStatsRootPage;
+                continue;
+            }
+
+            if (cursor.CurrentKey == ColumnDistributionStatsCatalogSentinel)
+            {
+                uint columnDistributionStatsRootPage = _catalogStore.ReadRootPage(cursor.CurrentValue.Span);
+                _columnDistributionStatsCatalogTree = new BTree(_pager, columnDistributionStatsRootPage);
+                _persistedColumnDistributionStatsCatalogRootPage = columnDistributionStatsRootPage;
+                continue;
+            }
+
+            if (cursor.CurrentKey == IndexPrefixStatsCatalogSentinel)
+            {
+                uint indexPrefixStatsRootPage = _catalogStore.ReadRootPage(cursor.CurrentValue.Span);
+                _indexPrefixStatsCatalogTree = new BTree(_pager, indexPrefixStatsRootPage);
+                _persistedIndexPrefixStatsCatalogRootPage = indexPrefixStatsRootPage;
                 continue;
             }
 
@@ -410,6 +478,24 @@ internal sealed class CatalogService
             while (await columnStatsCursor.MoveNextAsync(ct))
             {
                 CacheColumnStatistics(DeserializeColumnStatistics(columnStatsCursor.CurrentValue.Span));
+            }
+        }
+
+        if (_columnDistributionStatsCatalogTree != null)
+        {
+            var columnDistributionStatsCursor = _columnDistributionStatsCatalogTree.CreateCursor();
+            while (await columnDistributionStatsCursor.MoveNextAsync(ct))
+            {
+                CacheColumnDistributionStatistics(DeserializeColumnDistributionStatistics(columnDistributionStatsCursor.CurrentValue.Span));
+            }
+        }
+
+        if (_indexPrefixStatsCatalogTree != null)
+        {
+            var indexPrefixStatsCursor = _indexPrefixStatsCatalogTree.CreateCursor();
+            while (await indexPrefixStatsCursor.MoveNextAsync(ct))
+            {
+                CacheIndexPrefixStatistics(DeserializeIndexPrefixStatistics(indexPrefixStatsCursor.CurrentValue.Span));
             }
         }
 
@@ -486,6 +572,31 @@ internal sealed class CatalogService
     {
         if (_columnStatsCache.TryGetValue(GetColumnStatisticsCacheKey(tableName, columnName), out stats!) &&
             !stats.IsStale)
+        {
+            return true;
+        }
+
+        stats = null!;
+        return false;
+    }
+
+    public bool TryGetFreshColumnDistributionStatistics(string tableName, string columnName, out ColumnDistributionStatistics stats)
+    {
+        if (_columnDistributionStatsCache.TryGetValue(GetColumnDistributionStatisticsCacheKey(tableName, columnName), out stats!) &&
+            TryGetFreshColumnStatistics(tableName, columnName, out _))
+        {
+            return true;
+        }
+
+        stats = null!;
+        return false;
+    }
+
+    public bool TryGetFreshIndexPrefixStatistics(string indexName, out IndexPrefixStatistics stats)
+    {
+        if (_indexPrefixStatsCache.TryGetValue(indexName, out stats!) &&
+            _tableStatsCache.TryGetValue(stats.TableName, out var tableStats) &&
+            !tableStats.HasStaleColumns)
         {
             return true;
         }
@@ -649,6 +760,8 @@ internal sealed class CatalogService
         await new BTree(_pager, tableRootPage).ReclaimAsync(ct);
         await DeleteTableStatisticsAsync(tableName, ct);
         await DeleteColumnStatisticsAsync(tableName, ct);
+        await DeleteColumnDistributionStatisticsAsync(tableName, ct);
+        await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
 
         _cache.Remove(tableName);
@@ -707,6 +820,14 @@ internal sealed class CatalogService
             await RenameColumnStatisticsAsync(oldTableName, storedSchema.TableName, ct);
         else
             await DeleteColumnStatisticsAsync(storedSchema.TableName, ct);
+
+        await DeleteColumnDistributionStatisticsAsync(oldTableName, ct);
+        if (!string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase))
+            await DeleteColumnDistributionStatisticsAsync(storedSchema.TableName, ct);
+
+        await DeleteIndexPrefixStatisticsForTableAsync(oldTableName, ct);
+        if (!string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase))
+            await DeleteIndexPrefixStatisticsForTableAsync(storedSchema.TableName, ct);
 
         IncrementSchemaVersion();
     }
@@ -864,6 +985,63 @@ internal sealed class CatalogService
         }
 
         await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns, ct);
+    }
+
+    public async ValueTask ReplaceColumnDistributionStatisticsAsync(
+        string tableName,
+        IReadOnlyList<ColumnDistributionStatistics> columnStatistics,
+        CancellationToken ct = default)
+    {
+        await DeleteColumnDistributionStatisticsAsync(tableName, ct);
+
+        for (int i = 0; i < columnStatistics.Count; i++)
+        {
+            var stats = columnStatistics[i];
+            var normalized = new ColumnDistributionStatistics
+            {
+                TableName = tableName,
+                ColumnName = stats.ColumnName,
+                HistogramBuckets = stats.HistogramBuckets
+                    .Select(static bucket => new HistogramBucketStatistics
+                    {
+                        LowerBound = bucket.LowerBound,
+                        UpperBound = bucket.UpperBound,
+                        RowCount = bucket.RowCount,
+                    })
+                    .ToArray(),
+                FrequentValues = stats.FrequentValues
+                    .Select(static value => new FrequentValueStatistics
+                    {
+                        Value = value.Value,
+                        RowCount = value.RowCount,
+                    })
+                    .ToArray(),
+            };
+
+            await UpsertColumnDistributionStatisticsAsync(normalized, ct);
+        }
+    }
+
+    public async ValueTask ReplaceIndexPrefixStatisticsForTableAsync(
+        string tableName,
+        IReadOnlyList<IndexPrefixStatistics> indexStatistics,
+        CancellationToken ct = default)
+    {
+        await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
+
+        for (int i = 0; i < indexStatistics.Count; i++)
+        {
+            var stats = indexStatistics[i];
+            var normalized = new IndexPrefixStatistics
+            {
+                IndexName = stats.IndexName,
+                TableName = tableName,
+                PrefixColumns = stats.PrefixColumns.ToArray(),
+                PrefixDistinctCounts = stats.PrefixDistinctCounts.ToArray(),
+            };
+
+            await UpsertIndexPrefixStatisticsAsync(normalized, ct);
+        }
     }
 
     public async ValueTask MarkTableColumnStatisticsStaleAsync(string tableName, CancellationToken ct = default)
@@ -1080,6 +1258,7 @@ internal sealed class CatalogService
         _indexRootPages.Remove(oldIndexName);
         _indexStores.Remove(oldIndexName);
         RemoveIndexFromTableCache(oldSchema);
+        await DeleteIndexPrefixStatisticsAsync(oldIndexName, ct);
 
         byte[] indexBytes = _schemaSerializer.SerializeIndex(newSchema);
         var payload = _catalogStore.WriteRootPayload(rootPage, indexBytes);
@@ -1189,6 +1368,7 @@ internal sealed class CatalogService
         _indexRootPages.Remove(indexName);
         _indexStores.Remove(indexName);
         RemoveIndexFromTableCache(schema);
+        await DeleteIndexPrefixStatisticsAsync(indexName, ct);
         _indexesSnapshotDirty = true;
         IncrementSchemaVersion();
         return skippedCorruptReclaim;
@@ -1442,6 +1622,7 @@ internal sealed class CatalogService
             {
                 TableName = stats.TableName,
                 RowCount = stats.RowCount,
+                RowCountIsExact = true,
                 HasStaleColumns = stats.HasStaleColumns,
                 LastPersistedChangeCounter = unchecked(_pager.ChangeCounter + 1),
             }
@@ -1458,18 +1639,27 @@ internal sealed class CatalogService
 
     private void CacheTableStatistics(TableStatistics stats, bool isExact, bool markDirty)
     {
-        _tableStatsCache[stats.TableName] = stats;
+        var normalized = new TableStatistics
+        {
+            TableName = stats.TableName,
+            RowCount = stats.RowCount,
+            RowCountIsExact = isExact,
+            HasStaleColumns = stats.HasStaleColumns,
+            LastPersistedChangeCounter = stats.LastPersistedChangeCounter,
+        };
+
+        _tableStatsCache[normalized.TableName] = normalized;
         if (isExact)
-            _exactTableRowCounts.Add(stats.TableName);
+            _exactTableRowCounts.Add(normalized.TableName);
         else
-            _exactTableRowCounts.Remove(stats.TableName);
+            _exactTableRowCounts.Remove(normalized.TableName);
 
         if (markDirty)
-            _dirtyTableStatistics.Add(stats.TableName);
+            _dirtyTableStatistics.Add(normalized.TableName);
 
         _tableStatisticsSnapshotDirty = true;
-        if (_tableTrees.TryGetValue(stats.TableName, out var tree))
-            tree.SetCachedEntryCount(stats.RowCount);
+        if (_tableTrees.TryGetValue(normalized.TableName, out var tree))
+            tree.SetCachedEntryCount(normalized.RowCount);
     }
 
     private async ValueTask DeleteTableStatisticsAsync(string tableName, CancellationToken ct)
@@ -1574,6 +1764,187 @@ internal sealed class CatalogService
 
         if (_tableStatsCache.ContainsKey(tableName))
             await SetTableHasStaleColumnsAsync(tableName, hasStaleColumns: false, ct);
+    }
+
+    private async ValueTask UpsertColumnDistributionStatisticsAsync(ColumnDistributionStatistics stats, CancellationToken ct)
+    {
+        await EnsureColumnDistributionStatsCatalogTreeAsync(ct);
+
+        byte[] payload = SerializeColumnDistributionStatistics(stats);
+        long key = GetColumnDistributionStatisticsStorageKey(stats.TableName, stats.ColumnName);
+
+        try { await _columnDistributionStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
+        await _columnDistributionStatsCatalogTree!.InsertAsync(key, payload, ct);
+
+        CacheColumnDistributionStatistics(stats);
+    }
+
+    private async ValueTask DeleteColumnDistributionStatisticsAsync(string tableName, CancellationToken ct)
+    {
+        if (!_columnDistributionStatsByTable.TryGetValue(tableName, out var stats) || stats.Length == 0)
+            return;
+
+        if (_columnDistributionStatsCatalogTree != null)
+        {
+            for (int i = 0; i < stats.Length; i++)
+            {
+                long key = GetColumnDistributionStatisticsStorageKey(stats[i].TableName, stats[i].ColumnName);
+                try { await _columnDistributionStatsCatalogTree.DeleteAsync(key, ct); } catch { }
+            }
+        }
+
+        for (int i = 0; i < stats.Length; i++)
+            RemoveColumnDistributionStatisticsFromCache(stats[i].TableName, stats[i].ColumnName);
+    }
+
+    private void CacheColumnDistributionStatistics(ColumnDistributionStatistics stats)
+    {
+        var normalized = new ColumnDistributionStatistics
+        {
+            TableName = stats.TableName,
+            ColumnName = stats.ColumnName,
+            HistogramBuckets = stats.HistogramBuckets
+                .Select(static bucket => new HistogramBucketStatistics
+                {
+                    LowerBound = bucket.LowerBound,
+                    UpperBound = bucket.UpperBound,
+                    RowCount = bucket.RowCount,
+                })
+                .ToArray(),
+            FrequentValues = stats.FrequentValues
+                .Select(static value => new FrequentValueStatistics
+                {
+                    Value = value.Value,
+                    RowCount = value.RowCount,
+                })
+                .ToArray(),
+        };
+
+        string cacheKey = GetColumnDistributionStatisticsCacheKey(normalized.TableName, normalized.ColumnName);
+        _columnDistributionStatsCache[cacheKey] = normalized;
+
+        if (_columnDistributionStatsByTable.TryGetValue(normalized.TableName, out var existing))
+        {
+            _columnDistributionStatsByTable[normalized.TableName] = existing
+                .Where(item => !string.Equals(item.ColumnName, normalized.ColumnName, StringComparison.OrdinalIgnoreCase))
+                .Concat([normalized])
+                .ToArray();
+        }
+        else
+        {
+            _columnDistributionStatsByTable[normalized.TableName] = [normalized];
+        }
+    }
+
+    private void RemoveColumnDistributionStatisticsFromCache(string tableName, string columnName)
+    {
+        string cacheKey = GetColumnDistributionStatisticsCacheKey(tableName, columnName);
+        _columnDistributionStatsCache.Remove(cacheKey);
+
+        if (_columnDistributionStatsByTable.TryGetValue(tableName, out var existing))
+        {
+            var updated = existing
+                .Where(item => !string.Equals(item.ColumnName, columnName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (updated.Length == 0)
+                _columnDistributionStatsByTable.Remove(tableName);
+            else
+                _columnDistributionStatsByTable[tableName] = updated;
+        }
+    }
+
+    private static string GetColumnDistributionStatisticsCacheKey(string tableName, string columnName)
+        => $"{tableName}\u001F{columnName}";
+
+    private long GetColumnDistributionStatisticsStorageKey(string tableName, string columnName)
+        => _schemaSerializer.TableNameToKey($"{tableName}\u001F{columnName}");
+
+    private async ValueTask UpsertIndexPrefixStatisticsAsync(IndexPrefixStatistics stats, CancellationToken ct)
+    {
+        await EnsureIndexPrefixStatsCatalogTreeAsync(ct);
+
+        byte[] payload = SerializeIndexPrefixStatistics(stats);
+        long key = _schemaSerializer.IndexNameToKey(stats.IndexName);
+
+        try { await _indexPrefixStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
+        await _indexPrefixStatsCatalogTree!.InsertAsync(key, payload, ct);
+
+        CacheIndexPrefixStatistics(stats);
+    }
+
+    private async ValueTask DeleteIndexPrefixStatisticsAsync(string indexName, CancellationToken ct)
+    {
+        if (!_indexPrefixStatsCache.TryGetValue(indexName, out var stats))
+            return;
+
+        if (_indexPrefixStatsCatalogTree != null)
+        {
+            long key = _schemaSerializer.IndexNameToKey(indexName);
+            try { await _indexPrefixStatsCatalogTree.DeleteAsync(key, ct); } catch { }
+        }
+
+        RemoveIndexPrefixStatisticsFromCache(indexName, stats.TableName);
+    }
+
+    private async ValueTask DeleteIndexPrefixStatisticsForTableAsync(string tableName, CancellationToken ct)
+    {
+        if (!_indexPrefixStatsByTable.TryGetValue(tableName, out var stats) || stats.Length == 0)
+            return;
+
+        if (_indexPrefixStatsCatalogTree != null)
+        {
+            for (int i = 0; i < stats.Length; i++)
+            {
+                long key = _schemaSerializer.IndexNameToKey(stats[i].IndexName);
+                try { await _indexPrefixStatsCatalogTree.DeleteAsync(key, ct); } catch { }
+            }
+        }
+
+        for (int i = 0; i < stats.Length; i++)
+            RemoveIndexPrefixStatisticsFromCache(stats[i].IndexName, tableName);
+    }
+
+    private void CacheIndexPrefixStatistics(IndexPrefixStatistics stats)
+    {
+        var normalized = new IndexPrefixStatistics
+        {
+            IndexName = stats.IndexName,
+            TableName = stats.TableName,
+            PrefixColumns = stats.PrefixColumns.ToArray(),
+            PrefixDistinctCounts = stats.PrefixDistinctCounts.ToArray(),
+        };
+
+        _indexPrefixStatsCache[normalized.IndexName] = normalized;
+
+        if (_indexPrefixStatsByTable.TryGetValue(normalized.TableName, out var existing))
+        {
+            _indexPrefixStatsByTable[normalized.TableName] = existing
+                .Where(item => !string.Equals(item.IndexName, normalized.IndexName, StringComparison.OrdinalIgnoreCase))
+                .Concat([normalized])
+                .ToArray();
+        }
+        else
+        {
+            _indexPrefixStatsByTable[normalized.TableName] = [normalized];
+        }
+    }
+
+    private void RemoveIndexPrefixStatisticsFromCache(string indexName, string tableName)
+    {
+        _indexPrefixStatsCache.Remove(indexName);
+
+        if (_indexPrefixStatsByTable.TryGetValue(tableName, out var existing))
+        {
+            var updated = existing
+                .Where(item => !string.Equals(item.IndexName, indexName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (updated.Length == 0)
+                _indexPrefixStatsByTable.Remove(tableName);
+            else
+                _indexPrefixStatsByTable[tableName] = updated;
+        }
     }
 
     private async ValueTask RenameColumnStatisticsAsync(string oldTableName, string newTableName, CancellationToken ct)
@@ -1687,8 +2058,8 @@ internal sealed class CatalogService
     {
         if (_advisoryStatisticsPersistenceMode != AdvisoryStatisticsPersistenceMode.Deferred)
         {
-            foreach (string tableName in _tableStatsCache.Keys)
-                _exactTableRowCounts.Add(tableName);
+            foreach (var stats in _tableStatsCache.Values.ToArray())
+                CacheTableStatistics(stats, isExact: true, markDirty: false);
 
             return;
         }
@@ -1698,11 +2069,11 @@ internal sealed class CatalogService
             bool isExact = stats.LastPersistedChangeCounter == _pager.ChangeCounter;
             if (isExact)
             {
-                _exactTableRowCounts.Add(stats.TableName);
+                CacheTableStatistics(stats, isExact: true, markDirty: false);
                 continue;
             }
 
-            _exactTableRowCounts.Remove(stats.TableName);
+            CacheTableStatistics(stats, isExact: false, markDirty: false);
             if (!stats.HasStaleColumns)
             {
                 CacheTableStatistics(
@@ -1710,6 +2081,7 @@ internal sealed class CatalogService
                     {
                         TableName = stats.TableName,
                         RowCount = stats.RowCount,
+                        RowCountIsExact = false,
                         HasStaleColumns = true,
                         LastPersistedChangeCounter = stats.LastPersistedChangeCounter,
                     },
@@ -1845,6 +2217,225 @@ internal sealed class CatalogService
         };
     }
 
+    private static byte[] SerializeColumnDistributionStatistics(ColumnDistributionStatistics stats)
+    {
+        byte[] tableNameBytes = Encoding.UTF8.GetBytes(stats.TableName);
+        byte[] columnNameBytes = Encoding.UTF8.GetBytes(stats.ColumnName);
+        int totalSize = 4 + tableNameBytes.Length + 4 + columnNameBytes.Length + 4;
+
+        for (int i = 0; i < stats.FrequentValues.Count; i++)
+        {
+            byte[] valueBytes = SerializeStatisticsValue(stats.FrequentValues[i].Value);
+            totalSize += 4 + valueBytes.Length + 8;
+        }
+
+        totalSize += 4;
+        for (int i = 0; i < stats.HistogramBuckets.Count; i++)
+        {
+            byte[] lowerBytes = SerializeStatisticsValue(stats.HistogramBuckets[i].LowerBound);
+            byte[] upperBytes = SerializeStatisticsValue(stats.HistogramBuckets[i].UpperBound);
+            totalSize += 4 + lowerBytes.Length + 4 + upperBytes.Length + 8;
+        }
+
+        byte[] payload = new byte[totalSize];
+        int offset = 0;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), tableNameBytes.Length);
+        offset += 4;
+        tableNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += tableNameBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), columnNameBytes.Length);
+        offset += 4;
+        columnNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += columnNameBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), stats.FrequentValues.Count);
+        offset += 4;
+        for (int i = 0; i < stats.FrequentValues.Count; i++)
+        {
+            byte[] valueBytes = SerializeStatisticsValue(stats.FrequentValues[i].Value);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), valueBytes.Length);
+            offset += 4;
+            valueBytes.CopyTo(payload.AsSpan(offset));
+            offset += valueBytes.Length;
+            BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, 8), stats.FrequentValues[i].RowCount);
+            offset += 8;
+        }
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), stats.HistogramBuckets.Count);
+        offset += 4;
+        for (int i = 0; i < stats.HistogramBuckets.Count; i++)
+        {
+            byte[] lowerBytes = SerializeStatisticsValue(stats.HistogramBuckets[i].LowerBound);
+            byte[] upperBytes = SerializeStatisticsValue(stats.HistogramBuckets[i].UpperBound);
+
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), lowerBytes.Length);
+            offset += 4;
+            lowerBytes.CopyTo(payload.AsSpan(offset));
+            offset += lowerBytes.Length;
+
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), upperBytes.Length);
+            offset += 4;
+            upperBytes.CopyTo(payload.AsSpan(offset));
+            offset += upperBytes.Length;
+
+            BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, 8), stats.HistogramBuckets[i].RowCount);
+            offset += 8;
+        }
+
+        return payload;
+    }
+
+    private static ColumnDistributionStatistics DeserializeColumnDistributionStatistics(ReadOnlySpan<byte> payload)
+    {
+        int offset = 0;
+        int tableNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string tableName = Encoding.UTF8.GetString(payload.Slice(offset, tableNameLength));
+        offset += tableNameLength;
+
+        int columnNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string columnName = Encoding.UTF8.GetString(payload.Slice(offset, columnNameLength));
+        offset += columnNameLength;
+
+        int frequentValueCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        var frequentValues = new FrequentValueStatistics[frequentValueCount];
+        for (int i = 0; i < frequentValueCount; i++)
+        {
+            int valueLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+            offset += 4;
+            DbValue value = DeserializeStatisticsValue(payload.Slice(offset, valueLength));
+            offset += valueLength;
+            long rowCount = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(offset, 8));
+            offset += 8;
+            frequentValues[i] = new FrequentValueStatistics
+            {
+                Value = value,
+                RowCount = rowCount,
+            };
+        }
+
+        int bucketCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        var buckets = new HistogramBucketStatistics[bucketCount];
+        for (int i = 0; i < bucketCount; i++)
+        {
+            int lowerLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+            offset += 4;
+            DbValue lowerBound = DeserializeStatisticsValue(payload.Slice(offset, lowerLength));
+            offset += lowerLength;
+
+            int upperLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+            offset += 4;
+            DbValue upperBound = DeserializeStatisticsValue(payload.Slice(offset, upperLength));
+            offset += upperLength;
+
+            long rowCount = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(offset, 8));
+            offset += 8;
+            buckets[i] = new HistogramBucketStatistics
+            {
+                LowerBound = lowerBound,
+                UpperBound = upperBound,
+                RowCount = rowCount,
+            };
+        }
+
+        return new ColumnDistributionStatistics
+        {
+            TableName = tableName,
+            ColumnName = columnName,
+            FrequentValues = frequentValues,
+            HistogramBuckets = buckets,
+        };
+    }
+
+    private static byte[] SerializeIndexPrefixStatistics(IndexPrefixStatistics stats)
+    {
+        byte[] indexNameBytes = Encoding.UTF8.GetBytes(stats.IndexName);
+        byte[] tableNameBytes = Encoding.UTF8.GetBytes(stats.TableName);
+        int totalSize = 4 + indexNameBytes.Length + 4 + tableNameBytes.Length + 4 + 4 + (8 * stats.PrefixDistinctCounts.Count);
+
+        for (int i = 0; i < stats.PrefixColumns.Count; i++)
+            totalSize += 4 + Encoding.UTF8.GetByteCount(stats.PrefixColumns[i]);
+
+        byte[] payload = new byte[totalSize];
+        int offset = 0;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), indexNameBytes.Length);
+        offset += 4;
+        indexNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += indexNameBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), tableNameBytes.Length);
+        offset += 4;
+        tableNameBytes.CopyTo(payload.AsSpan(offset));
+        offset += tableNameBytes.Length;
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), stats.PrefixColumns.Count);
+        offset += 4;
+        for (int i = 0; i < stats.PrefixColumns.Count; i++)
+        {
+            byte[] prefixColumnBytes = Encoding.UTF8.GetBytes(stats.PrefixColumns[i]);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), prefixColumnBytes.Length);
+            offset += 4;
+            prefixColumnBytes.CopyTo(payload.AsSpan(offset));
+            offset += prefixColumnBytes.Length;
+        }
+
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, 4), stats.PrefixDistinctCounts.Count);
+        offset += 4;
+        for (int i = 0; i < stats.PrefixDistinctCounts.Count; i++)
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, 8), stats.PrefixDistinctCounts[i]);
+            offset += 8;
+        }
+
+        return payload;
+    }
+
+    private static IndexPrefixStatistics DeserializeIndexPrefixStatistics(ReadOnlySpan<byte> payload)
+    {
+        int offset = 0;
+        int indexNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string indexName = Encoding.UTF8.GetString(payload.Slice(offset, indexNameLength));
+        offset += indexNameLength;
+
+        int tableNameLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        string tableName = Encoding.UTF8.GetString(payload.Slice(offset, tableNameLength));
+        offset += tableNameLength;
+
+        int prefixColumnCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        var prefixColumns = new string[prefixColumnCount];
+        for (int i = 0; i < prefixColumnCount; i++)
+        {
+            int prefixColumnLength = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+            offset += 4;
+            prefixColumns[i] = Encoding.UTF8.GetString(payload.Slice(offset, prefixColumnLength));
+            offset += prefixColumnLength;
+        }
+
+        int prefixDistinctCountCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset, 4));
+        offset += 4;
+        var prefixDistinctCounts = new long[prefixDistinctCountCount];
+        for (int i = 0; i < prefixDistinctCountCount; i++)
+        {
+            prefixDistinctCounts[i] = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(offset, 8));
+            offset += 8;
+        }
+
+        return new IndexPrefixStatistics
+        {
+            IndexName = indexName,
+            TableName = tableName,
+            PrefixColumns = prefixColumns,
+            PrefixDistinctCounts = prefixDistinctCounts,
+        };
+    }
+
     private static byte[] SerializeStatisticsValue(DbValue value)
     {
         return value.Type switch
@@ -1913,6 +2504,8 @@ internal sealed class CatalogService
         await PersistTriggerCatalogRootPageChangeAsync(ct);
         await PersistTableStatsCatalogRootPageChangeAsync(ct);
         await PersistColumnStatsCatalogRootPageChangeAsync(ct);
+        await PersistColumnDistributionStatsCatalogRootPageChangeAsync(ct);
+        await PersistIndexPrefixStatsCatalogRootPageChangeAsync(ct);
     }
 
     private ValueTask PersistIndexCatalogRootPageChangeAsync(CancellationToken ct) =>
@@ -1929,6 +2522,12 @@ internal sealed class CatalogService
 
     private ValueTask PersistColumnStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_columnStatsCatalogTree, ColumnStatsCatalogSentinel, _persistedColumnStatsCatalogRootPage, ct, rootPage => _persistedColumnStatsCatalogRootPage = rootPage);
+
+    private ValueTask PersistColumnDistributionStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+        PersistAuxiliaryCatalogRootPageChangeAsync(_columnDistributionStatsCatalogTree, ColumnDistributionStatsCatalogSentinel, _persistedColumnDistributionStatsCatalogRootPage, ct, rootPage => _persistedColumnDistributionStatsCatalogRootPage = rootPage);
+
+    private ValueTask PersistIndexPrefixStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+        PersistAuxiliaryCatalogRootPageChangeAsync(_indexPrefixStatsCatalogTree, IndexPrefixStatsCatalogSentinel, _persistedIndexPrefixStatsCatalogRootPage, ct, rootPage => _persistedIndexPrefixStatsCatalogRootPage = rootPage);
 
     private async ValueTask PersistAuxiliaryCatalogRootPageChangeAsync(
         BTree? tree,
