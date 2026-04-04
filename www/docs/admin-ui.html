@@ -286,6 +286,48 @@ dotnet run</code></pre>
                     <li><strong>Validation</strong> &mdash; Rules inferred from schema (required, maxLength, range, regex, enum) with per-control overrides. Errors display inline next to affected fields.</li>
                 </ul>
 
+                <!-- ───────── Reports Designer ───────── -->
+                <h2 id="reports-designer">Reports Designer</h2>
+                <p>Create printable, banded reports from any table, view, or saved query. Open the reports designer from the <strong>Reports</strong> section of the Object Explorer or click <strong>New Report</strong> in the toolbar.</p>
+
+                <h3>Designer Layout</h3>
+                <p>The report designer uses a multi-panel layout:</p>
+                <ul>
+                    <li><strong>Toolbox</strong> (left) &mdash; Drag controls onto report bands: Label, BoundText, CalculatedText, Line, and Box.</li>
+                    <li><strong>Groups &amp; Sorts</strong> (left) &mdash; Define data grouping with ascending/descending sort direction and custom sort order on any field.</li>
+                    <li><strong>Page Settings</strong> (left) &mdash; Configure paper size (Letter / A4), orientation (Portrait / Landscape), and margins.</li>
+                    <li><strong>Design Canvas</strong> (centre) &mdash; WYSIWYG surface with drag-and-drop positioning, resize handles, and selection highlighting.</li>
+                    <li><strong>Property Inspector</strong> (right) &mdash; Edit position, size, data binding, format strings, font size, weight, alignment, and z-order for the selected control.</li>
+                </ul>
+
+                <h3>Report Bands</h3>
+                <table>
+                    <thead>
+                        <tr><th>Band</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Report Header</strong></td><td>Appears once at the start of the report.</td></tr>
+                        <tr><td><strong>Page Header</strong></td><td>Repeats at the top of each page.</td></tr>
+                        <tr><td><strong>Group Header</strong></td><td>Repeats for each group break.</td></tr>
+                        <tr><td><strong>Detail</strong></td><td>Repeats for every data row.</td></tr>
+                        <tr><td><strong>Group Footer</strong></td><td>Repeats at the end of each group.</td></tr>
+                        <tr><td><strong>Page Footer</strong></td><td>Repeats at the bottom of each page.</td></tr>
+                        <tr><td><strong>Report Footer</strong></td><td>Appears once at the end of the report.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Expressions &amp; Aggregates</h3>
+                <p>CalculatedText controls support expressions with field references, arithmetic operators, and aggregate functions:</p>
+                <ul>
+                    <li><strong>Field references</strong> &mdash; <code>[FieldName]</code> or simple identifiers</li>
+                    <li><strong>Arithmetic</strong> &mdash; <code>=Price * Qty</code></li>
+                    <li><strong>Aggregates</strong> &mdash; <code>=SUM(Total)</code>, <code>=COUNT(Id)</code>, <code>=AVG(Price)</code>, <code>=MIN(Date)</code>, <code>=MAX(Amount)</code></li>
+                    <li><strong>Special</strong> &mdash; <code>=PageNumber</code>, <code>=PrintDate</code></li>
+                </ul>
+
+                <h3>Preview &amp; Print</h3>
+                <p>Click <strong>Preview</strong> to render the report with live data. The preview shows paginated output with page navigation and supports browser printing. Reports are limited to 10,000 rows and 250 pages in preview mode.</p>
+
                 <!-- ───────── Stored Procedures ───────── -->
                 <h2 id="stored-procedures">Stored Procedures</h2>
                 <p>Create and manage stored procedures from the <strong>New Procedure</strong> button in the sidebar or by clicking an existing procedure in the Object Explorer.</p>
@@ -393,6 +435,10 @@ dotnet run</code></pre>
                         <a href="#forms-designer" class="next-step-card">
                             <h4>Forms Designer</h4>
                             <p>Build data-entry forms with a visual drag-and-drop designer</p>
+                        </a>
+                        <a href="reports.html" class="next-step-card">
+                            <h4>Reports</h4>
+                            <p>Visual banded-report designer with grouping, aggregates, and print</p>
                         </a>
                     </div>
                 </div>

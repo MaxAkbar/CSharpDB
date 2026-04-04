@@ -73,7 +73,7 @@ await foreach (var row in result.GetRowsAsync())
 |:-:|:-:|:-:|
 | ![Query tab](docs/images/QuerySytemTable.png) | ![Data browser](docs/images/TableDetails.png) | ![Schema view](docs/images/TableSchema.png) |
 
-Blazor Server dashboard with query execution, visual [Query Designer](docs/query-designer/README.md), data browser CRUD, schema editing, integrated forms designer, stored procedures, and storage diagnostics.
+Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, integrated forms and reports designers, stored procedures, and storage diagnostics.
 
 ---
 
@@ -170,8 +170,8 @@ The native library exports 20 C functions. See the [Native Library Reference](sr
 | [CLI Reference](docs/cli.md) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
-| [SQL Reference](docs/sql-reference.md) | Supported SQL syntax |
-| [Thread Safety](docs/thread-safety.md) | Concurrency model |
+| [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
+| [Internals & Contributing](docs/internals.md) | Project structure and concurrency model |
 | [FAQ](docs/faq.md) | Common questions |
 | [Roadmap](docs/roadmap.md) | Project goals |
 
