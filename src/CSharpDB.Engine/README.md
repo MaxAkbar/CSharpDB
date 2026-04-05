@@ -210,9 +210,22 @@ await foreach (var entry in users.FindByIndexAsync(User.Collection.Email, "alice
 }
 ```
 
+Generated collection descriptors follow CLR member names, including flattened
+nested paths such as `User.Collection.Address_City` for `Address.City` and
+array-element paths such as `User.Collection.Tags` for `Tags[]` or
+`User.Collection.Orders_Sku` for `Orders[].Sku`. JSON payload names can differ
+through `JsonPropertyName` without changing the public descriptor names.
+
 `GetGeneratedCollectionAsync<T>(...)` requires a generated or manually
 registered collection model and exposes only the descriptor-based collection
 surface. That keeps the call path off the reflection-based collection APIs.
+
+Generated collections also require existing collection indexes on that
+collection to resolve through registered generated descriptors. If a collection
+already has a reflection-only path index such as `Next.Name` that your
+generated model does not expose, open it through `GetCollectionAsync<T>(...)`
+or add generated descriptor coverage before switching to
+`GetGeneratedCollectionAsync<T>(...)`.
 
 ### Concurrent Readers
 

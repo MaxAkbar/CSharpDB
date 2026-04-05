@@ -39,6 +39,7 @@ public sealed class Collection<
     private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterWriteScopeAsync;
     private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
+    private readonly bool _requireRegisteredFields;
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly ICollectionModel<T>? _model;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
@@ -53,12 +54,14 @@ public sealed class Collection<
         Func<bool> isInTransaction,
         Func<CancellationToken, ValueTask<IDisposable>> enterWriteScopeAsync,
         Func<string, CancellationToken, ValueTask<PagerCommitResult>> beginImplicitCommitAsync,
-        Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
+        Func<CancellationToken, ValueTask> afterImplicitCommitAsync,
+        bool requireRegisteredFields = false)
     {
         _pager = pager;
         _catalog = catalog;
         _catalogTableName = catalogTableName;
         _tree = tree;
+        _requireRegisteredFields = requireRegisteredFields;
         _model = CollectionModelRegistry.TryGet<T>(out var model) ? model : null;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
@@ -577,12 +580,16 @@ public sealed class Collection<
         string? collation = null)
         => TryGetRegisteredField(fieldPath, out var field)
             ? CollectionIndexBinding<T>.Create(field, indexName, indexStore, collation)
-            : CollectionIndexBinding<T>.Create(fieldPath, indexName, indexStore, collation);
+            : _requireRegisteredFields
+                ? throw CreateGeneratedCollectionFieldBindingException(fieldPath)
+                : CollectionIndexBinding<T>.Create(fieldPath, indexName, indexStore, collation);
 
     private CollectionIndexBinding<T> CreateTransientBinding(string fieldPath)
         => TryGetRegisteredField(fieldPath, out var field)
             ? CollectionIndexBinding<T>.CreateTransient(field)
-            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+            : _requireRegisteredFields
+                ? throw CreateGeneratedCollectionFieldBindingException(fieldPath)
+                : CollectionIndexBinding<T>.CreateTransient(fieldPath);
 
     private bool TryGetRegisteredField(string fieldPath, out CollectionField<T> field)
     {
@@ -595,6 +602,11 @@ public sealed class Collection<
         field = null!;
         return false;
     }
+
+    private InvalidOperationException CreateGeneratedCollectionFieldBindingException(string fieldPath)
+        => new(
+            $"Generated collection '{_catalogTableName}' cannot bind index field path '{fieldPath}' because no generated collection descriptor is registered for document type '{typeof(T).FullName ?? typeof(T).Name}'. " +
+            "Open the collection through GetCollectionAsync<T>(...) for reflection-based path binding, or add generated descriptor coverage for that field path before using GetGeneratedCollectionAsync<T>(...).");
 
     private string BuildCollectionIndexName(string fieldPath)
     {

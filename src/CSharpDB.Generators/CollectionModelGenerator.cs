@@ -2,6 +2,7 @@ using System;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -56,6 +57,22 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor GeneratedFieldNameConflict = new(
+        id: "CDBGEN006",
+        title: "Generated collection field name conflict",
+        messageFormat: "Type '{0}' produces duplicate generated collection member '{1}'. Rename one of the CLR members or use a different collection-model shape.",
+        category: "CSharpDB.SourceGeneration",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor UnsupportedCollectionMember = new(
+        id: "CDBGEN007",
+        title: "Collection member shape is not supported",
+        messageFormat: "Type '{0}' member '{1}' is not supported by generated collection descriptors and will be ignored: {2}",
+        category: "CSharpDB.SourceGeneration",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         IncrementalValuesProvider<CollectionGenerationResult> candidates =
@@ -63,19 +80,21 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
                 fullyQualifiedMetadataName: CollectionModelAttributeName,
                 predicate: static (node, _) => node is TypeDeclarationSyntax,
                 transform: static (ctx, _) => InspectTarget(ctx))
-            .Where(static result => result.Target is not null || result.Diagnostic is not null);
+            .Where(static result => result.Target is not null || result.Diagnostics.Length > 0);
 
         context.RegisterSourceOutput(
             candidates,
             static (productionContext, result) =>
             {
-                if (result.Diagnostic is not null)
+                for (int i = 0; i < result.Diagnostics.Length; i++)
+                    productionContext.ReportDiagnostic(result.Diagnostics[i]);
+
+                if (result.Target is null)
                 {
-                    productionContext.ReportDiagnostic(result.Diagnostic);
                     return;
                 }
 
-                EmitModel(productionContext, result.Target!);
+                EmitModel(productionContext, result.Target);
             });
     }
 
@@ -92,28 +111,28 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
         {
             return new CollectionGenerationResult(
                 null,
-                Diagnostic.Create(TypeMustBePartial, location, typeSymbol.ToDisplayString()));
+                ImmutableArray.Create(Diagnostic.Create(TypeMustBePartial, location, typeSymbol.ToDisplayString())));
         }
 
         if (typeSymbol.ContainingType is not null)
         {
             return new CollectionGenerationResult(
                 null,
-                Diagnostic.Create(TypeMustBeTopLevel, location, typeSymbol.ToDisplayString()));
+                ImmutableArray.Create(Diagnostic.Create(TypeMustBeTopLevel, location, typeSymbol.ToDisplayString())));
         }
 
         if (typeSymbol.Arity != 0)
         {
             return new CollectionGenerationResult(
                 null,
-                Diagnostic.Create(GenericTypesNotSupported, location, typeSymbol.ToDisplayString()));
+                ImmutableArray.Create(Diagnostic.Create(GenericTypesNotSupported, location, typeSymbol.ToDisplayString())));
         }
 
         if (typeSymbol.GetMembers("Collection").Any(static member => !member.IsImplicitlyDeclared))
         {
             return new CollectionGenerationResult(
                 null,
-                Diagnostic.Create(ReservedCollectionNameConflict, location, typeSymbol.ToDisplayString()));
+                ImmutableArray.Create(Diagnostic.Create(ReservedCollectionNameConflict, location, typeSymbol.ToDisplayString())));
         }
 
         INamedTypeSymbol? jsonContextType = context.Attributes
@@ -125,17 +144,29 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
         {
             return new CollectionGenerationResult(
                 null,
-                Diagnostic.Create(JsonContextTypeRequired, location, typeSymbol.ToDisplayString()));
+                ImmutableArray.Create(Diagnostic.Create(JsonContextTypeRequired, location, typeSymbol.ToDisplayString())));
         }
 
         var fields = ImmutableArray.CreateBuilder<CollectionFieldSpec>();
-        foreach (ISymbol member in typeSymbol.GetMembers().OrderBy(static member => member.Name, StringComparer.Ordinal))
-        {
-            if (!SymbolEqualityComparer.Default.Equals(member.ContainingType, typeSymbol))
-                continue;
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
+        CollectFields(
+            rootType: typeSymbol,
+            currentType: typeSymbol,
+            path: ImmutableArray<FieldPathSegment>.Empty,
+            recursionStack: ImmutableArray.Create(typeSymbol),
+            fields: fields,
+            diagnostics: diagnostics);
 
-            if (TryCreateField(member, out CollectionFieldSpec spec))
-                fields.Add(spec);
+        if (TryFindFieldNameConflict(fields, out string? conflictingMemberName))
+        {
+            return new CollectionGenerationResult(
+                null,
+                ImmutableArray.Create(
+                    Diagnostic.Create(
+                        GeneratedFieldNameConflict,
+                        location,
+                        typeSymbol.ToDisplayString(),
+                        conflictingMemberName!)));
         }
 
         string? namespaceName = typeSymbol.ContainingNamespace.IsGlobalNamespace
@@ -151,49 +182,198 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
                 GetPartialTypeKeyword(typeSymbol),
                 MakeSafeIdentifier(typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)),
                 fields.ToImmutable()),
-            null);
+            diagnostics.ToImmutable());
     }
 
-    private static bool TryCreateField(ISymbol member, out CollectionFieldSpec field)
+    private static void CollectFields(
+        INamedTypeSymbol rootType,
+        INamedTypeSymbol currentType,
+        ImmutableArray<FieldPathSegment> path,
+        ImmutableArray<INamedTypeSymbol> recursionStack,
+        ImmutableArray<CollectionFieldSpec>.Builder fields,
+        ImmutableArray<Diagnostic>.Builder diagnostics)
+    {
+        foreach (ISymbol member in currentType.GetMembers().OrderBy(static member => member.Name, StringComparer.Ordinal))
+        {
+            if (!TryGetCollectionMember(member, out ITypeSymbol? memberType) || memberType is null)
+                continue;
+
+            string jsonName = GetJsonPropertyName(member) ?? JsonNamingPolicy.CamelCase.ConvertName(member.Name);
+            string memberTypeName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var pathSegment = new FieldPathSegment(
+                member.Name,
+                EscapeIdentifier(member.Name),
+                jsonName,
+                isArray: false,
+                canBeNull: CanBeNull(memberType),
+                isNullableValueType: IsNullableValueType(memberType),
+                memberTypeName,
+                elementTypeName: null,
+                canElementBeNull: false,
+                isElementNullableValueType: false);
+
+            if (TryCreateLeafField(rootType, memberType, path.Add(pathSegment), out CollectionFieldSpec leafField))
+            {
+                fields.Add(leafField);
+                continue;
+            }
+
+            if (TryGetNavigableComplexType(memberType, out INamedTypeSymbol? nestedType) &&
+                nestedType is not null &&
+                !ContainsType(recursionStack, nestedType))
+            {
+                CollectFields(
+                    rootType,
+                    nestedType,
+                    path.Add(pathSegment),
+                    recursionStack.Add(nestedType),
+                    fields,
+                    diagnostics);
+
+                continue;
+            }
+
+            if (TryGetNavigableComplexType(memberType, out nestedType) &&
+                nestedType is not null &&
+                ContainsType(recursionStack, nestedType))
+            {
+                diagnostics.Add(CreateUnsupportedMemberDiagnostic(rootType, member, "recursive object graphs are not supported"));
+                continue;
+            }
+
+            if (TryGetCollectionElementType(memberType, out ITypeSymbol? elementType) &&
+                elementType is not null &&
+                TryGetNavigableComplexType(elementType, out INamedTypeSymbol? collectionElementType) &&
+                collectionElementType is not null &&
+                !ContainsType(recursionStack, collectionElementType))
+            {
+                var collectionSegment = new FieldPathSegment(
+                    member.Name,
+                    EscapeIdentifier(member.Name),
+                    jsonName,
+                    isArray: true,
+                    canBeNull: CanBeNull(memberType),
+                    isNullableValueType: IsNullableValueType(memberType),
+                    memberTypeName,
+                    elementType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    canElementBeNull: CanBeNull(elementType),
+                    isElementNullableValueType: IsNullableValueType(elementType));
+
+                CollectFields(
+                    rootType,
+                    collectionElementType,
+                    path.Add(collectionSegment),
+                    recursionStack.Add(collectionElementType),
+                    fields,
+                    diagnostics);
+
+                continue;
+            }
+
+            if (TryGetCollectionElementType(memberType, out elementType) &&
+                elementType is not null &&
+                TryGetNavigableComplexType(elementType, out collectionElementType) &&
+                collectionElementType is not null &&
+                ContainsType(recursionStack, collectionElementType))
+            {
+                diagnostics.Add(CreateUnsupportedMemberDiagnostic(rootType, member, "recursive collection element graphs are not supported"));
+                continue;
+            }
+
+            diagnostics.Add(CreateUnsupportedMemberDiagnostic(rootType, member, DescribeUnsupportedMember(memberType)));
+        }
+    }
+
+    private static Diagnostic CreateUnsupportedMemberDiagnostic(
+        INamedTypeSymbol rootType,
+        ISymbol member,
+        string reason)
+        => Diagnostic.Create(
+            UnsupportedCollectionMember,
+            member.Locations.FirstOrDefault(),
+            rootType.ToDisplayString(),
+            member.Name,
+            reason);
+
+    private static string DescribeUnsupportedMember(ITypeSymbol memberType)
+    {
+        if (TryGetCollectionElementType(memberType, out ITypeSymbol? elementType) && elementType is not null)
+        {
+            return $"collection element type '{elementType.ToDisplayString()}' does not map to a supported scalar or nested object path";
+        }
+
+        return $"member type '{memberType.ToDisplayString()}' is not supported; generated fields currently cover string, Guid, DateOnly, TimeOnly, enums, integer types, scalar collections, and nested object paths";
+    }
+
+    private static bool TryCreateLeafField(
+        INamedTypeSymbol rootType,
+        ITypeSymbol memberType,
+        ImmutableArray<FieldPathSegment> path,
+        out CollectionFieldSpec field)
     {
         field = default;
-
-        if (member.IsStatic || member.DeclaredAccessibility != Accessibility.Public || member.IsImplicitlyDeclared)
+        if (!TryClassifyFieldType(memberType, out string descriptorTypeName, out string dataKindName, out bool isMultiValue))
             return false;
 
-        if (HasAttribute(member, JsonIgnoreAttributeName) || HasAttribute(member, JsonPropertyNameAttributeName))
-            return false;
+        FieldPathSegment lastSegment = path[path.Length - 1];
+        if (isMultiValue)
+            path = path.SetItem(
+                path.Length - 1,
+                new FieldPathSegment(
+                    lastSegment.ClrName,
+                    lastSegment.EscapedClrName,
+                    lastSegment.JsonName,
+                    isArray: true,
+                    lastSegment.CanBeNull,
+                    lastSegment.IsNullableValueType,
+                    lastSegment.MemberTypeName,
+                    lastSegment.ElementTypeName,
+                    lastSegment.CanElementBeNull,
+                    lastSegment.IsElementNullableValueType));
 
-        ITypeSymbol? memberType = member switch
+        string generatedMemberName = string.Join("_", path.Select(static segment => segment.ClrName));
+        string escapedGeneratedMemberName = EscapeIdentifier(generatedMemberName);
+        string fieldPath = BuildPath(path, useJsonNames: false);
+        string payloadFieldPath = BuildPath(path, useJsonNames: true);
+        string accessorExpression;
+        string? accessorHelperSource = null;
+
+        if (path.Length == 1)
         {
-            IPropertySymbol property when !property.IsIndexer &&
-                                        property.GetMethod is not null &&
-                                        property.GetMethod.DeclaredAccessibility == Accessibility.Public =>
-                property.Type,
-            IFieldSymbol fieldSymbol => fieldSymbol.Type,
-            _ => null,
-        };
+            accessorExpression = "static document => document." + path[0].EscapedClrName;
+        }
+        else
+        {
+            string helperMethodName = "__Get_" + generatedMemberName;
+            accessorExpression = "static document => " + helperMethodName + "(document)";
+            accessorHelperSource = BuildNestedAccessorHelper(rootType, helperMethodName, path);
+        }
 
-        if (memberType is null || !TryClassifyFieldType(memberType, out string dataKind, out bool isMultiValue))
-            return false;
-
-        string fieldPath = isMultiValue ? member.Name + "[]" : member.Name;
         field = new CollectionFieldSpec(
-            member.Name,
-            EscapeIdentifier(member.Name),
+            generatedMemberName,
+            escapedGeneratedMemberName,
             fieldPath,
-            memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            dataKind);
+            payloadFieldPath,
+            descriptorTypeName,
+            dataKindName,
+            accessorExpression,
+            accessorHelperSource);
         return true;
     }
 
-    private static bool TryClassifyFieldType(ITypeSymbol type, out string dataKindName, out bool isMultiValue)
+    private static bool TryClassifyFieldType(
+        ITypeSymbol type,
+        out string descriptorTypeName,
+        out string dataKindName,
+        out bool isMultiValue)
     {
         isMultiValue = false;
+        ITypeSymbol descriptorType = type;
         ITypeSymbol effectiveType = UnwrapNullable(type);
         if (TryGetCollectionElementType(type, out ITypeSymbol? elementType))
         {
             isMultiValue = true;
+            descriptorType = elementType!;
             effectiveType = UnwrapNullable(elementType!);
         }
 
@@ -202,6 +382,7 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
             IsWellKnownType(effectiveType, "System.DateOnly") ||
             IsWellKnownType(effectiveType, "System.TimeOnly"))
         {
+            descriptorTypeName = descriptorType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             dataKindName = "Text";
             return true;
         }
@@ -216,11 +397,70 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
                 SpecialType.System_Int64 or
                 SpecialType.System_UInt64)
         {
+            descriptorTypeName = descriptorType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             dataKindName = "Integer";
             return true;
         }
 
+        descriptorTypeName = string.Empty;
         dataKindName = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetCollectionMember(ISymbol member, out ITypeSymbol? memberType)
+    {
+        memberType = null;
+        if (member.IsStatic || member.DeclaredAccessibility != Accessibility.Public || member.IsImplicitlyDeclared)
+            return false;
+
+        if (HasAttribute(member, JsonIgnoreAttributeName))
+            return false;
+
+        memberType = member switch
+        {
+            IPropertySymbol property when !property.IsIndexer &&
+                                        property.GetMethod is not null &&
+                                        property.GetMethod.DeclaredAccessibility == Accessibility.Public =>
+                property.Type,
+            IFieldSymbol fieldSymbol => fieldSymbol.Type,
+            _ => null,
+        };
+
+        return memberType is not null;
+    }
+
+    private static bool TryGetNavigableComplexType(ITypeSymbol type, out INamedTypeSymbol? complexType)
+    {
+        complexType = null;
+
+        if (TryClassifyFieldType(type, out _, out _, out _))
+            return false;
+
+        if (TryGetCollectionElementType(type, out _))
+            return false;
+
+        ITypeSymbol effectiveType = UnwrapNullable(type);
+        if (effectiveType is not INamedTypeSymbol namedType)
+            return false;
+
+        if (effectiveType.TypeKind is not TypeKind.Class and not TypeKind.Struct)
+            return false;
+
+        if (effectiveType.SpecialType != SpecialType.None)
+            return false;
+
+        complexType = namedType;
+        return true;
+    }
+
+    private static bool ContainsType(ImmutableArray<INamedTypeSymbol> recursionStack, INamedTypeSymbol type)
+    {
+        for (int i = 0; i < recursionStack.Length; i++)
+        {
+            if (SymbolEqualityComparer.Default.Equals(recursionStack[i], type))
+                return true;
+        }
+
         return false;
     }
 
@@ -287,6 +527,224 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
                 "global::" + attributeTypeName,
                 StringComparison.Ordinal));
 
+    private static string? GetJsonPropertyName(ISymbol symbol)
+    {
+        foreach (AttributeData attribute in symbol.GetAttributes())
+        {
+            if (!string.Equals(
+                    attribute.AttributeClass?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    "global::" + JsonPropertyNameAttributeName,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (attribute.ConstructorArguments.Length == 1 &&
+                attribute.ConstructorArguments[0].Value is string propertyName &&
+                !string.IsNullOrWhiteSpace(propertyName))
+            {
+                return propertyName;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryFindFieldNameConflict(
+        ImmutableArray<CollectionFieldSpec>.Builder fields,
+        out string? conflictingMemberName)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < fields.Count; i++)
+        {
+            if (!seen.Add(fields[i].GeneratedMemberName))
+            {
+                conflictingMemberName = fields[i].GeneratedMemberName;
+                return true;
+            }
+        }
+
+        conflictingMemberName = null;
+        return false;
+    }
+
+    private static bool CanBeNull(ITypeSymbol type)
+        => type.IsReferenceType ||
+           (type is INamedTypeSymbol named &&
+            named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T);
+
+    private static bool IsNullableValueType(ITypeSymbol type)
+        => type is INamedTypeSymbol named &&
+           named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+    private static string BuildPath(ImmutableArray<FieldPathSegment> path, bool useJsonNames)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < path.Length; i++)
+        {
+            if (i > 0)
+                builder.Append('.');
+
+            builder.Append(useJsonNames ? path[i].JsonName : path[i].ClrName);
+            if (path[i].IsArray)
+                builder.Append("[]");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string BuildNestedAccessorHelper(
+        INamedTypeSymbol rootType,
+        string helperMethodName,
+        ImmutableArray<FieldPathSegment> path)
+    {
+        var source = new StringBuilder();
+        source.Append("        private static object? ")
+            .Append(helperMethodName)
+            .Append('(')
+            .Append(rootType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat))
+            .AppendLine(" document)");
+        source.AppendLine("        {");
+
+        bool containsArray = path.Any(static segment => segment.IsArray);
+        if (containsArray)
+        {
+            source.AppendLine("            global::System.Collections.Generic.List<object?>? values = null;");
+            EmitArrayTraversal(source, path, "document", 0, "            ");
+            source.AppendLine("            return values is null || values.Count == 0 ? null : values;");
+            source.AppendLine("        }");
+            return source.ToString();
+        }
+
+        for (int i = 0; i < path.Length - 1; i++)
+        {
+            string current = i == 0 ? "document" : "value" + (i - 1).ToString();
+            string next = "value" + i.ToString();
+            source.Append("            var ")
+                .Append(next)
+                .Append(" = ")
+                .Append(current)
+                .Append('.')
+                .Append(path[i].EscapedClrName)
+                .AppendLine(";");
+
+            if (path[i].CanBeNull)
+            {
+                source.Append("            if (")
+                    .Append(next)
+                    .AppendLine(" is null)");
+                source.AppendLine("                return null;");
+            }
+        }
+
+        string leafOwner = path.Length == 1 ? "document" : "value" + (path.Length - 2).ToString();
+        source.Append("            return ")
+            .Append(leafOwner)
+            .Append('.')
+            .Append(path[path.Length - 1].EscapedClrName)
+            .AppendLine(";");
+        source.AppendLine("        }");
+        return source.ToString();
+    }
+
+    private static void EmitArrayTraversal(
+        StringBuilder source,
+        ImmutableArray<FieldPathSegment> path,
+        string currentExpression,
+        int pathIndex,
+        string indent)
+    {
+        FieldPathSegment segment = path[pathIndex];
+        string valueVariable = "value" + pathIndex.ToString();
+        source.Append(indent)
+            .Append("var ")
+            .Append(valueVariable)
+            .Append(" = ")
+            .Append(currentExpression)
+            .Append('.')
+            .Append(segment.EscapedClrName)
+            .AppendLine(";");
+
+        if (segment.IsArray)
+        {
+            source.Append(indent)
+                .Append("if (")
+                .Append(valueVariable)
+                .AppendLine(" is not null)");
+            source.Append(indent).AppendLine("{");
+
+            string itemVariable = "item" + pathIndex.ToString();
+            source.Append(indent)
+                .Append("    foreach (var ")
+                .Append(itemVariable)
+                .Append(" in ")
+                .Append(valueVariable)
+                .AppendLine(")");
+            source.Append(indent).AppendLine("    {");
+
+            string itemExpression = itemVariable;
+            if (segment.CanElementBeNull)
+            {
+                source.Append(indent)
+                    .Append("        if (")
+                    .Append(itemVariable)
+                    .AppendLine(" is null)");
+                source.Append(indent).AppendLine("            continue;");
+                if (segment.IsElementNullableValueType)
+                    itemExpression += ".Value";
+            }
+
+            if (pathIndex == path.Length - 1)
+            {
+                source.Append(indent).AppendLine("        values ??= new global::System.Collections.Generic.List<object?>();");
+                source.Append(indent)
+                    .Append("        values.Add(")
+                    .Append(itemExpression)
+                    .AppendLine(");");
+            }
+            else
+            {
+                EmitArrayTraversal(source, path, itemExpression, pathIndex + 1, indent + "        ");
+            }
+
+            source.Append(indent).AppendLine("    }");
+            source.Append(indent).AppendLine("}");
+            return;
+        }
+
+        string nextExpression = valueVariable;
+        if (segment.CanBeNull)
+        {
+            source.Append(indent)
+                .Append("if (")
+                .Append(valueVariable)
+                .AppendLine(" is not null)");
+            source.Append(indent).AppendLine("{");
+            if (segment.IsNullableValueType)
+                nextExpression += ".Value";
+            indent += "    ";
+        }
+
+        if (pathIndex == path.Length - 1)
+        {
+            source.Append(indent).AppendLine("values ??= new global::System.Collections.Generic.List<object?>();");
+            source.Append(indent)
+                .Append("values.Add(")
+                .Append(nextExpression)
+                .AppendLine(");");
+        }
+        else
+        {
+            EmitArrayTraversal(source, path, nextExpression, pathIndex + 1, indent);
+        }
+
+        if (segment.CanBeNull)
+        {
+            indent = indent.Substring(0, indent.Length - 4);
+            source.Append(indent).AppendLine("}");
+        }
+    }
+
     private static bool IsWellKnownType(ITypeSymbol type, string fullyQualifiedMetadataName)
         => string.Equals(
             type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -347,11 +805,22 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
                 .AppendLine(" { get; } =");
             source.Append("            new(")
                 .Append(SymbolDisplay.FormatLiteral(field.FieldPath, quote: true))
-                .Append(", static document => document.")
-                .Append(field.EscapedMemberName)
+                .Append(", ")
+                .Append(field.AccessorExpression)
                 .Append(", global::CSharpDB.Engine.CollectionIndexDataKind.")
                 .Append(field.DataKindName)
-                .AppendLine(");");
+                .Append(", ")
+                .Append(SymbolDisplay.FormatLiteral(field.PayloadFieldPath, quote: true));
+            source.AppendLine(");");
+            source.AppendLine();
+        }
+
+        foreach (CollectionFieldSpec field in target.Fields)
+        {
+            if (field.AccessorHelperSource is null)
+                continue;
+
+            source.Append(field.AccessorHelperSource);
             source.AppendLine();
         }
 
@@ -559,15 +1028,15 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
 
     private readonly struct CollectionGenerationResult
     {
-        public CollectionGenerationResult(CollectionModelTarget? target, Diagnostic? diagnostic)
+        public CollectionGenerationResult(CollectionModelTarget? target, ImmutableArray<Diagnostic> diagnostics)
         {
             Target = target;
-            Diagnostic = diagnostic;
+            Diagnostics = diagnostics;
         }
 
         public CollectionModelTarget? Target { get; }
 
-        public Diagnostic? Diagnostic { get; }
+        public ImmutableArray<Diagnostic> Diagnostics { get; }
     }
 
     private sealed class CollectionModelTarget
@@ -608,27 +1077,86 @@ public sealed class CollectionModelGenerator : IIncrementalGenerator
     private readonly struct CollectionFieldSpec
     {
         public CollectionFieldSpec(
-            string memberName,
+            string generatedMemberName,
             string escapedMemberName,
             string fieldPath,
+            string payloadFieldPath,
             string memberTypeName,
-            string dataKindName)
+            string dataKindName,
+            string accessorExpression,
+            string? accessorHelperSource)
         {
-            MemberName = memberName;
+            GeneratedMemberName = generatedMemberName;
             EscapedMemberName = escapedMemberName;
             FieldPath = fieldPath;
+            PayloadFieldPath = payloadFieldPath;
             MemberTypeName = memberTypeName;
             DataKindName = dataKindName;
+            AccessorExpression = accessorExpression;
+            AccessorHelperSource = accessorHelperSource;
         }
 
-        public string MemberName { get; }
+        public string GeneratedMemberName { get; }
 
         public string EscapedMemberName { get; }
 
         public string FieldPath { get; }
 
+        public string PayloadFieldPath { get; }
+
         public string MemberTypeName { get; }
 
         public string DataKindName { get; }
+
+        public string AccessorExpression { get; }
+
+        public string? AccessorHelperSource { get; }
+    }
+
+    private readonly struct FieldPathSegment
+    {
+        public FieldPathSegment(
+            string clrName,
+            string escapedClrName,
+            string jsonName,
+            bool isArray,
+            bool canBeNull,
+            bool isNullableValueType,
+            string memberTypeName,
+            string? elementTypeName,
+            bool canElementBeNull,
+            bool isElementNullableValueType)
+        {
+            ClrName = clrName;
+            EscapedClrName = escapedClrName;
+            JsonName = jsonName;
+            IsArray = isArray;
+            CanBeNull = canBeNull;
+            IsNullableValueType = isNullableValueType;
+            MemberTypeName = memberTypeName;
+            ElementTypeName = elementTypeName;
+            CanElementBeNull = canElementBeNull;
+            IsElementNullableValueType = isElementNullableValueType;
+        }
+
+        public string ClrName { get; }
+
+        public string EscapedClrName { get; }
+
+        public string JsonName { get; }
+
+        public bool IsArray { get; }
+
+        public bool CanBeNull { get; }
+
+        public bool IsNullableValueType { get; }
+
+        public string MemberTypeName { get; }
+
+        public string? ElementTypeName { get; }
+
+        public bool CanElementBeNull { get; }
+
+        public bool IsElementNullableValueType { get; }
     }
 }

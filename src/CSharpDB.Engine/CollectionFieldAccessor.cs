@@ -40,8 +40,17 @@ internal sealed class CollectionFieldAccessor
     internal bool TargetsArrayElements => _targetsArrayElements;
 
     internal static CollectionFieldAccessor FromFieldPath(string fieldPath)
+        => Create(fieldPath, static segment => JsonNamingPolicy.CamelCase.ConvertName(segment));
+
+    internal static CollectionFieldAccessor FromJsonFieldPath(string fieldPath)
+        => Create(fieldPath, static segment => segment);
+
+    private static CollectionFieldAccessor Create(
+        string fieldPath,
+        Func<string, string> jsonSegmentSelector)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
+        ArgumentNullException.ThrowIfNull(jsonSegmentSelector);
 
         string[] fieldPathSegments = fieldPath.Split('.');
         var jsonPathSegments = new string[fieldPathSegments.Length];
@@ -81,7 +90,7 @@ internal sealed class CollectionFieldAccessor
                     nameof(fieldPath));
             }
 
-            string jsonSegment = JsonNamingPolicy.CamelCase.ConvertName(segment);
+            string jsonSegment = jsonSegmentSelector(segment);
             jsonPathSegments[i] = jsonSegment;
             jsonPathSegmentsUtf8[i] = Encoding.UTF8.GetBytes(jsonSegment);
         }

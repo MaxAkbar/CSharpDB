@@ -113,14 +113,33 @@ public abstract class CollectionField<TDocument>
 {
     private readonly CollectionFieldAccessor _payloadAccessor;
 
-    protected CollectionField(string fieldPath, CollectionIndexDataKind dataKind)
+    protected CollectionField(
+        string fieldPath,
+        CollectionIndexDataKind dataKind,
+        string? payloadFieldPath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fieldPath);
 
         FieldPath = NormalizeFieldPath(fieldPath, out bool targetsArrayElements);
+        string normalizedPayloadFieldPath = FieldPath;
+        bool payloadTargetsArrayElements = targetsArrayElements;
+        if (payloadFieldPath is not null)
+        {
+            normalizedPayloadFieldPath = NormalizeFieldPath(payloadFieldPath, out payloadTargetsArrayElements);
+        }
+
+        if (payloadFieldPath is not null && payloadTargetsArrayElements != targetsArrayElements)
+        {
+            throw new ArgumentException(
+                $"Collection payload path '{payloadFieldPath}' must use the same array wildcard shape as field path '{fieldPath}'.",
+                nameof(payloadFieldPath));
+        }
+
         DataKind = dataKind;
         TargetsArrayElements = targetsArrayElements;
-        _payloadAccessor = CollectionFieldAccessor.FromFieldPath(FieldPath);
+        _payloadAccessor = payloadFieldPath is null
+            ? CollectionFieldAccessor.FromFieldPath(FieldPath)
+            : CollectionFieldAccessor.FromJsonFieldPath(normalizedPayloadFieldPath);
     }
 
     public string FieldPath { get; }
@@ -191,13 +210,14 @@ public abstract class CollectionField<TDocument>
 /// </summary>
 public sealed class CollectionField<TDocument, TField> : CollectionField<TDocument>
 {
-    private readonly Func<TDocument, TField> _accessor;
+    private readonly Func<TDocument, object?> _accessor;
 
     public CollectionField(
         string fieldPath,
-        Func<TDocument, TField> accessor,
-        CollectionIndexDataKind dataKind)
-        : base(fieldPath, dataKind)
+        Func<TDocument, object?> accessor,
+        CollectionIndexDataKind dataKind,
+        string? payloadFieldPath = null)
+        : base(fieldPath, dataKind, payloadFieldPath)
     {
         _accessor = accessor ?? throw new ArgumentNullException(nameof(accessor));
     }

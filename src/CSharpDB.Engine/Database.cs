@@ -767,6 +767,7 @@ public sealed class Database : IAsyncDisposable
     // ============ Document Collection API ============
 
     private const string CollectionPrefix = "_col_";
+    private const string GeneratedCollectionCacheSuffix = "\u0001generated";
 
     /// <summary>
     /// Get or create a document collection with the given name.
@@ -779,7 +780,7 @@ public sealed class Database : IAsyncDisposable
         T>(
         string name,
         CancellationToken ct = default)
-        => await GetCollectionCoreAsync<T>(name, ct);
+        => await GetCollectionCoreAsync<T>(name, generatedOnly: false, ct);
 
     /// <summary>
     /// Get or create a trim-safe typed collection with the given name.
@@ -806,7 +807,7 @@ public sealed class Database : IAsyncDisposable
                 "Annotate the type with [CollectionModel(typeof(YourJsonSerializerContext))] or register an ICollectionModel<T> before calling GetGeneratedCollectionAsync.");
         }
 
-        return new GeneratedCollection<T>(await GetCollectionCoreAsync<T>(name, ct));
+        return new GeneratedCollection<T>(await GetCollectionCoreAsync<T>(name, generatedOnly: true, ct));
     }
 
     [UnconditionalSuppressMessage(
@@ -823,6 +824,7 @@ public sealed class Database : IAsyncDisposable
         Justification = "GetCollectionCoreAsync<T> is shared by the reflection-based and generated-model collection entry points. The generated-model entry point verifies that a generated or manually supplied collection model is registered before calling this method.")]
     private async ValueTask<Collection<T>> GetCollectionCoreAsync<T>(
         string name,
+        bool generatedOnly,
         CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -835,9 +837,10 @@ public sealed class Database : IAsyncDisposable
             InvalidateCachesIfSchemaChanged();
 
             string catalogName = $"{CollectionPrefix}{name}";
+            string cacheKey = BuildCollectionCacheKey(catalogName, generatedOnly);
 
             // Return cached instance if available
-            if (_collectionCache.TryGetValue(catalogName, out var cached))
+            if (_collectionCache.TryGetValue(cacheKey, out var cached))
                 return (Collection<T>)cached;
 
             // Create the backing table if it doesn't exist
@@ -896,8 +899,9 @@ public sealed class Database : IAsyncDisposable
                 () => _inTransaction,
                 AcquireWriteOperationScopeAsync,
                 BeginCommitForTableWithCatalogSyncAsync,
-                ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct));
-            _collectionCache[catalogName] = collection;
+                ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct),
+                requireRegisteredFields: generatedOnly);
+            _collectionCache[cacheKey] = collection;
             return collection;
         }
         finally
@@ -905,6 +909,11 @@ public sealed class Database : IAsyncDisposable
             writeScope?.Dispose();
         }
     }
+
+    private static string BuildCollectionCacheKey(string catalogName, bool generatedOnly)
+        => generatedOnly
+            ? catalogName + GeneratedCollectionCacheSuffix
+            : catalogName;
 
     /// <summary>
     /// Returns the names of all document collections in the database.
