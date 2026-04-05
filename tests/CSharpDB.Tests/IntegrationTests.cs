@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
@@ -2386,7 +2387,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SimpleLimitedSelectStar_UsesBatchLimitOperator()
+    public async Task SimpleLimitedSelectStar_UsesCompactSimpleScanFastPath()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_scan_limit (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
@@ -2400,11 +2401,67 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
         Assert.IsType<LimitOperator>(GetStoredOperator(result));
-        Assert.IsType<LimitOperator>(GetRootOperator(result));
+        Assert.IsType<CompactTableScanProjectionOperator>(FindOperatorInUnaryChain<CompactTableScanProjectionOperator>(rootOperator));
 
         var rows = await result.ToListAsync(ct);
         Assert.Equal(2, rows.Count);
+    }
+
+    [Fact]
+    public async Task SimpleLimitedOffsetSelectStar_UsesCompactSimpleScanFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_scan_limit_offset (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scan_limit_offset VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scan_limit_offset VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scan_limit_offset VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_scan_limit_offset VALUES (4, 40)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_scan_limit_offset LIMIT 2 OFFSET 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        Assert.IsType<OffsetOperator>(FindOperatorInUnaryChain<OffsetOperator>(rootOperator));
+        Assert.IsType<CompactTableScanProjectionOperator>(FindOperatorInUnaryChain<CompactTableScanProjectionOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(20L, rows[0][1].AsInteger);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(30L, rows[1][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task GenericFunctionFilteredLimitedSelectStar_UsesCompactSimpleScanBatchPlan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_generic_limit_filter (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_generic_limit_filter VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_generic_limit_filter VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_generic_limit_filter VALUES (3, 30)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_generic_limit_filter WHERE TEXT(id) = '2' LIMIT 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var compactOperator = Assert.IsType<CompactTableScanProjectionOperator>(FindOperatorInUnaryChain<CompactTableScanProjectionOperator>(rootOperator));
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(compactOperator, "_batchPlan"));
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(2L, row[0].AsInteger);
+        Assert.Equal(20L, row[1].AsInteger);
     }
 
     [Fact]
@@ -2556,6 +2613,35 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IndexedEqualitySelectStarWithLimitAndOffset_UsesBatchLimitOverIndexScan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_index_eq_limit_root (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, label TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_index_eq_limit_root_score ON batch_index_eq_limit_root(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_limit_root VALUES (1, 10, 'A')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_limit_root VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_limit_root VALUES (3, 20, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_index_eq_limit_root VALUES (4, 20, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM batch_index_eq_limit_root WHERE score = 20 LIMIT 1 OFFSET 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        Assert.IsType<OffsetOperator>(FindOperatorInUnaryChain<OffsetOperator>(rootOperator));
+        Assert.IsType<IndexScanOperator>(FindOperatorInUnaryChain<IndexScanOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(3L, row[0].AsInteger);
+        Assert.Equal(20L, row[1].AsInteger);
+        Assert.Equal("C", row[2].AsText);
+    }
+
+    [Fact]
     public async Task IndexedTextEqualitySelectStar_UsesIndexScanOperator()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -2662,6 +2748,38 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IdentityArithmeticJoin_UsesBatchCapableHashJoinOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_join_identity_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE batch_join_identity_right (id INTEGER PRIMARY KEY, left_id INTEGER NOT NULL, amount INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_left VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_left VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_left VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_right VALUES (1, 2, 200)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_right VALUES (2, 3, 300)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_join_identity_right VALUES (3, 4, 400)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_join_identity_left l INNER JOIN batch_join_identity_right r ON l.id + 0 = r.left_id") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<HashJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<HashJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(200L, rows[0][4].AsInteger);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(300L, rows[1][4].AsInteger);
+    }
+
+    [Fact]
     public async Task SimpleIndexNestedLoopJoin_UsesBatchCapableIndexNestedLoopJoinOperator()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -2677,6 +2795,38 @@ public class IntegrationTests : IAsyncLifetime
         var planner = GetPlanner();
         var statement = Parser.Parse(
             "SELECT * FROM batch_inlj_left l INNER JOIN batch_inlj_right r ON l.id = r.id") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<IndexNestedLoopJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<IndexNestedLoopJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(r => r[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(200L, rows[0][3].AsInteger);
+        Assert.Equal(3L, rows[1][0].AsInteger);
+        Assert.Equal(300L, rows[1][3].AsInteger);
+    }
+
+    [Fact]
+    public async Task IdentityArithmeticJoin_OnRightPrimaryKey_UsesBatchCapableIndexNestedLoopJoinOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE batch_inlj_identity_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE batch_inlj_identity_right (id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_left VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_left VALUES (2, 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_left VALUES (3, 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_right VALUES (2, 200)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_right VALUES (3, 300)", ct);
+        await _db.ExecuteAsync("INSERT INTO batch_inlj_identity_right VALUES (4, 400)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_inlj_identity_left l INNER JOIN batch_inlj_identity_right r ON l.id + 0 = r.id") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -2867,7 +3017,7 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT * FROM batch_nlj_left l INNER JOIN batch_nlj_right r ON l.id + 0 = r.left_id") as SelectStatement
+            "SELECT * FROM batch_nlj_left l INNER JOIN batch_nlj_right r ON l.id + 1 = r.left_id + 1") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -2899,7 +3049,7 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT * FROM batch_nlj_limit_left l INNER JOIN batch_nlj_limit_right r ON l.id + 0 = r.left_id LIMIT 2") as SelectStatement
+            "SELECT * FROM batch_nlj_limit_left l INNER JOIN batch_nlj_limit_right r ON l.id + 1 = r.left_id + 1 LIMIT 2") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -2916,7 +3066,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task NestedLoopJoinedColumnProjection_UsesBatchProjectionOperator()
+    public async Task NestedLoopJoinedColumnProjection_UsesBatchCapableNestedLoopJoinOperator()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_nlj_proj_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
@@ -2930,15 +3080,14 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT l.id, r.amount FROM batch_nlj_proj_left l INNER JOIN batch_nlj_proj_right r ON l.id + 0 = r.left_id WHERE l.score >= 20") as SelectStatement
+            "SELECT l.id, r.amount FROM batch_nlj_proj_left l INNER JOIN batch_nlj_proj_right r ON l.id + 1 = r.left_id + 1 WHERE l.score >= 20") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
-        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
-        Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<NestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
+        Assert.IsType<NestedLoopJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<NestedLoopJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -2961,7 +3110,7 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT * FROM batch_left_nlj_limit_left l LEFT JOIN batch_left_nlj_limit_right r ON l.id + 0 = r.left_id LIMIT 4") as SelectStatement
+            "SELECT * FROM batch_left_nlj_limit_left l LEFT JOIN batch_left_nlj_limit_right r ON l.id + 1 = r.left_id + 1 LIMIT 4") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -2998,7 +3147,7 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT * FROM batch_right_nlj_limit_left l RIGHT JOIN batch_right_nlj_limit_right r ON l.id + 0 = r.left_id LIMIT 4") as SelectStatement
+            "SELECT * FROM batch_right_nlj_limit_left l RIGHT JOIN batch_right_nlj_limit_right r ON l.id + 1 = r.left_id + 1 LIMIT 4") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -3494,6 +3643,35 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IndexedRangeColumnProjectionWithLimit_UsesCompactPayloadProjectionOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_index_cols_limit (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, category TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_compact_index_cols_limit_score ON compact_index_cols_limit(score)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols_limit VALUES (1, 10, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols_limit VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols_limit VALUES (3, 30, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_index_cols_limit VALUES (4, 40, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT s.id, s.category FROM compact_index_cols_limit s WHERE s.score BETWEEN 20 AND 40 AND s.category IS NOT NULL LIMIT 2") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var compactOperator = Assert.IsType<CompactPayloadProjectionOperator>(FindOperatorInUnaryChain<CompactPayloadProjectionOperator>(rootOperator));
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(compactOperator, "_batchPlan"));
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal("B", rows[0][1].AsText);
+        Assert.Equal("C", rows[1][1].AsText);
+    }
+
+    [Fact]
     public async Task IndexedRangeExpressionProjection_UsesCompactPayloadProjectionOperator()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -3542,9 +3720,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = Assert.IsType<FilterProjectionOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator, "_batchPlan"));
-        Assert.IsAssignableFrom<IBatchOperator>(GetPrivateField<IOperator>(projectionOperator, "_source"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3573,9 +3749,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<ProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3605,9 +3779,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3637,9 +3809,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3669,11 +3839,8 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
-        var scanOperator = Assert.IsType<TableScanOperator>(GetPrivateField<IOperator>(projectionOperator!, "_source"));
-        Assert.True(GetPrivateField<bool>(scanOperator, "_hasPreDecodeFilter"));
+        var compactOperator = AssertCompactSimpleScanBatchPlan(rootOperator);
+        Assert.True(GetPrivateField<bool>(compactOperator, "_hasPreDecodeFilter"));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3703,9 +3870,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3735,9 +3900,7 @@ public class IntegrationTests : IAsyncLifetime
         var rootOperator = GetRootOperator(result);
         Assert.IsType<LimitOperator>(rootOperator);
 
-        var projectionOperator = GetPrivateField<IOperator>(rootOperator, "_source");
-        Assert.IsType<FilterProjectionOperator>(projectionOperator);
-        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(projectionOperator!, "_batchPlan"));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3745,6 +3908,34 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(11L, rows[0][1].AsInteger);
         Assert.Equal(3L, rows[1][0].AsInteger);
         Assert.Equal(13L, rows[1][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task FilteredColumnProjection_WithLimitAndOffset_UsesCompactSimpleScanFastPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE compact_limit_offset_cols (id INTEGER PRIMARY KEY, score INTEGER NOT NULL, category TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_limit_offset_cols VALUES (1, 10, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_limit_offset_cols VALUES (2, 20, 'B')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_limit_offset_cols VALUES (3, 30, 'C')", ct);
+        await _db.ExecuteAsync("INSERT INTO compact_limit_offset_cols VALUES (4, 40, 'D')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT s.id, s.category FROM compact_limit_offset_cols s WHERE s.category IS NOT NULL LIMIT 1 OFFSET 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = GetRootOperator(result);
+        Assert.IsType<LimitOperator>(rootOperator);
+        Assert.IsType<OffsetOperator>(FindOperatorInUnaryChain<OffsetOperator>(rootOperator));
+        AssertCompactSimpleScanBatchPlan(rootOperator);
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(3L, row[0].AsInteger);
+        Assert.Equal("C", row[1].AsText);
     }
 
     [Fact]
@@ -5366,7 +5557,7 @@ public class IntegrationTests : IAsyncLifetime
 
         var planner = GetPlanner();
         var statement = Parser.Parse(
-            "SELECT l.tail, r.tail FROM left_nested_trim l JOIN right_nested_trim r ON l.id + 0 = r.code") as SelectStatement
+            "SELECT l.tail, r.tail FROM left_nested_trim l JOIN right_nested_trim r ON l.id + 1 = r.code + 1") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
         await using var result = await planner.ExecuteAsync(statement, ct);
@@ -6663,6 +6854,159 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task View_WithSimpleTableOuterWhere_PushesPredicateIntoBaseSource()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_email ON users(email)", ct);
+        await _db.ExecuteAsync("INSERT INTO users VALUES (1, 'alice@example.com', 'Alice')", ct);
+        await _db.ExecuteAsync("INSERT INTO users VALUES (2, 'bob@example.com', 'Bob')", ct);
+
+        await _db.ExecuteAsync("CREATE VIEW user_emails AS SELECT id, email, name FROM users", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT * FROM user_emails WHERE email = 'alice@example.com'",
+            ct);
+
+        var indexScan = FindOperatorInUnaryChain<IndexScanOperator>(GetRootOperator(result));
+        Assert.NotNull(indexScan);
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(1L, row[0].AsInteger);
+        Assert.Equal("alice@example.com", row[1].AsText);
+        Assert.Equal("Alice", row[2].AsText);
+    }
+
+    [Fact]
+    public async Task View_WithJoinOuterWhere_PushesPredicateIntoJoinOuterSource()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_email ON users(email)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_orders_user_id ON orders(user_id)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO users VALUES (1, 'alice@example.com', 'Alice')", ct);
+        await _db.ExecuteAsync("INSERT INTO users VALUES (2, 'bob@example.com', 'Bob')", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (10, 1, 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (11, 1, 150)", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (12, 2, 200)", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE VIEW customer_orders AS SELECT users.email, orders.amount FROM users JOIN orders ON users.id = orders.user_id",
+            ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT * FROM customer_orders WHERE email = 'alice@example.com'",
+            ct);
+
+        var joinRoot = FindJoinOperator(GetRootOperator(result));
+        var outerSource = joinRoot switch
+        {
+            IndexNestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_outer"),
+            HashedIndexNestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_outer"),
+            HashJoinOperator => GetPrivateField<IOperator>(joinRoot, "_left"),
+            NestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_left"),
+            _ => null,
+        };
+
+        var outerIndexScan = FindOperatorInUnaryChain<IndexScanOperator>(outerSource);
+        Assert.NotNull(outerIndexScan);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal([100L, 150L], rows.Select(row => row[1].AsInteger).OrderBy(amount => amount).ToArray());
+    }
+
+    [Fact]
+    public async Task View_WithJoinOuterLikeWhere_PushesResidualPredicateIntoJoinOuterSource()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_users_email ON users(email)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_orders_user_id ON orders(user_id)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO users VALUES (1, 'alice@example.com', 'Alice')", ct);
+        await _db.ExecuteAsync("INSERT INTO users VALUES (2, 'bob@example.com', 'Bob')", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (10, 1, 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (11, 1, 150)", ct);
+        await _db.ExecuteAsync("INSERT INTO orders VALUES (12, 2, 200)", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE VIEW customer_orders_like AS SELECT users.email, orders.amount FROM users JOIN orders ON users.id = orders.user_id",
+            ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT * FROM customer_orders_like WHERE TEXT(email) LIKE '%alice@example.com%'",
+            ct);
+
+        var joinRoot = FindJoinOperator(GetRootOperator(result));
+        var outerSource = joinRoot switch
+        {
+            IndexNestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_outer"),
+            HashedIndexNestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_outer"),
+            HashJoinOperator => GetPrivateField<IOperator>(joinRoot, "_left"),
+            NestedLoopJoinOperator => GetPrivateField<IOperator>(joinRoot, "_left"),
+            _ => null,
+        };
+
+        var pushedFilter = FindOperatorInUnaryChain<FilterOperator>(outerSource);
+        Assert.NotNull(pushedFilter);
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal([100L, 150L], rows.Select(row => row[1].AsInteger).OrderBy(amount => amount).ToArray());
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(5)]
+    public async Task InnerJoinChain_WithOuterLeafIndexedPredicate_RemovesTopLevelFilterAndPushesIntoLeaf(int joinCount)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateInnerJoinChainAsync(joinCount, createLookupIndex: true, ct);
+
+        await using var result = await _db.ExecuteAsync(
+            BuildInnerJoinChainQuery(joinCount, $"t{joinCount}.lookup_key = 'key_42'"),
+            ct);
+
+        var root = GetRootOperator(result);
+        Assert.False(HasFilterBeforeFirstJoin(root));
+        Assert.NotNull(FindOperatorInTree<IndexScanOperator>(root));
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(42L, row[0].AsInteger);
+        Assert.Equal("key_42", row[1].AsText);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(6)]
+    public async Task InnerJoinChain_WithOuterLeafResidualPredicate_RemovesTopLevelFilterAndPushesIntoLeaf(int joinCount)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateInnerJoinChainAsync(joinCount, createLookupIndex: false, ct);
+
+        await using var result = await _db.ExecuteAsync(
+            BuildInnerJoinChainQuery(joinCount, $"TEXT(t{joinCount}.lookup_key) LIKE '%key_42%'"),
+            ct);
+
+        var root = GetRootOperator(result);
+        Assert.False(HasFilterBeforeFirstJoin(root));
+        Assert.NotNull(FindOperatorInTree<FilterOperator>(root));
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(42L, row[0].AsInteger);
+        Assert.Equal("key_42", row[1].AsText);
+    }
+
+    [Fact]
     public async Task View_WithAggregate()
     {
         await _db.ExecuteAsync("CREATE TABLE sales (id INTEGER PRIMARY KEY, category INTEGER, amount INTEGER)", TestContext.Current.CancellationToken);
@@ -7228,6 +7572,126 @@ public class IntegrationTests : IAsyncLifetime
         }
 
         throw new Xunit.Sdk.XunitException($"Expected to find {typeof(TOperator).Name} in unary operator chain.");
+    }
+
+    private static IOperator FindJoinOperator(IOperator start)
+    {
+        for (var current = start; current != null; current = current is IUnaryOperatorSource unary ? unary.Source : null)
+        {
+            if (current is IndexNestedLoopJoinOperator or HashedIndexNestedLoopJoinOperator or HashJoinOperator or NestedLoopJoinOperator)
+                return current;
+        }
+
+        throw new Xunit.Sdk.XunitException("Expected to find a join operator in unary operator chain.");
+    }
+
+    private static CompactTableScanProjectionOperator AssertCompactSimpleScanBatchPlan(IOperator rootOperator)
+    {
+        var compactOperator = FindOperatorInUnaryChain<CompactTableScanProjectionOperator>(rootOperator);
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(GetPrivateField<object>(compactOperator, "_batchPlan"));
+        return compactOperator;
+    }
+
+    private async Task CreateInnerJoinChainAsync(int joinCount, bool createLookupIndex, CancellationToken ct)
+    {
+        Assert.True(joinCount >= 2);
+
+        await _db.ExecuteAsync("CREATE TABLE t1 (id INTEGER PRIMARY KEY, payload TEXT)", ct);
+        for (int i = 2; i <= joinCount; i++)
+        {
+            string createTableSql = i == joinCount
+                ? $"CREATE TABLE t{i} (id INTEGER PRIMARY KEY, prev_id INTEGER, payload TEXT, lookup_key TEXT)"
+                : $"CREATE TABLE t{i} (id INTEGER PRIMARY KEY, prev_id INTEGER, payload TEXT)";
+            await _db.ExecuteAsync(createTableSql, ct);
+        }
+
+        if (createLookupIndex)
+            await _db.ExecuteAsync($"CREATE INDEX idx_t{joinCount}_lookup_key ON t{joinCount}(lookup_key)", ct);
+
+        for (int rowId = 1; rowId <= 100; rowId++)
+            await _db.ExecuteAsync($"INSERT INTO t1 VALUES ({rowId}, 'p1_{rowId}')", ct);
+
+        for (int tableIndex = 2; tableIndex <= joinCount; tableIndex++)
+        {
+            for (int rowId = 1; rowId <= 100; rowId++)
+            {
+                string insertSql = tableIndex == joinCount
+                    ? $"INSERT INTO t{tableIndex} VALUES ({rowId}, {rowId}, 'p{tableIndex}_{rowId}', 'key_{rowId}')"
+                    : $"INSERT INTO t{tableIndex} VALUES ({rowId}, {rowId}, 'p{tableIndex}_{rowId}')";
+                await _db.ExecuteAsync(insertSql, ct);
+            }
+        }
+    }
+
+    private static string BuildInnerJoinChainQuery(int joinCount, string whereClause)
+    {
+        var sql = new StringBuilder($"SELECT t1.id, t{joinCount}.lookup_key FROM t1");
+        for (int i = 2; i <= joinCount; i++)
+        {
+            string leftAlias = i == 2 ? "t1" : $"t{i - 1}";
+            sql.Append($" INNER JOIN t{i} ON t{i}.prev_id = {leftAlias}.id");
+        }
+
+        sql.Append(" WHERE ");
+        sql.Append(whereClause);
+        return sql.ToString();
+    }
+
+    private static bool HasFilterBeforeFirstJoin(IOperator start)
+    {
+        for (var current = start; current != null; current = current is IUnaryOperatorSource unary ? unary.Source : null)
+        {
+            if (current is IndexNestedLoopJoinOperator or HashedIndexNestedLoopJoinOperator or HashJoinOperator or NestedLoopJoinOperator)
+                return false;
+
+            if (current is FilterOperator or FilterProjectionOperator)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static TOperator? FindOperatorInTree<TOperator>(IOperator? root)
+        where TOperator : class, IOperator
+    {
+        if (root == null)
+            return null;
+
+        var stack = new Stack<IOperator>();
+        stack.Push(root);
+
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            if (current is TOperator typed)
+                return typed;
+
+            if (current is IUnaryOperatorSource unary && unary.Source != null)
+                stack.Push(unary.Source);
+
+            switch (current)
+            {
+                case IndexNestedLoopJoinOperator or HashedIndexNestedLoopJoinOperator:
+                {
+                    var outer = GetPrivateField<IOperator>(current, "_outer");
+                    if (outer != null)
+                        stack.Push(outer);
+                    break;
+                }
+                case HashJoinOperator or NestedLoopJoinOperator:
+                {
+                    var left = GetPrivateField<IOperator>(current, "_left");
+                    if (left != null)
+                        stack.Push(left);
+                    var right = GetPrivateField<IOperator>(current, "_right");
+                    if (right != null)
+                        stack.Push(right);
+                    break;
+                }
+            }
+        }
+
+        return null;
     }
 
     #endregion

@@ -758,6 +758,13 @@ public class ParserTests
         Assert.NotNull(select.Where);
     }
 
+    [Fact]
+    public void Parse_JoinWithoutOn_Throws()
+    {
+        var error = Assert.Throws<CSharpDbException>(() => Parser.Parse("SELECT * FROM a JOIN b a.id = b.aid"));
+        Assert.Contains("Expected ON clause after JOIN target", error.Message, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region ALTER TABLE Parsing

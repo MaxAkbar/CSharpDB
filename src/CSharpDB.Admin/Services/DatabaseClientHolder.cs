@@ -91,6 +91,10 @@ public sealed class DatabaseClientHolder : ICSharpDbClient
     public Task DeleteProcedureAsync(string name, CancellationToken ct = default) => _inner.DeleteProcedureAsync(name, ct);
     public Task<ProcedureExecutionResult> ExecuteProcedureAsync(string name, IReadOnlyDictionary<string, object?> args, CancellationToken ct = default) => _inner.ExecuteProcedureAsync(name, args, ct);
     public Task<SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct = default) => _inner.ExecuteSqlAsync(sql, ct);
+    public ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
+        => _inner is CSharpDbClient client
+            ? client.TryOpenForwardOnlyQueryCursorAsync(sql, ct)
+            : ValueTask.FromResult<ForwardOnlyQueryCursor?>(null);
     public Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default) => _inner.BeginTransactionAsync(ct);
     public Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default) => _inner.ExecuteInTransactionAsync(transactionId, sql, ct);
     public Task CommitTransactionAsync(string transactionId, CancellationToken ct = default) => _inner.CommitTransactionAsync(transactionId, ct);
