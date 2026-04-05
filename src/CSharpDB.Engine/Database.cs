@@ -791,6 +791,10 @@ public sealed class Database : IAsyncDisposable
         "IL2026",
         Justification = "GetGeneratedCollectionAsync<T> verifies that a generated or manually supplied collection model is registered before delegating to the shared Collection<T> construction path.")]
     [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2091",
+        Justification = "GetGeneratedCollectionAsync<T> verifies that a generated or manually supplied collection model is registered before delegating to the shared Collection<T> construction path.")]
+    [UnconditionalSuppressMessage(
         "Aot",
         "IL3050",
         Justification = "GetGeneratedCollectionAsync<T> verifies that a generated or manually supplied collection model is registered before delegating to the shared Collection<T> construction path.")]
