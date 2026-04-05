@@ -16,14 +16,8 @@ internal sealed class CollectionIndexBinding<
 {
     private readonly Func<T, object?> _fieldAccessor;
     private readonly CollectionFieldAccessor _payloadAccessor;
-    private readonly CollectionIndexValueKind _valueKind;
+    private readonly CollectionIndexDataKind _valueKind;
     private readonly string? _collation;
-
-    private enum CollectionIndexValueKind
-    {
-        Integer,
-        Text,
-    }
 
     private CollectionIndexBinding(
         string fieldPath,
@@ -31,7 +25,7 @@ internal sealed class CollectionIndexBinding<
         IIndexStore indexStore,
         Func<T, object?> fieldAccessor,
         CollectionFieldAccessor payloadAccessor,
-        CollectionIndexValueKind valueKind,
+        CollectionIndexDataKind valueKind,
         string? collation)
     {
         FieldPath = fieldPath;
@@ -49,9 +43,9 @@ internal sealed class CollectionIndexBinding<
 
     internal IIndexStore IndexStore { get; }
 
-    internal bool UsesIntegerKey => _valueKind == CollectionIndexValueKind.Integer;
+    internal bool UsesIntegerKey => _valueKind == CollectionIndexDataKind.Integer;
 
-    internal bool UsesTextKey => _valueKind == CollectionIndexValueKind.Text;
+    internal bool UsesTextKey => _valueKind == CollectionIndexDataKind.Text;
 
     internal bool IsMultiValueArray => _payloadAccessor.TargetsArrayElements;
 
@@ -170,6 +164,26 @@ internal sealed class CollectionIndexBinding<
             collation);
     }
 
+    internal static CollectionIndexBinding<T> Create(
+        CollectionField<T> field,
+        string indexName,
+        IIndexStore indexStore,
+        string? collation = null)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        ArgumentNullException.ThrowIfNull(indexStore);
+
+        return new CollectionIndexBinding<T>(
+            field.FieldPath,
+            indexName,
+            indexStore,
+            field.ReadValue,
+            field.PayloadAccessor,
+            field.DataKind,
+            collation);
+    }
+
     internal static Func<T, object?> CreateFieldAccessor(string fieldPath)
     {
         fieldPath = NormalizeFieldPath(fieldPath);
@@ -198,6 +212,9 @@ internal sealed class CollectionIndexBinding<
     internal static CollectionIndexBinding<T> CreateTransient(string fieldPath, string? collation = null)
         => Create(fieldPath, "__collection_index_transient__", NoopIndexStore.Instance, collation);
 
+    internal static CollectionIndexBinding<T> CreateTransient(CollectionField<T> field, string? collation = null)
+        => Create(field, "__collection_index_transient__", NoopIndexStore.Instance, collation);
+
     internal bool TryBuildKeyFromDocument(T document, out long indexKey)
         => TryBuildKey(_fieldAccessor(document), out indexKey);
 
@@ -216,7 +233,7 @@ internal sealed class CollectionIndexBinding<
         }
 
         indexKey = 0;
-        if (_valueKind == CollectionIndexValueKind.Integer)
+        if (_valueKind == CollectionIndexDataKind.Integer)
         {
             if (!_payloadAccessor.TryReadInt64(payload, out long integerValue))
                 return false;
@@ -407,7 +424,7 @@ internal sealed class CollectionIndexBinding<
     {
         indexKey = 0;
 
-        if (_valueKind == CollectionIndexValueKind.Integer)
+        if (_valueKind == CollectionIndexDataKind.Integer)
         {
             if (dbValue.Type != DbType.Integer)
                 return false;
@@ -436,7 +453,7 @@ internal sealed class CollectionIndexBinding<
 
         for (int i = 0; i < values.Count; i++)
         {
-            if (values[i].Type == (_valueKind == CollectionIndexValueKind.Text ? DbType.Text : DbType.Integer))
+            if (values[i].Type == (_valueKind == CollectionIndexDataKind.Text ? DbType.Text : DbType.Integer))
             {
                 value = values[i];
                 return true;
@@ -630,7 +647,7 @@ internal sealed class CollectionIndexBinding<
                 $"Member '{member.Name}' cannot be used for collection indexing."),
         };
 
-    private static CollectionIndexValueKind ResolveValueKind(
+    private static CollectionIndexDataKind ResolveValueKind(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         Type memberType,
         string fieldPath,
@@ -649,13 +666,13 @@ internal sealed class CollectionIndexBinding<
         }
 
         if (effectiveType == typeof(string))
-            return CollectionIndexValueKind.Text;
+            return CollectionIndexDataKind.Text;
         if (effectiveType == typeof(Guid))
-            return CollectionIndexValueKind.Text;
+            return CollectionIndexDataKind.Text;
         if (effectiveType == typeof(DateOnly))
-            return CollectionIndexValueKind.Text;
+            return CollectionIndexDataKind.Text;
         if (effectiveType == typeof(TimeOnly))
-            return CollectionIndexValueKind.Text;
+            return CollectionIndexDataKind.Text;
 
         if (effectiveType.IsEnum)
             effectiveType = Enum.GetUnderlyingType(effectiveType);
@@ -669,15 +686,15 @@ internal sealed class CollectionIndexBinding<
             effectiveType == typeof(long) ||
             effectiveType == typeof(ulong))
         {
-            return CollectionIndexValueKind.Integer;
+            return CollectionIndexDataKind.Integer;
         }
 
         throw new NotSupportedException(
             $"Collection index field '{fieldPath}' on '{typeof(T).Name}' must be string, Guid, DateOnly, TimeOnly, or integer typed.");
     }
 
-    private static CollectionIndexValueKind ResolveJsonElementValueKind(string fieldPath, bool targetsArrayElements)
-        => CollectionIndexValueKind.Text;
+    private static CollectionIndexDataKind ResolveJsonElementValueKind(string fieldPath, bool targetsArrayElements)
+        => CollectionIndexDataKind.Text;
 
     private static bool TryGetCollectionElementType(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
@@ -931,10 +948,10 @@ internal sealed class CollectionIndexBinding<
         return true;
     }
 
-    private static string? ValidateCollationForValueKind(CollectionIndexValueKind valueKind, string? collation, string fieldPath)
+    private static string? ValidateCollationForValueKind(CollectionIndexDataKind valueKind, string? collation, string fieldPath)
     {
         string? normalized = CollationSupport.NormalizeMetadataName(collation);
-        if (valueKind != CollectionIndexValueKind.Text)
+        if (valueKind != CollectionIndexDataKind.Text)
         {
             if (normalized != null)
             {

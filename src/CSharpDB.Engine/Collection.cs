@@ -40,6 +40,7 @@ public sealed class Collection<
     private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
     private readonly CollectionDocumentCodec<T> _codec;
+    private readonly ICollectionModel<T>? _model;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
     private long _observedSchemaVersion;
 
@@ -58,6 +59,7 @@ public sealed class Collection<
         _catalog = catalog;
         _catalogTableName = catalogTableName;
         _tree = tree;
+        _model = CollectionModelRegistry.TryGet<T>(out var model) ? model : null;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
         _enterWriteScopeAsync = enterWriteScopeAsync ?? throw new ArgumentNullException(nameof(enterWriteScopeAsync));
@@ -376,6 +378,27 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Ensure a secondary index exists for a generated or manually supplied collection field descriptor.
+    /// </summary>
+    public ValueTask EnsureIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        CancellationToken ct = default)
+        => EnsureIndexAsync(field, collation: null, ct);
+
+    /// <summary>
+    /// Ensure a secondary index exists for a generated or manually supplied collection field descriptor.
+    /// Text fields may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
+    /// </summary>
+    public ValueTask EnsureIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        string? collation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        return EnsureIndexCoreAsync(field.FieldPath, collation, ct, field);
+    }
+
+    /// <summary>
     /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
     /// </summary>
     public ValueTask EnsureIndexAsync(
@@ -412,6 +435,20 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Find all documents matching a generated or manually supplied collection field descriptor.
+    /// Falls back to a full scan when the index does not exist.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        await foreach (var match in FindByFieldPathCoreAsync(field.FieldPath, value, ct, field))
+            yield return match;
+    }
+
+    /// <summary>
     /// Find all documents matching a path equality predicate, using a collection index when present.
     /// Supports paths such as <c>Address.City</c> or <c>$.address.city</c>.
     /// </summary>
@@ -427,6 +464,31 @@ public sealed class Collection<
             canonicalFieldPath,
             value,
             ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
+    /// Find all documents whose scalar generated field value falls within the supplied bounded range.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByRangeAsync<TField>(
+        CollectionField<T, TField> field,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            field.FieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct,
+            field))
         {
             yield return match;
         }
@@ -465,7 +527,7 @@ public sealed class Collection<
             if (!IsCollectionIndexSchema(schema, out string? fieldPath))
                 continue;
 
-            _indexes[fieldPath] = CollectionIndexBinding<T>.Create(
+            _indexes[fieldPath] = CreateBinding(
                 fieldPath,
                 schema.IndexName,
                 _catalog.GetIndexStore(schema.IndexName),
@@ -498,7 +560,7 @@ public sealed class Collection<
                 $"Index '{schema.IndexName}' is not a collection index for '{_catalogTableName}'.");
         }
 
-        var binding = CollectionIndexBinding<T>.Create(
+        var binding = CreateBinding(
             fieldPath,
             schema.IndexName,
             _catalog.GetIndexStore(schema.IndexName),
@@ -506,6 +568,32 @@ public sealed class Collection<
         _indexes[fieldPath] = binding;
         _observedSchemaVersion = _catalog.SchemaVersion;
         return binding;
+    }
+
+    private CollectionIndexBinding<T> CreateBinding(
+        string fieldPath,
+        string indexName,
+        IIndexStore indexStore,
+        string? collation = null)
+        => TryGetRegisteredField(fieldPath, out var field)
+            ? CollectionIndexBinding<T>.Create(field, indexName, indexStore, collation)
+            : CollectionIndexBinding<T>.Create(fieldPath, indexName, indexStore, collation);
+
+    private CollectionIndexBinding<T> CreateTransientBinding(string fieldPath)
+        => TryGetRegisteredField(fieldPath, out var field)
+            ? CollectionIndexBinding<T>.CreateTransient(field)
+            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+
+    private bool TryGetRegisteredField(string fieldPath, out CollectionField<T> field)
+    {
+        if (_model != null && _model.TryGetField(fieldPath, out var registeredField))
+        {
+            field = registeredField;
+            return true;
+        }
+
+        field = null!;
+        return false;
     }
 
     private string BuildCollectionIndexName(string fieldPath)
@@ -805,7 +893,11 @@ public sealed class Collection<
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
-    private async ValueTask EnsureIndexCoreAsync(string fieldPath, string? collation, CancellationToken ct)
+    private async ValueTask EnsureIndexCoreAsync(
+        string fieldPath,
+        string? collation,
+        CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
         string? normalizedCollation = CollationSupport.NormalizeMetadataName(collation);
@@ -848,7 +940,8 @@ public sealed class Collection<
             return;
         }
 
-        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
+        if (field is null && !TryGetRegisteredField(fieldPath, out field))
+            CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
 
         bool createdIndex = false;
         try
@@ -908,13 +1001,16 @@ public sealed class Collection<
     private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathCoreAsync<TField>(
         string fieldPath,
         TField value,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
 
         CollectionIndexBinding<T> binding = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding)
             ? attachedBinding
-            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+            : field is not null
+                ? CollectionIndexBinding<T>.CreateTransient(field)
+                : CreateTransientBinding(fieldPath);
         var comparer = EqualityComparer<TField>.Default;
 
         if (!TryGetOrAttachIndexBinding(fieldPath, out attachedBinding) ||
@@ -1007,14 +1103,17 @@ public sealed class Collection<
         TField upperBound,
         bool lowerInclusive,
         bool upperInclusive,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
 
         bool hasIndex = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding);
         CollectionIndexBinding<T> binding = hasIndex
             ? attachedBinding
-            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+            : field is not null
+                ? CollectionIndexBinding<T>.CreateTransient(field)
+                : CreateTransientBinding(fieldPath);
 
         if (binding.IsMultiValueArray)
         {

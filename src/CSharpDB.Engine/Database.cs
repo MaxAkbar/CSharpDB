@@ -779,6 +779,51 @@ public sealed class Database : IAsyncDisposable
         T>(
         string name,
         CancellationToken ct = default)
+        => await GetCollectionCoreAsync<T>(name, ct);
+
+    /// <summary>
+    /// Get or create a trim-safe typed collection with the given name.
+    /// The document type must have a generated or manually registered collection model.
+    /// </summary>
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2026",
+        Justification = "GetGeneratedCollectionAsync<T> verifies that a generated or manually supplied collection model is registered before delegating to the shared Collection<T> construction path.")]
+    [UnconditionalSuppressMessage(
+        "Aot",
+        "IL3050",
+        Justification = "GetGeneratedCollectionAsync<T> verifies that a generated or manually supplied collection model is registered before delegating to the shared Collection<T> construction path.")]
+    public async ValueTask<GeneratedCollection<T>> GetGeneratedCollectionAsync<T>(
+        string name,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (!CollectionModelRegistry.TryGet<T>(out _))
+        {
+            throw new InvalidOperationException(
+                $"No generated collection model is registered for document type '{typeof(T).FullName ?? typeof(T).Name}'. " +
+                "Annotate the type with [CollectionModel(typeof(YourJsonSerializerContext))] or register an ICollectionModel<T> before calling GetGeneratedCollectionAsync.");
+        }
+
+        return new GeneratedCollection<T>(await GetCollectionCoreAsync<T>(name, ct));
+    }
+
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2091",
+        Justification = "GetCollectionCoreAsync<T> is shared by the reflection-based and generated-model collection entry points. The generated-model entry point verifies that a generated or manually supplied collection model is registered before calling this method.")]
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2026",
+        Justification = "GetCollectionCoreAsync<T> is shared by the reflection-based and generated-model collection entry points. The generated-model entry point verifies that a generated or manually supplied collection model is registered before calling this method.")]
+    [UnconditionalSuppressMessage(
+        "Aot",
+        "IL3050",
+        Justification = "GetCollectionCoreAsync<T> is shared by the reflection-based and generated-model collection entry points. The generated-model entry point verifies that a generated or manually supplied collection model is registered before calling this method.")]
+    private async ValueTask<Collection<T>> GetCollectionCoreAsync<T>(
+        string name,
+        CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 

@@ -11,6 +11,7 @@
     <Project Path="src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj" />
     <Project Path="src/CSharpDB.Client/CSharpDB.Client.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
+    <Project Path="src/CSharpDB.Generators/CSharpDB.Generators.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
     <Project Path="src/CSharpDB.Storage/CSharpDB.Storage.csproj" />

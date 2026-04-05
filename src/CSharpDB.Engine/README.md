@@ -182,6 +182,38 @@ public sealed class User
 the collection does not exist yet, CSharpDB creates its backing storage
 automatically the first time you call it.
 
+### Generated Collection API
+
+For trim-safe typed collections, add the `CSharpDB.Generators` package and pair
+your document type with a `System.Text.Json` source-generated context:
+
+```csharp
+using System.Text.Json.Serialization;
+using CSharpDB.Engine;
+
+[CollectionModel(typeof(UserJsonContext))]
+public sealed partial record User(string Email, int Age);
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(User))]
+internal sealed partial class UserJsonContext : JsonSerializerContext;
+
+await using var db = await Database.OpenAsync("myapp.db");
+var users = await db.GetGeneratedCollectionAsync<User>("users");
+
+await users.PutAsync("alice", new User("alice@example.com", 30));
+await users.EnsureIndexAsync(User.Collection.Email);
+
+await foreach (var entry in users.FindByIndexAsync(User.Collection.Email, "alice@example.com"))
+{
+    Console.WriteLine(entry.Value.Email);
+}
+```
+
+`GetGeneratedCollectionAsync<T>(...)` requires a generated or manually
+registered collection model and exposes only the descriptor-based collection
+surface. That keeps the call path off the reflection-based collection APIs.
+
 ### Concurrent Readers
 
 ```csharp
@@ -236,6 +268,12 @@ The supported threading model for `Database` is:
 
 ```
 dotnet add package CSharpDB.Engine
+```
+
+For generated collection models:
+
+```
+dotnet add package CSharpDB.Generators
 ```
 
 For the recommended all-in-one package:
