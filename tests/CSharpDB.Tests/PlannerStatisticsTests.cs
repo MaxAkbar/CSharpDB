@@ -388,6 +388,25 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InnerJoinChain_LocalIsNullPredicate_IsFullyPushedDownIntoLeafPlan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupReorderableJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_small", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM planner_reorder_small s JOIN planner_reorder_mid m ON m.code = s.code JOIN planner_reorder_big b ON b.code = m.code WHERE b.nullable_tag IS NULL",
+            ct);
+
+        Assert.IsType<HashJoinOperator>(GetStoredOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(5, rows.Count);
+    }
+
+    [Fact]
     public async Task InnerJoinChain_ReordersUsingSelectiveTopLevelOrPredicate()
     {
         var ct = TestContext.Current.CancellationToken;

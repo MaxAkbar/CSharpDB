@@ -657,6 +657,33 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SelectProjection_UsesCoveredIndexOrder_WithLimit_UsesBatchSource()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE ordered_cover_limit (id INTEGER PRIMARY KEY, sort_key INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_ordered_cover_limit_sort_key ON ordered_cover_limit(sort_key)", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (1, 30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (2, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (3, 20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (4, 40, 'd')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, sort_key FROM ordered_cover_limit ORDER BY sort_key LIMIT 2") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var sourceOperator = Assert.IsType<IndexOrderedProjectionScanOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(sourceOperator);
+
+        var rows = await result.ToListAsync(ct);
+        var pairs = rows.Select(row => (Id: row[0].AsInteger, SortKey: row[1].AsInteger)).ToArray();
+        Assert.Equal([(2L, 10L), (3L, 20L)], pairs);
+    }
+
+    [Fact]
     public async Task SelectProjection_UsesCoveredIntegerRangeScan()
     {
         var ct = TestContext.Current.CancellationToken;

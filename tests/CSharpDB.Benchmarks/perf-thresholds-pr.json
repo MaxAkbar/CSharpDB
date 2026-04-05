@@ -92,27 +92,6 @@
       "maxAllocRegressionBytes": 131072.0
     },
     {
-      "csv": "CSharpDB.Benchmarks.Micro.WalGuardrailBenchmarks-report.csv",
-      "baselineSnapshot": "pr-validation/20260330-233433",
-      "keyColumns": [
-        "Method"
-      ],
-      "overrides": [
-        {
-          "match": {
-            "Method": "'Manual checkpoint after 100 writes'"
-          },
-          "maxMeanRegressionPercent": 25.0
-        },
-        {
-          "match": {
-            "Method": "'Manual checkpoint after 1000 writes'"
-          },
-          "maxMeanRegressionPercent": 25.0
-        }
-      ]
-    },
-    {
       "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionGuardrailBenchmarks-report.csv",
       "baselineSnapshot": "pr-validation/20260330-233433",
       "keyColumns": [

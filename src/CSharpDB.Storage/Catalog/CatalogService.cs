@@ -500,6 +500,8 @@ internal sealed class CatalogService
         }
 
         ReconcileLoadedStatisticsFreshness();
+        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
+            await PopulateImmediateTableStatisticsAsync(ct);
     }
 
     // ============ TABLE operations ============
@@ -1631,8 +1633,8 @@ internal sealed class CatalogService
         byte[] payload = SerializeTableStatistics(storedStats);
         long key = _schemaSerializer.TableNameToKey(storedStats.TableName);
 
-        try { await _tableStatsCatalogTree!.DeleteAsync(key, ct); } catch { }
-        await _tableStatsCatalogTree!.InsertAsync(key, payload, ct);
+        if (!await _tableStatsCatalogTree!.ReplaceAsync(key, payload, ct))
+            await _tableStatsCatalogTree.InsertAsync(key, payload, ct);
 
         CacheTableStatistics(storedStats, isExact, markDirty: false);
     }
@@ -2110,6 +2112,43 @@ internal sealed class CatalogService
                         markDirty: false);
                 }
             }
+        }
+    }
+
+    private async ValueTask PopulateImmediateTableStatisticsAsync(CancellationToken ct)
+    {
+        foreach (string existingTableName in _tableStatsCache.Keys.ToArray())
+        {
+            if (!_cache.ContainsKey(existingTableName))
+            {
+                _tableStatsCache.Remove(existingTableName);
+                _exactTableRowCounts.Remove(existingTableName);
+            }
+        }
+
+        foreach (string tableName in _cache.Keys)
+        {
+            if (_tableStatsCache.TryGetValue(tableName, out var existing))
+            {
+                CacheTableStatistics(existing, isExact: true, markDirty: false);
+                continue;
+            }
+
+            long rowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
+            bool hasStaleColumns =
+                _columnStatsByTableSnapshot.TryGetValue(tableName, out var columnStats) &&
+                columnStats.Any(static stats => stats.IsStale);
+
+            CacheTableStatistics(
+                new TableStatistics
+                {
+                    TableName = tableName,
+                    RowCount = rowCount,
+                    HasStaleColumns = hasStaleColumns,
+                    LastPersistedChangeCounter = _pager.ChangeCounter,
+                },
+                isExact: true,
+                markDirty: false);
         }
     }
 

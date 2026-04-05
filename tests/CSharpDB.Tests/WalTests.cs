@@ -7,6 +7,7 @@ using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Wal;
+using System.Reflection;
 
 namespace CSharpDB.Tests;
 
@@ -415,6 +416,32 @@ public class WalTests : IAsyncLifetime
         await using var afterReopen = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var reopenedRows = await afterReopen.ToListAsync(ct);
         Assert.Equal(2L, reopenedRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task BeginTransaction_AfterExplicitCommit_DoesNotFlushPendingImmediateTableStats()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'one')", ct);
+        await _db.CommitAsync(ct);
+
+        _db.ResetWalFlushDiagnostics();
+        _db.ResetCommitPathDiagnostics();
+
+        await _db.BeginTransactionAsync(ct);
+
+        WalFlushDiagnosticsSnapshot walDiagnostics = _db.GetWalFlushDiagnosticsSnapshot();
+        CommitPathDiagnosticsSnapshot commitDiagnostics = _db.GetCommitPathDiagnosticsSnapshot();
+
+        Assert.Equal(0, walDiagnostics.FlushCount);
+        Assert.Equal(0, walDiagnostics.FlushedCommitCount);
+        Assert.Equal(0, walDiagnostics.FlushedByteCount);
+        Assert.Equal(0, commitDiagnostics.BufferedFlushCount + commitDiagnostics.DurableFlushCount);
+
+        await _db.RollbackAsync(ct);
     }
 
     [Fact]
@@ -1187,6 +1214,63 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Checkpoint_DefaultOptions_PreserveOwnedPagesForPointLookups()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const int rowCount = 5_000;
+        const int probeCount = 512;
+
+        await _db.ExecuteAsync("CREATE TABLE cache_hot_t (id INTEGER PRIMARY KEY, value INTEGER, note TEXT)", ct);
+        await SeedPointLookupTableAsync(_db, "cache_hot_t", rowCount, ct);
+
+        BTree tree = GetTableTree(_db, "cache_hot_t");
+
+        await _db.CheckpointAsync(ct);
+
+        int cacheHits = CountLookupCacheHits(tree, rowCount, probeCount);
+        Assert.Equal(probeCount, cacheHits);
+    }
+
+    [Fact]
+    public async Task Checkpoint_PreserveOwnedPagesOptOut_ClearsPointLookupCache()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_cache_clear_{Guid.NewGuid():N}.db");
+        const int rowCount = 5_000;
+        const int probeCount = 512;
+
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions
+                {
+                    PreserveOwnedPagesOnCheckpoint = false,
+                },
+            },
+        };
+
+        try
+        {
+            await using var db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE cache_cold_t (id INTEGER PRIMARY KEY, value INTEGER, note TEXT)", ct);
+            await SeedPointLookupTableAsync(db, "cache_cold_t", rowCount, ct);
+
+            BTree tree = GetTableTree(db, "cache_cold_t");
+
+            await db.CheckpointAsync(ct);
+
+            int cacheHits = CountLookupCacheHits(tree, rowCount, probeCount);
+            Assert.Equal(0, cacheHits);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task FileWriteAheadLog_Checkpoint_RepairsStaleInRangeIndexOffsetsFromWalFile()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -1730,6 +1814,48 @@ public class WalTests : IAsyncLifetime
         public ValueTask DisposeAsync() => _inner.DisposeAsync();
 
         public void Dispose() => _inner.Dispose();
+    }
+
+    private static async ValueTask SeedPointLookupTableAsync(
+        Database db,
+        string tableName,
+        int rowCount,
+        CancellationToken ct)
+    {
+        const int batchSize = 500;
+        for (int i = 0; i < rowCount; i += batchSize)
+        {
+            await db.BeginTransactionAsync(ct);
+            int end = Math.Min(i + batchSize, rowCount);
+            for (int id = i; id < end; id++)
+                await db.ExecuteAsync($"INSERT INTO {tableName} VALUES ({id}, {id * 3}, 'row_{id}')", ct);
+            await db.CommitAsync(ct);
+        }
+    }
+
+    private static BTree GetTableTree(Database db, string tableName)
+    {
+        var catalogField = typeof(Database).GetField("_catalog", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Database catalog field not found.");
+        object catalog = catalogField.GetValue(db)
+            ?? throw new InvalidOperationException("Database catalog was null.");
+        var getTableTreeMethod = catalog.GetType().GetMethod("GetTableTree", [typeof(string)])
+            ?? throw new InvalidOperationException("SchemaCatalog.GetTableTree(string) not found.");
+        return (BTree)(getTableTreeMethod.Invoke(catalog, [tableName])
+            ?? throw new InvalidOperationException("SchemaCatalog.GetTableTree returned null."));
+    }
+
+    private static int CountLookupCacheHits(BTree tree, int rowCount, int probeCount)
+    {
+        var rng = new Random(7);
+        int hits = 0;
+        for (int i = 0; i < probeCount; i++)
+        {
+            if (tree.TryFindCachedMemory(rng.Next(0, rowCount), out _))
+                hits++;
+        }
+
+        return hits;
     }
 
     private sealed class TrackingWalFlushPolicy : IWalFlushPolicy
