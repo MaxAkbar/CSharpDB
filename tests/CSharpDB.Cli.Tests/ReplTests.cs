@@ -314,6 +314,35 @@ public sealed class ReplTests
         Assert.Equal(3, layout.WindowStart);
     }
 
+    [Theory]
+    [InlineData("> .view <NAME> - Show CREATE VIEW SQL", ".view <NAME>")]
+    [InlineData("> orders_by_day", "orders_by_day")]
+    [InlineData(".schema [TABLE|--all]", ".schema [TABLE|--all]")]
+    public void Repl_NormalizeMenuSearchText_RemovesPresentationNoise(string input, string expected)
+    {
+        string actual = Repl.NormalizeMenuSearchText(input);
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(".v", 0)]
+    [InlineData("tri", 2)]
+    [InlineData("help", 3)]
+    [InlineData("missing", 1)]
+    public void Repl_FindMenuMatchIndex_SelectsMatchingChoice(string searchText, int expectedIndex)
+    {
+        var choices = new[]
+        {
+            new Repl.MenuChoice<string>("> .view <NAME> - Show CREATE VIEW SQL", ".view target_view"),
+            new Repl.MenuChoice<string>("> .schema [TABLE|--all] - Show CREATE TABLE schema", ".schema"),
+            new Repl.MenuChoice<string>("> .trigger <NAME> - Show CREATE TRIGGER SQL", ".trigger target_trigger"),
+            new Repl.MenuChoice<string>("> .help - Show this help message", ".help"),
+        };
+
+        int actual = Repl.FindMenuMatchIndex(choices, searchText, currentIndex: 1);
+        Assert.Equal(expectedIndex, actual);
+    }
+
     [Fact]
     public async Task Repl_BackupCommand_WritesSnapshotAndManifest()
     {
