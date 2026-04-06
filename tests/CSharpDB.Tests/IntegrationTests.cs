@@ -4,6 +4,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Tests;
 
@@ -6635,6 +6636,7 @@ public class IntegrationTests : IAsyncLifetime
     public async Task Index_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
     {
         var ct = TestContext.Current.CancellationToken;
+        _db.PreferSyncPointLookups = false;
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep-1')", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'x', 'keep-2')", ct);
@@ -6660,6 +6662,7 @@ public class IntegrationTests : IAsyncLifetime
     public async Task UniqueIndex_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
     {
         var ct = TestContext.Current.CancellationToken;
+        _db.PreferSyncPointLookups = false;
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep')", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'y', 'skip')", ct);
@@ -6677,6 +6680,63 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(10L, rows[0][0].AsInteger);
         Assert.Equal("x", rows[0][1].AsText);
         Assert.Equal(1L, rows[0][2].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_UsesSyncLookupResultWhenWarm()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 'keep')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 'skip')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, a, b FROM t WHERE a = 10 AND b = 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+        {
+            var root = Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(warmup));
+            var indexStore = GetPrivateField<IIndexStore>(root, "_indexStore")
+                ?? throw new InvalidOperationException("Expected hashed projection lookup to expose its index store.");
+            long seekValue = GetPrivateField<long>(root, "_seekValue");
+            _ = await indexStore.FindAsync(seekValue, ct);
+        }
+
+        _db.PreferSyncPointLookups = true;
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesSyncLookupResult(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(10L, rows[0][1].AsInteger);
+        Assert.Equal(20L, rows[0][2].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_SyncLookup_RespectsOffset()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 'keep')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 'skip')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, a, b FROM t WHERE a = 10 AND b = 20 LIMIT 1 OFFSET 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+            _ = await warmup.ToListAsync(ct);
+
+        _db.PreferSyncPointLookups = true;
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesSyncLookupResult(result));
+        Assert.Empty(await result.ToListAsync(ct));
     }
 
     [Fact]

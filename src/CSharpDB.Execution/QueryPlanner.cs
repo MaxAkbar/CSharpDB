@@ -9159,6 +9159,19 @@ public sealed class QueryPlanner
         var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
         var serializer = GetReadSerializer(baseSchema);
 
+        if (!stmt.Columns.Any(c => c.IsStar) &&
+            TryBuildColumnProjection(stmt.Columns, schema, out var directProjectionColumnIndices, out var directOutputColumns) &&
+            TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+                simpleRef.TableName,
+                stmt,
+                schema,
+                directOutputColumns,
+                directProjectionColumnIndices,
+                out result))
+        {
+            return true;
+        }
+
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
             ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere)
             ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
@@ -9179,6 +9192,18 @@ public sealed class QueryPlanner
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (!ShouldIncludeSingleLookupRow(stmt))
+                {
+                    result = QueryResult.FromSyncLookup(null, op.OutputSchema);
+                    return true;
+                }
+
+                if (TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, op.OutputSchema, null, out result))
+                    return true;
+            }
+
             if (remainingWhere != null)
                 op = new FilterOperator(
                     op,
@@ -9190,6 +9215,18 @@ public sealed class QueryPlanner
 
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (!ShouldIncludeSingleLookupRow(stmt))
+                {
+                    result = QueryResult.FromSyncLookup(null, outputCols);
+                    return true;
+                }
+
+                if (TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, outputCols, columnIndices, out result))
+                    return true;
+            }
+
             if (remainingWhere == null &&
                 op is IndexOrderedScanOperator orderedScan &&
                 TryBuildCoveredOrderedIndexProjectionOperator(
@@ -9312,6 +9349,76 @@ public sealed class QueryPlanner
         return false;
     }
 
+    private bool TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+        string tableName,
+        SelectStatement stmt,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        int[] projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (!PreferSyncPointLookups || stmt.Where == null)
+            return false;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(stmt.Where, conjuncts);
+        if (!TryPickCompositeLookupCandidate(
+                conjuncts,
+                schema,
+                _catalog.GetSqlIndexesForTable(tableName),
+                out var compositeIndex,
+                out long lookupKey,
+                out var keyColumnIndices,
+                out var keyComponents) ||
+            keyColumnIndices == null ||
+            keyComponents == null)
+        {
+            return false;
+        }
+
+        Expression? remainingWhere = BuildResidualTermsExcludingLookupKeyTerms(
+            conjuncts,
+            schema,
+            keyColumnIndices,
+            keyComponents);
+        if (remainingWhere != null ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices, schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        if (!ShouldIncludeSingleLookupRow(stmt))
+        {
+            result = QueryResult.FromSyncLookup(null, outputSchema);
+            return true;
+        }
+
+        var expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+        if (!TryResolveSingleCachedIndexRowId(
+                _catalog.GetIndexStore(compositeIndex!.IndexName, _pager),
+                lookupKey,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload: false,
+                out bool foundRow,
+                out long rowId))
+        {
+            return false;
+        }
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices,
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
+    }
+
     private bool TryMaterializeSyncIndexedLookupResult(
         IOperator lookupOp,
         TableSchema schema,
@@ -9322,11 +9429,20 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups ||
-            !TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+        if (!PreferSyncPointLookups)
         {
             return false;
         }
+
+        if (projectionColumnIndices != null &&
+            lookupOp is IndexScanOperator indexScan &&
+            TryMaterializeSyncCoveredIndexProjection(indexScan, schema, outputSchema, projectionColumnIndices, out result))
+        {
+            return true;
+        }
+
+        if (!TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+            return false;
 
         if (projectionColumnIndices == null)
         {
@@ -9369,6 +9485,82 @@ public sealed class QueryPlanner
 
         result = QueryResult.FromSyncLookup(projectedRow, outputSchema);
         return true;
+    }
+
+    private static bool TryMaterializeSyncCoveredIndexProjection(
+        IndexScanOperator indexScan,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (indexScan.ExpectedKeyColumnIndices is not { Length: > 0 } keyColumnIndices ||
+            indexScan.ExpectedKeyComponents is not { Length: > 0 } keyComponents ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices.ToArray(), schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        if (!TryResolveSingleCachedIndexRowId(indexScan, out bool foundRow, out long rowId))
+            return false;
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices.ToArray(),
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
+    }
+
+    private static QueryResult CreateSyncCoveredIndexProjectionResult(
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        bool foundRow,
+        long rowId)
+    {
+        if (!foundRow)
+            return QueryResult.FromSyncLookup(null, outputSchema);
+
+        var row = projectionColumnIndices.Length == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[projectionColumnIndices.Length];
+        int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
+        DbValue rowIdValue = DbValue.FromInteger(rowId);
+
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyIndex)
+            {
+                row[i] = rowIdValue;
+                continue;
+            }
+
+            int keyComponentIndex = -1;
+            for (int j = 0; j < keyColumnIndices.Length; j++)
+            {
+                if (keyColumnIndices[j] == columnIndex)
+                {
+                    keyComponentIndex = j;
+                    break;
+                }
+            }
+
+            if (keyComponentIndex < 0)
+                return QueryResult.FromSyncLookup(null, outputSchema);
+
+            row[i] = keyComponents[keyComponentIndex];
+        }
+
+        return QueryResult.FromSyncLookup(row, outputSchema);
     }
 
     private static bool TryGetSingleCachedLookupRowPayload(IOperator lookupOp, out ReadOnlyMemory<byte>? rowPayload)
@@ -9429,29 +9621,55 @@ public sealed class QueryPlanner
         out bool foundRow,
         out long rowId)
     {
+        return TryResolveSingleCachedIndexRowId(
+            indexScan.IndexStore,
+            indexScan.SeekValue,
+            indexScan.ExpectedKeyComponents,
+            indexScan.ExpectedKeyTextBytes,
+            indexScan.UsesOrderedTextPayload,
+            out foundRow,
+            out rowId);
+    }
+
+    private static bool TryResolveSingleCachedIndexRowId(
+        IIndexStore indexStore,
+        long seekValue,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
+        out bool foundRow,
+        out long rowId)
+    {
         foundRow = false;
         rowId = 0;
 
-        if (indexScan.IndexStore is not ICacheAwareIndexStore cacheAware ||
-            !cacheAware.TryFindCached(indexScan.SeekValue, out var cachedIndexPayload))
+        if (indexStore is not ICacheAwareIndexStore cacheAware ||
+            !cacheAware.TryFindCached(seekValue, out var cachedIndexPayload))
         {
             return false;
         }
 
         if (cachedIndexPayload is { Length: > 0 } &&
-            indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents &&
+            keyComponents is { Length: > 0 } &&
             HashedIndexPayloadCodec.TryGetSingleMatchingRowId(
                 cachedIndexPayload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out foundRow,
                 out rowId))
         {
             return true;
         }
 
-        if (!TryGetCachedIndexRowIdPayload(indexScan, cachedIndexPayload, out var rowIdPayload))
+        if (!TryGetCachedIndexRowIdPayload(
+                cachedIndexPayload,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload,
+                out var rowIdPayload))
+        {
             return false;
+        }
 
         if (rowIdPayload.IsEmpty)
             return true;
@@ -9465,8 +9683,10 @@ public sealed class QueryPlanner
     }
 
     private static bool TryGetCachedIndexRowIdPayload(
-        IndexScanOperator indexScan,
         byte[]? payload,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
         out ReadOnlyMemory<byte> rowIdPayload)
     {
         rowIdPayload = ReadOnlyMemory<byte>.Empty;
@@ -9474,9 +9694,9 @@ public sealed class QueryPlanner
         if (payload is not { Length: > 0 })
             return true;
 
-        if (indexScan.UsesOrderedTextPayload)
+        if (usesOrderedTextPayload)
         {
-            if (indexScan.ExpectedKeyComponents is [var keyComponent] &&
+            if (keyComponents is [var keyComponent] &&
                 keyComponent.Type == DbType.Text &&
                 OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                     payload,
@@ -9490,12 +9710,12 @@ public sealed class QueryPlanner
             return false;
         }
 
-        if (indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents)
+        if (keyComponents is { Length: > 0 })
         {
             rowIdPayload = HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                 payload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out var hashedRowIds)
                 ? hashedRowIds
                 : ReadOnlyMemory<byte>.Empty;
@@ -9505,6 +9725,10 @@ public sealed class QueryPlanner
         rowIdPayload = payload;
         return true;
     }
+
+    private static bool ShouldIncludeSingleLookupRow(SelectStatement stmt)
+        => stmt.Offset.GetValueOrDefault() == 0 &&
+           (!stmt.Limit.HasValue || stmt.Limit.Value > 0);
 
     private static bool AreStrictlyAscendingUnique(ReadOnlySpan<int> values)
     {
