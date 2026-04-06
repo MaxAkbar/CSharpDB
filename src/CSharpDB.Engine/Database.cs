@@ -1069,12 +1069,14 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<PagerCommitResult> BeginCommitWithCatalogSyncAsync(CancellationToken ct)
     {
+        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
         return await _pager.BeginCommitAsync(ct);
     }
 
     private async ValueTask<PagerCommitResult> BeginCommitForTableWithCatalogSyncAsync(string tableName, CancellationToken ct)
     {
+        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistRootPageChangesAsync(tableName, ct);
         return await _pager.BeginCommitAsync(ct);
     }

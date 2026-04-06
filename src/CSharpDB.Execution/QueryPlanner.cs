@@ -9171,14 +9171,10 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
 
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
-                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
+            if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+                ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
         }
 
         if (stmt.Columns.Any(c => c.IsStar))
@@ -9564,7 +9560,7 @@ public sealed class QueryPlanner
                 if (remainingWhere != null &&
                     TryExtractPushdownPredicates(remainingWhere, schema, out var starExtractedPredicates, out var starResidualWhere))
                 {
-                    remainingWhere = starResidualWhere;
+                    remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
                     var compactStarOp = BuildCompactSelectStarScanOperator(
                         tableTree,
                         schema,
@@ -9618,7 +9614,7 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
         }
 
         if (!TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
@@ -9647,13 +9643,7 @@ public sealed class QueryPlanner
                 estimatedRowCount);
 
             if (pushedPredicates is { Count: > 0 })
-            {
-                for (int i = 0; i < pushedPredicates.Count; i++)
-                {
-                    var predicate = pushedPredicates[i];
-                    compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-                }
-            }
+                ApplyPushdownPredicates(compactOp, pushedPredicates);
 
             if (remainingWhere != null)
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
@@ -9681,13 +9671,7 @@ public sealed class QueryPlanner
             estimatedRowCount);
 
         if (pushedPredicates is { Count: > 0 })
-        {
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                compactExpressionOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-        }
+            ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
 
         if (remainingWhere != null)
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
@@ -9725,13 +9709,7 @@ public sealed class QueryPlanner
             estimatedRowCount);
 
         if (pushedPredicates is { Count: > 0 })
-        {
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-        }
+            ApplyPushdownPredicates(compactOp, pushedPredicates);
 
         if (remainingWhere != null)
         {
@@ -9745,6 +9723,60 @@ public sealed class QueryPlanner
         }
 
         return compactOp;
+    }
+
+    private void ApplyPushdownPredicates(
+        IPreDecodeFilterSupport preDecodeFilterTarget,
+        IReadOnlyList<PushdownPredicateSpec> predicates)
+    {
+        for (int i = 0; i < predicates.Count; i++)
+        {
+            var predicate = predicates[i];
+            if (predicate.Kind == PreDecodeFilterKind.Comparison)
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+            else
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(
+                    _recordSerializer,
+                    predicate.ColumnIndex,
+                    isNotNull: predicate.Kind == PreDecodeFilterKind.IsNotNull));
+            }
+        }
+    }
+
+    private static Expression? RetainPushdownNullResidual(
+        Expression originalWhere,
+        Expression? residualWhere,
+        TableSchema schema)
+    {
+        if (residualWhere != null)
+            return residualWhere;
+
+        if (originalWhere is IsNullExpression singleNull &&
+            TryGetPushdownNullCheck(singleNull, schema, out _))
+        {
+            return originalWhere;
+        }
+
+        if (originalWhere is not BinaryExpression { Op: BinaryOp.And })
+            return null;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(originalWhere, conjuncts);
+
+        var retainedNullTerms = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (conjuncts[i] is IsNullExpression isNull &&
+                TryGetPushdownNullCheck(isNull, schema, out _))
+            {
+                retainedNullTerms.Add(conjuncts[i]);
+            }
+        }
+
+        return CombineConjuncts(retainedNullTerms);
     }
 
     private static int[] CreateIdentityColumnIndices(int count)
@@ -10472,22 +10504,7 @@ public sealed class QueryPlanner
 
         if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
         {
-            for (int i = 0; i < predicates.Count; i++)
-            {
-                var predicate = predicates[i];
-                if (predicate.Kind == PreDecodeFilterKind.Comparison)
-                {
-                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-                }
-                else
-                {
-                    preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(
-                        _recordSerializer,
-                        predicate.ColumnIndex,
-                        isNotNull: predicate.Kind == PreDecodeFilterKind.IsNotNull));
-                }
-            }
-
+            ApplyPushdownPredicates(preDecodeFilterTarget, predicates);
             remaining = residual;
             return true;
         }
