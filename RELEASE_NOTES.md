@@ -1,31 +1,25 @@
 # What's New
 
-## v2.8.0
+## v2.8.1
 
-### Admin Forms Designer and Entry Runtime
+### Admin Query and View Responsiveness
 
-- Added an admin-only forms module with a visual form designer, runtime form entry, formula evaluation, validation inference, and JSON-backed form definitions.
-- Integrated Forms into `CSharpDB.Admin` with sidebar navigation, designer/runtime tabs, table actions, and shared admin theming.
-- Added database-backed form persistence through the internal `__forms` metadata table, including schema-signature tracking and active-database reload behavior.
-- Added runtime usability improvements including paged record navigation, go-to-record by primary key, column-based search, manual child-table mapping, and checkbox/radio coercion for text and numeric boolean representations.
-- Added a dedicated `CSharpDB.Admin.Forms.Tests` suite covering repository behavior, schema adaptation, generator/validation rules, runtime record services, serialization, and admin tab wiring.
+- Removed the blocking upfront `COUNT(*)` requirement for ad-hoc SQL and view browsing in `CSharpDB.Admin`, so first-page results can render immediately.
+- Added unknown-total paging state for query and view grids, including improved row-range status when the full result count is not yet known.
+- Added a forward-only direct query cursor for view paging so sequential next-page navigation can continue without re-running the full view query.
+- Improved filtered view behavior by pushing simple outer predicates into the underlying view source instead of evaluating them only after the expanded join/view result.
 
-### Admin Reports Designer, Preview, and Print
+### SQL Planner and Execution Improvements
 
-- Added an admin-only reports module with a banded report designer, preview/runtime rendering, grouping, sorting, totals, and report-only browser print/PDF output.
-- Integrated Reports into `CSharpDB.Admin` with sidebar/object-explorer navigation, report actions, and shared admin-shell wiring.
-- Added database-backed report persistence through `__reports` plus chunked `__report_definition_chunks` storage so larger layouts no longer depend on oversized single-row definitions.
-- Added report usability features including schema-signature drift warnings, auto-fit column layout, and support for table, view, and saved-query report sources.
-- Added a dedicated `CSharpDB.Admin.Reports.Tests` suite covering repository behavior, chunked-definition persistence, schema/source resolution, preview pagination/grouping, and layout helpers.
+- Added simple-view outer predicate rewrite and broader inner-join leaf predicate pushdown so selective filters can reach the correct base-table source earlier.
+- Extended these pushdown rules across qualifying inner-join chains instead of limiting the optimization to a fixed join count.
+- Normalized identity arithmetic join predicates such as `x + 0 = y` so they use normal join planning instead of falling back to slow nested-loop behavior.
+- Extended compact scan fast paths to cover simple projected `LIMIT/OFFSET` queries, including `SELECT *` single-table scans.
+- Extended fast indexed lookup paths so `LIMIT/OFFSET` is preserved on star, covered-projection, compact-payload, and generic projection indexed plans.
+- Tightened SQL parsing so `JOIN` syntax without the required `ON` clause is rejected as invalid instead of reaching execution.
 
-### Batch-First SQL Row Transport
+### Benchmark and Validation Updates
 
-- The SQL executor now uses an internal batch-first row transport foundation across batch-capable scans, joins, projections, filters, limits, and generic aggregate paths.
-- Shared batch predicate and projection kernels reduce per-row overhead, preserve direct batch storage deeper into execution plans, and lay the groundwork for future vectorized execution work.
-- Batch evaluation and expression-compiler coverage was expanded and hardened for compact-row shapes, numeric-expression predicates, and distinct aggregate fast paths.
-
-### Docs, Site, and Admin Updates
-
-- Added new design notes for compiled live queries and materialized join read models.
-- Added blog and news pages to the website and refreshed roadmap content to reflect the current shipped surface.
-- Refactored Admin navigation and title-bar plumbing, including a shared database client holder, improved modal input support, and the integrated Forms/Reports shell wiring.
+- Reduced benchmark baseline storage to a single focused validation snapshot and updated guardrail configuration to use that single baseline consistently.
+- Renamed stale benchmark labels and baseline rows so guardrail comparisons match the current benchmark surface after the join and scan fast-path changes.
+- Refreshed the benchmark validation pass and confirmed the current release guardrail comparison is clean: `PASS=184, WARN=0, SKIP=0, FAIL=0`.

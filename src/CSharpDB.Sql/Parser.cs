@@ -1927,11 +1927,16 @@ public sealed class Parser
             var joinType = ParseJoinType();
             var right = ParseSimpleTableRef();
             Expression? condition = null;
-            if (joinType != JoinType.Cross && Peek().Type == TokenType.On)
+
+            if (joinType != JoinType.Cross)
             {
+                if (Peek().Type != TokenType.On)
+                    throw Error("Expected ON clause after JOIN target.");
+
                 Advance();
                 condition = ParseExpression();
             }
+
             left = new JoinTableRef { Left = left, Right = right, JoinType = joinType, Condition = condition };
         }
 

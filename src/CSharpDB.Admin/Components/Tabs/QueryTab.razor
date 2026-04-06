@@ -514,7 +514,7 @@
     private string GetResultSummary()
     {
         if (_activeQuerySql is not null)
-            return $"{_queryResultsStatus.TotalRows} rows";
+            return FormatQueryResultSummary(_queryResultsStatus);
 
         if (_resultRows is null)
             return "0 rows";
@@ -532,6 +532,19 @@
         _queryResultsStatus = status;
         _elapsed = status.Elapsed;
         return InvokeAsync(StateHasChanged);
+    }
+
+    private static string FormatQueryResultSummary(QueryResultsStatus status)
+    {
+        if (status.HasExactTotal)
+            return $"{status.TotalRows} rows";
+
+        if (status.VisibleRows <= 0)
+            return "0 rows";
+
+        int firstRow = ((status.Page - 1) * status.PageSize) + 1;
+        int lastRow = firstRow + status.VisibleRows - 1;
+        return $"Rows {firstRow}-{lastRow}{(status.HasNextPage ? "+" : string.Empty)}";
     }
 
     private static bool TryPreparePagedQuery(string sql, out string normalizedSql)

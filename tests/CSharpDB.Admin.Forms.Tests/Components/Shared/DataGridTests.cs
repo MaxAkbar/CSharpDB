@@ -40,6 +40,63 @@ public sealed class DataGridTests
         Assert.Single(GetRows(component));
     }
 
+    [Fact]
+    public void QueryPagingWithoutExactTotal_ShowsRangeAndKeepsNextEnabled()
+    {
+        var component = new DataGrid();
+        SetField(component, "_page", 2);
+        SetField(component, "_pageSize", 25);
+        SetField(component, "_hasExactTotal", false);
+        SetField(component, "_hasNextPage", true);
+        SetField(component, "_rows", Enumerable.Range(0, 25)
+            .Select(i => new DataGridRow([i]))
+            .ToList());
+
+        string pageInfo = (string)InvokeNonPublic(component, "GetPageInfoText")!;
+        string rowCount = (string)InvokeNonPublic(component, "GetRowCountText")!;
+        bool canGoNext = (bool)InvokeNonPublic(component, "CanGoToNextPage")!;
+        bool canGoLast = (bool)InvokeNonPublic(component, "CanGoToLastPage")!;
+
+        Assert.Equal("Page 2", pageInfo);
+        Assert.Equal("Rows 26-50+", rowCount);
+        Assert.True(canGoNext);
+        Assert.False(canGoLast);
+    }
+
+    [Fact]
+    public void ApplyOverfetchedPageRows_WithExtraRow_KeepsTotalUnknown()
+    {
+        var component = new DataGrid();
+        SetField(component, "_page", 2);
+        SetField(component, "_pageSize", 25);
+
+        InvokeNonPublic(component, "ApplyOverfetchedPageRows", Enumerable.Range(0, 26)
+            .Select(i => new object?[] { i })
+            .ToList());
+
+        Assert.False(GetField<bool>(component, "_hasExactTotal"));
+        Assert.True(GetField<bool>(component, "_hasNextPage"));
+        Assert.Equal(51, GetField<int>(component, "_totalRows"));
+        Assert.Equal(25, GetAllRows(component).Count);
+    }
+
+    [Fact]
+    public void ApplyOverfetchedPageRows_OnLastPage_ComputesExactTotal()
+    {
+        var component = new DataGrid();
+        SetField(component, "_page", 2);
+        SetField(component, "_pageSize", 25);
+
+        InvokeNonPublic(component, "ApplyOverfetchedPageRows", Enumerable.Range(0, 7)
+            .Select(i => new object?[] { i })
+            .ToList());
+
+        Assert.True(GetField<bool>(component, "_hasExactTotal"));
+        Assert.False(GetField<bool>(component, "_hasNextPage"));
+        Assert.Equal(32, GetField<int>(component, "_totalRows"));
+        Assert.Equal(7, GetAllRows(component).Count);
+    }
+
     private static Dictionary<int, string> GetFilters(DataGrid component)
         => GetField<Dictionary<int, string>>(component, "_filters");
 

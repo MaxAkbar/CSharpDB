@@ -1202,7 +1202,10 @@ internal static class BatchPlanCompiler
 internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBatchPlan
 {
     private readonly BatchPredicateExpression? _predicate;
+    private readonly BatchPredicateTerm[]? _conjunctiveTerms;
     private readonly BatchProjectionTerm[] _projections;
+    private readonly int[]? _directProjectionColumns;
+    private readonly bool _isPassthroughProjection;
     private readonly BatchPushdownFilter[] _pushdownFilters;
 
     public SpecializedFilterProjectionBatchPlan(
@@ -1211,7 +1214,10 @@ internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBa
         BatchPushdownFilter[] pushdownFilters)
     {
         _predicate = predicate;
+        _conjunctiveTerms = TryFlattenConjunctiveTerms(predicate);
         _projections = projections ?? throw new ArgumentNullException(nameof(projections));
+        _directProjectionColumns = TryGetDirectProjectionColumns(_projections);
+        _isPassthroughProjection = IsPassthroughProjection(_directProjectionColumns, _projections.Length);
         _pushdownFilters = pushdownFilters ?? Array.Empty<BatchPushdownFilter>();
     }
 
@@ -1239,19 +1245,89 @@ internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBa
             if (!MatchesPredicates(row))
                 continue;
 
-            selection.Add(rowIndex);
             int destinationRowIndex = destination.Count;
             Span<DbValue> destinationRow = destination.GetWritableRowSpan(destinationRowIndex);
-            for (int projectionIndex = 0; projectionIndex < _projections.Length; projectionIndex++)
-                destinationRow[projectionIndex] = _projections[projectionIndex].Evaluate(row);
+            WriteProjectedRow(row, destinationRow);
             destination.CommitWrittenRow(destinationRowIndex);
         }
 
         return destination.Count;
     }
 
+    private void WriteProjectedRow(ReadOnlySpan<DbValue> sourceRow, Span<DbValue> destinationRow)
+    {
+        if (_isPassthroughProjection)
+        {
+            sourceRow.CopyTo(destinationRow);
+            return;
+        }
+
+        if (_directProjectionColumns is { Length: > 0 } directProjectionColumns)
+        {
+            for (int projectionIndex = 0; projectionIndex < directProjectionColumns.Length; projectionIndex++)
+                destinationRow[projectionIndex] = sourceRow[directProjectionColumns[projectionIndex]];
+            return;
+        }
+
+        for (int projectionIndex = 0; projectionIndex < _projections.Length; projectionIndex++)
+            destinationRow[projectionIndex] = _projections[projectionIndex].Evaluate(sourceRow);
+    }
+
     private bool MatchesPredicates(ReadOnlySpan<DbValue> row)
-        => _predicate == null || _predicate.Evaluate(row);
+    {
+        if (_conjunctiveTerms is { Length: > 0 } conjunctiveTerms)
+        {
+            for (int i = 0; i < conjunctiveTerms.Length; i++)
+            {
+                if (!conjunctiveTerms[i].Evaluate(row))
+                    return false;
+            }
+
+            return true;
+        }
+
+        return _predicate == null || _predicate.Evaluate(row);
+    }
+
+    private static BatchPredicateTerm[]? TryFlattenConjunctiveTerms(BatchPredicateExpression? predicate)
+    {
+        if (predicate == null)
+            return Array.Empty<BatchPredicateTerm>();
+
+        var terms = new List<BatchPredicateTerm>();
+        return predicate.TryCollectConjunctiveTerms(terms)
+            ? terms.ToArray()
+            : null;
+    }
+
+    private static int[]? TryGetDirectProjectionColumns(BatchProjectionTerm[] projections)
+    {
+        if (projections.Length == 0)
+            return Array.Empty<int>();
+
+        var directColumns = new int[projections.Length];
+        for (int i = 0; i < projections.Length; i++)
+        {
+            if (!projections[i].TryGetDirectColumnIndex(out directColumns[i]))
+                return null;
+        }
+
+        return directColumns;
+    }
+
+    private static bool IsPassthroughProjection(int[]? directProjectionColumns, int projectionCount)
+    {
+        if (directProjectionColumns == null || directProjectionColumns.Length != projectionCount)
+            return false;
+
+        for (int i = 0; i < directProjectionColumns.Length; i++)
+        {
+            if (directProjectionColumns[i] != i)
+                return false;
+        }
+
+        return true;
+    }
 }
 
 internal sealed class BatchPredicateExpression
@@ -1306,6 +1382,25 @@ internal sealed class BatchPredicateExpression
             BatchPredicateExpressionKind.Not => _left != null && !_left.Evaluate(row),
             _ => false,
         };
+    }
+
+    public bool TryCollectConjunctiveTerms(List<BatchPredicateTerm> terms)
+    {
+        ArgumentNullException.ThrowIfNull(terms);
+
+        switch (_kind)
+        {
+            case BatchPredicateExpressionKind.Leaf:
+                terms.Add(_term);
+                return true;
+            case BatchPredicateExpressionKind.And:
+                return _left != null &&
+                    _right != null &&
+                    _left.TryCollectConjunctiveTerms(terms) &&
+                    _right.TryCollectConjunctiveTerms(terms);
+            default:
+                return false;
+        }
     }
 
     public bool TryAppendPushdownFilters(List<BatchPushdownFilter> filters)
@@ -2236,6 +2331,18 @@ internal readonly struct BatchProjectionTerm
 
     public static BatchProjectionTerm CreateTextNumericExpression(BatchNumericExpression expression)
         => new(0, DbValue.Null, expression ?? throw new ArgumentNullException(nameof(expression)), BatchProjectionKind.TextNumericExpression);
+
+    public bool TryGetDirectColumnIndex(out int columnIndex)
+    {
+        if (_kind == BatchProjectionKind.Column)
+        {
+            columnIndex = _columnIndex;
+            return true;
+        }
+
+        columnIndex = -1;
+        return false;
+    }
 
     public DbValue Evaluate(ReadOnlySpan<DbValue> row)
     {

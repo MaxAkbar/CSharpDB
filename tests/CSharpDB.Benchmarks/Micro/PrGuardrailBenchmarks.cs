@@ -87,7 +87,7 @@ public class JoinGuardrailBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop)")]
+    [Benchmark(Description = "INNER JOIN 1Kx1K (identity arithmetic join)")]
     public async Task InnerJoin_1Kx1K_ForcedNestedLoop()
     {
         await using var result = await _bench.Db.ExecuteAsync(

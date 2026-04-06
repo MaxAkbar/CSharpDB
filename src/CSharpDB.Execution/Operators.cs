@@ -3069,7 +3069,7 @@ public sealed class DistinctOperator : IOperator, IBatchOperator, IBatchBufferRe
 /// <summary>
 /// Offset operator — skips the first N rows from the source.
 /// </summary>
-public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController
+public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IUnaryOperatorSource
 {
     private const int DefaultBatchSize = 64;
 
@@ -3083,6 +3083,7 @@ public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseC
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
     public DbValue[] Current => _source.Current;
+    IOperator IUnaryOperatorSource.Source => _source;
 
     public OffsetOperator(IOperator source, int offset)
     {
@@ -3212,7 +3213,7 @@ public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseC
 /// <summary>
 /// Limit operator — caps the number of output rows.
 /// </summary>
-public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider
+public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider, IUnaryOperatorSource
 {
     private const int DefaultBatchSize = 64;
     private const int SmallLimitRowModeThreshold = 4;
@@ -3228,6 +3229,7 @@ public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseCo
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
     public DbValue[] Current => _source.Current;
     public int? EstimatedRowCount => _limit >= 0 ? _limit : 0;
+    IOperator IUnaryOperatorSource.Source => _source;
 
     public LimitOperator(IOperator source, int limit)
     {

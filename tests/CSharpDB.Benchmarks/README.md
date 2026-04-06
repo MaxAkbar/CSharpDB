@@ -33,7 +33,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Item | Result |
 |------|--------|
 | Baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
-| PR baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` |
+| PR guardrail baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
 | Broad main sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260330-081102.csv` |
 | Direct transport sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260330-081709.csv` |
 | Hybrid storage sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260330-082134.csv` |
@@ -48,7 +48,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 High-level takeaways from the March 30 refresh:
 
 - The focused validation baseline now points to a single coherent March 30 snapshot built on `main`.
-- The PR lane now has its own checked-in March 30 snapshot under `baselines/pr-validation/20260330-233433`.
+- The checked-in March 30 baseline snapshot now also carries the PR guardrail CSVs.
 - The top-level SQL, collection, storage-mode, and master comparison tables below now use March 30 durable artifacts from the same run family.
 - The durable write guardrails now anchor on same-day `median-of-3` captures for `write-diagnostics`, `durable-sql-batching`, and `concurrent-write-diagnostics`.
 - The broad micro sweep in `BenchmarkDotNet.Artifacts/results` was also refreshed on March 30, 2026.
@@ -256,7 +256,7 @@ pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -Mode release
 Defaults:
 
 - Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
-- PR baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433`
+- PR guardrail baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
 - PR threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds-pr.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
@@ -266,7 +266,7 @@ Defaults:
 - `--release` reads `perf-thresholds.json` and runs the existing tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
 - `--micro` and `--all` keep the original full micro benchmark surface; they do not automatically add the PR guardrail duplicates unless you explicitly filter for `*GuardrailBenchmarks*`.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
-- The checked-in PR snapshot under `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` carries only the dedicated PR guardrail CSVs so PR validation stays lane-specific and fast.
+- The checked-in focused snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` now carries the dedicated PR guardrail CSVs as well, so both release and PR validation use the same baseline snapshot.
 - That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
 - Set `CSHARPDB_PERF_RUNNER_ID` on the canonical perf runner before capturing a baseline if you want strict regression failures to be limited to that designated machine.

@@ -348,9 +348,9 @@
         <div class="designer-section-header" @onclick="() => _resultsCollapsed = !_resultsCollapsed">
             <i class="bi @(_resultsCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
             <span>Results</span>
-            @if (_resultStatus.TotalRows > 0)
+            @if (ShouldShowResultBadge())
             {
-                <span class="designer-section-badge">@_resultStatus.TotalRows rows</span>
+                <span class="designer-section-badge">@GetResultBadgeText()</span>
             }
         </div>
         @if (!_resultsCollapsed)
@@ -837,5 +837,20 @@
     {
         _resultStatus = status;
         return InvokeAsync(StateHasChanged);
+    }
+
+    private bool ShouldShowResultBadge()
+        => _resultStatus.HasExactTotal
+            ? _resultStatus.TotalRows > 0
+            : _resultStatus.VisibleRows > 0;
+
+    private string GetResultBadgeText()
+    {
+        if (_resultStatus.HasExactTotal)
+            return $"{_resultStatus.TotalRows} rows";
+
+        int firstRow = ((_resultStatus.Page - 1) * _resultStatus.PageSize) + 1;
+        int lastRow = firstRow + _resultStatus.VisibleRows - 1;
+        return $"Rows {firstRow}-{lastRow}{(_resultStatus.HasNextPage ? "+" : string.Empty)}";
     }
 }
