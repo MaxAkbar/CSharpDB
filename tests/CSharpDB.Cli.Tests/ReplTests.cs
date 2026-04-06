@@ -257,6 +257,64 @@ public sealed class ReplTests
     }
 
     [Fact]
+    public async Task Repl_DotCommandPalette_ShowsHelpWhenInputIsRedirected()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempFilePath(".db");
+
+        try
+        {
+            string input = string.Join(Environment.NewLine, new[]
+            {
+                ".",
+                ".quit",
+                "",
+            });
+
+            string output = await RunReplAsync(dbPath, input, ct);
+            string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
+
+            Assert.Contains("Available Commands", plainOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(".tables", plainOutput, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public void Repl_MenuLayout_ClampsTopWithinConsoleBuffer()
+    {
+        Repl.MenuLayout layout = Repl.CalculateMenuLayout(
+            requestedTop: 37,
+            selectedIndex: 0,
+            itemCount: 12,
+            bufferHeight: 40);
+
+        Assert.Equal(25, layout.Top);
+        Assert.Equal(15, layout.LineCount);
+        Assert.Equal(12, layout.VisibleItemCount);
+        Assert.Equal(0, layout.WindowStart);
+    }
+
+    [Fact]
+    public void Repl_MenuLayout_ScrollsVisibleWindowWhenMenuExceedsBuffer()
+    {
+        Repl.MenuLayout layout = Repl.CalculateMenuLayout(
+            requestedTop: 20,
+            selectedIndex: 7,
+            itemCount: 12,
+            bufferHeight: 8);
+
+        Assert.Equal(0, layout.Top);
+        Assert.Equal(8, layout.LineCount);
+        Assert.Equal(5, layout.VisibleItemCount);
+        Assert.Equal(3, layout.WindowStart);
+    }
+
+    [Fact]
     public async Task Repl_BackupCommand_WritesSnapshotAndManifest()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using Spectre.Console;
 
 namespace CSharpDB.Cli;
 
@@ -312,27 +313,42 @@ internal static class MaintenanceCommandRunner
 
     private static void WriteMaintenanceReportSummary(DatabaseMaintenanceReport report, TextWriter output)
     {
-        output.WriteLine($"Database: {report.DatabasePath}");
-        output.WriteLine($"File bytes: {report.SpaceUsage.DatabaseFileBytes}");
-        output.WriteLine($"WAL bytes: {report.SpaceUsage.WalFileBytes}");
-        output.WriteLine($"Page size: {report.SpaceUsage.PageSizeBytes}");
-        output.WriteLine($"Pages: physical={report.SpaceUsage.PhysicalPageCount}, declared={report.SpaceUsage.DeclaredPageCount}, freelist={report.SpaceUsage.FreelistPageCount}");
-        output.WriteLine($"Fragmentation: btreeFree={report.Fragmentation.BTreeFreeBytes}, pagesWithFreeSpace={report.Fragmentation.PagesWithFreeSpace}, tailFreelist={report.Fragmentation.TailFreelistPageCount}");
+        var console = CliConsole.Create(output);
+        var table = CliConsole.CreateKeyValueTable();
+        table.AddColumn(new TableColumn(string.Empty));
+        table.AddColumn(new TableColumn(string.Empty));
+        table.AddRow(new Markup("[bold]Database:[/]"), new Markup(CliConsole.Escape(report.DatabasePath)));
+        table.AddRow(new Markup("[bold]File bytes:[/]"), new Markup(CliConsole.Escape(report.SpaceUsage.DatabaseFileBytes.ToString())));
+        table.AddRow(new Markup("[bold]WAL bytes:[/]"), new Markup(CliConsole.Escape(report.SpaceUsage.WalFileBytes.ToString())));
+        table.AddRow(new Markup("[bold]Page size:[/]"), new Markup(CliConsole.Escape(report.SpaceUsage.PageSizeBytes.ToString())));
+        table.AddRow(
+            new Markup("[bold]Pages:[/]"),
+            new Markup(CliConsole.Escape($"physical={report.SpaceUsage.PhysicalPageCount}, declared={report.SpaceUsage.DeclaredPageCount}, freelist={report.SpaceUsage.FreelistPageCount}")));
+        table.AddRow(
+            new Markup("[bold]Fragmentation:[/]"),
+            new Markup(CliConsole.Escape($"btreeFree={report.Fragmentation.BTreeFreeBytes}, pagesWithFreeSpace={report.Fragmentation.PagesWithFreeSpace}, tailFreelist={report.Fragmentation.TailFreelistPageCount}")));
+        console.Write(table);
     }
 
     private static void WriteReindexSummary(ReindexResult result, TextWriter output)
     {
+        var console = CliConsole.Create(output);
         string target = result.Scope == ReindexScope.All || string.IsNullOrWhiteSpace(result.Name)
             ? result.Scope.ToString().ToLowerInvariant()
             : $"{result.Scope.ToString().ToLowerInvariant()}:{result.Name}";
-        output.WriteLine($"Reindexed {result.RebuiltIndexCount} index(es) for {target}.");
+        CliConsole.WriteSuccess(console, $"Reindexed {result.RebuiltIndexCount} index(es) for {target}.");
         if (result.RecoveredCorruptIndexCount > 0)
-            output.WriteLine($"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run vacuum to reclaim orphaned pages.");
+            CliConsole.WriteWarning(console, $"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run vacuum to reclaim orphaned pages.");
     }
 
     private static void WriteVacuumSummary(VacuumResult result, TextWriter output)
     {
-        output.WriteLine($"Database bytes: {result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter}");
-        output.WriteLine($"Physical pages: {result.PhysicalPageCountBefore} -> {result.PhysicalPageCountAfter}");
+        var console = CliConsole.Create(output);
+        var table = CliConsole.CreateKeyValueTable();
+        table.AddColumn(new TableColumn(string.Empty));
+        table.AddColumn(new TableColumn(string.Empty));
+        table.AddRow(new Markup("[bold]Database bytes:[/]"), new Markup(CliConsole.Escape($"{result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter}")));
+        table.AddRow(new Markup("[bold]Physical pages:[/]"), new Markup(CliConsole.Escape($"{result.PhysicalPageCountBefore} -> {result.PhysicalPageCountAfter}")));
+        console.Write(table);
     }
 }

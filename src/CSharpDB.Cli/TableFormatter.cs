@@ -1,163 +1,95 @@
 using System.Globalization;
 using System.Text.Json;
 using CSharpDB.Primitives;
+using Spectre.Console;
+using Spectre.Console.Rendering;
 
 namespace CSharpDB.Cli;
 
 /// <summary>
-/// Formats query results as a Unicode box-drawing table with ANSI colors.
+/// Formats query results using Spectre.Console tables.
 /// </summary>
 internal sealed class TableFormatter
 {
-    private readonly TextWriter _out;
+    private const int MaxCellWidth = 60;
+    private readonly IAnsiConsole _console;
 
-    public TableFormatter(TextWriter output)
+    public TableFormatter(IAnsiConsole console)
     {
-        _out = output;
+        _console = console;
     }
 
     public void PrintTable(ColumnDefinition[] schema, List<DbValue[]> rows)
     {
-        int colCount = schema.Length;
-        if (colCount == 0) return;
+        if (schema.Length == 0)
+            return;
 
-        // Calculate column widths (max of header name and all cell values).
-        var widths = new int[colCount];
-        for (int c = 0; c < colCount; c++)
-            widths[c] = schema[c].Name.Length;
+        var table = CliConsole.CreateDataTable();
+        foreach (var column in schema)
+            table.AddColumn(new TableColumn($"[bold]{CliConsole.Escape(column.Name)}[/]"));
 
         foreach (var row in rows)
         {
-            for (int c = 0; c < colCount; c++)
+            var cells = new IRenderable[schema.Length];
+            for (int i = 0; i < schema.Length; i++)
             {
-                int len = FormatValue(row[c]).Length;
-                if (len > widths[c]) widths[c] = len;
+                DbValue value = row[i];
+                string text = Truncate(FormatValue(value));
+                string? style = GetValueStyle(value);
+                cells[i] = CreateCell(text, style, value.Type is DbType.Integer or DbType.Real);
             }
+
+            table.AddRow(cells);
         }
 
-        // Cap column widths to a reasonable maximum.
-        const int maxWidth = 40;
-        for (int c = 0; c < colCount; c++)
-            widths[c] = Math.Min(widths[c], maxWidth);
-
-        string border = Ansi.Dim + Ansi.BrightBlack;
-
-        // Top border: ┌────┬────┐
-        PrintBorderLine(widths, border, '┌', '┬', '┐');
-
-        // Header row
-        _out.Write(border + "│" + Ansi.Reset);
-        for (int c = 0; c < colCount; c++)
-        {
-            string header = schema[c].Name.PadRight(widths[c]);
-            _out.Write(" " + Ansi.Bold + Ansi.White + header + Ansi.Reset + " ");
-            _out.Write(border + "│" + Ansi.Reset);
-        }
-        _out.WriteLine();
-
-        // Header separator: ├────┼────┤
-        PrintBorderLine(widths, border, '├', '┼', '┤');
-
-        // Data rows
-        foreach (var row in rows)
-        {
-            _out.Write(border + "│" + Ansi.Reset);
-            for (int c = 0; c < colCount; c++)
-            {
-                string text = FormatValue(row[c]);
-                if (text.Length > widths[c])
-                    text = text[..(widths[c] - 1)] + "…";
-
-                string padded = row[c].Type is DbType.Integer or DbType.Real
-                    ? text.PadLeft(widths[c])
-                    : text.PadRight(widths[c]);
-
-                string color = GetValueColor(row[c]);
-                _out.Write(" " + color + padded + Ansi.Reset + " ");
-                _out.Write(border + "│" + Ansi.Reset);
-            }
-            _out.WriteLine();
-        }
-
-        // Bottom border: └────┴────┘
-        PrintBorderLine(widths, border, '└', '┴', '┘');
+        _console.Write(table);
     }
 
     public void PrintTable(string[] columnNames, List<object?[]> rows)
     {
-        int colCount = columnNames.Length;
-        if (colCount == 0) return;
+        if (columnNames.Length == 0)
+            return;
 
-        var widths = new int[colCount];
-        for (int c = 0; c < colCount; c++)
-            widths[c] = columnNames[c].Length;
-
-        foreach (var row in rows)
-        {
-            for (int c = 0; c < colCount && c < row.Length; c++)
-            {
-                int len = FormatObjectValue(row[c]).Length;
-                if (len > widths[c]) widths[c] = len;
-            }
-        }
-
-        const int maxWidth = 40;
-        for (int c = 0; c < colCount; c++)
-            widths[c] = Math.Min(widths[c], maxWidth);
-
-        string border = Ansi.Dim + Ansi.BrightBlack;
-
-        PrintBorderLine(widths, border, '┌', '┬', '┐');
-
-        _out.Write(border + "│" + Ansi.Reset);
-        for (int c = 0; c < colCount; c++)
-        {
-            string header = columnNames[c].PadRight(widths[c]);
-            _out.Write(" " + Ansi.Bold + Ansi.White + header + Ansi.Reset + " ");
-            _out.Write(border + "│" + Ansi.Reset);
-        }
-        _out.WriteLine();
-
-        PrintBorderLine(widths, border, '├', '┼', '┤');
+        var table = CliConsole.CreateDataTable();
+        foreach (string columnName in columnNames)
+            table.AddColumn(new TableColumn($"[bold]{CliConsole.Escape(columnName)}[/]"));
 
         foreach (var row in rows)
         {
-            _out.Write(border + "│" + Ansi.Reset);
-            for (int c = 0; c < colCount; c++)
+            var cells = new IRenderable[columnNames.Length];
+            for (int i = 0; i < columnNames.Length; i++)
             {
-                object? value = c < row.Length ? row[c] : null;
-                string text = FormatObjectValue(value);
-                if (text.Length > widths[c])
-                    text = text[..(widths[c] - 1)] + "…";
-
-                string padded = IsNumericValue(value)
-                    ? text.PadLeft(widths[c])
-                    : text.PadRight(widths[c]);
-
-                string color = GetValueColor(value);
-                _out.Write(" " + color + padded + Ansi.Reset + " ");
-                _out.Write(border + "│" + Ansi.Reset);
+                object? value = i < row.Length ? row[i] : null;
+                string text = Truncate(FormatObjectValue(value));
+                string? style = GetValueStyle(value);
+                cells[i] = CreateCell(text, style, IsNumericValue(value));
             }
-            _out.WriteLine();
+
+            table.AddRow(cells);
         }
 
-        PrintBorderLine(widths, border, '└', '┴', '┘');
+        _console.Write(table);
     }
 
-    private void PrintBorderLine(int[] widths, string border, char left, char mid, char right)
+    private static IRenderable CreateCell(string text, string? style, bool rightAligned)
     {
-        _out.Write(border);
-        _out.Write(left);
-        for (int c = 0; c < widths.Length; c++)
-        {
-            _out.Write(new string('─', widths[c] + 2));
-            _out.Write(c < widths.Length - 1 ? mid : right);
-        }
-        _out.Write(Ansi.Reset);
-        _out.WriteLine();
+        string markup = string.IsNullOrWhiteSpace(style)
+            ? CliConsole.Escape(text)
+            : $"[{style}]{CliConsole.Escape(text)}[/]";
+        IRenderable cell = new Markup(markup);
+        return rightAligned ? Align.Right(cell) : cell;
+    }
+
+    private static string Truncate(string text)
+    {
+        if (text.Length <= MaxCellWidth)
+            return text;
+
+        return text[..(MaxCellWidth - 1)] + "…";
     }
 
     private static string FormatValue(DbValue value) => value.ToString();
+
     private static string FormatObjectValue(object? value) => value switch
     {
         null => "NULL",
@@ -169,29 +101,29 @@ internal sealed class TableFormatter
         _ => value.ToString() ?? string.Empty,
     };
 
-    private static string GetValueColor(DbValue value) => value.Type switch
+    private static string? GetValueStyle(DbValue value) => value.Type switch
     {
-        DbType.Null => Ansi.Dim + Ansi.Italic,
-        DbType.Integer or DbType.Real => Ansi.Yellow,
-        DbType.Text => Ansi.Green,
-        DbType.Blob => Ansi.Magenta,
-        _ => "",
+        DbType.Null => "italic grey",
+        DbType.Integer or DbType.Real => "yellow",
+        DbType.Text => "green",
+        DbType.Blob => "orchid",
+        _ => null,
     };
 
-    private static string GetValueColor(object? value) => value switch
+    private static string? GetValueStyle(object? value) => value switch
     {
-        null => Ansi.Dim + Ansi.Italic,
-        byte[] => Ansi.Magenta,
-        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal => Ansi.Yellow,
-        string => Ansi.Green,
+        null => "italic grey",
+        byte[] => "orchid",
+        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal => "yellow",
+        string => "green",
         JsonElement element => element.ValueKind switch
         {
-            JsonValueKind.Null or JsonValueKind.Undefined => Ansi.Dim + Ansi.Italic,
-            JsonValueKind.Number => Ansi.Yellow,
-            JsonValueKind.String => Ansi.Green,
-            _ => "",
+            JsonValueKind.Null or JsonValueKind.Undefined => "italic grey",
+            JsonValueKind.Number => "yellow",
+            JsonValueKind.String => "green",
+            _ => null,
         },
-        _ => "",
+        _ => null,
     };
 
     private static bool IsNumericValue(object? value) => value switch

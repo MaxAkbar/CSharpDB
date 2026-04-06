@@ -1,25 +1,21 @@
 # What's New
 
-## v2.8.1
+## v2.9.0
 
-### Admin Query and View Responsiveness
+### Richer CLI Console Experience
 
-- Removed the blocking upfront `COUNT(*)` requirement for ad-hoc SQL and view browsing in `CSharpDB.Admin`, so first-page results can render immediately.
-- Added unknown-total paging state for query and view grids, including improved row-range status when the full result count is not yet known.
-- Added a forward-only direct query cursor for view paging so sequential next-page navigation can continue without re-running the full view query.
-- Improved filtered view behavior by pushing simple outer predicates into the underlying view source instead of evaluating them only after the expanded join/view result.
+- Migrated `CSharpDB.Cli` from the handwritten ANSI output layer to `Spectre.Console` so the shell, help text, query tables, schema panels, and status messages render with a more consistent console UI.
+- Added a shared `CliConsole` helper with the new ASCII startup banner, left-anchored branding, richer prompt/status rendering, and reusable table/panel helpers for CLI commands.
+- Upgraded inspector and maintenance summaries to structured console tables so database, page, WAL, index, vacuum, and reindex output is easier to scan in a terminal session.
 
-### SQL Planner and Execution Improvements
+### Interactive Dot-Command Menu
 
-- Added simple-view outer predicate rewrite and broader inner-join leaf predicate pushdown so selective filters can reach the correct base-table source earlier.
-- Extended these pushdown rules across qualifying inner-join chains instead of limiting the optimization to a fixed join count.
-- Normalized identity arithmetic join predicates such as `x + 0 = y` so they use normal join planning instead of falling back to slow nested-loop behavior.
-- Extended compact scan fast paths to cover simple projected `LIMIT/OFFSET` queries, including `SELECT *` single-table scans.
-- Extended fast indexed lookup paths so `LIMIT/OFFSET` is preserved on star, covered-projection, compact-payload, and generic projection indexed plans.
-- Tightened SQL parsing so `JOIN` syntax without the required `ON` clause is rejected as invalid instead of reaching execution.
+- Added an interactive dot-command menu at the `csdb>` prompt. Pressing `.` as the first character at a fresh prompt now opens a keyboard-driven menu of supported dot commands.
+- Added arrow-key navigation with `Up` and `Down`, `Enter` to run the selected command, and `Esc` to cancel and return to the prompt.
+- Preserved scripted and redirected-input behavior by falling back to normal dot-command handling when the shell is not running in an interactive console.
 
-### Benchmark and Validation Updates
+### Reliability and Test Coverage
 
-- Reduced benchmark baseline storage to a single focused validation snapshot and updated guardrail configuration to use that single baseline consistently.
-- Renamed stale benchmark labels and baseline rows so guardrail comparisons match the current benchmark surface after the join and scan fast-path changes.
-- Refreshed the benchmark validation pass and confirmed the current release guardrail comparison is clean: `PASS=184, WARN=0, SKIP=0, FAIL=0`.
+- Hardened the dot-command menu renderer so it clamps itself to the visible console buffer and scrolls the visible command window instead of crashing near the bottom of the terminal.
+- Added CLI coverage for redirected `.` handling and the menu layout edge cases around small or nearly full console buffers.
+- Validated the current workspace with `dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj`, `dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj`, and `dotnet test CSharpDB.slnx`.
