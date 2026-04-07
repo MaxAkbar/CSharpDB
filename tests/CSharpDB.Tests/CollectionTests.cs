@@ -257,6 +257,48 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExplicitTransaction_CountReflectsPendingWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        await users.PutAsync("u:1", new User("Alice", 30, "a@b.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 25, "b@b.com"), ct);
+
+        Assert.Equal(2, await users.CountAsync(ct));
+
+        await _db.RollbackAsync(ct);
+
+        Assert.Equal(0, await users.CountAsync(ct));
+    }
+
+    [Fact]
+    public async Task ExplicitTransaction_SqlCountReflectsPendingCollectionWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        await users.PutAsync("u:1", new User("Alice", 30, "a@b.com"), ct);
+        await users.PutAsync("u:2", new User("Bob", 25, "b@b.com"), ct);
+
+        await using (var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM _col_users", ct))
+        {
+            var rows = await result.ToListAsync(ct);
+            Assert.Single(rows);
+            Assert.Equal(2, rows[0][0].AsInteger);
+        }
+
+        await users.PutAsync("u:3", new User("Charlie", 35, "c@b.com"), ct);
+        Assert.Equal(3, await users.CountAsync(ct));
+
+        await _db.CommitAsync(ct);
+
+        Assert.Equal(3, await users.CountAsync(ct));
+    }
+
+    [Fact]
     public async Task ExplicitTransaction_Rollback()
     {
         var users = await _db.GetCollectionAsync<User>("users", TestContext.Current.CancellationToken);

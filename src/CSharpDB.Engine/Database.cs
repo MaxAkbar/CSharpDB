@@ -25,6 +25,7 @@ public sealed class Database : IAsyncDisposable
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private long _observedSchemaVersion;
     private bool _inTransaction;
@@ -245,21 +246,22 @@ public sealed class Database : IAsyncDisposable
     /// <summary>
     /// Execute a SQL statement. Returns a QueryResult with rows (for SELECT) or affected count (for DML/DDL).
     /// </summary>
-    public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
+    public async ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
         InvalidateCachesIfSchemaChanged();
+        await FlushPendingCollectionCatalogMutationsBeforeSqlAsync(ct);
 
         if (LooksLikeInsert(sql) && Parser.TryParseSimpleInsert(sql, out var simpleInsert))
-            return ExecuteSimpleInsertAsync(simpleInsert, ct);
+            return await ExecuteSimpleInsertAsync(simpleInsert, ct);
 
         if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var simpleLookup))
-            return ExecuteSimplePrimaryKeyLookupAsync(simpleLookup, ct);
+            return await ExecuteSimplePrimaryKeyLookupAsync(simpleLookup, ct);
 
         if (_statementCache.TryGetOrMarkBypass(sql, out var cachedStmt, out _))
-            return ExecuteStatementAsync(cachedStmt, ct);
+            return await ExecuteStatementAsync(cachedStmt, ct);
 
         var stmt = ParseCached(sql);
-        return ExecuteStatementAsync(stmt, ct);
+        return await ExecuteStatementAsync(stmt, ct);
     }
 
     private async ValueTask<QueryResult> ExecuteSimplePrimaryKeyLookupAsync(
@@ -305,11 +307,17 @@ public sealed class Database : IAsyncDisposable
     /// Execute a pre-parsed SQL statement. Used by prepared command paths
     /// to bypass SQL text parsing on repeated executions.
     /// </summary>
-    public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
-        => ExecuteStatementAsync(statement, ct);
+    public async ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+    {
+        await FlushPendingCollectionCatalogMutationsBeforeSqlAsync(ct);
+        return await ExecuteStatementAsync(statement, ct);
+    }
 
-    internal ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken ct = default)
-        => ExecuteSimpleInsertAsync(insert, ct);
+    internal async ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken ct = default)
+    {
+        await FlushPendingCollectionCatalogMutationsBeforeSqlAsync(ct);
+        return await ExecuteSimpleInsertAsync(insert, ct);
+    }
 
     /// <summary>
     /// Prepare a reusable full-row insert batch for a single table.
@@ -459,11 +467,12 @@ public sealed class Database : IAsyncDisposable
         PagerCommitResult commit;
         try
         {
-            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
+            await FlushPendingCollectionCatalogMutationsAsync(ct);
             commit = await BeginCommitWithCatalogSyncAsync(ct);
         }
         catch
         {
+            ClearPendingCollectionCatalogMutations();
             await RecoverCatalogStateAfterFailedCommitAsync();
             _inTransaction = false;
             ReleaseExplicitTransactionWriteGate();
@@ -497,6 +506,7 @@ public sealed class Database : IAsyncDisposable
         }
         finally
         {
+            ClearPendingCollectionCatalogMutations();
             _inTransaction = false;
             ReleaseExplicitTransactionWriteGate();
         }
@@ -901,6 +911,8 @@ public sealed class Database : IAsyncDisposable
                 tree,
                 _recordSerializer,
                 () => _inTransaction,
+                RecordPendingCollectionCatalogMutation,
+                GetPendingCollectionRowCountAsync,
                 AcquireWriteOperationScopeAsync,
                 BeginCommitForTableWithCatalogSyncAsync,
                 ct => PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct),
@@ -1044,6 +1056,33 @@ public sealed class Database : IAsyncDisposable
             : $"{CollectionPrefix}{collectionName}";
     }
 
+    private void RecordPendingCollectionCatalogMutation(
+        string tableName,
+        BTree tree,
+        long rowCountDelta,
+        bool requiresExactRowCountSync,
+        bool hasDocumentMutation)
+    {
+        if (!_inTransaction)
+            return;
+
+        if (!_pendingCollectionCatalogMutations.TryGetValue(tableName, out var pending))
+        {
+            pending = new PendingCollectionCatalogMutation(tree);
+            _pendingCollectionCatalogMutations[tableName] = pending;
+        }
+
+        pending.Record(tree, rowCountDelta, requiresExactRowCountSync, hasDocumentMutation);
+    }
+
+    private async ValueTask<long?> GetPendingCollectionRowCountAsync(string tableName, BTree tree, CancellationToken ct)
+    {
+        if (!_inTransaction || !_pendingCollectionCatalogMutations.ContainsKey(tableName))
+            return null;
+
+        return await tree.CountEntriesAsync(ct);
+    }
+
     private async ValueTask<IDisposable> AcquireWriteOperationScopeAsync(CancellationToken ct)
     {
         await _writeOperationGate.WaitAsync(ct);
@@ -1053,6 +1092,14 @@ public sealed class Database : IAsyncDisposable
     private void ReleaseExplicitTransactionWriteGate()
     {
         _writeOperationGate.Release();
+    }
+
+    private ValueTask FlushPendingCollectionCatalogMutationsBeforeSqlAsync(CancellationToken ct)
+    {
+        if (!_inTransaction || _pendingCollectionCatalogMutations.Count == 0)
+            return ValueTask.CompletedTask;
+
+        return FlushPendingCollectionCatalogMutationsAsync(ct);
     }
 
     private void RefreshCachedCollectionsFromCatalog()
@@ -1066,6 +1113,7 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask RecoverCatalogStateAfterFailedCommitAsync()
     {
+        ClearPendingCollectionCatalogMutations();
         try
         {
             await _pager.RollbackAsync(CancellationToken.None);
@@ -1159,6 +1207,7 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
         {
             try { await _pager.RollbackAsync(); } catch { }
+            ClearPendingCollectionCatalogMutations();
             _inTransaction = false;
             ReleaseExplicitTransactionWriteGate();
             rolledBackExplicitTransaction = true;
@@ -1210,6 +1259,46 @@ public sealed class Database : IAsyncDisposable
         }
     }
 
+    private async ValueTask FlushPendingCollectionCatalogMutationsAsync(CancellationToken ct)
+    {
+        if (_pendingCollectionCatalogMutations.Count == 0)
+            return;
+
+        foreach (var entry in _pendingCollectionCatalogMutations)
+        {
+            string tableName = entry.Key;
+            PendingCollectionCatalogMutation pending = entry.Value;
+
+            if (pending.RequiresExactRowCountSync)
+            {
+                long exactRowCount = await pending.Tree.CountEntriesAsync(ct);
+                await _catalog.SetTableRowCountAsync(tableName, exactRowCount, ct);
+            }
+            else if (pending.RowCountDelta != 0)
+            {
+                if (_catalog.TryGetExactTableRowCount(tableName, out _))
+                {
+                    await _catalog.AdjustTableRowCountKnownExactAsync(tableName, pending.RowCountDelta, ct);
+                }
+                else
+                {
+                    long exactRowCount = await pending.Tree.CountEntriesAsync(ct);
+                    await _catalog.SetTableRowCountAsync(tableName, exactRowCount, ct);
+                }
+            }
+
+            if (pending.HasDocumentMutation)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(tableName, ct);
+        }
+
+        ClearPendingCollectionCatalogMutations();
+    }
+
+    private void ClearPendingCollectionCatalogMutations()
+    {
+        _pendingCollectionCatalogMutations.Clear();
+    }
+
     private sealed class WriteOperationScope : IDisposable
     {
         internal static readonly WriteOperationScope NoOp = new(null);
@@ -1224,6 +1313,27 @@ public sealed class Database : IAsyncDisposable
         public void Dispose()
         {
             Interlocked.Exchange(ref _gate, null)?.Release();
+        }
+    }
+
+    private sealed class PendingCollectionCatalogMutation
+    {
+        internal PendingCollectionCatalogMutation(BTree tree)
+        {
+            Tree = tree;
+        }
+
+        internal BTree Tree { get; private set; }
+        internal long RowCountDelta { get; private set; }
+        internal bool RequiresExactRowCountSync { get; private set; }
+        internal bool HasDocumentMutation { get; private set; }
+
+        internal void Record(BTree tree, long rowCountDelta, bool requiresExactRowCountSync, bool hasDocumentMutation)
+        {
+            Tree = tree;
+            RowCountDelta = checked(RowCountDelta + rowCountDelta);
+            RequiresExactRowCountSync |= requiresExactRowCountSync;
+            HasDocumentMutation |= hasDocumentMutation;
         }
     }
 

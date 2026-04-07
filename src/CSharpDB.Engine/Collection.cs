@@ -36,6 +36,8 @@ public sealed class Collection<
     private readonly string _catalogTableName;
     private BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Action<string, BTree, long, bool, bool> _recordPendingTransactionMutation;
+    private readonly Func<string, BTree, CancellationToken, ValueTask<long?>> _getPendingTransactionRowCountAsync;
     private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterWriteScopeAsync;
     private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
@@ -43,6 +45,8 @@ public sealed class Collection<
     private readonly CollectionDocumentCodec<T> _codec;
     private readonly ICollectionModel<T>? _model;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<uint> _writeTraversalPath = new(capacity: 8);
+    private readonly HashSet<uint> _writeTraversalSet = new();
     private long _observedSchemaVersion;
 
     internal Collection(
@@ -52,6 +56,8 @@ public sealed class Collection<
         BTree tree,
         IRecordSerializer recordSerializer,
         Func<bool> isInTransaction,
+        Action<string, BTree, long, bool, bool> recordPendingTransactionMutation,
+        Func<string, BTree, CancellationToken, ValueTask<long?>> getPendingTransactionRowCountAsync,
         Func<CancellationToken, ValueTask<IDisposable>> enterWriteScopeAsync,
         Func<string, CancellationToken, ValueTask<PagerCommitResult>> beginImplicitCommitAsync,
         Func<CancellationToken, ValueTask> afterImplicitCommitAsync,
@@ -65,6 +71,8 @@ public sealed class Collection<
         _model = CollectionModelRegistry.TryGet<T>(out var model) ? model : null;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _recordPendingTransactionMutation = recordPendingTransactionMutation ?? throw new ArgumentNullException(nameof(recordPendingTransactionMutation));
+        _getPendingTransactionRowCountAsync = getPendingTransactionRowCountAsync ?? throw new ArgumentNullException(nameof(getPendingTransactionRowCountAsync));
         _enterWriteScopeAsync = enterWriteScopeAsync ?? throw new ArgumentNullException(nameof(enterWriteScopeAsync));
         _beginImplicitCommitAsync = beginImplicitCommitAsync ?? throw new ArgumentNullException(nameof(beginImplicitCommitAsync));
         _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
@@ -121,6 +129,9 @@ public sealed class Collection<
 
         RefreshIndexesIfSchemaChanged();
         bool mutated = false;
+        long rowCountDelta = 0;
+        bool requiresExactRowCountSync = false;
+        bool inTransaction = _isInTransaction();
 
         await AutoCommitAsync(async () =>
         {
@@ -130,16 +141,27 @@ public sealed class Collection<
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                var existing = await _tree.FindMemoryAsync(probeHash, ct);
+                var existing = await _tree.FindMemoryForWriteAsync(probeHash, ct);
 
                 if (existing is not { } existingPayload)
                 {
-                    await _tree.InsertAsync(probeHash, newPayload, ct);
+                    await _tree.InsertAsync(probeHash, newPayload, _writeTraversalPath, _writeTraversalSet, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
+                    rowCountDelta = 1;
                     if (HasZeroCachedRowCount())
-                        await SyncRowCountAsync(ct);
-                    else
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
+                    else if (!inTransaction)
+                    {
                         await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
+                    }
+                    else
+                    {
+                        requiresExactRowCountSync = false;
+                    }
                     mutated = true;
                     return;
                 }
@@ -149,10 +171,14 @@ public sealed class Collection<
                     if (_indexes.Count > 0)
                         await DeleteFromIndexesAsync(probeHash, existingPayload, ct);
 
-                    await _tree.ReplaceAsync(probeHash, newPayload, ct);
+                    await _tree.ReplaceAsync(probeHash, newPayload, _writeTraversalPath, _writeTraversalSet, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
                     if (ShouldReconcileRowCount(existingPayload.Span))
-                        await SyncRowCountAsync(ct);
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
                     mutated = true;
                     return;
                 }
@@ -164,7 +190,12 @@ public sealed class Collection<
         }, ct);
 
         if (mutated)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        {
+            if (inTransaction)
+                _recordPendingTransactionMutation(_catalogTableName, _tree, rowCountDelta, requiresExactRowCountSync, true);
+            else
+                await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        }
     }
 
     /// <summary>
@@ -200,6 +231,9 @@ public sealed class Collection<
         RefreshIndexesIfSchemaChanged();
 
         bool deleted = false;
+        long rowCountDelta = 0;
+        bool requiresExactRowCountSync = false;
+        bool inTransaction = _isInTransaction();
 
         await AutoCommitAsync(async () =>
         {
@@ -208,7 +242,7 @@ public sealed class Collection<
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                var payload = await _tree.FindMemoryAsync(probeHash, ct);
+                var payload = await _tree.FindMemoryForWriteAsync(probeHash, ct);
 
                 if (payload is not { } payloadMemory)
                     return;
@@ -220,9 +254,20 @@ public sealed class Collection<
 
                     await _tree.DeleteAsync(probeHash, ct);
                     if (ShouldReconcileRowCount(payloadMemory.Span))
-                        await SyncRowCountAsync(ct);
-                    else
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
+                    else if (!inTransaction)
+                    {
+                        rowCountDelta = -1;
                         await _catalog.AdjustTableRowCountAsync(_catalogTableName, -1, ct);
+                    }
+                    else
+                    {
+                        rowCountDelta = -1;
+                    }
                     deleted = true;
                     return;
                 }
@@ -230,7 +275,12 @@ public sealed class Collection<
         }, ct);
 
         if (deleted)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        {
+            if (inTransaction)
+                _recordPendingTransactionMutation(_catalogTableName, _tree, rowCountDelta, requiresExactRowCountSync, true);
+            else
+                await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        }
 
         return deleted;
     }
@@ -239,7 +289,13 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
+    {
+        long? pendingRowCount = await _getPendingTransactionRowCountAsync(_catalogTableName, _tree, ct);
+        if (pendingRowCount.HasValue)
+            return pendingRowCount.Value;
+
+        return await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
+    }
 
     /// <summary>
     /// Iterate all documents in the collection.
