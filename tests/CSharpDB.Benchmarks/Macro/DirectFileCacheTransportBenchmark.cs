@@ -34,6 +34,19 @@ public static class DirectFileCacheTransportBenchmark
         return results;
     }
 
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(capacity: 4)
+        {
+            await RunSqlSingleInsertAsync(tunedFileCache: true),
+            await RunSqlBatchInsertAsync(tunedFileCache: true),
+            await RunSqlPointLookupAsync(tunedFileCache: true),
+            await RunSqlConcurrentReadsAsync(tunedFileCache: true),
+        };
+
+        return results;
+    }
+
     private static async Task<BenchmarkResult> RunSqlSingleInsertAsync(bool tunedFileCache)
     {
         await using var context = await DirectBenchmarkContext.CreateAsync();

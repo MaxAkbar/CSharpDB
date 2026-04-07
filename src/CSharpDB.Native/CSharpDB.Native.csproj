@@ -32,6 +32,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Data\CSharpDB.Data.csproj" />
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />

@@ -13,6 +13,7 @@
 
 - Followed the main optimizer/storage work with stabilization updates across planner, checkpoint, and maintenance behavior after merge-time regressions surfaced in tests.
 - Tightened planner behavior around batch evaluation, join planning, and checkpoint-related validation to keep the new stats-guided and batching paths correct under the existing test suite.
+- Restored cache-hot covered composite-index lookup performance by exposing cache-only reads from the default B-tree index store and adding a direct planner fast path for exact covered composite projections, bringing the focused composite benchmark rows back ahead of baseline.
 - Added and refreshed regression coverage across planner statistics, WAL behavior, integration scenarios, page-read buffering, and hybrid/local database paths.
 
 ### CLI Console Experience

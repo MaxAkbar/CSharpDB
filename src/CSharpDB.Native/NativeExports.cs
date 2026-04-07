@@ -79,7 +79,7 @@ public static class NativeExports
         try
         {
             var db = HandleTable.Get<Database>(dbHandle);
-            string sql = Marshal.PtrToStringUTF8(sqlPtr)!;
+            string sql = ReadRequiredUtf8String(sqlPtr, nameof(sqlPtr));
             var result = db.ExecuteAsync(sql).AsTask().GetAwaiter().GetResult();
             return HandleTable.Alloc(result);
         }
@@ -87,6 +87,172 @@ public static class NativeExports
         {
             ErrorState.Set(ex);
             return IntPtr.Zero;
+        }
+    }
+
+    // ================================================================
+    //  Prepared statements
+    // ================================================================
+
+    /// <summary>
+    /// Prepare a reusable SQL statement and return an opaque statement handle.
+    /// Statements that cannot use the template path still execute via the SQL-text
+    /// parameter binder so prepare remains functional for supported SQL text.
+    /// Returns IntPtr.Zero on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_prepare")]
+    public static IntPtr Prepare(IntPtr dbHandle, IntPtr sqlPtr)
+    {
+        try
+        {
+            var db = HandleTable.Get<Database>(dbHandle);
+            string sql = ReadRequiredUtf8String(sqlPtr, nameof(sqlPtr));
+            var statement = NativePreparedStatement.Create(db, sql);
+            return HandleTable.Alloc(statement);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Bind a 64-bit integer parameter by name. Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_int64")]
+    public static int StatementBindInt64(IntPtr statementHandle, IntPtr namePtr, long value)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindInt64(name, value);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Bind a double parameter by name. Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_double")]
+    public static int StatementBindDouble(IntPtr statementHandle, IntPtr namePtr, double value)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindDouble(name, value);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Bind a UTF-8 text parameter by name. Passing IntPtr.Zero for the text binds NULL.
+    /// Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_text")]
+    public static int StatementBindText(IntPtr statementHandle, IntPtr namePtr, IntPtr valuePtr)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            string? value = ReadNullableUtf8String(valuePtr, nameof(valuePtr));
+            statement.BindText(name, value);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Bind SQL NULL by parameter name. Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_null")]
+    public static int StatementBindNull(IntPtr statementHandle, IntPtr namePtr)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindNull(name);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Clear all currently bound parameter values from a prepared statement.
+    /// Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_clear_bindings")]
+    public static int StatementClearBindings(IntPtr statementHandle)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            statement.ClearBindings();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Execute a prepared statement. Returns a result handle, or IntPtr.Zero on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_execute")]
+    public static IntPtr StatementExecute(IntPtr statementHandle)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            var result = statement.ExecuteAsync().AsTask().GetAwaiter().GetResult();
+            return HandleTable.Alloc(result);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Free a prepared statement handle. Safe to call with IntPtr.Zero.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_free")]
+    public static void StatementFree(IntPtr statementHandle)
+    {
+        if (statementHandle == IntPtr.Zero) return;
+
+        try
+        {
+            HandleTable.Free(statementHandle);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
         }
     }
 
@@ -632,6 +798,15 @@ public static class NativeExports
 
         string? value = Marshal.PtrToStringUTF8(valuePtr);
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? ReadNullableUtf8String(IntPtr valuePtr, string paramName)
+    {
+        if (valuePtr == IntPtr.Zero)
+            return null;
+
+        return Marshal.PtrToStringUTF8(valuePtr)
+            ?? throw new ArgumentException("Expected a UTF-8 string pointer.", paramName);
     }
 
     private static IntPtr SerializeJson<TValue>(TValue value, JsonTypeInfo<TValue> typeInfo)

@@ -16,6 +16,7 @@ A NativeAOT-compiled shared library that exposes the CSharpDB embedded database 
 - [API Reference](#api-reference)
   - [Database Lifecycle](#database-lifecycle)
   - [SQL Execution](#sql-execution)
+  - [Prepared Statements](#prepared-statements)
   - [Result Navigation](#result-navigation)
   - [Value Access](#value-access)
   - [Transactions](#transactions)
@@ -213,6 +214,81 @@ Execute a SQL statement (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, etc.).
 - **db** — Database handle from `csharpdb_open`.
 - **sql** — UTF-8 SQL string.
 - **Returns** — Result handle, or `NULL` on error. **Must** be freed with `csharpdb_result_free`.
+
+---
+
+### Prepared Statements
+
+Prepared statements expose the same parameter binding model as the managed ADO.NET provider:
+
+- parameters are named (`@id`, `@name`, etc.)
+- parameter names may be supplied with or without the leading `@`
+- supported bound value types are `int64`, `double`, UTF-8 text, and `NULL`
+- unsupported prepared templates automatically fall back to SQL-text parameter binding, so `csharpdb_prepare` remains usable for valid SQL shapes that cannot yet use the template fast path
+
+#### `csharpdb_prepare`
+
+```c
+csharpdb_stmt_t csharpdb_prepare(csharpdb_t db, const char* sql);
+```
+
+Prepare a reusable SQL statement and return an opaque statement handle.
+
+#### `csharpdb_stmt_bind_int64`
+
+```c
+int csharpdb_stmt_bind_int64(csharpdb_stmt_t stmt, const char* name, int64_t value);
+```
+
+Bind a 64-bit integer parameter by name. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_bind_double`
+
+```c
+int csharpdb_stmt_bind_double(csharpdb_stmt_t stmt, const char* name, double value);
+```
+
+Bind a double parameter by name. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_bind_text`
+
+```c
+int csharpdb_stmt_bind_text(csharpdb_stmt_t stmt, const char* name, const char* value);
+```
+
+Bind a UTF-8 text parameter by name. Pass `NULL` for `value` to bind SQL `NULL`. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_bind_null`
+
+```c
+int csharpdb_stmt_bind_null(csharpdb_stmt_t stmt, const char* name);
+```
+
+Bind SQL `NULL` by parameter name. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_clear_bindings`
+
+```c
+int csharpdb_stmt_clear_bindings(csharpdb_stmt_t stmt);
+```
+
+Clear all currently bound parameter values. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_execute`
+
+```c
+csharpdb_result_t csharpdb_stmt_execute(csharpdb_stmt_t stmt);
+```
+
+Execute the prepared statement and return a result handle. The returned result follows the same lifetime rules as `csharpdb_execute`.
+
+#### `csharpdb_stmt_free`
+
+```c
+void csharpdb_stmt_free(csharpdb_stmt_t stmt);
+```
+
+Free a prepared statement handle. Safe to call with `NULL`.
 
 ---
 
@@ -1599,10 +1675,12 @@ Pre-built client packages that wrap the native library with idiomatic APIs:
 
 1. Every `csharpdb_open` must be paired with `csharpdb_close`.
 2. Every `csharpdb_execute` must be paired with `csharpdb_result_free`.
-3. String pointers from `csharpdb_result_get_text` and `csharpdb_result_column_name` are owned by the library. **Do not free them.**
-4. Blob pointers from `csharpdb_result_get_blob` are owned by the library. **Do not free them.**
-5. Text and blob pointers from row values are valid only until the next `csharpdb_result_next` call or `csharpdb_result_free`. Copy the data if you need it longer.
-6. Column name pointers are valid until `csharpdb_result_free`.
+3. Every `csharpdb_prepare` must be paired with `csharpdb_stmt_free`.
+4. Every `csharpdb_stmt_execute` must be paired with `csharpdb_result_free`.
+5. String pointers from `csharpdb_result_get_text` and `csharpdb_result_column_name` are owned by the library. **Do not free them.**
+6. Blob pointers from `csharpdb_result_get_blob` are owned by the library. **Do not free them.**
+7. Text and blob pointers from row values are valid only until the next `csharpdb_result_next` call or `csharpdb_result_free`. Copy the data if you need it longer.
+8. Column name pointers are valid until `csharpdb_result_free`.
 
 ---
 
