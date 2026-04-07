@@ -2,7 +2,7 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current top-level snapshot in this README centers on the March 30, 2026 `main` validation refresh: one full `--all` sweep, one same-day focused baseline snapshot, and same-day `median-of-3` reruns for the durable write guardrails. A release validation rerun was completed on April 2, 2026 against that March 30 focused baseline and finished clean at `PASS=184, FAIL=0`. Archived competitor ranges and older spot-check notes are still called out inline where they remain useful.
+The current top-level snapshot in this README centers on the March 30, 2026 `main` validation refresh: one full `--all` sweep, one same-day focused baseline snapshot, and same-day `median-of-3` reruns for the durable write guardrails. A release validation rerun was completed on April 2, 2026 against that March 30 focused baseline and finished clean at `PASS=184, FAIL=0`. A later focused `CompositeIndexBenchmarks` rerun on April 6, 2026 then verified that the covered composite-equality rows were back ahead of the March 30 baseline after the cache-hot covered-lookup fix. Archived competitor ranges and older spot-check notes are still called out inline where they remain useful.
 
 ## Latest Validation Snapshot
 
@@ -21,6 +21,19 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
 | Baseline used by release rerun | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
 | Release rerun note | `BenchmarkDotNet class refreshes were run sequentially before compare to avoid shared job-directory collisions between concurrent filtered runs.` |
 
+A focused composite-index rerun was also completed on April 6, 2026 after the covered composite lookup fix:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *CompositeIndexBenchmarks*
+```
+
+| Item | Result |
+|------|--------|
+| Focused composite rerun artifact | `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv` |
+| Covered composite 100K row | `2.386 us, 3.04 KB allocated` |
+| Unique covered composite 100K row | `2.392 us, 3.04 KB allocated` |
+| March 30 baseline reference | `3.108 us / 3.159 us, both at 10.63 KB allocated` |
+
 The current focused validation baseline was refreshed on March 30, 2026 with:
 
 ```powershell
@@ -33,7 +46,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Item | Result |
 |------|--------|
 | Baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
-| PR baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` |
+| PR guardrail baseline snapshot | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
 | Broad main sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260330-081102.csv` |
 | Direct transport sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260330-081709.csv` |
 | Hybrid storage sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260330-082134.csv` |
@@ -48,14 +61,15 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 High-level takeaways from the March 30 refresh:
 
 - The focused validation baseline now points to a single coherent March 30 snapshot built on `main`.
-- The PR lane now has its own checked-in March 30 snapshot under `baselines/pr-validation/20260330-233433`.
-- The top-level SQL, collection, storage-mode, and master comparison tables below now use March 30 durable artifacts from the same run family.
+- The checked-in March 30 baseline snapshot now also carries the PR guardrail CSVs.
+- The top-level SQL, collection, and storage-mode tables below still use March 30 durable artifacts from the same run family, while the master comparison table was refreshed on April 6, 2026 from the dedicated `master-table` median-of-3 suite.
 - The durable write guardrails now anchor on same-day `median-of-3` captures for `write-diagnostics`, `durable-sql-batching`, and `concurrent-write-diagnostics`.
 - The broad micro sweep in `BenchmarkDotNet.Artifacts/results` was also refreshed on March 30, 2026.
 
 - `Focused validation baseline refresh on March 30, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
 - `Broad main sweep on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260330-081102.csv`
 - `Direct client transport sweep on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260330-081709.csv`
+- `Master comparison median-of-3 sweep on April 6, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260406-225440-median-of-3.csv`
 - `Hybrid storage-mode sweep on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260330-082134.csv`
 - `Hybrid cold-open sweep on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260330-082420.csv`
 - `Hybrid hot-set sweep on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260330-082434.csv`
@@ -164,6 +178,26 @@ dotnet run -c Release -- --direct-file-cache-transport --repeat 3 --repro
 # Focused hot steady-state comparison for file-backed vs in-memory vs lazy-resident incremental-durable hybrid
 dotnet run -c Release -- --hybrid-storage-mode --repeat 3 --repro
 
+# Focused master comparison refresh for only the CSharpDB rows used in the README table
+dotnet run -c Release -- --master-table --repeat 3 --repro
+
+# Focused master comparison refresh in buffered mode (less durable; analogous to SQLite WAL NORMAL)
+$env:CSHARPDB_BENCH_DURABILITY='Buffered'
+dotnet run -c Release -- --master-table --repeat 3 --repro
+Remove-Item Env:CSHARPDB_BENCH_DURABILITY
+
+# Standalone local SQLite apples-to-apples SQL comparison (WAL + FULL only)
+dotnet run -c Release -- --sqlite-compare --repeat 3 --repro
+
+# Strict ADO.NET insert apples-to-apples comparison for CSharpDB vs SQLite
+dotnet run -c Release -- --strict-insert-compare --repeat 3 --repro
+
+# Publish the NativeAOT shared library for the current RID before running the native mix
+dotnet publish .\src\CSharpDB.Native\CSharpDB.Native.csproj -c Release -r win-x64
+
+# Raw insert comparison including CSharpDB NativeAOT FFI
+dotnet run -c Release -- --native-aot-insert-compare --repeat 3 --repro
+
 # Focused engine-cold open + first read comparison for file-backed vs in-memory vs lazy-resident incremental-durable hybrid
 dotnet run -c Release -- --hybrid-cold-open --repeat 3 --repro
 
@@ -185,6 +219,10 @@ dotnet run -c Release -- --all
 ```
 
 Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` and `BenchmarkDotNet.Artifacts/results/`.
+
+The standalone SQLite comparison suite writes `sqlite-compare-*.csv` with only local SQLite `WAL + FULL` SQL rows. It does not feed the CSharpDB `--master-table` refresh path.
+
+Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table harnesses run in durable mode. `Buffered` is the less-durable CSharpDB-only mode, analogous to SQLite WAL `synchronous=NORMAL`.
 
 ### Concurrent Durable Write Methodology
 
@@ -256,7 +294,7 @@ pwsh ./tests/CSharpDB.Benchmarks/scripts/Run-Perf-Guardrails.ps1 -Mode release
 Defaults:
 
 - Baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
-- PR baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433`
+- PR guardrail baseline snapshot: `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
 - Threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds.json`
 - PR threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds-pr.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
@@ -266,7 +304,7 @@ Defaults:
 - `--release` reads `perf-thresholds.json` and runs the existing tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
 - `--micro` and `--all` keep the original full micro benchmark surface; they do not automatically add the PR guardrail duplicates unless you explicitly filter for `*GuardrailBenchmarks*`.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
-- The checked-in PR snapshot under `tests/CSharpDB.Benchmarks/baselines/pr-validation/20260330-233433` carries only the dedicated PR guardrail CSVs so PR validation stays lane-specific and fast.
+- The checked-in focused snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` now carries the dedicated PR guardrail CSVs as well, so both release and PR validation use the same baseline snapshot.
 - That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
 - Set `CSHARPDB_PERF_RUNNER_ID` on the canonical perf runner before capturing a baseline if you want strict regression failures to be limited to that designated machine.
@@ -274,7 +312,7 @@ Defaults:
 
 ## Current Performance Snapshot
 
-The API snapshot, hot steady-state tables, and master comparison table below use the March 30, 2026 `main` artifacts listed above. CSharpDB values are durable-only unless a note says otherwise.
+The API snapshot and hot steady-state tables below use the March 30, 2026 `main` artifacts listed above. The master comparison table was refreshed separately on April 6, 2026 from `master-table-20260406-225440-median-of-3.csv`. CSharpDB values are durable-only unless a note says otherwise.
 
 ### SQL API (March 30, 2026 broad main sweep)
 
@@ -420,15 +458,15 @@ The important result for async I/O batching is still the staged-vs-direct compar
 | `WHERE value BETWEEN ... SELECT id, category` compact projection (100K rows) | 38.913 ms | 7.30 MB | Non-covered indexed range scan decodes only projected payload columns instead of wide rows |
 | `WHERE value BETWEEN ... SELECT id, value + id` compact expression projection (100K rows) | 39.049 ms | 7.30 MB | Indexed range scan keeps the compact payload decode path even when projection includes an expression |
 
-### SQL Composite Equality Lookup Spot Checks (March 25, 2026)
+### SQL Composite Equality Lookup Spot Checks (April 6, 2026)
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|
-| `WHERE a = ... AND b = ...` no index (100K rows) | 182.879 ms | 69.44 MB | Full scan over wide rows |
-| `WHERE a = ... AND b = ...` single-column index (100K rows) | 32.360 us | 20.54 KB | Uses `a` only, then filters `b` after row fetch |
-| `WHERE a = ... AND b = ... SELECT *` composite index (100K rows) | 3.427 us | 18.19 KB | Direct composite equality lookup over hashed secondary index |
-| `WHERE a = ... AND b = ... SELECT id, a, b` composite covered projection (100K rows) | 2.523 us | 10.33 KB | Index-only projection now uses no-copy hashed-payload matching on the covered path |
-| `WHERE a = ... AND b = ... SELECT id, a, b` unique composite covered projection (100K rows) | 2.575 us | 10.33 KB | Same covered path on a unique composite index |
+| `WHERE a = ... AND b = ...` no index (100K rows) | 9.624 ms | 800.74 KB | Full scan over wide rows |
+| `WHERE a = ... AND b = ...` single-column index (100K rows) | 21.650 us | 20.59 KB | Uses `a` only, then filters `b` after row fetch |
+| `WHERE a = ... AND b = ... SELECT *` composite index (100K rows) | 3.440 us | 11.46 KB | Direct composite equality lookup over the hashed secondary index |
+| `WHERE a = ... AND b = ... SELECT id, a, b` composite covered projection (100K rows) | 2.386 us | 3.04 KB | Cache-hot covered projection short-circuits directly from cached composite index payload without base-row materialization |
+| `WHERE a = ... AND b = ... SELECT id, a, b` unique composite covered projection (100K rows) | 2.392 us | 3.04 KB | Same cache-hot covered path on a unique composite index |
 
 ### SQL Indexed Aggregate Spot Checks (March 25, 2026)
 
@@ -617,6 +655,7 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - `MaxCachedPages = 2048` was still the best collection setting in the current tuning matrix: indexed collection lookup fell from `54.15 us` at 16 pages to `20.57 us` at 2048 pages with `UseCachingIndexes = false`.
 - `UseCachingIndexes` stayed neutral-to-negative on these lookup workloads. At `256` pages, SQL indexed lookup worsened from `91.55 us` to `273.44 us`, and the reused reader-session path worsened from `41.36 us` to `212.94 us`; collection lookup was roughly flat at `32.35 us` vs `34.06 us`.
 - The reader-session setup penalty is visible again in the latest dedicated `ReaderSessionBenchmarks`: simple point lookups measured `1,703.7 ns` with per-query sessions, `680.9 ns` with a reused session, and `663.6 ns` with direct `ExecuteAsync`.
+- The April 6, 2026 focused `CompositeIndexBenchmarks` rerun confirmed that cache-hot covered composite equality lookups are back ahead of the March 30 baseline: the 100K covered rows landed at `2.386 us` and `2.392 us` with `3.04 KB` allocated, down from the March 30 baseline's `3.108 us` and `3.159 us` at `10.63 KB`.
 - A small dedicated WAL read cache still helps once the hottest pages live in the WAL instead of the main file: the WAL-backed SQL cold-lookup micro dropped from `28.74 us` to `19.83 us` when `MaxCachedWalReadPages = 128`.
 - Raw storage traversal still benefits from speculative next-leaf reads: on the direct file-backed `BTreeCursor` micro, full scans improved from `9.25 ms` to `8.51 ms` at `10K` rows and from `92.74 ms` to `87.41 ms` at `100K`, while the `1024`-row seek window improved from `919.2 us` to `822.2 us` at `10K` and from `945.7 us` to `824.7 us` at `100K`.
 - Recommended direct file-backed read preset for hot local workloads: `builder.UseDirectLookupOptimizedPreset()` keeps the existing page-cache shape and read path.
@@ -729,9 +768,10 @@ hot-set table above for that feature.
 
 The master table below separates embedded engine runs from client/hosted runs so the interface cost is visible.
 
-- Embedded engine durable SQL/collection rows were refreshed on March 30, 2026 from `hybrid-storage-mode-20260330-082134.csv` using the focused hot storage-mode harness.
-- CSharpDB SQL concurrent reads are shown as `per-query sessions / reused reader sessions (x32 reads per snapshot)` because those patterns measure materially different setup costs.
-- The direct local SQL client row was refreshed on March 30, 2026 from `direct-file-cache-transport-20260330-081709.csv`.
+- CSharpDB rows in this section were refreshed on April 6, 2026 from `master-table-20260406-225440-median-of-3.csv` using the dedicated `--master-table --repeat 3 --repro` harness.
+- CSharpDB SQL concurrent reads are shown as `per-query sessions / reused reader sessions (x32 reads per snapshot)` because those patterns measure materially different setup costs. The direct local SQL client row still reports only the per-query reader pattern.
+- A dedicated `--master-table` suite now emits only the CSharpDB rows used by this section into `master-table-*.csv`, with stable `MasterComparison_*` row names and batch throughput normalized to rows/sec or docs/sec.
+- The concurrent durable write companion table below stays separate because its `ops/sec` is total successful commits/sec across `4` or `8` simultaneous writers sharing one engine and WAL, not single-writer insert throughput.
 - The top SQL/collection API snapshot tables above use the macro harness in durable mode (`macro-20260330-081102.csv`).
 - Cold / cache-pressured lookup numbers were also refreshed on March 15, 2026 from `ColdLookupBenchmarks-report.csv`, but they stay in the dedicated spot-check section rather than the master table.
 - Ordered/range covered-scan numbers were refreshed on March 14, 2026 from `OrderByIndexBenchmarks`, but they stay in the micro sections because the master table tracks durable writes, cold point lookups, and concurrent-read throughput rather than scan-shape throughput.
@@ -742,17 +782,17 @@ The master table below separates embedded engine runs from client/hosted runs so
 
 ### Master Comparison Table
 
-CSharpDB rows below are durable March 30, 2026 `main` captures. Competitor rows remain single published directional ranges.
+CSharpDB rows below are durable April 6, 2026 `main` median-of-3 captures from `master-table-20260406-225440-median-of-3.csv`. Competitor rows remain single published directional ranges.
 
 | Database | Language | Type | Single INSERT | Batched INSERT | Point Lookup | Concurrent Reads |
 |----------|----------|------|---------------|----------------|--------------|------------------|
-| **CSharpDB SQL (embedded engine, file-backed)** | **C#** | **Relational SQL** | **272.8 ops/sec** | **~26.22K rows/sec** | **~1.07M ops/sec** | **~619.66K / ~11.80M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB SQL (embedded engine, incremental-durable hybrid)** | **C#** | **Relational SQL** | **272.3 ops/sec** | **~26.78K rows/sec** | **~1.08M ops/sec** | **~614.95K / ~12.38M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB SQL (direct client, local process)** | **C#** | **Relational SQL** | **277.3 ops/sec** | **~3.26K rows/sec** | **~530.73K ops/sec** | **~510.33K COUNT(*) ops/sec (8r)** |
-| **CSharpDB SQL (embedded engine, in-memory)** | **C#** | **Relational SQL** | **~256.28K ops/sec** | **~760.80K rows/sec** | **~1.09M ops/sec** | **~622.95K / ~12.33M COUNT(*) ops/sec (8r, per-query / reused x32)** |
-| **CSharpDB Collection (embedded engine, file-backed)** | **C#** | **Document (NoSQL)** | **278.3 ops/sec** | **~26.96K docs/sec** | **~1.77M ops/sec** | **-** |
-| **CSharpDB Collection (embedded engine, incremental-durable hybrid)** | **C#** | **Document (NoSQL)** | **281.4 ops/sec** | **~26.27K docs/sec** | **~1.80M ops/sec** | **-** |
-| **CSharpDB Collection (embedded engine, in-memory)** | **C#** | **Document (NoSQL)** | **~244.76K ops/sec** | **~654.34K docs/sec** | **~1.81M ops/sec** | **-** |
+| **CSharpDB SQL (embedded engine, file-backed)** | **C#** | **Relational SQL** | **265.9 ops/sec** | **~25.95K rows/sec** | **~1.26M ops/sec** | **~522.58K / ~9.64M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB SQL (embedded engine, incremental-durable hybrid)** | **C#** | **Relational SQL** | **268.5 ops/sec** | **~25.62K rows/sec** | **~1.29M ops/sec** | **~561.60K / ~9.47M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB SQL (direct client, local process)** | **C#** | **Relational SQL** | **278.2 ops/sec** | **~2.97K rows/sec** | **~590.69K ops/sec** | **~385.56K COUNT(*) ops/sec (8r)** |
+| **CSharpDB SQL (embedded engine, in-memory)** | **C#** | **Relational SQL** | **~228.59K ops/sec** | **~699.74K rows/sec** | **~1.26M ops/sec** | **~553.85K / ~9.52M COUNT(*) ops/sec (8r, per-query / reused x32)** |
+| **CSharpDB Collection (embedded engine, file-backed)** | **C#** | **Document (NoSQL)** | **273.9 ops/sec** | **~25.14K docs/sec** | **~1.71M ops/sec** | **-** |
+| **CSharpDB Collection (embedded engine, incremental-durable hybrid)** | **C#** | **Document (NoSQL)** | **268.6 ops/sec** | **~25.01K docs/sec** | **~1.58M ops/sec** | **-** |
+| **CSharpDB Collection (embedded engine, in-memory)** | **C#** | **Document (NoSQL)** | **~135.80K ops/sec** | **~246.50K docs/sec** | **~1.70M ops/sec** | **-** |
 | SQLite | C | Relational SQL | ~1-4K ops/sec | ~80-114K rows/sec | N/A | WAL lock limited |
 | LiteDB | C# | Document (NoSQL) | ~1K ops/sec | ~16-21K rows/sec | N/A | N/A |
 | Realm | C++ | Object DB | ~9-76K obj/sec | N/A | N/A | Multi-reader |
@@ -764,6 +804,39 @@ CSharpDB rows below are durable March 30, 2026 `main` captures. Competitor rows 
 | DuckDB | C++ | Columnar SQL (OLAP) | ~1-8K ops/sec | ~163K-1.2M rows/sec | N/A | N/A (OLAP) |
 | PouchDB | JavaScript | Document + sync | ~4-6K (bulk) | ~4-6K docs/sec | N/A | N/A |
 | TinyDB | Python | Document (JSON) | ~1-5K ops/sec | ~26K batch | N/A | N/A |
+
+### Buffered Durability Snapshot (CSharpDB Only)
+
+The durable master table above stays the default published comparison. The table below is a separate April 7, 2026 CSharpDB-only snapshot from `master-table-20260407-012447-median-of-3.csv`, produced by rerunning `--master-table --repeat 3 --repro` with `CSHARPDB_BENCH_DURABILITY=Buffered`.
+
+`Buffered` is the less-durable write mode, analogous to SQLite WAL `synchronous=NORMAL`: commit records are flushed to the OS, but CSharpDB does not force an OS-buffer flush before acknowledging every commit. That can materially improve write throughput, but it also means recently acknowledged commits are more exposed to loss on OS crash or power loss than in the durable table above.
+
+This section stays write-focused because durability mode mostly changes commit costs, not point-lookups or concurrent-read setup costs.
+
+| Surface | Single Op (Durable) | Single Op (Buffered) | Batch x100 (Durable) | Batch x100 (Buffered) | Notes |
+|---------|----------------------|----------------------|----------------------|-----------------------|-------|
+| CSharpDB SQL (embedded engine, file-backed) | `265.9 ops/sec` | `~22.25K ops/sec` | `~25.95K rows/sec` | `~473.55K rows/sec` | Biggest write uplift in the embedded SQL path |
+| CSharpDB SQL (embedded engine, incremental-durable hybrid) | `268.5 ops/sec` | `~21.48K ops/sec` | `~25.62K rows/sec` | `~418.70K rows/sec` | Similar buffered uplift with the hybrid pager layout |
+| CSharpDB SQL (direct client, local process) | `278.2 ops/sec` | `~18.49K ops/sec` | `~2.97K rows/sec` | `~5.69K rows/sec` | Single inserts jump sharply; batch remains transport-heavy |
+| CSharpDB Collection (embedded engine, file-backed) | `273.9 ops/sec` | `~20.26K ops/sec` | `~25.14K docs/sec` | `~201.41K docs/sec` | File-backed document path benefits strongly from buffered commits |
+| CSharpDB Collection (embedded engine, incremental-durable hybrid) | `268.6 ops/sec` | `~20.55K ops/sec` | `~25.01K docs/sec` | `~202.99K docs/sec` | Buffered mode is similarly favorable on the hybrid document path |
+
+### Concurrent Durable Writes (Single-Row Auto-Commit, CSharpDB Only)
+
+The table below uses the April 5, 2026 median-of-3 shared-engine artifact `concurrent-write-diagnostics-20260405-232104-median-of-3.csv`.
+
+Each logical writer issues single-row `INSERT` statements with auto-commit against one shared `Database` instance. This is not an application-level batch-insert benchmark. `Durable Commits/sec` is the total successful commit rate across all writers combined. `Commit Coalescing Window` is the engine-side durable commit window; it may group overlapping commits at flush time, but it does not turn each writer into a multi-row transaction benchmark.
+
+| Scenario | Writers | Commit Coalescing Window | WAL Prealloc | Durable Commits/sec | Notes |
+|----------|---------|--------------------------|--------------|---------------------|-------|
+| CSharpDB SQL shared engine | 4 | `0` | `0` | `528.1` | Baseline shared-WAL 4-writer contention |
+| CSharpDB SQL shared engine | 4 | `250us` | `0` | `531.9` | Essentially flat versus 4-writer baseline |
+| CSharpDB SQL shared engine | 4 | `500us` | `0` | `526.6` | Slightly below the 4-writer baseline |
+| CSharpDB SQL shared engine | 8 | `0` | `0` | `1,106.7` | Baseline 8-writer shared-engine throughput |
+| CSharpDB SQL shared engine | 8 | `250us` | `0` | `1,079.5` | Slightly below the 8-writer baseline |
+| CSharpDB SQL shared engine | 8 | `500us` | `0` | `1,774.5` | Best no-preallocation row in the current sweep |
+| CSharpDB SQL shared engine | 8 | `0` | `1 MiB` | `1,769.9` | Best preallocation row in the current sweep |
+| CSharpDB SQL shared engine | 8 | `250us` | `1 MiB` | `1,468.0` | Better than `8 x 250us` without prealloc, but below the top rows |
 
 Hot-cache point-lookup reference for CSharpDB:
 

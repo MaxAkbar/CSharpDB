@@ -6,6 +6,8 @@ public sealed class QueryResultsStatus
     public int VisibleRows { get; init; }
     public int Page { get; init; }
     public int PageSize { get; init; }
+    public bool HasExactTotal { get; init; }
+    public bool HasNextPage { get; init; }
     public TimeSpan? Elapsed { get; init; }
     public string? Error { get; init; }
 }

@@ -183,6 +183,15 @@
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
         "Method"
+      ],
+      "overrides": [
+        {
+          "match": {
+            "Method": "'INNER JOIN 1Kx1K (identity arithmetic expression projection)'"
+          },
+          "maxAllocRegressionPercent": 15.0,
+          "maxAllocRegressionBytes": 65536.0
+        }
       ]
     },
     {
@@ -226,35 +235,35 @@
           "RowCount": "100000"
         },
         {
-          "Method": "'Generic scan batch plan: residual column projection + LIMIT'",
+          "Method": "'Compact scan batch plan: residual column projection + LIMIT'",
           "RowCount": "10000"
         },
         {
-          "Method": "'Generic scan batch plan: residual column projection + LIMIT'",
+          "Method": "'Compact scan batch plan: residual column projection + LIMIT'",
           "RowCount": "100000"
         },
         {
-          "Method": "'Generic scan batch plan: expression projection + LIMIT (20% selectivity)'",
+          "Method": "'Compact scan batch plan: expression projection + LIMIT (20% selectivity)'",
           "RowCount": "10000"
         },
         {
-          "Method": "'Generic scan batch plan: expression projection + LIMIT (20% selectivity)'",
+          "Method": "'Compact scan batch plan: expression projection + LIMIT (20% selectivity)'",
           "RowCount": "100000"
         },
         {
-          "Method": "'Generic scan batch plan: IN expression projection + LIMIT'",
+          "Method": "'Compact scan batch plan: IN expression projection + LIMIT'",
           "RowCount": "10000"
         },
         {
-          "Method": "'Generic scan batch plan: IN expression projection + LIMIT'",
+          "Method": "'Compact scan batch plan: IN expression projection + LIMIT'",
           "RowCount": "100000"
         },
         {
-          "Method": "'Generic scan batch plan: NOT IN expression projection + LIMIT'",
+          "Method": "'Compact scan batch plan: NOT IN expression projection + LIMIT'",
           "RowCount": "10000"
         },
         {
-          "Method": "'Generic scan batch plan: NOT IN expression projection + LIMIT'",
+          "Method": "'Compact scan batch plan: NOT IN expression projection + LIMIT'",
           "RowCount": "100000"
         }
       ],

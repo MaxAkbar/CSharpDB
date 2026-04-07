@@ -3,7 +3,7 @@ namespace CSharpDB.Storage.Indexing;
 /// <summary>
 /// IIndexStore adapter backed by BTree.
 /// </summary>
-public sealed class BTreeIndexStore : IIndexStore, IReclaimableIndexStore
+public sealed class BTreeIndexStore : IIndexStore, ICacheAwareIndexStore, IReclaimableIndexStore
 {
     private readonly BTree _tree;
 
@@ -16,6 +16,9 @@ public sealed class BTreeIndexStore : IIndexStore, IReclaimableIndexStore
 
     public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default) =>
         _tree.FindAsync(key, ct);
+
+    public bool TryFindCached(long key, out byte[]? payload) =>
+        _tree.TryFindCached(key, out payload);
 
     public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default) =>
         _tree.FindMaxKeyAsync(range, ct);

@@ -2627,10 +2627,7 @@ public sealed class QueryPlanner
         };
 
         op = ApplyOrdering(op, stmt.OrderBy, schema, GetOrderByTopN(stmt.OrderBy, stmt.Limit, stmt.Offset));
-        if (stmt.Offset.HasValue)
-            op = new OffsetOperator(op, stmt.Offset.Value);
-        if (stmt.Limit.HasValue)
-            op = new LimitOperator(op, stmt.Limit.Value);
+        op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
         return CreateQueryResult(op);
     }
@@ -2725,11 +2722,7 @@ public sealed class QueryPlanner
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
         }
 
-        if (stmt.Offset.HasValue)
-            op = new OffsetOperator(op, stmt.Offset.Value);
-
-        if (stmt.Limit.HasValue)
-            op = new LimitOperator(op, stmt.Limit.Value);
+        op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
         return CreateQueryResult(op);
     }
@@ -3475,8 +3468,8 @@ public sealed class QueryPlanner
 
         // Try index-based scan for simple equality WHERE on a single table
         Expression? remainingWhere = stmt.Where;
-        if (consumedOuterPredicates is { Count: > 0 } && remainingWhere != null)
-            remainingWhere = RemoveConsumedConjuncts(remainingWhere, consumedOuterPredicates);
+        if (fromRef is JoinTableRef joinRef)
+            remainingWhere = RemoveRedundantInnerJoinLocalLeafPredicates(joinRef, remainingWhere);
         if (stmt.From is SimpleTableRef simpleRef &&
             !_catalog.IsView(simpleRef.TableName) &&
             !IsSystemCatalogTable(simpleRef.TableName))
@@ -3680,13 +3673,20 @@ public sealed class QueryPlanner
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
         }
 
-        if (stmt.Offset.HasValue)
-            op = new OffsetOperator(op, stmt.Offset.Value);
-
-        if (stmt.Limit.HasValue)
-            op = new LimitOperator(op, stmt.Limit.Value);
+        op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
         return CreateQueryResult(op);
+    }
+
+    private static IOperator ApplyOffsetAndLimit(IOperator op, int? offset, int? limit)
+    {
+        if (offset.HasValue)
+            op = new OffsetOperator(op, offset.Value);
+
+        if (limit.HasValue)
+            op = new LimitOperator(op, limit.Value);
+
+        return op;
     }
 
     private static QueryResult CreateQueryResult(IOperator op)
@@ -5519,10 +5519,7 @@ public sealed class QueryPlanner
             countPredicateKind,
             countPredicateValue);
 
-        if (stmt.Offset.HasValue)
-            op = new OffsetOperator(op, stmt.Offset.Value);
-        if (stmt.Limit.HasValue)
-            op = new LimitOperator(op, stmt.Limit.Value);
+        op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
         result = new QueryResult(op);
         return true;
@@ -6164,7 +6161,11 @@ public sealed class QueryPlanner
 
                 if (viewQuery is SelectStatement viewStmt && !ContainsSubqueries(viewStmt))
                 {
-                    (viewOp, viewSchema) = BuildFromOperator(viewStmt.From);
+                    Expression? pushedOuterViewPredicate = TryRewriteOuterPredicateForSimpleView(simple, viewStmt, outerWhere);
+                    (viewOp, viewSchema) = BuildFromOperator(
+                        viewStmt.From,
+                        pushedOuterViewPredicate,
+                        pushDownOuterLocalPredicates: pushedOuterViewPredicate != null);
 
                     bool hasAggregates = viewStmt.GroupBy != null ||
                                          viewStmt.Having != null ||
@@ -6295,22 +6296,27 @@ public sealed class QueryPlanner
                 TryCollectLocalJoinLeafPredicates(outerWhere, simple, qualifiedTableSchema, out var localConjuncts) &&
                 CombineConjuncts(localConjuncts) is { } localPredicate)
             {
-                Expression? localRemaining = localPredicate;
+                Expression? remainingLocalPredicate = localPredicate;
                 var indexedLocalOp = TryBuildIndexScan(simple.TableName, localPredicate, qualifiedTableSchema, out var localResidualPredicate);
                 if (indexedLocalOp != null)
                 {
                     op = indexedLocalOp;
-                    localRemaining = localResidualPredicate;
+                    remainingLocalPredicate = localResidualPredicate;
                 }
 
-                if (localRemaining != null &&
-                    TryPushDownSimplePreDecodeFilter(op, localRemaining, qualifiedTableSchema, out var pushedLocalRemaining))
+                if (remainingLocalPredicate != null &&
+                    TryPushDownSimplePreDecodeFilter(op, remainingLocalPredicate, qualifiedTableSchema, out var pushedLocalPredicate))
                 {
-                    localRemaining = pushedLocalRemaining;
+                    remainingLocalPredicate = pushedLocalPredicate;
                 }
 
-                if (consumedOuterPredicates != null)
-                    TrackConsumedOuterPredicates(localConjuncts, localRemaining, consumedOuterPredicates);
+                if (remainingLocalPredicate != null)
+                {
+                    op = new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingLocalPredicate, qualifiedTableSchema),
+                        TryCreateFilterBatchPlan(op, remainingLocalPredicate, qualifiedTableSchema));
+                }
             }
 
             return (op, qualifiedTableSchema);
@@ -6431,6 +6437,327 @@ public sealed class QueryPlanner
         }
 
         throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
+    }
+
+    private Expression? TryRewriteOuterPredicateForSimpleView(
+        SimpleTableRef viewRef,
+        SelectStatement viewStmt,
+        Expression? outerWhere)
+    {
+        if (outerWhere == null || !CanPushOuterPredicateIntoSimpleView(viewStmt))
+            return null;
+
+        var sourceSchema = ResolveCorrelationTableRefSchema(viewStmt.From);
+        if (!TryBuildSimpleViewOutputExpressionMap(viewStmt, sourceSchema, out var outputExpressionMap))
+            return null;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(outerWhere, conjuncts);
+
+        var rewrittenConjuncts = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (TryRewriteSimpleViewPredicateExpression(
+                    conjuncts[i],
+                    viewRef,
+                    outputExpressionMap,
+                    out var rewrittenConjunct))
+            {
+                rewrittenConjuncts.Add(rewrittenConjunct);
+            }
+        }
+
+        return CombineConjuncts(rewrittenConjuncts);
+    }
+
+    private static bool CanPushOuterPredicateIntoSimpleView(SelectStatement viewStmt)
+    {
+        if (viewStmt.IsDistinct ||
+            viewStmt.GroupBy != null ||
+            viewStmt.Having != null ||
+            viewStmt.OrderBy != null ||
+            viewStmt.Limit != null ||
+            viewStmt.Offset != null)
+        {
+            return false;
+        }
+
+        return !viewStmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
+    }
+
+    private static bool TryBuildSimpleViewOutputExpressionMap(
+        SelectStatement viewStmt,
+        TableSchema sourceSchema,
+        out Dictionary<string, Expression> outputExpressionMap)
+    {
+        outputExpressionMap = new Dictionary<string, Expression>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new Dictionary<string, Expression?>(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidate(string outputName, Expression sourceExpression)
+        {
+            if (candidates.TryGetValue(outputName, out var existing))
+            {
+                if (existing != null)
+                    candidates[outputName] = null;
+                return;
+            }
+
+            candidates[outputName] = sourceExpression;
+        }
+
+        int expressionIndex = 0;
+        for (int i = 0; i < viewStmt.Columns.Count; i++)
+        {
+            var column = viewStmt.Columns[i];
+            if (column.IsStar)
+            {
+                for (int sourceColumnIndex = 0; sourceColumnIndex < sourceSchema.Columns.Count; sourceColumnIndex++)
+                {
+                    AddCandidate(
+                        sourceSchema.Columns[sourceColumnIndex].Name,
+                        CreateSourceColumnExpression(sourceSchema, sourceColumnIndex));
+                }
+
+                continue;
+            }
+
+            if (column.Expression == null)
+                continue;
+
+            string outputName = InferColumnDef(column.Expression, column.Alias, sourceSchema, expressionIndex++).Name;
+            AddCandidate(outputName, column.Expression);
+        }
+
+        foreach (var (outputName, expression) in candidates)
+        {
+            if (expression != null)
+                outputExpressionMap[outputName] = expression;
+        }
+
+        return outputExpressionMap.Count > 0;
+    }
+
+    private static Expression CreateSourceColumnExpression(TableSchema sourceSchema, int columnIndex)
+    {
+        string columnName = sourceSchema.Columns[columnIndex].Name;
+        string? tableAlias = null;
+
+        if (sourceSchema.QualifiedMappings is { Count: > 0 } qualifiedMappings)
+        {
+            foreach (var (key, mappedIndex) in qualifiedMappings)
+            {
+                if (mappedIndex != columnIndex)
+                    continue;
+
+                int separator = key.IndexOf('.');
+                if (separator <= 0)
+                    continue;
+
+                string candidateAlias = key[..separator];
+                if (tableAlias == null)
+                {
+                    tableAlias = candidateAlias;
+                    continue;
+                }
+
+                if (!string.Equals(tableAlias, candidateAlias, StringComparison.OrdinalIgnoreCase))
+                {
+                    tableAlias = null;
+                    break;
+                }
+            }
+        }
+
+        return new ColumnRefExpression
+        {
+            TableAlias = tableAlias,
+            ColumnName = columnName,
+        };
+    }
+
+    private static bool TryRewriteSimpleViewPredicateExpression(
+        Expression expression,
+        SimpleTableRef viewRef,
+        IReadOnlyDictionary<string, Expression> outputExpressionMap,
+        out Expression rewritten)
+    {
+        switch (expression)
+        {
+            case LiteralExpression:
+            case ParameterExpression:
+                rewritten = expression;
+                return true;
+            case ColumnRefExpression columnRef:
+                if (!TargetsSimpleViewReference(columnRef, viewRef) ||
+                    !outputExpressionMap.TryGetValue(columnRef.ColumnName, out rewritten!))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                return true;
+            case BinaryExpression binary:
+                if (!TryRewriteSimpleViewPredicateExpression(binary.Left, viewRef, outputExpressionMap, out var rewrittenLeft) ||
+                    !TryRewriteSimpleViewPredicateExpression(binary.Right, viewRef, outputExpressionMap, out var rewrittenRight))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new BinaryExpression
+                {
+                    Op = binary.Op,
+                    Left = rewrittenLeft,
+                    Right = rewrittenRight,
+                };
+                return true;
+            case UnaryExpression unary:
+                if (!TryRewriteSimpleViewPredicateExpression(unary.Operand, viewRef, outputExpressionMap, out var rewrittenOperand))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new UnaryExpression
+                {
+                    Op = unary.Op,
+                    Operand = rewrittenOperand,
+                };
+                return true;
+            case CollateExpression collate:
+                if (!TryRewriteSimpleViewPredicateExpression(collate.Operand, viewRef, outputExpressionMap, out var rewrittenCollateOperand))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new CollateExpression
+                {
+                    Operand = rewrittenCollateOperand,
+                    Collation = collate.Collation,
+                };
+                return true;
+            case LikeExpression like:
+                if (!TryRewriteSimpleViewPredicateExpression(like.Operand, viewRef, outputExpressionMap, out var rewrittenLikeOperand) ||
+                    !TryRewriteSimpleViewPredicateExpression(like.Pattern, viewRef, outputExpressionMap, out var rewrittenPattern))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                Expression? rewrittenEscapeChar = null;
+                if (like.EscapeChar != null &&
+                    !TryRewriteSimpleViewPredicateExpression(like.EscapeChar, viewRef, outputExpressionMap, out rewrittenEscapeChar))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new LikeExpression
+                {
+                    Operand = rewrittenLikeOperand,
+                    Pattern = rewrittenPattern,
+                    EscapeChar = rewrittenEscapeChar,
+                    Negated = like.Negated,
+                };
+                return true;
+            case InExpression inExpression:
+            {
+                if (!TryRewriteSimpleViewPredicateExpression(inExpression.Operand, viewRef, outputExpressionMap, out var rewrittenInOperand))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                var rewrittenValues = new List<Expression>(inExpression.Values.Count);
+                for (int i = 0; i < inExpression.Values.Count; i++)
+                {
+                    if (!TryRewriteSimpleViewPredicateExpression(inExpression.Values[i], viewRef, outputExpressionMap, out var rewrittenValue))
+                    {
+                        rewritten = expression;
+                        return false;
+                    }
+
+                    rewrittenValues.Add(rewrittenValue);
+                }
+
+                rewritten = new InExpression
+                {
+                    Operand = rewrittenInOperand,
+                    Values = rewrittenValues,
+                    Negated = inExpression.Negated,
+                };
+                return true;
+            }
+            case BetweenExpression between:
+                if (!TryRewriteSimpleViewPredicateExpression(between.Operand, viewRef, outputExpressionMap, out var rewrittenBetweenOperand) ||
+                    !TryRewriteSimpleViewPredicateExpression(between.Low, viewRef, outputExpressionMap, out var rewrittenLow) ||
+                    !TryRewriteSimpleViewPredicateExpression(between.High, viewRef, outputExpressionMap, out var rewrittenHigh))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new BetweenExpression
+                {
+                    Operand = rewrittenBetweenOperand,
+                    Low = rewrittenLow,
+                    High = rewrittenHigh,
+                    Negated = between.Negated,
+                };
+                return true;
+            case IsNullExpression isNull:
+                if (!TryRewriteSimpleViewPredicateExpression(isNull.Operand, viewRef, outputExpressionMap, out var rewrittenIsNullOperand))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new IsNullExpression
+                {
+                    Operand = rewrittenIsNullOperand,
+                    Negated = isNull.Negated,
+                };
+                return true;
+            case FunctionCallExpression functionCall:
+            {
+                var rewrittenArguments = new List<Expression>(functionCall.Arguments.Count);
+                for (int i = 0; i < functionCall.Arguments.Count; i++)
+                {
+                    if (!TryRewriteSimpleViewPredicateExpression(functionCall.Arguments[i], viewRef, outputExpressionMap, out var rewrittenArgument))
+                    {
+                        rewritten = expression;
+                        return false;
+                    }
+
+                    rewrittenArguments.Add(rewrittenArgument);
+                }
+
+                rewritten = new FunctionCallExpression
+                {
+                    FunctionName = functionCall.FunctionName,
+                    Arguments = rewrittenArguments,
+                    IsDistinct = functionCall.IsDistinct,
+                    IsStarArg = functionCall.IsStarArg,
+                };
+                return true;
+            }
+            default:
+                rewritten = expression;
+                return false;
+        }
+    }
+
+    private static bool TargetsSimpleViewReference(ColumnRefExpression columnRef, SimpleTableRef viewRef)
+    {
+        if (string.IsNullOrEmpty(columnRef.TableAlias))
+            return true;
+
+        if (string.Equals(columnRef.TableAlias, viewRef.TableName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return viewRef.Alias != null &&
+               string.Equals(columnRef.TableAlias, viewRef.Alias, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool TryReorderInnerJoinChain(JoinTableRef join, Expression? outerWhere, out TableRef reordered)
@@ -6594,6 +6921,36 @@ public sealed class QueryPlanner
             .ToList();
 
         return CombineConjuncts(remainingConjuncts);
+    }
+
+    private Expression? RemoveRedundantInnerJoinLocalLeafPredicates(
+        JoinTableRef join,
+        Expression? outerWhere)
+    {
+        if (outerWhere == null)
+            return null;
+
+        var leaves = new List<ReorderableJoinLeaf>();
+        var predicates = new List<ReorderableJoinPredicate>();
+        int leafIndex = 0;
+        int predicateIndex = 0;
+        if (!TryCollectReorderableInnerJoinChain(join, leaves, predicates, ref leafIndex, ref predicateIndex))
+            return outerWhere;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(outerWhere, conjuncts);
+
+        var residualTerms = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryResolveReferencedJoinTables(conjuncts[i], leaves, out var referencedTables) ||
+                referencedTables.Count != 1)
+            {
+                residualTerms.Add(conjuncts[i]);
+            }
+        }
+
+        return CombineConjuncts(residualTerms);
     }
 
     private void ApplyLocalPredicateRowEstimates(
@@ -7846,16 +8203,11 @@ public sealed class QueryPlanner
         if (expression is not BinaryExpression { Op: BinaryOp.Equals } equalsExpr)
             return false;
 
-        if (equalsExpr.Left is not ColumnRefExpression leftColumn ||
-            equalsExpr.Right is not ColumnRefExpression rightColumn)
+        if (!TryResolveNormalizedJoinColumnIndex(equalsExpr.Left, compositeSchema, out int leftAbs) ||
+            !TryResolveNormalizedJoinColumnIndex(equalsExpr.Right, compositeSchema, out int rightAbs))
         {
             return false;
         }
-
-        int leftAbs = ResolveJoinColumnIndex(leftColumn, compositeSchema);
-        int rightAbs = ResolveJoinColumnIndex(rightColumn, compositeSchema);
-        if (leftAbs < 0 || rightAbs < 0)
-            return false;
 
         bool leftIsLeftInput = leftAbs < leftColumnCount;
         bool rightIsLeftInput = rightAbs < leftColumnCount;
@@ -7875,6 +8227,77 @@ public sealed class QueryPlanner
         }
 
         return leftKeyIndex >= 0 && rightKeyIndex >= 0;
+    }
+
+    private static bool TryResolveNormalizedJoinColumnIndex(
+        Expression expression,
+        TableSchema compositeSchema,
+        out int absoluteIndex)
+    {
+        absoluteIndex = -1;
+
+        switch (expression)
+        {
+            case ColumnRefExpression columnRef:
+                absoluteIndex = ResolveJoinColumnIndex(columnRef, compositeSchema);
+                return absoluteIndex >= 0;
+
+            case CollateExpression collate:
+                return TryResolveNormalizedJoinColumnIndex(collate.Operand, compositeSchema, out absoluteIndex);
+
+            case BinaryExpression { Op: BinaryOp.Plus } plus:
+                return (TryIsZeroLiteral(plus.Right) &&
+                        TryResolveNumericJoinColumnIndex(plus.Left, compositeSchema, out absoluteIndex)) ||
+                       (TryIsZeroLiteral(plus.Left) &&
+                        TryResolveNumericJoinColumnIndex(plus.Right, compositeSchema, out absoluteIndex));
+
+            case BinaryExpression { Op: BinaryOp.Minus } minus:
+                return TryIsZeroLiteral(minus.Right) &&
+                       TryResolveNumericJoinColumnIndex(minus.Left, compositeSchema, out absoluteIndex);
+
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryResolveNumericJoinColumnIndex(
+        Expression expression,
+        TableSchema compositeSchema,
+        out int absoluteIndex)
+    {
+        absoluteIndex = -1;
+        if (!TryResolveNormalizedJoinColumnIndex(expression, compositeSchema, out int resolvedIndex))
+            return false;
+
+        if (resolvedIndex < 0 || resolvedIndex >= compositeSchema.Columns.Count)
+            return false;
+
+        DbType columnType = compositeSchema.Columns[resolvedIndex].Type;
+        if (columnType is not (DbType.Integer or DbType.Real))
+            return false;
+
+        absoluteIndex = resolvedIndex;
+        return true;
+    }
+
+    private static bool TryIsZeroLiteral(Expression expression)
+    {
+        return expression switch
+        {
+            LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: long value } => value == 0,
+            LiteralExpression { LiteralType: TokenType.RealLiteral, Value: double value } => value == 0d,
+            UnaryExpression
+            {
+                Op: TokenType.Minus,
+                Operand: LiteralExpression { LiteralType: TokenType.IntegerLiteral, Value: long value }
+            } => value == 0,
+            UnaryExpression
+            {
+                Op: TokenType.Minus,
+                Operand: LiteralExpression { LiteralType: TokenType.RealLiteral, Value: double value }
+            } => value == 0d,
+            _ => false,
+        };
     }
 
     private static int ResolveJoinColumnIndex(ColumnRefExpression columnRef, TableSchema compositeSchema)
@@ -8729,14 +9152,25 @@ public sealed class QueryPlanner
             return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
-        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
-            return false;
 
         var baseSchema = _catalog.GetTable(simpleRef.TableName);
         if (baseSchema == null)
             return false;
         var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
         var serializer = GetReadSerializer(baseSchema);
+
+        if (!stmt.Columns.Any(c => c.IsStar) &&
+            TryBuildColumnProjection(stmt.Columns, schema, out var directProjectionColumnIndices, out var directOutputColumns) &&
+            TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+                simpleRef.TableName,
+                stmt,
+                schema,
+                directOutputColumns,
+                directProjectionColumnIndices,
+                out result))
+        {
+            return true;
+        }
 
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
             ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere)
@@ -8750,29 +9184,43 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
 
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
-                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
+            if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+                ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
         }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, op.OutputSchema, null, out result))
+                {
+                    return true;
+                }
+            }
+
             if (remainingWhere != null)
                 op = new FilterOperator(
                     op,
                     GetOrCompileSpanExpression(remainingWhere, schema),
                     TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
-            result = CreateQueryResult(op);
+            result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
 
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, outputCols, columnIndices, out result))
+                {
+                    return true;
+                }
+            }
+
             if (remainingWhere == null &&
                 op is IndexOrderedScanOperator orderedScan &&
                 TryBuildCoveredOrderedIndexProjectionOperator(
@@ -8782,7 +9230,7 @@ public sealed class QueryPlanner
                     outputCols,
                     out var coveredOrderedProjection))
             {
-                result = new QueryResult(coveredOrderedProjection);
+                result = CreateQueryResult(ApplyOffsetAndLimit(coveredOrderedProjection, stmt.Offset, stmt.Limit));
                 return true;
             }
 
@@ -8795,7 +9243,7 @@ public sealed class QueryPlanner
                     outputCols,
                     out var coveredHashedProjection))
             {
-                result = new QueryResult(coveredHashedProjection);
+                result = CreateQueryResult(ApplyOffsetAndLimit(coveredHashedProjection, stmt.Offset, stmt.Limit));
                 return true;
             }
 
@@ -8824,9 +9272,12 @@ public sealed class QueryPlanner
                     if (remainingWhere != null)
                         compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
                     if (batchPlan != null)
+                    {
                         compactOp.SetBatchPlan(batchPlan);
+                        ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
+                    }
 
-                    result = CreateQueryResult(compactOp);
+                    result = CreateQueryResult(ApplyOffsetAndLimit(compactOp, stmt.Offset, stmt.Limit));
                     return true;
                 }
             }
@@ -8851,7 +9302,7 @@ public sealed class QueryPlanner
                     TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
-            result = CreateQueryResult(op);
+            result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
 
@@ -8879,14 +9330,85 @@ public sealed class QueryPlanner
                 expressions,
                 compactSchema);
             if (compactBatchPlan != null)
+            {
                 compactExpressionOp.SetBatchPlan(compactBatchPlan);
+                ApplyBatchPlanPreDecodeFilters(compactExpressionOp, compactBatchPlan);
+            }
 
-            result = CreateQueryResult(compactExpressionOp);
+            result = CreateQueryResult(ApplyOffsetAndLimit(compactExpressionOp, stmt.Offset, stmt.Limit));
             return true;
         }
 
         // Expression projections fall back to the general path.
         return false;
+    }
+
+    private bool TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+        string tableName,
+        SelectStatement stmt,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        int[] projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (!PreferSyncPointLookups ||
+            stmt.Where == null ||
+            !CanUseSyncIndexedLookupShortcut(stmt))
+        {
+            return false;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(stmt.Where, conjuncts);
+        if (!TryPickCompositeLookupCandidate(
+                conjuncts,
+                schema,
+                _catalog.GetSqlIndexesForTable(tableName),
+                out var compositeIndex,
+                out long lookupKey,
+                out var keyColumnIndices,
+                out var keyComponents) ||
+            keyColumnIndices == null ||
+            keyComponents == null)
+        {
+            return false;
+        }
+
+        Expression? remainingWhere = BuildResidualTermsExcludingLookupKeyTerms(
+            conjuncts,
+            schema,
+            keyColumnIndices,
+            keyComponents);
+        if (remainingWhere != null ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices, schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        var expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+        if (!TryResolveSingleCachedIndexRowId(
+                _catalog.GetIndexStore(compositeIndex!.IndexName, _pager),
+                lookupKey,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload: false,
+                out bool foundRow,
+                out long rowId))
+        {
+            return false;
+        }
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices,
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
     }
 
     private bool TryMaterializeSyncIndexedLookupResult(
@@ -8899,11 +9421,20 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups ||
-            !TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+        if (!PreferSyncPointLookups)
         {
             return false;
         }
+
+        if (projectionColumnIndices != null &&
+            lookupOp is IndexScanOperator indexScan &&
+            TryMaterializeSyncCoveredIndexProjection(indexScan, schema, outputSchema, projectionColumnIndices, out result))
+        {
+            return true;
+        }
+
+        if (!TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+            return false;
 
         if (projectionColumnIndices == null)
         {
@@ -8946,6 +9477,82 @@ public sealed class QueryPlanner
 
         result = QueryResult.FromSyncLookup(projectedRow, outputSchema);
         return true;
+    }
+
+    private static bool TryMaterializeSyncCoveredIndexProjection(
+        IndexScanOperator indexScan,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (indexScan.ExpectedKeyColumnIndices is not { Length: > 0 } keyColumnIndices ||
+            indexScan.ExpectedKeyComponents is not { Length: > 0 } keyComponents ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices.ToArray(), schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        if (!TryResolveSingleCachedIndexRowId(indexScan, out bool foundRow, out long rowId))
+            return false;
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices.ToArray(),
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
+    }
+
+    private static QueryResult CreateSyncCoveredIndexProjectionResult(
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        bool foundRow,
+        long rowId)
+    {
+        if (!foundRow)
+            return QueryResult.FromSyncLookup(null, outputSchema);
+
+        var row = projectionColumnIndices.Length == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[projectionColumnIndices.Length];
+        int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
+        DbValue rowIdValue = DbValue.FromInteger(rowId);
+
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyIndex)
+            {
+                row[i] = rowIdValue;
+                continue;
+            }
+
+            int keyComponentIndex = -1;
+            for (int j = 0; j < keyColumnIndices.Length; j++)
+            {
+                if (keyColumnIndices[j] == columnIndex)
+                {
+                    keyComponentIndex = j;
+                    break;
+                }
+            }
+
+            if (keyComponentIndex < 0)
+                return QueryResult.FromSyncLookup(null, outputSchema);
+
+            row[i] = keyComponents[keyComponentIndex];
+        }
+
+        return QueryResult.FromSyncLookup(row, outputSchema);
     }
 
     private static bool TryGetSingleCachedLookupRowPayload(IOperator lookupOp, out ReadOnlyMemory<byte>? rowPayload)
@@ -9006,29 +9613,55 @@ public sealed class QueryPlanner
         out bool foundRow,
         out long rowId)
     {
+        return TryResolveSingleCachedIndexRowId(
+            indexScan.IndexStore,
+            indexScan.SeekValue,
+            indexScan.ExpectedKeyComponents,
+            indexScan.ExpectedKeyTextBytes,
+            indexScan.UsesOrderedTextPayload,
+            out foundRow,
+            out rowId);
+    }
+
+    private static bool TryResolveSingleCachedIndexRowId(
+        IIndexStore indexStore,
+        long seekValue,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
+        out bool foundRow,
+        out long rowId)
+    {
         foundRow = false;
         rowId = 0;
 
-        if (indexScan.IndexStore is not ICacheAwareIndexStore cacheAware ||
-            !cacheAware.TryFindCached(indexScan.SeekValue, out var cachedIndexPayload))
+        if (indexStore is not ICacheAwareIndexStore cacheAware ||
+            !cacheAware.TryFindCached(seekValue, out var cachedIndexPayload))
         {
             return false;
         }
 
         if (cachedIndexPayload is { Length: > 0 } &&
-            indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents &&
+            keyComponents is { Length: > 0 } &&
             HashedIndexPayloadCodec.TryGetSingleMatchingRowId(
                 cachedIndexPayload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out foundRow,
                 out rowId))
         {
             return true;
         }
 
-        if (!TryGetCachedIndexRowIdPayload(indexScan, cachedIndexPayload, out var rowIdPayload))
+        if (!TryGetCachedIndexRowIdPayload(
+                cachedIndexPayload,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload,
+                out var rowIdPayload))
+        {
             return false;
+        }
 
         if (rowIdPayload.IsEmpty)
             return true;
@@ -9042,8 +9675,10 @@ public sealed class QueryPlanner
     }
 
     private static bool TryGetCachedIndexRowIdPayload(
-        IndexScanOperator indexScan,
         byte[]? payload,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
         out ReadOnlyMemory<byte> rowIdPayload)
     {
         rowIdPayload = ReadOnlyMemory<byte>.Empty;
@@ -9051,9 +9686,9 @@ public sealed class QueryPlanner
         if (payload is not { Length: > 0 })
             return true;
 
-        if (indexScan.UsesOrderedTextPayload)
+        if (usesOrderedTextPayload)
         {
-            if (indexScan.ExpectedKeyComponents is [var keyComponent] &&
+            if (keyComponents is [var keyComponent] &&
                 keyComponent.Type == DbType.Text &&
                 OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                     payload,
@@ -9067,12 +9702,12 @@ public sealed class QueryPlanner
             return false;
         }
 
-        if (indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents)
+        if (keyComponents is { Length: > 0 })
         {
             rowIdPayload = HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                 payload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out var hashedRowIds)
                 ? hashedRowIds
                 : ReadOnlyMemory<byte>.Empty;
@@ -9082,6 +9717,10 @@ public sealed class QueryPlanner
         rowIdPayload = payload;
         return true;
     }
+
+    private static bool CanUseSyncIndexedLookupShortcut(SelectStatement stmt)
+        => stmt.Offset.GetValueOrDefault() == 0 &&
+           !stmt.Limit.HasValue;
 
     private static bool AreStrictlyAscendingUnique(ReadOnlySpan<int> values)
     {
@@ -9118,8 +9757,7 @@ public sealed class QueryPlanner
             return false;
         if (stmt.OrderBy is { Count: > 0 })
             return false;
-        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
-            return false;
+        bool hasRowWindow = stmt.Limit.HasValue || stmt.Offset.HasValue;
 
         var baseSchema = _catalog.GetTable(simpleRef.TableName);
         if (baseSchema == null)
@@ -9133,6 +9771,36 @@ public sealed class QueryPlanner
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
+            if (hasRowWindow)
+            {
+                if (remainingWhere != null &&
+                    TryExtractPushdownPredicates(remainingWhere, schema, out var starExtractedPredicates, out var starResidualWhere))
+                {
+                    remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
+                    var compactStarOp = BuildCompactSelectStarScanOperator(
+                        tableTree,
+                        schema,
+                        serializer,
+                        estimatedRowCount,
+                        starExtractedPredicates,
+                        remainingWhere);
+
+                    result = CreateQueryResult(ApplyOffsetAndLimit(compactStarOp, stmt.Offset, stmt.Limit));
+                    return true;
+                }
+
+                var compactRowWindowOp = BuildCompactSelectStarScanOperator(
+                    tableTree,
+                    schema,
+                    serializer,
+                    estimatedRowCount,
+                    null,
+                    remainingWhere);
+
+                result = CreateQueryResult(ApplyOffsetAndLimit(compactRowWindowOp, stmt.Offset, stmt.Limit));
+                return true;
+            }
+
             var scanOp = new TableScanOperator(
                 tableTree,
                 schema,
@@ -9152,6 +9820,7 @@ public sealed class QueryPlanner
                     GetOrCompileSpanExpression(remainingWhere, schema),
                     TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema));
 
+            op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
             result = CreateQueryResult(op);
             return true;
         }
@@ -9161,7 +9830,7 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
         }
 
         if (!TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
@@ -9190,20 +9859,17 @@ public sealed class QueryPlanner
                 estimatedRowCount);
 
             if (pushedPredicates is { Count: > 0 })
-            {
-                for (int i = 0; i < pushedPredicates.Count; i++)
-                {
-                    var predicate = pushedPredicates[i];
-                    compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-                }
-            }
+                ApplyPushdownPredicates(compactOp, pushedPredicates);
 
             if (remainingWhere != null)
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
             if (batchPlan != null)
+            {
                 compactOp.SetBatchPlan(batchPlan);
+                ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
+            }
 
-            result = CreateQueryResult(compactOp);
+            result = CreateQueryResult(ApplyOffsetAndLimit(compactOp, stmt.Offset, stmt.Limit));
             return true;
         }
 
@@ -9221,13 +9887,7 @@ public sealed class QueryPlanner
             estimatedRowCount);
 
         if (pushedPredicates is { Count: > 0 })
-        {
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                compactExpressionOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-        }
+            ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
 
         if (remainingWhere != null)
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
@@ -9238,10 +9898,124 @@ public sealed class QueryPlanner
             expressions,
             compactSchema);
         if (compactBatchPlan != null)
+        {
             compactExpressionOp.SetBatchPlan(compactBatchPlan);
+            ApplyBatchPlanPreDecodeFilters(compactExpressionOp, compactBatchPlan);
+        }
 
-        result = CreateQueryResult(compactExpressionOp);
+        result = CreateQueryResult(ApplyOffsetAndLimit(compactExpressionOp, stmt.Offset, stmt.Limit));
         return true;
+    }
+
+    private CompactTableScanProjectionOperator BuildCompactSelectStarScanOperator(
+        BTree tableTree,
+        TableSchema schema,
+        IRecordSerializer serializer,
+        int? estimatedRowCount,
+        List<PushdownPredicateSpec>? pushedPredicates,
+        Expression? remainingWhere)
+    {
+        int[] allColumnIndices = CreateIdentityColumnIndices(schema.Columns.Count);
+        var compactOp = new CompactTableScanProjectionOperator(
+            tableTree,
+            allColumnIndices,
+            allColumnIndices,
+            schema.Columns.ToArray(),
+            serializer,
+            estimatedRowCount);
+
+        if (pushedPredicates is { Count: > 0 })
+            ApplyPushdownPredicates(compactOp, pushedPredicates);
+
+        if (remainingWhere != null)
+        {
+            compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, schema));
+            var batchPlan = TryCreateCompactBatchPlan(remainingWhere, CreateIdentityProjectionExpressions(schema), schema);
+            if (batchPlan != null)
+            {
+                compactOp.SetBatchPlan(batchPlan);
+                ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
+            }
+        }
+
+        return compactOp;
+    }
+
+    private void ApplyPushdownPredicates(
+        IPreDecodeFilterSupport preDecodeFilterTarget,
+        IReadOnlyList<PushdownPredicateSpec> predicates)
+    {
+        for (int i = 0; i < predicates.Count; i++)
+        {
+            var predicate = predicates[i];
+            if (predicate.Kind == PreDecodeFilterKind.Comparison)
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+            else
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(
+                    _recordSerializer,
+                    predicate.ColumnIndex,
+                    isNotNull: predicate.Kind == PreDecodeFilterKind.IsNotNull));
+            }
+        }
+    }
+
+    private static Expression? RetainPushdownNullResidual(
+        Expression originalWhere,
+        Expression? residualWhere,
+        TableSchema schema)
+    {
+        if (residualWhere != null)
+            return residualWhere;
+
+        if (originalWhere is IsNullExpression singleNull &&
+            TryGetPushdownNullCheck(singleNull, schema, out _))
+        {
+            return originalWhere;
+        }
+
+        if (originalWhere is not BinaryExpression { Op: BinaryOp.And })
+            return null;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(originalWhere, conjuncts);
+
+        var retainedNullTerms = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (conjuncts[i] is IsNullExpression isNull &&
+                TryGetPushdownNullCheck(isNull, schema, out _))
+            {
+                retainedNullTerms.Add(conjuncts[i]);
+            }
+        }
+
+        return CombineConjuncts(retainedNullTerms);
+    }
+
+    private static int[] CreateIdentityColumnIndices(int count)
+    {
+        var indices = new int[count];
+        for (int i = 0; i < count; i++)
+            indices[i] = i;
+
+        return indices;
+    }
+
+    private static Expression[] CreateIdentityProjectionExpressions(TableSchema schema)
+    {
+        var expressions = new Expression[schema.Columns.Count];
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            expressions[i] = new ColumnRefExpression
+            {
+                ColumnName = schema.Columns[i].Name,
+            };
+        }
+
+        return expressions;
     }
 
     private IOperator? TryBuildIntegerIndexRangeScan(
@@ -9946,22 +10720,7 @@ public sealed class QueryPlanner
 
         if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
         {
-            for (int i = 0; i < predicates.Count; i++)
-            {
-                var predicate = predicates[i];
-                if (predicate.Kind == PreDecodeFilterKind.Comparison)
-                {
-                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-                }
-                else
-                {
-                    preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(
-                        _recordSerializer,
-                        predicate.ColumnIndex,
-                        isNotNull: predicate.Kind == PreDecodeFilterKind.IsNotNull));
-                }
-            }
-
+            ApplyPushdownPredicates(preDecodeFilterTarget, predicates);
             remaining = residual;
             return true;
         }

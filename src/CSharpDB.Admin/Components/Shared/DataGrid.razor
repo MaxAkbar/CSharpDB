@@ -1,10 +1,13 @@
 @using System.Diagnostics
+@using CSharpDB.Admin.Services
 @using CSharpDB.Admin.Helpers
 @using CSharpDB.Admin.Models
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject ModalService Modal
+@implements IAsyncDisposable
 
 <div class="grid-container">
     @if (_loading)
@@ -133,7 +136,7 @@
     }
 </div>
 
-@if (_totalRows > 0)
+@if (ShouldShowPaginationBar())
 {
     <div class="pagination-bar">
         <div class="page-size-select">
@@ -151,15 +154,15 @@
             <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
                 <i class="bi bi-chevron-left"></i>
             </button>
-            <span class="page-info">Page @_page of @TotalPages</span>
-            <button class="page-btn" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(_page + 1)">
+            <span class="page-info">@GetPageInfoText()</span>
+            <button class="page-btn" disabled="@(!CanGoToNextPage())" @onclick="() => GoToPage(_page + 1)">
                 <i class="bi bi-chevron-right"></i>
             </button>
-            <button class="page-btn" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(TotalPages)">
+            <button class="page-btn" disabled="@(!CanGoToLastPage())" @onclick="() => GoToPage(TotalPages)">
                 <i class="bi bi-chevron-double-right"></i>
             </button>
         </div>
-        <div class="row-count">@_totalRows rows</div>
+        <div class="row-count">@GetRowCountText()</div>
     </div>
 }
 
@@ -202,8 +205,17 @@
     private bool _sourceInitialized;
     private QueryPagingPlan? _queryPagingPlan;
     private TimeSpan? _lastQueryElapsed;
+    private bool _hasExactTotal;
+    private bool _hasNextPage;
+    private ForwardOnlyQueryCursor? _viewCursor;
+    private string? _viewCursorSql;
+    private readonly List<object?[]> _viewCursorLookaheadRows = new();
+    private int _viewCursorNextPage;
+    private bool _bypassViewCursorForNextLoad;
 
-    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize));
+    private int TotalPages => _hasExactTotal
+        ? Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize))
+        : _page + (_hasNextPage ? 1 : 0);
     private bool HasActiveFilters => _filters.Values.Any(value => !string.IsNullOrWhiteSpace(value));
 
     protected override async Task OnParametersSetAsync()
@@ -225,6 +237,7 @@
 
         if (sourceChanged)
         {
+            await DisposeViewCursorAsync();
             _page = 1;
             _sortCol = null;
             _sortAsc = true;
@@ -237,6 +250,9 @@
             _queryPagingPlan = null;
             _loadError = null;
             _lastQueryElapsed = null;
+            _hasExactTotal = false;
+            _hasNextPage = false;
+            _bypassViewCursorForNextLoad = false;
         }
 
         await LoadDataAsync();
@@ -254,7 +270,10 @@
         try
         {
             if (ShouldLoadAllRows())
+            {
+                await DisposeViewCursorAsync();
                 await LoadAllRowsAsync();
+            }
             else
                 await LoadCurrentPageAsync();
 
@@ -262,9 +281,12 @@
         }
         catch (Exception ex)
         {
+            await DisposeViewCursorAsync();
             _allRows = new();
             _rows = new();
             _totalRows = 0;
+            _hasExactTotal = true;
+            _hasNextPage = false;
             _loadError = ex.Message;
 
             if (QuerySql is null)
@@ -293,6 +315,7 @@
 
         if (ShouldLoadAllRows())
         {
+            await DisposeViewCursorAsync();
             if (!_loadedAllRows)
             {
                 await LoadDataAsync();
@@ -354,6 +377,7 @@
 
         if (ShouldLoadAllRows())
         {
+            await DisposeViewCursorAsync();
             if (!_loadedAllRows)
             {
                 await LoadDataAsync();
@@ -678,7 +702,21 @@
     // ─── Pagination ─────────────────
     private async Task GoToPage(int page)
     {
+        int currentPage = _page;
         _page = Math.Max(1, Math.Min(TotalPages, page));
+
+        if (ViewName is not null && _page != currentPage)
+        {
+            if (_page < currentPage)
+            {
+                _bypassViewCursorForNextLoad = true;
+                await DisposeViewCursorAsync();
+            }
+            else if (_viewCursor is not null && _viewCursorNextPage != _page)
+            {
+                await DisposeViewCursorAsync();
+            }
+        }
 
         if (_loadedAllRows)
         {
@@ -694,6 +732,7 @@
     private async Task OnPageSizeChanged()
     {
         _page = 1;
+        await DisposeViewCursorAsync();
 
         if (_loadedAllRows)
         {
@@ -712,6 +751,8 @@
     {
         _loadedAllRows = false;
         _lastQueryElapsed = null;
+        _hasExactTotal = false;
+        _hasNextPage = false;
 
         if (QuerySql is not null)
         {
@@ -733,7 +774,8 @@
         if (ViewName is not null)
         {
             string viewName = RequireIdentifier(ViewName);
-            await LoadServerPageAsync(viewName);
+            if (!await TryLoadViewCursorPageAsync(viewName))
+                await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true);
 
             Columns ??= Array.Empty<string>();
             ColumnTypes = null;
@@ -753,6 +795,7 @@
             throw new InvalidOperationException(countResult.Error);
 
         _totalRows = ReadCount(countResult);
+        _hasExactTotal = true;
         ClampPageToAvailableRows();
 
         var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName));
@@ -760,9 +803,100 @@
             throw new InvalidOperationException(queryResult.Error);
 
         _allRows = (queryResult.Rows ?? []).Select(r => new DataGridRow(r)).ToList();
+        _hasNextPage = _page < TotalPages;
 
         if (ViewName is not null)
             Columns = queryResult.ColumnNames ?? Array.Empty<string>();
+    }
+
+    private async Task LoadUnknownTotalSourcePageAsync(string sourceName, bool captureColumnNames = false)
+    {
+        while (true)
+        {
+            var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName, _pageSize + 1));
+            if (queryResult.Error is not null)
+                throw new InvalidOperationException(queryResult.Error);
+
+            if (captureColumnNames && (Columns is null || Columns.Length == 0))
+                Columns = queryResult.ColumnNames ?? Array.Empty<string>();
+
+            var rows = (queryResult.Rows ?? []).ToList();
+            if (_page > 1 && rows.Count == 0)
+            {
+                // The result set shrank underneath us; step back to the last non-empty page.
+                _page--;
+                continue;
+            }
+
+            ApplyOverfetchedPageRows(rows);
+            break;
+        }
+    }
+
+    private async Task<bool> TryLoadViewCursorPageAsync(string viewName)
+    {
+        if (_bypassViewCursorForNextLoad)
+        {
+            _bypassViewCursorForNextLoad = false;
+            return false;
+        }
+
+        string cursorSql = BuildStreamingSelectSql(viewName);
+        if (_page == 1)
+        {
+            await DisposeViewCursorAsync();
+            _viewCursor = await DbHolder.TryOpenForwardOnlyQueryCursorAsync(cursorSql);
+            if (_viewCursor is null)
+                return false;
+
+            _viewCursorSql = cursorSql;
+            _viewCursorNextPage = 1;
+            _viewCursorLookaheadRows.Clear();
+        }
+        else if (_viewCursor is null ||
+                 _viewCursorNextPage != _page ||
+                 !string.Equals(_viewCursorSql, cursorSql, StringComparison.Ordinal))
+        {
+            await DisposeViewCursorAsync();
+            return false;
+        }
+
+        if (Columns is null || Columns.Length == 0)
+            Columns = _viewCursor.ColumnNames;
+
+        await LoadViewCursorPageAsync();
+        return true;
+    }
+
+    private async Task LoadViewCursorPageAsync()
+    {
+        if (_viewCursor is null)
+            throw new InvalidOperationException("View cursor is not available.");
+
+        var rows = new List<object?[]>(_pageSize + 1);
+        if (_viewCursorLookaheadRows.Count > 0)
+        {
+            rows.AddRange(_viewCursorLookaheadRows);
+            _viewCursorLookaheadRows.Clear();
+        }
+
+        int remaining = (_pageSize + 1) - rows.Count;
+        if (remaining > 0)
+            rows.AddRange(await _viewCursor.ReadNextAsync(remaining));
+
+        _hasNextPage = rows.Count > _pageSize;
+        if (_hasNextPage)
+        {
+            _viewCursorLookaheadRows.Add(rows[^1]);
+            rows.RemoveAt(rows.Count - 1);
+            _viewCursorNextPage = _page + 1;
+        }
+        else
+        {
+            await DisposeViewCursorAsync();
+        }
+
+        ApplyPageRows(rows, hasNextPage: _hasNextPage);
     }
 
     private async Task LoadQueryPageAsync(string querySql)
@@ -772,30 +906,32 @@
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            string[] displayColumns = Columns ?? Array.Empty<string>();
-            QueryCountPlan countPlan = _queryPagingPlan.BuildCountPlan(_filters, displayColumns);
+            while (true)
+            {
+                string[] displayColumns = Columns ?? Array.Empty<string>();
+                // Over-fetch one row so ad-hoc SQL paging can stay responsive without blocking on COUNT(*).
+                var pageResult = await DbClient.ExecuteSqlAsync(
+                    _queryPagingPlan.BuildPageSql(_filters, _sortCol, _sortAsc, _pageSize + 1, _page, displayColumns));
+                if (pageResult.Error is not null)
+                    throw new InvalidOperationException(pageResult.Error);
 
-            var countResult = await DbClient.ExecuteSqlAsync(countPlan.Sql);
-            if (countResult.Error is not null)
-                throw new InvalidOperationException(countResult.Error);
+                if (Columns is null || Columns.Length == 0)
+                    Columns = pageResult.ColumnNames ?? Array.Empty<string>();
 
-            int rawCount = ReadCount(countResult);
-            _totalRows = countPlan.ApplyBasePagination
-                ? _queryPagingPlan.ApplyBasePaginationToCount(rawCount)
-                : rawCount;
+                ColumnTypes = null;
+                PrimaryKeyColumn = null;
 
-            ClampPageToAvailableRows();
+                var rows = (pageResult.Rows ?? []).ToList();
+                if (_page > 1 && rows.Count == 0)
+                {
+                    // The result set shrank underneath us; step back to the last non-empty page.
+                    _page--;
+                    continue;
+                }
 
-            var pageResult = await DbClient.ExecuteSqlAsync(
-                _queryPagingPlan.BuildPageSql(_filters, _sortCol, _sortAsc, _pageSize, _page, displayColumns));
-            if (pageResult.Error is not null)
-                throw new InvalidOperationException(pageResult.Error);
-
-            if (Columns is null || Columns.Length == 0)
-                Columns = pageResult.ColumnNames ?? Array.Empty<string>();
-            ColumnTypes = null;
-            PrimaryKeyColumn = null;
-            _allRows = (pageResult.Rows ?? []).Select(row => new DataGridRow(row)).ToList();
+                ApplyOverfetchedPageRows(rows);
+                break;
+            }
         }
         finally
         {
@@ -851,18 +987,44 @@
 
     private void ClampPageToAvailableRows()
     {
+        if (!_hasExactTotal)
+            return;
+
         int totalPages = TotalPages;
         if (_page > totalPages)
             _page = totalPages;
     }
 
-    private string BuildSelectSql(string sourceName)
+    private void ApplyOverfetchedPageRows(List<object?[]> rows)
+    {
+        _hasNextPage = rows.Count > _pageSize;
+        if (_hasNextPage)
+            rows.RemoveAt(rows.Count - 1);
+
+        ApplyPageRows(rows, _hasNextPage);
+    }
+
+    private void ApplyPageRows(List<object?[]> rows, bool hasNextPage)
+    {
+        _hasNextPage = hasNextPage;
+        _hasExactTotal = !hasNextPage;
+        _totalRows = _hasExactTotal
+            ? ((_page - 1) * _pageSize) + rows.Count
+            : (_page * _pageSize) + 1;
+        _allRows = rows.Select(row => new DataGridRow(row)).ToList();
+    }
+
+    private string BuildSelectSql(string sourceName, int? limit = null)
     {
         string whereClause = BuildWhereClause();
         string orderByClause = BuildOrderByClause();
         int offset = (_page - 1) * _pageSize;
-        return $"SELECT * FROM {sourceName}{whereClause}{orderByClause} LIMIT {_pageSize} OFFSET {offset}";
+        int pageLimit = limit ?? _pageSize;
+        return $"SELECT * FROM {sourceName}{whereClause}{orderByClause} LIMIT {pageLimit} OFFSET {offset}";
     }
+
+    private string BuildStreamingSelectSql(string sourceName)
+        => $"SELECT * FROM {sourceName}{BuildWhereClause()}{BuildOrderByClause()}";
 
     private string BuildCountSql(string sourceName)
         => $"SELECT COUNT(*) FROM {sourceName}{BuildWhereClause()}";
@@ -913,9 +1075,40 @@
             VisibleRows = _rows.Count,
             Page = _page,
             PageSize = _pageSize,
+            HasExactTotal = _hasExactTotal,
+            HasNextPage = _hasNextPage,
             Elapsed = _lastQueryElapsed,
             Error = _loadError,
         });
+    }
+
+    private bool ShouldShowPaginationBar()
+        => _page > 1 || _rows.Count > 0 || _hasNextPage || (_hasExactTotal && _totalRows > 0);
+
+    private bool CanGoToNextPage()
+        => _hasExactTotal
+            ? _page < TotalPages
+            : _hasNextPage;
+
+    private bool CanGoToLastPage()
+        => _hasExactTotal && _page < TotalPages;
+
+    private string GetPageInfoText()
+        => _hasExactTotal
+            ? $"Page {_page} of {TotalPages}"
+            : $"Page {_page}";
+
+    private string GetRowCountText()
+    {
+        if (_hasExactTotal)
+            return $"{_totalRows} rows";
+
+        if (_rows.Count == 0)
+            return "0 rows";
+
+        int firstRow = ((_page - 1) * _pageSize) + 1;
+        int lastRow = firstRow + _rows.Count - 1;
+        return $"Rows {firstRow}-{lastRow}{(_hasNextPage ? "+" : string.Empty)}";
     }
 
     private static int ReadCount(CSharpDB.Client.Models.SqlExecutionResult result)
@@ -994,6 +1187,17 @@
         return left.Equals(right);
     }
 
+    private async ValueTask DisposeViewCursorAsync()
+    {
+        if (_viewCursor is not null)
+            await _viewCursor.DisposeAsync();
+
+        _viewCursor = null;
+        _viewCursorSql = null;
+        _viewCursorNextPage = 0;
+        _viewCursorLookaheadRows.Clear();
+    }
+
     private static string RequireIdentifier(string identifier)
     {
         if (string.IsNullOrWhiteSpace(identifier))
@@ -1030,4 +1234,9 @@
         "BLOB" => "type-blob",
         _ => "type-other"
     };
+
+    public async ValueTask DisposeAsync()
+    {
+        await DisposeViewCursorAsync();
+    }
 }

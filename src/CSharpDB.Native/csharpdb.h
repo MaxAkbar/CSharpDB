@@ -47,6 +47,9 @@ typedef void* csharpdb_t;
 /** Opaque query result handle. */
 typedef void* csharpdb_result_t;
 
+/** Opaque prepared statement handle. */
+typedef void* csharpdb_stmt_t;
+
 /* ------------------------------------------------------------------ */
 /*  Column / value type codes (matches CSharpDB.Primitives.DbType)           */
 /* ------------------------------------------------------------------ */
@@ -85,6 +88,61 @@ void csharpdb_close(csharpdb_t db);
  * @return Result handle, or NULL on error.
  */
 csharpdb_result_t csharpdb_execute(csharpdb_t db, const char* sql);
+
+/**
+ * Prepare a reusable SQL statement.
+ * @param db   Database handle.
+ * @param sql  UTF-8 SQL string.
+ * @return Prepared statement handle, or NULL on error.
+ */
+csharpdb_stmt_t csharpdb_prepare(csharpdb_t db, const char* sql);
+
+/**
+ * Bind a 64-bit integer parameter by name.
+ * Parameter names may be passed with or without the leading '@'.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_int64(csharpdb_stmt_t stmt, const char* name, int64_t value);
+
+/**
+ * Bind a double parameter by name.
+ * Parameter names may be passed with or without the leading '@'.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_double(csharpdb_stmt_t stmt, const char* name, double value);
+
+/**
+ * Bind a UTF-8 text parameter by name.
+ * Parameter names may be passed with or without the leading '@'.
+ * Pass NULL for value to bind SQL NULL.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_text(csharpdb_stmt_t stmt, const char* name, const char* value);
+
+/**
+ * Bind SQL NULL by parameter name.
+ * Parameter names may be passed with or without the leading '@'.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_null(csharpdb_stmt_t stmt, const char* name);
+
+/**
+ * Clear all bound parameter values from the statement.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_clear_bindings(csharpdb_stmt_t stmt);
+
+/**
+ * Execute a prepared statement.
+ * @return Result handle, or NULL on error.
+ */
+csharpdb_result_t csharpdb_stmt_execute(csharpdb_stmt_t stmt);
+
+/**
+ * Free a prepared statement handle.
+ * Safe to call with NULL.
+ */
+void csharpdb_stmt_free(csharpdb_stmt_t stmt);
 
 /* ------------------------------------------------------------------ */
 /*  Result metadata                                                    */

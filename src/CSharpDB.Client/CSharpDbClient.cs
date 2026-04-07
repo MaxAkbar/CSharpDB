@@ -87,6 +87,35 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default) => _inner.InspectPageAsync(pageId, includeHex, databasePath, ct);
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default) => _inner.CheckIndexesAsync(databasePath, indexName, sampleSize, ct);
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
+    public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
+    {
+        if (_inner is not IEngineBackedClient engineBacked)
+            return null;
+
+        Database? db = await engineBacked.TryGetDatabaseAsync(ct);
+        if (db is null)
+            return null;
+
+        CSharpDB.Execution.QueryResult? result = null;
+        try
+        {
+            result = await db.ExecuteAsync(sql, ct);
+            if (!result.IsQuery)
+            {
+                await result.DisposeAsync();
+                return null;
+            }
+
+            return new ForwardOnlyQueryCursor(result);
+        }
+        catch
+        {
+            if (result is not null)
+                await result.DisposeAsync();
+            throw;
+        }
+    }
+
     public ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)
         => _inner is IEngineBackedClient engineBacked
             ? engineBacked.TryGetDatabaseAsync(ct)

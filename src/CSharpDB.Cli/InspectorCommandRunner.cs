@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Storage.Diagnostics;
+using Spectre.Console;
 
 namespace CSharpDB.Cli;
 
@@ -330,49 +331,61 @@ internal static class InspectorCommandRunner
 
     private static void WriteInspectSummary(DatabaseInspectReport report, TextWriter output)
     {
-        output.WriteLine($"Database: {report.DatabasePath}");
-        output.WriteLine($"File bytes: {report.Header.FileLengthBytes}, pages: {report.Header.PhysicalPageCount}");
-        output.WriteLine(
-            $"Header: magic={report.Header.Magic} ({Flag(report.Header.MagicValid)}), " +
-            $"version={report.Header.Version} ({Flag(report.Header.VersionValid)}), " +
-            $"pageSize={report.Header.PageSize} ({Flag(report.Header.PageSizeValid)})");
-        output.WriteLine(
-            $"Declared pages: {report.Header.DeclaredPageCount} " +
-            $"({Flag(report.Header.DeclaredPageCountMatchesPhysical)})");
-        output.WriteLine("Page types:");
-        foreach (var kvp in report.PageTypeHistogram.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
-            output.WriteLine($"  {kvp.Key,-10} {kvp.Value}");
-
+        var console = CliConsole.Create(output);
+        var summary = CliConsole.CreateKeyValueTable();
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddRow(new Markup("[bold]Database:[/]"), new Markup(CliConsole.Escape(report.DatabasePath)));
+        summary.AddRow(new Markup("[bold]File:[/]"), new Markup(CliConsole.Escape($"bytes={report.Header.FileLengthBytes}, pages={report.Header.PhysicalPageCount}")));
+        summary.AddRow(
+            new Markup("[bold]Header:[/]"),
+            new Markup(CliConsole.Escape(
+                $"magic={report.Header.Magic} ({Flag(report.Header.MagicValid)}), version={report.Header.Version} ({Flag(report.Header.VersionValid)}), pageSize={report.Header.PageSize} ({Flag(report.Header.PageSizeValid)})")));
+        summary.AddRow(
+            new Markup("[bold]Declared pages:[/]"),
+            new Markup(CliConsole.Escape($"{report.Header.DeclaredPageCount} ({Flag(report.Header.DeclaredPageCountMatchesPhysical)})")));
         if (report.Pages is not null)
-            output.WriteLine($"Detailed pages included: {report.Pages.Count}");
+            summary.AddRow(new Markup("[bold]Detailed pages:[/]"), new Markup(CliConsole.Escape(report.Pages.Count.ToString())));
+        console.Write(summary);
+        console.WriteLine();
 
+        var pageTypes = CliConsole.CreateDataTable();
+        pageTypes.AddColumn("[bold]Page Type[/]");
+        pageTypes.AddColumn("[bold]Count[/]");
+        foreach (var kvp in report.PageTypeHistogram.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+            pageTypes.AddRow(new Markup(CliConsole.Escape(kvp.Key)), new Markup(CliConsole.Escape(kvp.Value.ToString())));
+        console.Write(pageTypes);
         WriteIssues(report.Issues, output);
     }
 
     private static void WriteInspectPageSummary(PageInspectReport report, TextWriter output)
     {
-        output.WriteLine($"Database: {report.DatabasePath}");
-        output.WriteLine($"Page: {report.PageId}");
-        output.WriteLine($"Exists: {report.Exists}");
-
+        var console = CliConsole.Create(output);
+        var summary = CliConsole.CreateKeyValueTable();
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddRow(new Markup("[bold]Database:[/]"), new Markup(CliConsole.Escape(report.DatabasePath)));
+        summary.AddRow(new Markup("[bold]Page:[/]"), new Markup(CliConsole.Escape(report.PageId.ToString())));
+        summary.AddRow(new Markup("[bold]Exists:[/]"), new Markup(CliConsole.Escape(report.Exists.ToString())));
         if (report.Page is not null)
         {
-            output.WriteLine(
-                $"Type: {report.Page.PageTypeName} ({report.Page.PageTypeCode}), " +
-                $"cells={report.Page.CellCount}, freeSpace={report.Page.FreeSpaceBytes}");
-            output.WriteLine($"Cell content start: {report.Page.CellContentStart}");
-            output.WriteLine($"Right child / next leaf: {report.Page.RightChildOrNextLeaf}");
+            summary.AddRow(
+                new Markup("[bold]Type:[/]"),
+                new Markup(CliConsole.Escape($"{report.Page.PageTypeName} ({report.Page.PageTypeCode}), cells={report.Page.CellCount}, freeSpace={report.Page.FreeSpaceBytes}")));
+            summary.AddRow(new Markup("[bold]Cell content start:[/]"), new Markup(CliConsole.Escape(report.Page.CellContentStart.ToString())));
+            summary.AddRow(new Markup("[bold]Right child / next leaf:[/]"), new Markup(CliConsole.Escape(report.Page.RightChildOrNextLeaf.ToString())));
 
             if (report.Page.LeafCells is not null)
-                output.WriteLine($"Leaf cells: {report.Page.LeafCells.Count}");
+                summary.AddRow(new Markup("[bold]Leaf cells:[/]"), new Markup(CliConsole.Escape(report.Page.LeafCells.Count.ToString())));
             if (report.Page.InteriorCells is not null)
-                output.WriteLine($"Interior cells: {report.Page.InteriorCells.Count}");
+                summary.AddRow(new Markup("[bold]Interior cells:[/]"), new Markup(CliConsole.Escape(report.Page.InteriorCells.Count.ToString())));
         }
+        console.Write(summary);
 
         if (!string.IsNullOrWhiteSpace(report.HexDump))
         {
-            output.WriteLine();
-            output.WriteLine(report.HexDump);
+            console.WriteLine();
+            CliConsole.WriteSqlPanel(console, $"Page {report.PageId} Hex Dump", report.HexDump);
         }
 
         WriteIssues(report.Issues, output);
@@ -380,51 +393,71 @@ internal static class InspectorCommandRunner
 
     private static void WriteWalSummary(WalInspectReport report, TextWriter output)
     {
-        output.WriteLine($"Database: {report.DatabasePath}");
-        output.WriteLine($"WAL: {report.WalPath}");
-        output.WriteLine($"Exists: {report.Exists}");
+        var console = CliConsole.Create(output);
+        var summary = CliConsole.CreateKeyValueTable();
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddRow(new Markup("[bold]Database:[/]"), new Markup(CliConsole.Escape(report.DatabasePath)));
+        summary.AddRow(new Markup("[bold]WAL:[/]"), new Markup(CliConsole.Escape(report.WalPath)));
+        summary.AddRow(new Markup("[bold]Exists:[/]"), new Markup(CliConsole.Escape(report.Exists.ToString())));
 
         if (!report.Exists)
         {
-            output.WriteLine("No WAL file present.");
+            console.Write(summary);
+            CliConsole.WriteMuted(console, "No WAL file present.");
             return;
         }
 
-        output.WriteLine($"File bytes: {report.FileLengthBytes}");
-        output.WriteLine(
-            $"Header: magic={report.Magic} ({Flag(report.MagicValid)}), " +
-            $"version={report.Version} ({Flag(report.VersionValid)}), " +
-            $"pageSize={report.PageSize} ({Flag(report.PageSizeValid)})");
-        output.WriteLine($"Salts: {report.Salt1}, {report.Salt2}");
-        output.WriteLine($"Frames: full={report.FullFrameCount}, commits={report.CommitFrameCount}, trailingBytes={report.TrailingBytes}");
+        summary.AddRow(new Markup("[bold]File bytes:[/]"), new Markup(CliConsole.Escape(report.FileLengthBytes.ToString())));
+        summary.AddRow(
+            new Markup("[bold]Header:[/]"),
+            new Markup(CliConsole.Escape(
+                $"magic={report.Magic} ({Flag(report.MagicValid)}), version={report.Version} ({Flag(report.VersionValid)}), pageSize={report.PageSize} ({Flag(report.PageSizeValid)})")));
+        summary.AddRow(new Markup("[bold]Salts:[/]"), new Markup(CliConsole.Escape($"{report.Salt1}, {report.Salt2}")));
+        summary.AddRow(
+            new Markup("[bold]Frames:[/]"),
+            new Markup(CliConsole.Escape($"full={report.FullFrameCount}, commits={report.CommitFrameCount}, trailingBytes={report.TrailingBytes}")));
+        console.Write(summary);
 
         WriteIssues(report.Issues, output);
     }
 
     private static void WriteIndexSummary(IndexInspectReport report, TextWriter output)
     {
-        output.WriteLine($"Database: {report.DatabasePath}");
-        output.WriteLine($"Indexes checked: {report.Indexes.Count}");
+        var console = CliConsole.Create(output);
+        var summary = CliConsole.CreateKeyValueTable();
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddRow(new Markup("[bold]Database:[/]"), new Markup(CliConsole.Escape(report.DatabasePath)));
+        summary.AddRow(new Markup("[bold]Indexes checked:[/]"), new Markup(CliConsole.Escape(report.Indexes.Count.ToString())));
         if (!string.IsNullOrWhiteSpace(report.RequestedIndexName))
-            output.WriteLine($"Requested index: {report.RequestedIndexName}");
-        output.WriteLine($"Sample size: {report.SampleSize}");
+            summary.AddRow(new Markup("[bold]Requested index:[/]"), new Markup(CliConsole.Escape(report.RequestedIndexName)));
+        summary.AddRow(new Markup("[bold]Sample size:[/]"), new Markup(CliConsole.Escape(report.SampleSize.ToString())));
+        console.Write(summary);
 
         if (report.Indexes.Count > 0)
         {
-            output.WriteLine();
-            output.WriteLine("Index                              Table                     Root  RootOK TableOK ColsOK Reachable");
-            output.WriteLine("-----------------------------------------------------------------------------------------------------");
+            console.WriteLine();
+            var table = CliConsole.CreateDataTable();
+            table.AddColumn("[bold]Index[/]");
+            table.AddColumn("[bold]Table[/]");
+            table.AddColumn("[bold]Root[/]");
+            table.AddColumn("[bold]Root OK[/]");
+            table.AddColumn("[bold]Table OK[/]");
+            table.AddColumn("[bold]Cols OK[/]");
+            table.AddColumn("[bold]Reachable[/]");
             foreach (var item in report.Indexes)
             {
-                output.WriteLine(
-                    $"{Trim(item.IndexName, 34),-34} " +
-                    $"{Trim(item.TableName, 25),-25} " +
-                    $"{item.RootPage,5} " +
-                    $"{Bool(item.RootPageValid),6} " +
-                    $"{Bool(item.TableExists),7} " +
-                    $"{Bool(item.ColumnsExistInTable),6} " +
-                    $"{Bool(item.RootTreeReachable),9}");
+                table.AddRow(
+                    new Markup(CliConsole.Escape(Trim(item.IndexName, 34))),
+                    new Markup(CliConsole.Escape(Trim(item.TableName, 25))),
+                    new Markup(CliConsole.Escape(item.RootPage.ToString())),
+                    new Markup(CliConsole.Escape(Bool(item.RootPageValid))),
+                    new Markup(CliConsole.Escape(Bool(item.TableExists))),
+                    new Markup(CliConsole.Escape(Bool(item.ColumnsExistInTable))),
+                    new Markup(CliConsole.Escape(Bool(item.RootTreeReachable))));
             }
+            console.Write(table);
         }
 
         WriteIssues(report.Issues, output);
@@ -432,16 +465,22 @@ internal static class InspectorCommandRunner
 
     private static void WriteIssues(IReadOnlyList<IntegrityIssue> issues, TextWriter output)
     {
+        var console = CliConsole.Create(output);
         int errors = issues.Count(i => i.Severity == InspectSeverity.Error);
         int warnings = issues.Count(i => i.Severity == InspectSeverity.Warning);
         int info = issues.Count(i => i.Severity == InspectSeverity.Info);
 
-        output.WriteLine();
-        output.WriteLine($"Issues: errors={errors}, warnings={warnings}, info={info}");
+        console.WriteLine();
+        console.MarkupLine($"[bold]Issues:[/] errors={errors}, warnings={warnings}, info={info}");
 
         if (issues.Count == 0)
             return;
 
+        var table = CliConsole.CreateDataTable();
+        table.AddColumn("[bold]Severity[/]");
+        table.AddColumn("[bold]Code[/]");
+        table.AddColumn("[bold]Location[/]");
+        table.AddColumn("[bold]Message[/]");
         foreach (var issue in issues.OrderByDescending(i => i.Severity).ThenBy(i => i.Code, StringComparer.Ordinal))
         {
             string location = string.Empty;
@@ -449,8 +488,13 @@ internal static class InspectorCommandRunner
                 location += $" page={issue.PageId.Value}";
             if (issue.Offset.HasValue)
                 location += $" offset={issue.Offset.Value}";
-            output.WriteLine($"  [{issue.Severity}] {issue.Code}:{location} {issue.Message}");
+            table.AddRow(
+                new Markup(CliConsole.Escape(issue.Severity.ToString())),
+                new Markup(CliConsole.Escape(issue.Code)),
+                new Markup(CliConsole.Escape(location.Trim())),
+                new Markup(CliConsole.Escape(issue.Message)));
         }
+        console.Write(table);
     }
 
     private static string Bool(bool value) => value ? "yes" : "no";

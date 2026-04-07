@@ -4,8 +4,8 @@ using CSharpDB.Benchmarks.Infrastructure;
 namespace CSharpDB.Benchmarks.Micro;
 
 /// <summary>
-/// Measures scan-heavy projection shapes that now route through two internal
-/// batch lanes: compact table-scan plans and LIMIT-forced generic plans.
+/// Measures scan-heavy projection shapes that route through compact scan batch
+/// plans, including simple row-windowed variants.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(warmupCount: 2, iterationCount: 5)]
@@ -60,7 +60,7 @@ public class ScanProjectionBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "Generic scan batch plan: residual column projection + LIMIT")]
+    [Benchmark(Description = "Compact scan batch plan: residual column projection + LIMIT")]
     public async Task GenericResidualColumnProjection_WithLimit()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -68,7 +68,7 @@ public class ScanProjectionBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "Generic scan batch plan: expression projection + LIMIT (20% selectivity)")]
+    [Benchmark(Description = "Compact scan batch plan: expression projection + LIMIT (20% selectivity)")]
     public async Task GenericExpressionProjection_20Pct_WithLimit()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -76,7 +76,7 @@ public class ScanProjectionBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "Generic scan batch plan: IN expression projection + LIMIT")]
+    [Benchmark(Description = "Compact scan batch plan: IN expression projection + LIMIT")]
     public async Task GenericInExpressionProjection_WithLimit()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -84,7 +84,7 @@ public class ScanProjectionBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "Generic scan batch plan: NOT IN expression projection + LIMIT")]
+    [Benchmark(Description = "Compact scan batch plan: NOT IN expression projection + LIMIT")]
     public async Task GenericNotInExpressionProjection_WithLimit()
     {
         await using var result = await _bench.Db.ExecuteAsync(

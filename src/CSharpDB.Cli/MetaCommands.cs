@@ -1,6 +1,7 @@
 using CSharpDB.Client.Models;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
+using Spectre.Console;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
@@ -24,23 +25,63 @@ internal sealed class HelpCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
-        output.WriteLine($"{Ansi.Bold}Available commands:{Ansi.Reset}");
-        output.WriteLine($"  {Ansi.Colorize(".quit", Ansi.Cyan),-24} {Ansi.Colorize("Exit the shell", Ansi.Dim)}");
-        output.WriteLine($"  {Ansi.Colorize(".exit", Ansi.Cyan),-24} {Ansi.Colorize("Alias for .quit", Ansi.Dim)}");
+        var console = CliConsole.Create(output);
 
-        foreach (var cmd in _commands.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+        var groups = new (string Title, (string Command, string Description)[] Items)[]
         {
-            string name = Ansi.Colorize(cmd.Name, Ansi.Cyan);
-            string desc = Ansi.Colorize(cmd.Description, Ansi.Dim);
-            output.WriteLine($"  {name,-24} {desc}");
+            ("Shell", [
+                (".help", "Show this help message"),
+                (".quit / .exit", "Exit the shell"),
+                (".timing", "Toggle query timing display"),
+                (".read <FILE>", "Execute SQL from a script file"),
+            ]),
+            ("Inspection", GetCommandGroup([".info", ".tables", ".schema", ".indexes",
+                ".views", ".view", ".triggers", ".trigger", ".collections"])),
+            ("Transactions", GetCommandGroup([".begin", ".commit", ".rollback"])),
+            ("Snapshots", GetCommandGroup([".snapshot", ".syncpoint"])),
+            ("Maintenance", GetCommandGroup([".checkpoint", ".backup", ".restore",
+                ".reindex", ".vacuum", ".migrate-fks"])),
+        };
+
+        foreach (var (title, items) in groups)
+        {
+            if (items.Length == 0)
+                continue;
+
+            console.Write(new Rule($"[bold deepskyblue1]{title}[/]").LeftJustified().RuleStyle("grey42"));
+
+            var table = new Table()
+                .Border(TableBorder.None)
+                .HideHeaders()
+                .AddColumn(new TableColumn(string.Empty).PadRight(2))
+                .AddColumn(new TableColumn(string.Empty));
+
+            foreach (var (cmd, desc) in items)
+                table.AddRow(
+                    new Markup($"  [deepskyblue1]{CliConsole.Escape(cmd)}[/]"),
+                    new Markup($"[grey]{CliConsole.Escape(desc)}[/]"));
+
+            console.Write(table);
         }
 
-        output.WriteLine();
-        output.WriteLine($"{Ansi.Bold}SQL:{Ansi.Reset}");
-        output.WriteLine(Ansi.Colorize("  Enter SQL statements terminated with a semicolon (;).", Ansi.Dim));
-        output.WriteLine(Ansi.Colorize("  Trigger bodies are handled as a single statement.", Ansi.Dim));
-        output.WriteLine(Ansi.Colorize("  Multi-line input and multi-statement lines are supported.", Ansi.Dim));
+        console.WriteLine();
+        console.Write(new Rule("[bold deepskyblue1]SQL[/]").LeftJustified().RuleStyle("grey42"));
+        CliConsole.WriteMuted(console, "  Enter SQL statements terminated with a semicolon (;).");
+        CliConsole.WriteMuted(console, "  Multi-line input, multi-statement lines, and trigger bodies are supported.");
         return ValueTask.CompletedTask;
+    }
+
+    private (string Command, string Description)[] GetCommandGroup(string[] aliases)
+    {
+        var items = new List<(string Command, string Description)>();
+        foreach (string alias in aliases)
+        {
+            var cmd = _commands.FirstOrDefault(c => c.Aliases.Contains(alias, StringComparer.OrdinalIgnoreCase));
+            if (cmd is not null)
+                items.Add((cmd.Name, cmd.Description));
+        }
+
+        return items.ToArray();
     }
 }
 
@@ -52,7 +93,24 @@ internal sealed class InfoCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         var info = await context.Client.GetInfoAsync(ct);
+
+        console.Write(new Rule("[bold deepskyblue1]Database[/]").LeftJustified().RuleStyle("grey42"));
+
+        var dbTable = CliConsole.CreateKeyValueTable();
+        dbTable.AddColumn(new TableColumn(string.Empty).PadRight(2));
+        dbTable.AddColumn(new TableColumn(string.Empty));
+        dbTable.AddRow(new Markup("  [grey]Path:[/]"), new Markup($"[white]{CliConsole.Escape(context.DatabasePath)}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Tables:[/]"), new Markup($"[deepskyblue1]{info.TableCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Indexes:[/]"), new Markup($"[deepskyblue1]{info.IndexCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Views:[/]"), new Markup($"[deepskyblue1]{info.ViewCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Triggers:[/]"), new Markup($"[deepskyblue1]{info.TriggerCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Collections:[/]"), new Markup($"[deepskyblue1]{info.CollectionCount}[/]"));
+        console.Write(dbTable);
+
+        console.Write(new Rule("[bold deepskyblue1]Session[/]").LeftJustified().RuleStyle("grey42"));
+
         string snapshotStatus = context.SupportsLocalDirectFeatures
             ? (context.SnapshotEnabled ? "on" : "off")
             : "unavailable";
@@ -60,16 +118,27 @@ internal sealed class InfoCommand : IMetaCommand
             ? (context.PreferSyncPointLookups ? "on" : "off")
             : "unavailable";
 
-        output.WriteLine($"{Ansi.Bold}Database:{Ansi.Reset} {Ansi.Cyan}{context.DatabasePath}{Ansi.Reset}");
-        output.WriteLine($"{Ansi.Bold}Objects:{Ansi.Reset} " +
-                         $"tables={info.TableCount}, indexes={info.IndexCount}, views={info.ViewCount}, " +
-                         $"triggers={info.TriggerCount}, collections={info.CollectionCount}");
-        output.WriteLine($"{Ansi.Bold}Modes:{Ansi.Reset} " +
-                         $"timing={(context.ShowTiming ? "on" : "off")}, " +
-                         $"snapshot={snapshotStatus}, " +
-                         $"syncpoint={syncPointStatus}, " +
-                         $"tx={(context.InExplicitTransaction ? "active" : "none")}");
+        var modeTable = CliConsole.CreateKeyValueTable();
+        modeTable.AddColumn(new TableColumn(string.Empty).PadRight(2));
+        modeTable.AddColumn(new TableColumn(string.Empty));
+        modeTable.AddRow(new Markup("  [grey]Timing:[/]"), FormatToggle(context.ShowTiming));
+        modeTable.AddRow(new Markup("  [grey]Snapshot:[/]"), FormatStatus(snapshotStatus));
+        modeTable.AddRow(new Markup("  [grey]Sync point:[/]"), FormatStatus(syncPointStatus));
+        modeTable.AddRow(new Markup("  [grey]Transaction:[/]"), context.InExplicitTransaction
+            ? new Markup("[bold yellow]active[/]")
+            : new Markup("[grey]none[/]"));
+        console.Write(modeTable);
     }
+
+    private static Markup FormatToggle(bool value)
+        => value ? new Markup("[green]on[/]") : new Markup("[grey]off[/]");
+
+    private static Markup FormatStatus(string status) => status switch
+    {
+        "on" => new Markup("[green]on[/]"),
+        "off" => new Markup("[grey]off[/]"),
+        _ => new Markup("[dim grey]unavailable[/]"),
+    };
 }
 
 internal sealed class TablesCommand : IMetaCommand
@@ -80,6 +149,7 @@ internal sealed class TablesCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         bool includeInternal = argument.Equals("--all", StringComparison.OrdinalIgnoreCase);
         string? pattern = includeInternal || string.IsNullOrWhiteSpace(argument) ? null : argument.Trim();
 
@@ -91,14 +161,7 @@ internal sealed class TablesCommand : IMetaCommand
             names = names.Where(n => n.Contains(pattern, StringComparison.OrdinalIgnoreCase));
 
         var ordered = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (ordered.Length == 0)
-        {
-            output.WriteLine(Ansi.Colorize("No tables.", Ansi.Dim));
-            return;
-        }
-
-        foreach (var name in ordered)
-            output.WriteLine($"  {Ansi.Cyan}{name}{Ansi.Reset}");
+        CliConsole.WriteNameList(console, ordered, "No tables.");
     }
 }
 
@@ -110,15 +173,16 @@ internal sealed class SchemaCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (string.IsNullOrWhiteSpace(argument))
         {
-            await PrintAllSchemasAsync(context, output, includeInternal: false, ct);
+            await PrintAllSchemasAsync(context, console, includeInternal: false, ct);
             return;
         }
 
         if (argument.Equals("--all", StringComparison.OrdinalIgnoreCase))
         {
-            await PrintAllSchemasAsync(context, output, includeInternal: true, ct);
+            await PrintAllSchemasAsync(context, console, includeInternal: true, ct);
             return;
         }
 
@@ -128,16 +192,16 @@ internal sealed class SchemaCommand : IMetaCommand
 
         if (schema is null)
         {
-            output.WriteLine(Ansi.Colorize($"Table '{argument}' not found.", Ansi.Red));
+            CliConsole.WriteError(console, $"Table '{argument}' not found.");
             return;
         }
 
-        PrintSingleTableSchema(schema, output);
+        PrintSingleTableSchema(schema, console);
     }
 
     private static async ValueTask PrintAllSchemasAsync(
         MetaCommandContext context,
-        TextWriter output,
+        IAnsiConsole console,
         bool includeInternal,
         CancellationToken ct)
     {
@@ -145,7 +209,7 @@ internal sealed class SchemaCommand : IMetaCommand
         var ordered = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
         if (ordered.Length == 0)
         {
-            output.WriteLine(Ansi.Colorize("No tables.", Ansi.Dim));
+            CliConsole.WriteMuted(console, "No tables.");
             return;
         }
 
@@ -155,14 +219,15 @@ internal sealed class SchemaCommand : IMetaCommand
             if (schema is null)
                 continue;
 
-            PrintSingleTableSchema(schema, output);
-            output.WriteLine();
+            PrintSingleTableSchema(schema, console);
+            console.WriteLine();
         }
     }
 
-    private static void PrintSingleTableSchema(ClientTableSchema schema, TextWriter output)
+    private static void PrintSingleTableSchema(ClientTableSchema schema, IAnsiConsole console)
     {
-        output.WriteLine($"{Ansi.Bold}CREATE TABLE{Ansi.Reset} {Ansi.Cyan}{schema.TableName}{Ansi.Reset} (");
+        var sql = new System.Text.StringBuilder();
+        sql.AppendLine($"CREATE TABLE {schema.TableName} (");
 
         for (int i = 0; i < schema.Columns.Count; i++)
         {
@@ -170,25 +235,26 @@ internal sealed class SchemaCommand : IMetaCommand
             bool hasTrailingItems = i < schema.Columns.Count - 1 || schema.ForeignKeys.Count > 0;
             string comma = hasTrailingItems ? "," : string.Empty;
 
-            string type = Ansi.Colorize(col.Type.ToString().ToUpperInvariant(), Ansi.Yellow);
-            string pk = col.IsPrimaryKey ? Ansi.Colorize(" PRIMARY KEY", Ansi.Magenta) : string.Empty;
-            string identity = col.IsIdentity ? Ansi.Colorize(" IDENTITY", Ansi.Magenta) : string.Empty;
-            string nn = !col.Nullable ? Ansi.Colorize(" NOT NULL", Ansi.Magenta) : string.Empty;
+            string type = col.Type.ToString().ToUpperInvariant();
+            string pk = col.IsPrimaryKey ? " PRIMARY KEY" : string.Empty;
+            string identity = col.IsIdentity ? " IDENTITY" : string.Empty;
+            string nn = !col.Nullable ? " NOT NULL" : string.Empty;
             string foreignKey = string.Empty;
             ClientForeignKeyDefinition? columnForeignKey = schema.ForeignKeys.FirstOrDefault(fk =>
                 fk.ColumnName.Equals(col.Name, StringComparison.OrdinalIgnoreCase));
             if (columnForeignKey is not null)
             {
                 foreignKey =
-                    $" {Ansi.Colorize("REFERENCES", Ansi.Magenta)} {Ansi.Cyan}{columnForeignKey.ReferencedTableName}{Ansi.Reset}({columnForeignKey.ReferencedColumnName})";
+                    $" REFERENCES {columnForeignKey.ReferencedTableName}({columnForeignKey.ReferencedColumnName})";
                 if (columnForeignKey.OnDelete == ClientForeignKeyOnDeleteAction.Cascade)
-                    foreignKey += $" {Ansi.Colorize("ON DELETE CASCADE", Ansi.Magenta)}";
+                    foreignKey += " ON DELETE CASCADE";
             }
 
-            output.WriteLine($"  {col.Name} {type}{pk}{identity}{nn}{foreignKey}{comma}");
+            sql.AppendLine($"  {col.Name} {type}{pk}{identity}{nn}{foreignKey}{comma}");
         }
 
-        output.WriteLine(");");
+        sql.Append(");");
+        CliConsole.WriteSqlPanel(console, schema.TableName, sql.ToString());
     }
 }
 
@@ -200,6 +266,7 @@ internal sealed class IndexesCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         IEnumerable<ClientIndexSchema> indexes = await context.Client.GetIndexesAsync(ct);
         if (!string.IsNullOrWhiteSpace(argument))
             indexes = indexes.Where(i => i.TableName.Equals(argument.Trim(), StringComparison.OrdinalIgnoreCase));
@@ -207,16 +274,24 @@ internal sealed class IndexesCommand : IMetaCommand
         var ordered = indexes.OrderBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase).ToArray();
         if (ordered.Length == 0)
         {
-            output.WriteLine(Ansi.Colorize("No indexes.", Ansi.Dim));
+            CliConsole.WriteMuted(console, "No indexes.");
             return;
         }
 
+        var table = CliConsole.CreateDataTable();
+        table.AddColumn("[bold]Index[/]");
+        table.AddColumn("[bold]Table[/]");
+        table.AddColumn("[bold]Columns[/]");
+        table.AddColumn("[bold]Flags[/]");
         foreach (var idx in ordered)
         {
-            string unique = idx.IsUnique ? Ansi.Colorize(" UNIQUE", Ansi.Magenta) : string.Empty;
-            string cols = string.Join(", ", idx.Columns);
-            output.WriteLine($"  {Ansi.Cyan}{idx.IndexName}{Ansi.Reset} ON {idx.TableName} ({cols}){unique}");
+            table.AddRow(
+                new Markup($"[deepskyblue1]{CliConsole.Escape(idx.IndexName)}[/]"),
+                new Markup(CliConsole.Escape(idx.TableName)),
+                new Markup(CliConsole.Escape(string.Join(", ", idx.Columns))),
+                new Markup(idx.IsUnique ? "[fuchsia]UNIQUE[/]" : "[grey]-[/]"));
         }
+        console.Write(table);
     }
 }
 
@@ -228,18 +303,12 @@ internal sealed class ViewsCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         var views = (await context.Client.GetViewNamesAsync(ct))
             .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (views.Length == 0)
-        {
-            output.WriteLine(Ansi.Colorize("No views.", Ansi.Dim));
-            return;
-        }
-
-        foreach (var view in views)
-            output.WriteLine($"  {Ansi.Cyan}{view}{Ansi.Reset}");
+        CliConsole.WriteNameList(console, views, "No views.");
     }
 }
 
@@ -251,9 +320,10 @@ internal sealed class ViewCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (string.IsNullOrWhiteSpace(argument))
         {
-            output.WriteLine(Ansi.Colorize("Usage: .view <NAME>", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Usage: .view <NAME>");
             return;
         }
 
@@ -261,12 +331,11 @@ internal sealed class ViewCommand : IMetaCommand
         string? sql = await context.Client.GetViewSqlAsync(name, ct);
         if (sql is null)
         {
-            output.WriteLine(Ansi.Colorize($"View '{name}' not found.", Ansi.Red));
+            CliConsole.WriteError(console, $"View '{name}' not found.");
             return;
         }
 
-        output.WriteLine($"{Ansi.Bold}CREATE VIEW{Ansi.Reset} {Ansi.Cyan}{name}{Ansi.Reset} AS");
-        output.WriteLine(sql.Trim().TrimEnd(';') + ";");
+        CliConsole.WriteSqlPanel(console, name, $"CREATE VIEW {name} AS{Environment.NewLine}{sql.Trim().TrimEnd(';')};");
     }
 }
 
@@ -278,6 +347,7 @@ internal sealed class TriggersCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         IEnumerable<ClientTriggerSchema> triggers = await context.Client.GetTriggersAsync(ct);
         if (!string.IsNullOrWhiteSpace(argument))
             triggers = triggers.Where(t => t.TableName.Equals(argument.Trim(), StringComparison.OrdinalIgnoreCase));
@@ -285,16 +355,24 @@ internal sealed class TriggersCommand : IMetaCommand
         var ordered = triggers.OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase).ToArray();
         if (ordered.Length == 0)
         {
-            output.WriteLine(Ansi.Colorize("No triggers.", Ansi.Dim));
+            CliConsole.WriteMuted(console, "No triggers.");
             return;
         }
 
+        var table = CliConsole.CreateDataTable();
+        table.AddColumn("[bold]Trigger[/]");
+        table.AddColumn("[bold]Timing[/]");
+        table.AddColumn("[bold]Event[/]");
+        table.AddColumn("[bold]Table[/]");
         foreach (var trig in ordered)
         {
-            output.WriteLine(
-                $"  {Ansi.Cyan}{trig.TriggerName}{Ansi.Reset} " +
-                $"{trig.Timing.ToString().ToUpperInvariant()} {trig.Event.ToString().ToUpperInvariant()} ON {trig.TableName}");
+            table.AddRow(
+                new Markup($"[deepskyblue1]{CliConsole.Escape(trig.TriggerName)}[/]"),
+                new Markup(CliConsole.Escape(trig.Timing.ToString().ToUpperInvariant())),
+                new Markup(CliConsole.Escape(trig.Event.ToString().ToUpperInvariant())),
+                new Markup(CliConsole.Escape(trig.TableName)));
         }
+        console.Write(table);
     }
 }
 
@@ -306,9 +384,10 @@ internal sealed class TriggerCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (string.IsNullOrWhiteSpace(argument))
         {
-            output.WriteLine(Ansi.Colorize("Usage: .trigger <NAME>", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Usage: .trigger <NAME>");
             return;
         }
 
@@ -318,16 +397,14 @@ internal sealed class TriggerCommand : IMetaCommand
 
         if (trigger is null)
         {
-            output.WriteLine(Ansi.Colorize($"Trigger '{name}' not found.", Ansi.Red));
+            CliConsole.WriteError(console, $"Trigger '{name}' not found.");
             return;
         }
 
-        output.WriteLine(
-            $"{Ansi.Bold}CREATE TRIGGER{Ansi.Reset} {Ansi.Cyan}{trigger.TriggerName}{Ansi.Reset} " +
-            $"{trigger.Timing.ToString().ToUpperInvariant()} {trigger.Event.ToString().ToUpperInvariant()} ON {trigger.TableName}");
-        output.WriteLine("BEGIN");
-        output.WriteLine($"  {trigger.BodySql.Trim().TrimEnd(';')};");
-        output.WriteLine("END;");
+        CliConsole.WriteSqlPanel(
+            console,
+            trigger.TriggerName,
+            $"CREATE TRIGGER {trigger.TriggerName} {trigger.Timing.ToString().ToUpperInvariant()} {trigger.Event.ToString().ToUpperInvariant()} ON {trigger.TableName}{Environment.NewLine}BEGIN{Environment.NewLine}  {trigger.BodySql.Trim().TrimEnd(';')};{Environment.NewLine}END;");
     }
 }
 
@@ -339,18 +416,12 @@ internal sealed class CollectionsCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         var names = (await context.Client.GetCollectionNamesAsync(ct))
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (names.Length == 0)
-        {
-            output.WriteLine(Ansi.Colorize("No collections.", Ansi.Dim));
-            return;
-        }
-
-        foreach (var name in names)
-            output.WriteLine($"  {Ansi.Cyan}{name}{Ansi.Reset}");
+        CliConsole.WriteNameList(console, names, "No collections.");
     }
 }
 
@@ -362,8 +433,9 @@ internal sealed class BeginTransactionCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         await context.BeginTransactionAsync(ct);
-        output.WriteLine(Ansi.Colorize("Transaction started.", Ansi.Green));
+        CliConsole.WriteSuccess(console, "Transaction started.");
     }
 }
 
@@ -375,8 +447,9 @@ internal sealed class CommitCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         await context.CommitAsync(ct);
-        output.WriteLine(Ansi.Colorize("Transaction committed.", Ansi.Green));
+        CliConsole.WriteSuccess(console, "Transaction committed.");
     }
 }
 
@@ -388,8 +461,9 @@ internal sealed class RollbackCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         await context.RollbackAsync(ct);
-        output.WriteLine(Ansi.Colorize("Transaction rolled back.", Ansi.Green));
+        CliConsole.WriteSuccess(console, "Transaction rolled back.");
     }
 }
 
@@ -401,8 +475,9 @@ internal sealed class CheckpointCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         await context.CheckpointAsync(ct);
-        output.WriteLine(Ansi.Colorize("Checkpoint completed.", Ansi.Green));
+        CliConsole.WriteSuccess(console, "Checkpoint completed.");
     }
 }
 
@@ -414,21 +489,20 @@ internal sealed class BackupCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!MetaCommandHelpers.TryParseBackupArgument(argument, out string? destinationPath, out bool withManifest, out string? error))
         {
-            output.WriteLine(Ansi.Colorize(error ?? "Usage: .backup <FILE> [--with-manifest]", Ansi.Yellow));
+            CliConsole.WriteWarning(console, error ?? "Usage: .backup <FILE> [--with-manifest]");
             return;
         }
 
         var result = await context.BackupAsync(destinationPath!, withManifest, ct);
-        output.WriteLine(Ansi.Colorize($"Backup saved to {result.DestinationPath}.", Ansi.Green));
-        output.WriteLine(Ansi.Colorize(
-            $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}.",
-            Ansi.Dim));
-        output.WriteLine(Ansi.Colorize($"SHA-256={result.Sha256}", Ansi.Dim));
+        CliConsole.WriteSuccess(console, $"Backup saved to {result.DestinationPath}.");
+        CliConsole.WriteMuted(console, $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}.");
+        CliConsole.WriteMuted(console, $"SHA-256={result.Sha256}");
 
         if (!string.IsNullOrWhiteSpace(result.ManifestPath))
-            output.WriteLine(Ansi.Colorize($"Manifest: {result.ManifestPath}", Ansi.Dim));
+            CliConsole.WriteMuted(console, $"Manifest: {result.ManifestPath}");
     }
 }
 
@@ -440,26 +514,27 @@ internal sealed class RestoreCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!MetaCommandHelpers.TryParseRestoreArgument(argument, out string? sourcePath, out bool validateOnly, out string? error))
         {
-            output.WriteLine(Ansi.Colorize(error ?? "Usage: .restore <FILE> [--validate-only]", Ansi.Yellow));
+            CliConsole.WriteWarning(console, error ?? "Usage: .restore <FILE> [--validate-only]");
             return;
         }
 
         var result = await context.RestoreAsync(sourcePath!, validateOnly, ct);
         if (result.ValidateOnly)
         {
-            output.WriteLine(Ansi.Colorize($"Restore source is valid: {result.SourcePath}", Ansi.Green));
+            CliConsole.WriteSuccess(console, $"Restore source is valid: {result.SourcePath}");
         }
         else
         {
-            output.WriteLine(Ansi.Colorize($"Restore complete from {result.SourcePath}.", Ansi.Green));
-            output.WriteLine(Ansi.Colorize($"Target: {result.DestinationPath}", Ansi.Dim));
+            CliConsole.WriteSuccess(console, $"Restore complete from {result.SourcePath}.");
+            CliConsole.WriteMuted(console, $"Target: {result.DestinationPath}");
         }
 
-        output.WriteLine(Ansi.Colorize(
-            $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}, sourceWal={(result.SourceWalExists ? "present" : "absent")}.",
-            Ansi.Dim));
+        CliConsole.WriteMuted(
+            console,
+            $"Bytes={result.DatabaseFileBytes}, pages={result.PhysicalPageCount}, changeCounter={result.ChangeCounter}, sourceWal={(result.SourceWalExists ? "present" : "absent")}.");
     }
 }
 
@@ -471,9 +546,10 @@ internal sealed class MigrateForeignKeysCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!MetaCommandHelpers.TryParseForeignKeyMigrationArgument(argument, out string? specPath, out bool validateOnly, out string? backupPath, out string? error))
         {
-            output.WriteLine(Ansi.Colorize(error ?? "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]", Ansi.Yellow));
+            CliConsole.WriteWarning(console, error ?? "Usage: .migrate-fks <SPEC.json> [--validate-only] [--backup <FILE>]");
             return;
         }
 
@@ -491,9 +567,10 @@ internal sealed class ReindexCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!MetaCommandHelpers.TryParseReindexArgument(argument, out var request, out string? error))
         {
-            output.WriteLine(Ansi.Colorize(error ?? "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]", Ansi.Yellow));
+            CliConsole.WriteWarning(console, error ?? "Usage: .reindex [--all|--table <name>|--index <name>] [--force-corrupt-rebuild]");
             return;
         }
 
@@ -502,12 +579,12 @@ internal sealed class ReindexCommand : IMetaCommand
             ? "all indexes"
             : $"{result.Scope.ToString().ToLowerInvariant()} '{result.Name}'";
 
-        output.WriteLine(Ansi.Colorize($"Reindexed {result.RebuiltIndexCount} index(es) for {target}.", Ansi.Green));
+        CliConsole.WriteSuccess(console, $"Reindexed {result.RebuiltIndexCount} index(es) for {target}.");
         if (result.RecoveredCorruptIndexCount > 0)
         {
-            output.WriteLine(Ansi.Colorize(
-                $"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run .vacuum to reclaim orphaned pages.",
-                Ansi.Yellow));
+            CliConsole.WriteWarning(
+                console,
+                $"Recovered {result.RecoveredCorruptIndexCount} corrupt index tree(s) without reclaim; run .vacuum to reclaim orphaned pages.");
         }
     }
 }
@@ -520,17 +597,17 @@ internal sealed class VacuumCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!string.IsNullOrWhiteSpace(argument))
         {
-            output.WriteLine(Ansi.Colorize("Usage: .vacuum", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Usage: .vacuum");
             return;
         }
 
         var result = await context.VacuumAsync(ct);
-        output.WriteLine(Ansi.Colorize(
-            $"Vacuum complete: bytes {result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter}, " +
-            $"pages {result.PhysicalPageCountBefore} -> {result.PhysicalPageCountAfter}.",
-            Ansi.Green));
+        CliConsole.WriteSuccess(
+            console,
+            $"Vacuum complete: bytes {result.DatabaseFileBytesBefore} -> {result.DatabaseFileBytesAfter}, pages {result.PhysicalPageCountBefore} -> {result.PhysicalPageCountAfter}.");
     }
 }
 
@@ -542,17 +619,17 @@ internal sealed class SnapshotCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!context.SupportsLocalDirectFeatures)
         {
-            output.WriteLine(Ansi.Colorize("Snapshot mode requires direct local access.", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Snapshot mode requires direct local access.");
             return ValueTask.CompletedTask;
         }
 
         string arg = argument.Trim().ToLowerInvariant();
         if (arg.Length == 0 || arg == "status")
         {
-            string status = context.SnapshotEnabled ? "on" : "off";
-            output.WriteLine($"Snapshot mode: {Ansi.Colorize(status, context.SnapshotEnabled ? Ansi.Green : Ansi.Dim)}");
+            console.MarkupLine($"Snapshot mode: {(context.SnapshotEnabled ? "[green]on[/]" : "[grey]off[/]")}");
             return ValueTask.CompletedTask;
         }
 
@@ -560,12 +637,12 @@ internal sealed class SnapshotCommand : IMetaCommand
         {
             if (context.SnapshotEnabled)
             {
-                output.WriteLine(Ansi.Colorize("Snapshot mode is already on.", Ansi.Dim));
+                CliConsole.WriteMuted(console, "Snapshot mode is already on.");
                 return ValueTask.CompletedTask;
             }
 
             context.EnableSnapshot();
-            output.WriteLine(Ansi.Colorize("Snapshot mode enabled (SELECT only).", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Snapshot mode enabled (SELECT only).");
             return ValueTask.CompletedTask;
         }
 
@@ -573,16 +650,16 @@ internal sealed class SnapshotCommand : IMetaCommand
         {
             if (!context.SnapshotEnabled)
             {
-                output.WriteLine(Ansi.Colorize("Snapshot mode is already off.", Ansi.Dim));
+                CliConsole.WriteMuted(console, "Snapshot mode is already off.");
                 return ValueTask.CompletedTask;
             }
 
             context.DisableSnapshot();
-            output.WriteLine(Ansi.Colorize("Snapshot mode disabled.", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Snapshot mode disabled.");
             return ValueTask.CompletedTask;
         }
 
-        output.WriteLine(Ansi.Colorize("Usage: .snapshot [on|off|status]", Ansi.Yellow));
+        CliConsole.WriteWarning(console, "Usage: .snapshot [on|off|status]");
         return ValueTask.CompletedTask;
     }
 }
@@ -595,35 +672,35 @@ internal sealed class SyncPointCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (!context.SupportsLocalDirectFeatures)
         {
-            output.WriteLine(Ansi.Colorize("Sync point mode requires direct local access.", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Sync point mode requires direct local access.");
             return ValueTask.CompletedTask;
         }
 
         string arg = argument.Trim().ToLowerInvariant();
         if (arg.Length == 0 || arg == "status")
         {
-            string status = context.PreferSyncPointLookups ? "on" : "off";
-            output.WriteLine($"Sync point lookup fast path: {Ansi.Colorize(status, context.PreferSyncPointLookups ? Ansi.Green : Ansi.Dim)}");
+            console.MarkupLine($"Sync point lookup fast path: {(context.PreferSyncPointLookups ? "[green]on[/]" : "[grey]off[/]")}");
             return ValueTask.CompletedTask;
         }
 
         if (arg is "on" or "enable")
         {
             context.PreferSyncPointLookups = true;
-            output.WriteLine(Ansi.Colorize("Sync point lookup fast path enabled.", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Sync point lookup fast path enabled.");
             return ValueTask.CompletedTask;
         }
 
         if (arg is "off" or "disable")
         {
             context.PreferSyncPointLookups = false;
-            output.WriteLine(Ansi.Colorize("Sync point lookup fast path disabled.", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Sync point lookup fast path disabled.");
             return ValueTask.CompletedTask;
         }
 
-        output.WriteLine(Ansi.Colorize("Usage: .syncpoint [on|off|status]", Ansi.Yellow));
+        CliConsole.WriteWarning(console, "Usage: .syncpoint [on|off|status]");
         return ValueTask.CompletedTask;
     }
 }
@@ -636,29 +713,29 @@ internal sealed class TimingCommand : IMetaCommand
 
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         string arg = argument.Trim().ToLowerInvariant();
         if (arg.Length == 0 || arg == "status")
         {
-            string status = context.ShowTiming ? "on" : "off";
-            output.WriteLine($"Timing: {Ansi.Colorize(status, context.ShowTiming ? Ansi.Green : Ansi.Dim)}");
+            console.MarkupLine($"Timing: {(context.ShowTiming ? "[green]on[/]" : "[grey]off[/]")}");
             return ValueTask.CompletedTask;
         }
 
         if (arg is "on" or "enable")
         {
             context.ShowTiming = true;
-            output.WriteLine(Ansi.Colorize("Timing enabled.", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Timing enabled.");
             return ValueTask.CompletedTask;
         }
 
         if (arg is "off" or "disable")
         {
             context.ShowTiming = false;
-            output.WriteLine(Ansi.Colorize("Timing disabled.", Ansi.Green));
+            CliConsole.WriteSuccess(console, "Timing disabled.");
             return ValueTask.CompletedTask;
         }
 
-        output.WriteLine(Ansi.Colorize("Usage: .timing [on|off|status]", Ansi.Yellow));
+        CliConsole.WriteWarning(console, "Usage: .timing [on|off|status]");
         return ValueTask.CompletedTask;
     }
 }
@@ -671,16 +748,17 @@ internal sealed class ReadCommand : IMetaCommand
 
     public async ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
+        var console = CliConsole.Create(output);
         if (string.IsNullOrWhiteSpace(argument))
         {
-            output.WriteLine(Ansi.Colorize("Usage: .read <FILE>", Ansi.Yellow));
+            CliConsole.WriteWarning(console, "Usage: .read <FILE>");
             return;
         }
 
         string path = MetaCommandHelpers.NormalizePath(argument);
         if (!File.Exists(path))
         {
-            output.WriteLine(Ansi.Colorize($"File not found: {path}", Ansi.Red));
+            CliConsole.WriteError(console, $"File not found: {path}");
             return;
         }
 
@@ -698,17 +776,17 @@ internal sealed class ReadCommand : IMetaCommand
         }
         catch (CSharpDbException ex)
         {
-            output.WriteLine(Ansi.Colorize($"Error: {ex.Message}", Ansi.Red));
+            CliConsole.WriteError(console, ex.Message);
             return;
         }
 
         if (statements.Count == 0)
         {
-            output.WriteLine(Ansi.Colorize("No SQL statements found.", Ansi.Dim));
+            CliConsole.WriteMuted(console, "No SQL statements found.");
             return;
         }
 
-        output.WriteLine(Ansi.Colorize($"Running {statements.Count} statements from {path}", Ansi.Dim));
+        CliConsole.WriteMuted(console, $"Running {statements.Count} statements from {path}");
 
         int ok = 0;
         int fail = 0;
@@ -719,8 +797,10 @@ internal sealed class ReadCommand : IMetaCommand
             else fail++;
         }
 
-        string summaryColor = fail == 0 ? Ansi.Green : Ansi.Yellow;
-        output.WriteLine(Ansi.Colorize($"Script complete: {ok} passed, {fail} failed.", summaryColor));
+        if (fail == 0)
+            CliConsole.WriteSuccess(console, $"Script complete: {ok} passed, {fail} failed.");
+        else
+            CliConsole.WriteWarning(console, $"Script complete: {ok} passed, {fail} failed.");
     }
 }
 
@@ -1093,48 +1173,71 @@ internal static class MetaCommandHelpers
 
     internal static void WriteForeignKeyMigrationSummary(ForeignKeyMigrationResult result, TextWriter output)
     {
+        var console = CliConsole.Create(output);
         if (result.ValidateOnly)
         {
-            output.WriteLine(result.Succeeded
-                ? "Foreign key migration validation succeeded."
-                : "Foreign key migration validation failed.");
+            if (result.Succeeded)
+                CliConsole.WriteSuccess(console, "Foreign key migration validation succeeded.");
+            else
+                CliConsole.WriteError(console, "Foreign key migration validation failed.");
         }
         else
         {
-            output.WriteLine(result.Succeeded
-                ? "Foreign key migration completed."
-                : "Foreign key migration failed.");
+            if (result.Succeeded)
+                CliConsole.WriteSuccess(console, "Foreign key migration completed.");
+            else
+                CliConsole.WriteError(console, "Foreign key migration failed.");
         }
 
-        output.WriteLine($"Affected tables: {result.AffectedTables}");
-        output.WriteLine($"Applied foreign keys: {result.AppliedForeignKeys}");
-        output.WriteLine($"Copied rows: {result.CopiedRows}");
-        output.WriteLine($"Violations: {result.ViolationCount}");
+        var summary = CliConsole.CreateKeyValueTable();
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddColumn(new TableColumn(string.Empty));
+        summary.AddRow(new Markup("[bold]Affected tables:[/]"), new Markup(CliConsole.Escape(result.AffectedTables.ToString())));
+        summary.AddRow(new Markup("[bold]Applied foreign keys:[/]"), new Markup(CliConsole.Escape(result.AppliedForeignKeys.ToString())));
+        summary.AddRow(new Markup("[bold]Copied rows:[/]"), new Markup(CliConsole.Escape(result.CopiedRows.ToString())));
+        summary.AddRow(new Markup("[bold]Violations:[/]"), new Markup(CliConsole.Escape(result.ViolationCount.ToString())));
 
         if (!string.IsNullOrWhiteSpace(result.BackupDestinationPath))
-            output.WriteLine($"Backup: {result.BackupDestinationPath}");
+            summary.AddRow(new Markup("[bold]Backup:[/]"), new Markup(CliConsole.Escape(result.BackupDestinationPath)));
+
+        console.Write(summary);
 
         if (result.AppliedConstraints.Count > 0)
         {
-            output.WriteLine("Applied constraints:");
+            console.WriteLine();
+            var constraints = CliConsole.CreateDataTable();
+            constraints.AddColumn("[bold]Constraint[/]");
+            constraints.AddColumn("[bold]Reference[/]");
+            constraints.AddColumn("[bold]Options[/]");
             foreach (var applied in result.AppliedConstraints.OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
             {
-                output.WriteLine(
-                    $"  {applied.TableName}.{applied.ColumnName} -> {applied.ReferencedTableName}({applied.ReferencedColumnName}), " +
-                    $"constraint={applied.ConstraintName}, onDelete={applied.OnDelete}, supportIndex={applied.SupportingIndexName}");
+                constraints.AddRow(
+                    new Markup(CliConsole.Escape($"{applied.TableName}.{applied.ColumnName}")),
+                    new Markup(CliConsole.Escape($"{applied.ReferencedTableName}({applied.ReferencedColumnName})")),
+                    new Markup(CliConsole.Escape($"constraint={applied.ConstraintName}, onDelete={applied.OnDelete}, supportIndex={applied.SupportingIndexName}")));
             }
+            console.Write(new Rule("[bold]Applied Constraints[/]").LeftJustified());
+            console.Write(constraints);
         }
 
         if (result.Violations.Count > 0)
         {
-            output.WriteLine("Violation sample:");
+            console.WriteLine();
+            var violations = CliConsole.CreateDataTable();
+            violations.AddColumn("[bold]Child[/]");
+            violations.AddColumn("[bold]Value[/]");
+            violations.AddColumn("[bold]Reference[/]");
+            violations.AddColumn("[bold]Reason[/]");
             foreach (var violation in result.Violations)
             {
-                output.WriteLine(
-                    $"  {violation.TableName}.{violation.ColumnName} value={FormatValue(violation.ChildValue)} " +
-                    $"childKey {violation.ChildKeyColumnName}={FormatValue(violation.ChildKeyValue)} " +
-                    $"-> {violation.ReferencedTableName}({violation.ReferencedColumnName}) reason={violation.Reason}");
+                violations.AddRow(
+                    new Markup(CliConsole.Escape($"{violation.TableName}.{violation.ColumnName} / {violation.ChildKeyColumnName}={FormatValue(violation.ChildKeyValue)}")),
+                    new Markup(CliConsole.Escape(FormatValue(violation.ChildValue))),
+                    new Markup(CliConsole.Escape($"{violation.ReferencedTableName}({violation.ReferencedColumnName})")),
+                    new Markup(CliConsole.Escape(violation.Reason)));
             }
+            console.Write(new Rule("[bold]Violation Sample[/]").LeftJustified());
+            console.Write(violations);
         }
     }
 

@@ -136,7 +136,7 @@ public sealed class PageReadBufferTests
     }
 
     [Fact]
-    public async Task Pager_WithMemoryMappedReads_RefreshesMappingAfterCheckpointGrowth()
+    public async Task Pager_WithMemoryMappedReads_RefreshesMappingAfterCheckpointGrowth_WhenOwnedPagePreservationIsDisabled()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_mmap_growth_test_{Guid.NewGuid():N}.db");
@@ -144,7 +144,12 @@ public sealed class PageReadBufferTests
 
         try
         {
-            await using var pager = await OpenPagerAsync(dbPath, useMemoryMappedReads: true, createNew: true, ct);
+            await using var pager = await OpenPagerAsync(
+                dbPath,
+                useMemoryMappedReads: true,
+                createNew: true,
+                ct,
+                preserveOwnedPagesOnCheckpoint: false);
             await pager.InitializeNewDatabaseAsync(ct);
 
             await pager.BeginTransactionAsync(ct);
@@ -231,7 +236,8 @@ public sealed class PageReadBufferTests
         CancellationToken ct,
         int? maxCachedPages = null,
         int maxCachedWalReadPages = 0,
-        ICheckpointPolicy? checkpointPolicy = null)
+        ICheckpointPolicy? checkpointPolicy = null,
+        bool preserveOwnedPagesOnCheckpoint = true)
     {
         var device = new FileStorageDevice(dbPath, createNew);
         var walIndex = new WalIndex();
@@ -246,6 +252,7 @@ public sealed class PageReadBufferTests
                 MaxCachedPages = maxCachedPages,
                 MaxCachedWalReadPages = maxCachedWalReadPages,
                 CheckpointPolicy = checkpointPolicy ?? new FrameCountCheckpointPolicy(PageConstants.DefaultCheckpointThreshold),
+                PreserveOwnedPagesOnCheckpoint = preserveOwnedPagesOnCheckpoint,
             },
             ct);
 

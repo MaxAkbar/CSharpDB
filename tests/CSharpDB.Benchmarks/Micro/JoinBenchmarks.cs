@@ -198,7 +198,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop)")]
+    [Benchmark(Description = "INNER JOIN 1Kx1K (identity arithmetic join)")]
     public async Task InnerJoin_1Kx1K_ForcedNestedLoop()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -206,7 +206,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    [Benchmark(Description = "INNER JOIN 1Kx1K (identity arithmetic LIMIT 1)")]
     public async Task InnerJoin_1Kx1K_ForcedNestedLoop_Limit1()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -214,7 +214,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "INNER JOIN 1Kx1K (forced nested-loop expression projection)")]
+    [Benchmark(Description = "INNER JOIN 1Kx1K (identity arithmetic expression projection)")]
     public async Task InnerJoin_1Kx1K_ForcedNestedLoop_ExpressionProjection()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -246,7 +246,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection forced nested-loop)")]
+    [Benchmark(Description = "INNER JOIN 1Kx1K (wide late projection identity arithmetic)")]
     public async Task InnerJoin_WideLateProjection_ForcedNestedLoop()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -414,7 +414,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "LEFT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    [Benchmark(Description = "LEFT JOIN 1Kx1K (identity arithmetic LIMIT 1)")]
     public async Task LeftJoin_1Kx1K_ForcedNestedLoop_Limit1()
     {
         await using var result = await _bench.Db.ExecuteAsync(
@@ -422,7 +422,7 @@ public class JoinBenchmarks
         await result.ToListAsync();
     }
 
-    [Benchmark(Description = "RIGHT JOIN 1Kx1K (forced nested-loop LIMIT 1)")]
+    [Benchmark(Description = "RIGHT JOIN 1Kx1K (identity arithmetic LIMIT 1)")]
     public async Task RightJoin_1Kx1K_ForcedNestedLoop_Limit1()
     {
         await using var result = await _bench.Db.ExecuteAsync(

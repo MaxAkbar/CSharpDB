@@ -1,31 +1,30 @@
 # What's New
 
-## v2.8.0
+## v2.9.0
 
-### Admin Forms Designer and Entry Runtime
+### Planner Statistics and Durable Write Batching
 
-- Added an admin-only forms module with a visual form designer, runtime form entry, formula evaluation, validation inference, and JSON-backed form definitions.
-- Integrated Forms into `CSharpDB.Admin` with sidebar navigation, designer/runtime tabs, table actions, and shared admin theming.
-- Added database-backed form persistence through the internal `__forms` metadata table, including schema-signature tracking and active-database reload behavior.
-- Added runtime usability improvements including paged record navigation, go-to-record by primary key, column-based search, manual child-table mapping, and checkbox/radio coercion for text and numeric boolean representations.
-- Added a dedicated `CSharpDB.Admin.Forms.Tests` suite covering repository behavior, schema adaptation, generator/validation rules, runtime record services, serialization, and admin tab wiring.
+- Added the next phase of statistics-guided planning with richer `ANALYZE` data, including histogram, heavy-hitter, and composite-prefix statistics used by the optimizer for better cardinality and join-cost estimates.
+- Extended the planner to use bounded dynamic-programming join reordering on qualifying inner-join chains instead of relying only on simpler greedy choices.
+- Added durable-write batching infrastructure and shared storage copy batching so WAL- and maintenance-adjacent copy paths can batch work more efficiently without changing default durability semantics.
+- Added explicit `sys.table_stats.row_count_is_exact` semantics so planner costing can distinguish estimated row counts from exact counts and keep `COUNT(*)` fast paths honest.
 
-### Admin Reports Designer, Preview, and Print
+### Planner and Runtime Stabilization
 
-- Added an admin-only reports module with a banded report designer, preview/runtime rendering, grouping, sorting, totals, and report-only browser print/PDF output.
-- Integrated Reports into `CSharpDB.Admin` with sidebar/object-explorer navigation, report actions, and shared admin-shell wiring.
-- Added database-backed report persistence through `__reports` plus chunked `__report_definition_chunks` storage so larger layouts no longer depend on oversized single-row definitions.
-- Added report usability features including schema-signature drift warnings, auto-fit column layout, and support for table, view, and saved-query report sources.
-- Added a dedicated `CSharpDB.Admin.Reports.Tests` suite covering repository behavior, chunked-definition persistence, schema/source resolution, preview pagination/grouping, and layout helpers.
+- Followed the main optimizer/storage work with stabilization updates across planner, checkpoint, and maintenance behavior after merge-time regressions surfaced in tests.
+- Tightened planner behavior around batch evaluation, join planning, and checkpoint-related validation to keep the new stats-guided and batching paths correct under the existing test suite.
+- Restored cache-hot covered composite-index lookup performance by exposing cache-only reads from the default B-tree index store and adding a direct planner fast path for exact covered composite projections, bringing the focused composite benchmark rows back ahead of baseline.
+- Added and refreshed regression coverage across planner statistics, WAL behavior, integration scenarios, page-read buffering, and hybrid/local database paths.
 
-### Batch-First SQL Row Transport
+### CLI Console Experience
 
-- The SQL executor now uses an internal batch-first row transport foundation across batch-capable scans, joins, projections, filters, limits, and generic aggregate paths.
-- Shared batch predicate and projection kernels reduce per-row overhead, preserve direct batch storage deeper into execution plans, and lay the groundwork for future vectorized execution work.
-- Batch evaluation and expression-compiler coverage was expanded and hardened for compact-row shapes, numeric-expression predicates, and distinct aggregate fast paths.
+- Migrated `CSharpDB.Cli` from the handwritten ANSI output layer to `Spectre.Console` so the shell, help text, query tables, schema panels, and status messages render with a more consistent console UI.
+- Added a shared `CliConsole` helper with the new ASCII startup banner, left-anchored branding, richer prompt/status rendering, and reusable table/panel helpers for CLI commands.
+- Added an interactive dot-command menu at the `csdb>` prompt. Pressing `.` as the first character at a fresh prompt now opens a keyboard-driven menu of supported dot commands with `Up`/`Down`, `Enter`, and `Esc`.
+- Hardened the dot-command menu renderer so it clamps itself to the console buffer and scrolls the visible command window instead of crashing near the bottom of the terminal.
 
-### Docs, Site, and Admin Updates
+### Documentation Refresh
 
-- Added new design notes for compiled live queries and materialized join read models.
-- Added blog and news pages to the website and refreshed roadmap content to reflect the current shipped surface.
-- Refactored Admin navigation and title-bar plumbing, including a shared database client holder, improved modal input support, and the integrated Forms/Reports shell wiring.
+- Added contributor-facing documentation for configuration, the query execution pipeline, SQL surface behavior, and combined query/durable-write performance guidance.
+- Refreshed the roadmap to reflect the current `v2.9.0` status of the optimizer, batch execution, and durable-write work.
+- Validated the branch with `dotnet build CSharpDB.slnx`, `dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj`, `dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj`, and `dotnet test CSharpDB.slnx`.
