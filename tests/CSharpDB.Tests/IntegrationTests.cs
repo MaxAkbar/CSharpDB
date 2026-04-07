@@ -2684,7 +2684,15 @@ public class IntegrationTests : IAsyncLifetime
         var statement = Parser.Parse("SELECT * FROM batch_index_eq_limit_root WHERE score = 20 LIMIT 1 OFFSET 1") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+        {
+            _ = await warmup.ToListAsync(ct);
+        }
+
+        _db.PreferSyncPointLookups = true;
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.False(UsesSyncLookupResult(result));
         Assert.True(UsesDirectBatchStorage(result));
 
         var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
@@ -6717,7 +6725,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_SyncLookup_RespectsOffset()
+    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_WithOffset_UsesBatchPlanAndReturnsEmpty()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT)", ct);
@@ -6735,7 +6743,8 @@ public class IntegrationTests : IAsyncLifetime
 
         _db.PreferSyncPointLookups = true;
         await using var result = await planner.ExecuteAsync(statement, ct);
-        Assert.True(UsesSyncLookupResult(result));
+        Assert.False(UsesSyncLookupResult(result));
+        Assert.True(UsesDirectBatchStorage(result));
         Assert.Empty(await result.ToListAsync(ct));
     }
 

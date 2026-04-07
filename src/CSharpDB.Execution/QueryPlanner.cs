@@ -9194,14 +9194,11 @@ public sealed class QueryPlanner
         {
             if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
             {
-                if (!ShouldIncludeSingleLookupRow(stmt))
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, op.OutputSchema, null, out result))
                 {
-                    result = QueryResult.FromSyncLookup(null, op.OutputSchema);
                     return true;
                 }
-
-                if (TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, op.OutputSchema, null, out result))
-                    return true;
             }
 
             if (remainingWhere != null)
@@ -9217,14 +9214,11 @@ public sealed class QueryPlanner
         {
             if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
             {
-                if (!ShouldIncludeSingleLookupRow(stmt))
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, outputCols, columnIndices, out result))
                 {
-                    result = QueryResult.FromSyncLookup(null, outputCols);
                     return true;
                 }
-
-                if (TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, outputCols, columnIndices, out result))
-                    return true;
             }
 
             if (remainingWhere == null &&
@@ -9359,8 +9353,12 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups || stmt.Where == null)
+        if (!PreferSyncPointLookups ||
+            stmt.Where == null ||
+            !CanUseSyncIndexedLookupShortcut(stmt))
+        {
             return false;
+        }
 
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(stmt.Where, conjuncts);
@@ -9387,12 +9385,6 @@ public sealed class QueryPlanner
             !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices, schema, keyColumnIndices))
         {
             return false;
-        }
-
-        if (!ShouldIncludeSingleLookupRow(stmt))
-        {
-            result = QueryResult.FromSyncLookup(null, outputSchema);
-            return true;
         }
 
         var expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
@@ -9726,9 +9718,9 @@ public sealed class QueryPlanner
         return true;
     }
 
-    private static bool ShouldIncludeSingleLookupRow(SelectStatement stmt)
+    private static bool CanUseSyncIndexedLookupShortcut(SelectStatement stmt)
         => stmt.Offset.GetValueOrDefault() == 0 &&
-           (!stmt.Limit.HasValue || stmt.Limit.Value > 0);
+           !stmt.Limit.HasValue;
 
     private static bool AreStrictlyAscendingUnique(ReadOnlySpan<int> values)
     {

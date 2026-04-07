@@ -633,7 +633,7 @@ public class WalTests : IAsyncLifetime
         {
             CheckpointPolicy = new FrameCountCheckpointPolicy(1),
             AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
-            AutoCheckpointMaxPagesPerStep = 1,
+            AutoCheckpointMaxPagesPerStep = 64,
         };
 
         try
@@ -651,6 +651,11 @@ public class WalTests : IAsyncLifetime
             }
 
             await pager.CommitAsync(ct);
+
+            long initialWalLength = new FileInfo(walPath).Length;
+            Assert.True(
+                initialWalLength > PageConstants.WalHeaderSize + (64L * PageConstants.WalFrameSize),
+                $"Expected the large commit to require multiple background checkpoint slices (walLength={initialWalLength}).");
 
             await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
         }
