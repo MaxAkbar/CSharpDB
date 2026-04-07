@@ -246,7 +246,7 @@ public sealed class ReplTests
             string output = await RunReplAsync(dbPath, input, ct);
             string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
 
-            Assert.Contains("Objects:", plainOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Tables:", plainOutput, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Error:", plainOutput, StringComparison.OrdinalIgnoreCase);
         }
         finally
@@ -274,7 +274,7 @@ public sealed class ReplTests
             string output = await RunReplAsync(dbPath, input, ct);
             string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
 
-            Assert.Contains("Available Commands", plainOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Inspection", plainOutput, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(".tables", plainOutput, StringComparison.OrdinalIgnoreCase);
         }
         finally

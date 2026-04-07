@@ -26,27 +26,62 @@ internal sealed class HelpCommand : IMetaCommand
     public ValueTask ExecuteAsync(MetaCommandContext context, string argument, TextWriter output, CancellationToken ct = default)
     {
         var console = CliConsole.Create(output);
-        var table = CliConsole.CreateDataTable();
-        table.AddColumn("[bold]Command[/]");
-        table.AddColumn("[bold]Description[/]");
-        table.AddRow(new Markup("[deepskyblue1].quit[/]"), new Markup("[grey]Exit the shell[/]"));
-        table.AddRow(new Markup("[deepskyblue1].exit[/]"), new Markup("[grey]Alias for .quit[/]"));
 
-        foreach (var cmd in _commands.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+        var groups = new (string Title, (string Command, string Description)[] Items)[]
         {
-            table.AddRow(
-                new Markup($"[deepskyblue1]{CliConsole.Escape(cmd.Name)}[/]"),
-                new Markup($"[grey]{CliConsole.Escape(cmd.Description)}[/]"));
+            ("Shell", [
+                (".help", "Show this help message"),
+                (".quit / .exit", "Exit the shell"),
+                (".timing", "Toggle query timing display"),
+                (".read <FILE>", "Execute SQL from a script file"),
+            ]),
+            ("Inspection", GetCommandGroup([".info", ".tables", ".schema", ".indexes",
+                ".views", ".view", ".triggers", ".trigger", ".collections"])),
+            ("Transactions", GetCommandGroup([".begin", ".commit", ".rollback"])),
+            ("Snapshots", GetCommandGroup([".snapshot", ".syncpoint"])),
+            ("Maintenance", GetCommandGroup([".checkpoint", ".backup", ".restore",
+                ".reindex", ".vacuum", ".migrate-fks"])),
+        };
+
+        foreach (var (title, items) in groups)
+        {
+            if (items.Length == 0)
+                continue;
+
+            console.Write(new Rule($"[bold deepskyblue1]{title}[/]").LeftJustified().RuleStyle("grey42"));
+
+            var table = new Table()
+                .Border(TableBorder.None)
+                .HideHeaders()
+                .AddColumn(new TableColumn(string.Empty).PadRight(2))
+                .AddColumn(new TableColumn(string.Empty));
+
+            foreach (var (cmd, desc) in items)
+                table.AddRow(
+                    new Markup($"  [deepskyblue1]{CliConsole.Escape(cmd)}[/]"),
+                    new Markup($"[grey]{CliConsole.Escape(desc)}[/]"));
+
+            console.Write(table);
         }
 
-        console.Write(new Rule("[bold]Available Commands[/]").LeftJustified());
-        console.Write(table);
         console.WriteLine();
-        console.Write(new Rule("[bold]SQL[/]").LeftJustified());
-        CliConsole.WriteMuted(console, "Enter SQL statements terminated with a semicolon (;).");
-        CliConsole.WriteMuted(console, "Trigger bodies are handled as a single statement.");
-        CliConsole.WriteMuted(console, "Multi-line input and multi-statement lines are supported.");
+        console.Write(new Rule("[bold deepskyblue1]SQL[/]").LeftJustified().RuleStyle("grey42"));
+        CliConsole.WriteMuted(console, "  Enter SQL statements terminated with a semicolon (;).");
+        CliConsole.WriteMuted(console, "  Multi-line input, multi-statement lines, and trigger bodies are supported.");
         return ValueTask.CompletedTask;
+    }
+
+    private (string Command, string Description)[] GetCommandGroup(string[] aliases)
+    {
+        var items = new List<(string Command, string Description)>();
+        foreach (string alias in aliases)
+        {
+            var cmd = _commands.FirstOrDefault(c => c.Aliases.Contains(alias, StringComparer.OrdinalIgnoreCase));
+            if (cmd is not null)
+                items.Add((cmd.Name, cmd.Description));
+        }
+
+        return items.ToArray();
     }
 }
 
@@ -60,6 +95,22 @@ internal sealed class InfoCommand : IMetaCommand
     {
         var console = CliConsole.Create(output);
         var info = await context.Client.GetInfoAsync(ct);
+
+        console.Write(new Rule("[bold deepskyblue1]Database[/]").LeftJustified().RuleStyle("grey42"));
+
+        var dbTable = CliConsole.CreateKeyValueTable();
+        dbTable.AddColumn(new TableColumn(string.Empty).PadRight(2));
+        dbTable.AddColumn(new TableColumn(string.Empty));
+        dbTable.AddRow(new Markup("  [grey]Path:[/]"), new Markup($"[white]{CliConsole.Escape(context.DatabasePath)}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Tables:[/]"), new Markup($"[deepskyblue1]{info.TableCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Indexes:[/]"), new Markup($"[deepskyblue1]{info.IndexCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Views:[/]"), new Markup($"[deepskyblue1]{info.ViewCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Triggers:[/]"), new Markup($"[deepskyblue1]{info.TriggerCount}[/]"));
+        dbTable.AddRow(new Markup("  [grey]Collections:[/]"), new Markup($"[deepskyblue1]{info.CollectionCount}[/]"));
+        console.Write(dbTable);
+
+        console.Write(new Rule("[bold deepskyblue1]Session[/]").LeftJustified().RuleStyle("grey42"));
+
         string snapshotStatus = context.SupportsLocalDirectFeatures
             ? (context.SnapshotEnabled ? "on" : "off")
             : "unavailable";
@@ -67,20 +118,27 @@ internal sealed class InfoCommand : IMetaCommand
             ? (context.PreferSyncPointLookups ? "on" : "off")
             : "unavailable";
 
-        var table = CliConsole.CreateKeyValueTable();
-        table.AddColumn(new TableColumn(string.Empty));
-        table.AddColumn(new TableColumn(string.Empty));
-        table.AddRow(new Markup("[bold]Database:[/]"), new Markup($"[deepskyblue1]{CliConsole.Escape(context.DatabasePath)}[/]"));
-        table.AddRow(
-            new Markup("[bold]Objects:[/]"),
-            new Markup(CliConsole.Escape(
-                $"tables={info.TableCount}, indexes={info.IndexCount}, views={info.ViewCount}, triggers={info.TriggerCount}, collections={info.CollectionCount}")));
-        table.AddRow(
-            new Markup("[bold]Modes:[/]"),
-            new Markup(CliConsole.Escape(
-                $"timing={(context.ShowTiming ? "on" : "off")}, snapshot={snapshotStatus}, syncpoint={syncPointStatus}, tx={(context.InExplicitTransaction ? "active" : "none")}")));
-        console.Write(table);
+        var modeTable = CliConsole.CreateKeyValueTable();
+        modeTable.AddColumn(new TableColumn(string.Empty).PadRight(2));
+        modeTable.AddColumn(new TableColumn(string.Empty));
+        modeTable.AddRow(new Markup("  [grey]Timing:[/]"), FormatToggle(context.ShowTiming));
+        modeTable.AddRow(new Markup("  [grey]Snapshot:[/]"), FormatStatus(snapshotStatus));
+        modeTable.AddRow(new Markup("  [grey]Sync point:[/]"), FormatStatus(syncPointStatus));
+        modeTable.AddRow(new Markup("  [grey]Transaction:[/]"), context.InExplicitTransaction
+            ? new Markup("[bold yellow]active[/]")
+            : new Markup("[grey]none[/]"));
+        console.Write(modeTable);
     }
+
+    private static Markup FormatToggle(bool value)
+        => value ? new Markup("[green]on[/]") : new Markup("[grey]off[/]");
+
+    private static Markup FormatStatus(string status) => status switch
+    {
+        "on" => new Markup("[green]on[/]"),
+        "off" => new Markup("[grey]off[/]"),
+        _ => new Markup("[dim grey]unavailable[/]"),
+    };
 }
 
 internal sealed class TablesCommand : IMetaCommand

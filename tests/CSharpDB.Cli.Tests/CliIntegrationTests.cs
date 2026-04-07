@@ -23,8 +23,8 @@ public sealed class CliIntegrationTests
                 ct);
 
             Assert.Equal(0, result.ExitCode);
-            Assert.Contains("Database: csharpdb.db", result.StdOut, StringComparison.Ordinal);
-            Assert.Contains("Objects:", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("csharpdb.db", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("Tables:", result.StdOut, StringComparison.Ordinal);
             Assert.DoesNotContain("Error:", result.StdOut, StringComparison.Ordinal);
             Assert.True(string.IsNullOrWhiteSpace(result.StdErr));
             Assert.True(File.Exists(Path.Combine(workDir, "csharpdb.db")));
@@ -128,7 +128,7 @@ public sealed class CliIntegrationTests
                 ct);
 
             Assert.Equal(0, result.ExitCode);
-            Assert.Contains("Available Commands", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Inspection", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(".tables", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.True(string.IsNullOrWhiteSpace(result.StdErr));
         }
