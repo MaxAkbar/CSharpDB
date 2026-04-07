@@ -1004,7 +1004,7 @@ public class WalTests : IAsyncLifetime
         string walPath = dbPath + ".wal";
         var policy = new BlockingCommitWalFlushPolicy();
         WriteAheadLog? wal = null;
-        TimeSpan batchWindow = TimeSpan.FromMilliseconds(5);
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(250);
 
         try
         {
@@ -1038,6 +1038,7 @@ public class WalTests : IAsyncLifetime
             Assert.Equal(2, wal.Index.FrameCount);
             Assert.Equal(1, diagnostics.FlushCount);
             Assert.Equal(2, diagnostics.FlushedCommitCount);
+            Assert.True(diagnostics.BatchWindowWaitCount > 0);
             Assert.True(wal.Index.TryGetLatest(0, out _));
             Assert.True(wal.Index.TryGetLatest(1, out _));
         }
