@@ -82,9 +82,10 @@ public sealed class PagerOptions
     /// <summary>
     /// When true, owned main-file pages already materialized into the shared page
     /// cache remain resident after checkpoint completes. Transient WAL and
-    /// memory-mapped read views are still invalidated.
+    /// memory-mapped read views are still invalidated. Enabled by default so
+    /// checkpoints do not discard hot local working sets from the shared cache.
     /// </summary>
-    public bool PreserveOwnedPagesOnCheckpoint { get; init; }
+    public bool PreserveOwnedPagesOnCheckpoint { get; init; } = true;
 
     internal IPageCache CreatePageCache()
     {

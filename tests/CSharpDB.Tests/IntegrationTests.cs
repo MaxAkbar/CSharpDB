@@ -4,6 +4,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
+using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Tests;
 
@@ -658,6 +659,33 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SelectProjection_UsesCoveredIndexOrder_WithLimit_UsesBatchSource()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE ordered_cover_limit (id INTEGER PRIMARY KEY, sort_key INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_ordered_cover_limit_sort_key ON ordered_cover_limit(sort_key)", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (1, 30, 'c')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (2, 10, 'a')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (3, 20, 'b')", ct);
+        await _db.ExecuteAsync("INSERT INTO ordered_cover_limit VALUES (4, 40, 'd')", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, sort_key FROM ordered_cover_limit ORDER BY sort_key LIMIT 2") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var sourceOperator = Assert.IsType<IndexOrderedProjectionScanOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(sourceOperator);
+
+        var rows = await result.ToListAsync(ct);
+        var pairs = rows.Select(row => (Id: row[0].AsInteger, SortKey: row[1].AsInteger)).ToArray();
+        Assert.Equal([(2L, 10L), (3L, 20L)], pairs);
+    }
+
+    [Fact]
     public async Task SelectProjection_UsesCoveredIntegerRangeScan()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -949,6 +977,35 @@ public class IntegrationTests : IAsyncLifetime
         var rows = await result.ToListAsync(ct);
         Assert.Single(rows);
         Assert.Equal(20d, rows[0][0].AsReal);
+    }
+
+    [Fact]
+    public async Task CountStar_WithFilterOverWideTable_RemainsCorrectWhenDecodeHintsTrimUnusedTailColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE count_trim_tail (" +
+            "id INTEGER PRIMARY KEY, " +
+            "supplier_id INTEGER NOT NULL, " +
+            "warehouse_id INTEGER NOT NULL, " +
+            "buyer_name TEXT NOT NULL, " +
+            "order_date TEXT NOT NULL, " +
+            "expected_date TEXT NOT NULL, " +
+            "status TEXT NOT NULL, " +
+            "total_amount REAL NOT NULL)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO count_trim_tail VALUES (1, 1, 10, 'Riley', '2026-03-01', '2026-03-12', 'open', 2232.0)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_trim_tail VALUES (2, 1, 10, 'Riley', '2026-03-02', '2026-03-13', 'approved', 1250.0)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_trim_tail VALUES (3, 1, 10, 'Riley', '2026-03-03', '2026-03-14', 'received', 980.0)", ct);
+        await _db.ExecuteAsync("INSERT INTO count_trim_tail VALUES (4, 2, 20, 'Jordan', '2026-03-04', '2026-03-15', 'partial', 880.0)", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM count_trim_tail WHERE supplier_id = 1 AND status IN ('open', 'approved', 'partial')",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(2L, row[0].AsInteger);
     }
 
     [Fact]
@@ -2627,7 +2684,15 @@ public class IntegrationTests : IAsyncLifetime
         var statement = Parser.Parse("SELECT * FROM batch_index_eq_limit_root WHERE score = 20 LIMIT 1 OFFSET 1") as SelectStatement
             ?? throw new InvalidOperationException("Expected SELECT statement.");
 
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+        {
+            _ = await warmup.ToListAsync(ct);
+        }
+
+        _db.PreferSyncPointLookups = true;
         await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.False(UsesSyncLookupResult(result));
         Assert.True(UsesDirectBatchStorage(result));
 
         var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
@@ -2875,7 +2940,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task IndexNestedLoopJoinedColumnProjection_UsesBatchProjectionOperator()
+    public async Task IndexNestedLoopJoinedColumnProjection_UsesBatchJoinOperatorAfterLeafPushdown()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_inlj_proj_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
@@ -2894,10 +2959,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
-        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
-        Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
+        Assert.IsType<IndexNestedLoopJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<IndexNestedLoopJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -2971,7 +3035,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HashedIndexNestedLoopJoinedColumnProjection_UsesBatchProjectionOperator()
+    public async Task HashedIndexNestedLoopJoinedColumnProjection_UsesBatchJoinOperatorAfterLeafPushdown()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_hinlj_proj_left (id INTEGER PRIMARY KEY, code TEXT NOT NULL, score INTEGER NOT NULL)", ct);
@@ -2991,10 +3055,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
-        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
-        Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<HashedIndexNestedLoopJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
+        Assert.IsType<HashedIndexNestedLoopJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<HashedIndexNestedLoopJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3349,7 +3412,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task JoinedFilteredColumnProjection_UsesBatchProjectionOperator()
+    public async Task JoinedFilteredColumnProjection_UsesBatchJoinOperatorAfterLeafPushdown()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_proj_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
@@ -3368,10 +3431,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = Assert.IsType<FilterProjectionOperator>(GetRootOperator(result));
-        Assert.NotNull(GetPrivateField<object?>(rootOperator, "_batchPlan"));
-        Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<HashJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
+        Assert.IsType<HashJoinOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<HashJoinOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(rootOperator);
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -3529,7 +3591,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task JoinedFilteredExpressionProjection_UsesBatchFilterProjectionOperator()
+    public async Task JoinedFilteredExpressionProjection_UsesBatchProjectionOperatorAfterLeafPushdown()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE batch_expr_left (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)", ct);
@@ -3548,9 +3610,9 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         Assert.True(UsesDirectBatchStorage(result));
-        Assert.IsType<FilterProjectionOperator>(GetStoredOperator(result));
-        var rootOperator = GetRootOperator(result);
-        Assert.IsType<FilterProjectionOperator>(rootOperator);
+        Assert.IsType<ProjectionOperator>(GetStoredOperator(result));
+        var rootOperator = Assert.IsType<ProjectionOperator>(GetRootOperator(result));
+        Assert.IsAssignableFrom<IBatchOperator>(FindOperatorInUnaryChain<HashJoinOperator>(GetPrivateField<IOperator>(rootOperator, "_source")));
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsInteger).ToArray();
         Assert.Equal(2, rows.Length);
@@ -6582,6 +6644,7 @@ public class IntegrationTests : IAsyncLifetime
     public async Task Index_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
     {
         var ct = TestContext.Current.CancellationToken;
+        _db.PreferSyncPointLookups = false;
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep-1')", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'x', 'keep-2')", ct);
@@ -6607,6 +6670,7 @@ public class IntegrationTests : IAsyncLifetime
     public async Task UniqueIndex_MultiColumn_CoveredProjection_UsesHashedIndexProjectionLookup()
     {
         var ct = TestContext.Current.CancellationToken;
+        _db.PreferSyncPointLookups = false;
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, payload TEXT)", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 'x', 'keep')", ct);
         await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 'y', 'skip')", ct);
@@ -6624,6 +6688,64 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(10L, rows[0][0].AsInteger);
         Assert.Equal("x", rows[0][1].AsText);
         Assert.Equal(1L, rows[0][2].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_UsesSyncLookupResultWhenWarm()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 'keep')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 'skip')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, a, b FROM t WHERE a = 10 AND b = 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+        {
+            var root = Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(warmup));
+            var indexStore = GetPrivateField<IIndexStore>(root, "_indexStore")
+                ?? throw new InvalidOperationException("Expected hashed projection lookup to expose its index store.");
+            long seekValue = GetPrivateField<long>(root, "_seekValue");
+            _ = await indexStore.FindAsync(seekValue, ct);
+        }
+
+        _db.PreferSyncPointLookups = true;
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesSyncLookupResult(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Single(rows);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(10L, rows[0][1].AsInteger);
+        Assert.Equal(20L, rows[0][2].AsInteger);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_MultiColumn_IntegerCoveredProjection_WithOffset_UsesBatchPlanAndReturnsEmpty()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10, 20, 'keep')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 10, 21, 'skip')", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_ab ON t (a, b)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, a, b FROM t WHERE a = 10 AND b = 20 LIMIT 1 OFFSET 1") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        _db.PreferSyncPointLookups = false;
+        await using (var warmup = await planner.ExecuteAsync(statement, ct))
+            _ = await warmup.ToListAsync(ct);
+
+        _db.PreferSyncPointLookups = true;
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.False(UsesSyncLookupResult(result));
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.Empty(await result.ToListAsync(ct));
     }
 
     [Fact]

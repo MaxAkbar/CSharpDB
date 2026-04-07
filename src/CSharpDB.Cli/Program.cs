@@ -2,8 +2,12 @@ using CSharpDB.Cli;
 using CSharpDB.Client;
 using CSharpDB.Client.Internal;
 using CSharpDB.Engine;
+using Spectre.Console;
 
-Ansi.EnableVirtualTerminal();
+CliConsole.ConfigureTerminal();
+
+var stdout = CliConsole.Create(Console.Out, interactive: true);
+var stderr = CliConsole.Create(Console.Error);
 
 if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
     return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);
@@ -16,17 +20,14 @@ if (args.Length > 0 && PipelineCommandRunner.IsKnownCommand(args[0]))
 
 if (!CliShellOptions.TryParse(args, out var shellOptions, out var parseError))
 {
-    Console.Error.WriteLine(Ansi.Colorize($"Error: {parseError}", Ansi.Red));
-    Console.Error.WriteLine(Ansi.Colorize(CliShellOptions.Usage, Ansi.Yellow));
+    CliConsole.WriteError(stderr, parseError ?? "Invalid command line.");
+    stderr.MarkupLine($"[yellow]{CliConsole.Escape(CliShellOptions.Usage)}[/]");
     return 1;
 }
 
 string displayTarget = shellOptions!.DisplayTarget;
 
-Console.WriteLine($"{Ansi.Bold}{Ansi.Cyan}CSharpDB{Ansi.Reset} - Interactive SQL Shell");
-Console.WriteLine($"{Ansi.Dim}Database: {displayTarget}{Ansi.Reset}");
-Console.WriteLine($"{Ansi.Dim}Type .help for commands, .quit to exit.{Ansi.Reset}");
-Console.WriteLine();
+CliConsole.WriteBanner(stdout, displayTarget);
 
 ICSharpDbClient client;
 Database? localDatabase = null;
@@ -39,7 +40,7 @@ try
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine(Ansi.Colorize($"Fatal: Could not open database: {ex.Message}", Ansi.Red));
+    CliConsole.WriteError(stderr, $"Fatal: Could not open database: {ex.Message}");
     return 1;
 }
 

@@ -1245,6 +1245,7 @@ internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBa
             if (!MatchesPredicates(row))
                 continue;
 
+            selection.Add(rowIndex);
             int destinationRowIndex = destination.Count;
             Span<DbValue> destinationRow = destination.GetWritableRowSpan(destinationRowIndex);
             WriteProjectedRow(row, destinationRow);
@@ -1258,14 +1259,24 @@ internal sealed class SpecializedFilterProjectionBatchPlan : IFilterProjectionBa
     {
         if (_isPassthroughProjection)
         {
-            sourceRow.CopyTo(destinationRow);
+            int copiedCount = Math.Min(sourceRow.Length, destinationRow.Length);
+            if (copiedCount > 0)
+                sourceRow[..copiedCount].CopyTo(destinationRow);
+
+            if (copiedCount < destinationRow.Length)
+                destinationRow[copiedCount..].Fill(DbValue.Null);
             return;
         }
 
         if (_directProjectionColumns is { Length: > 0 } directProjectionColumns)
         {
             for (int projectionIndex = 0; projectionIndex < directProjectionColumns.Length; projectionIndex++)
-                destinationRow[projectionIndex] = sourceRow[directProjectionColumns[projectionIndex]];
+            {
+                int sourceColumnIndex = directProjectionColumns[projectionIndex];
+                destinationRow[projectionIndex] = (uint)sourceColumnIndex < (uint)sourceRow.Length
+                    ? sourceRow[sourceColumnIndex]
+                    : DbValue.Null;
+            }
             return;
         }
 

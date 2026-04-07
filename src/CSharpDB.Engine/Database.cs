@@ -24,7 +24,6 @@ public sealed class Database : IAsyncDisposable
     private readonly IRecordSerializer _recordSerializer;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
-    private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private long _observedSchemaVersion;
@@ -64,7 +63,6 @@ public sealed class Database : IAsyncDisposable
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
-        _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
@@ -435,6 +433,7 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "Transaction already active.");
 
+        await FlushPendingAdvisoryStatisticsAsync(ct);
         await _writeOperationGate.WaitAsync(ct);
         try
         {
@@ -460,6 +459,7 @@ public sealed class Database : IAsyncDisposable
         PagerCommitResult commit;
         try
         {
+            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
             commit = await BeginCommitWithCatalogSyncAsync(ct);
         }
         catch
@@ -519,7 +519,7 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
 
-        await FlushDeferredAdvisoryStatisticsAsync(ct);
+        await FlushPendingAdvisoryStatisticsAsync(ct);
         await _pager.SaveToFileAsync(filePath, ct);
     }
 
@@ -1069,16 +1069,14 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<PagerCommitResult> BeginCommitWithCatalogSyncAsync(CancellationToken ct)
     {
-        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
-            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
+        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistAllRootPageChangesAsync(ct);
         return await _pager.BeginCommitAsync(ct);
     }
 
     private async ValueTask<PagerCommitResult> BeginCommitForTableWithCatalogSyncAsync(string tableName, CancellationToken ct)
     {
-        if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
-            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
+        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
         await _catalog.PersistRootPageChangesAsync(tableName, ct);
         return await _pager.BeginCommitAsync(ct);
     }
@@ -1111,7 +1109,7 @@ public sealed class Database : IAsyncDisposable
         try
         {
             if (!rolledBackExplicitTransaction)
-                await FlushDeferredAdvisoryStatisticsAsync(CancellationToken.None);
+                await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
             await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
         }
         finally
@@ -1122,10 +1120,9 @@ public sealed class Database : IAsyncDisposable
         }
     }
 
-    private async ValueTask FlushDeferredAdvisoryStatisticsAsync(CancellationToken ct)
+    private async ValueTask FlushPendingAdvisoryStatisticsAsync(CancellationToken ct)
     {
-        if (_advisoryStatisticsPersistenceMode != AdvisoryStatisticsPersistenceMode.Deferred ||
-            _inTransaction ||
+        if (_inTransaction ||
             !_catalog.HasDirtyAdvisoryStatistics)
         {
             return;

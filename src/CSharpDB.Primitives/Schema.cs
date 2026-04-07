@@ -143,6 +143,7 @@ public sealed class TableStatistics
 {
     public required string TableName { get; init; }
     public long RowCount { get; init; }
+    public bool RowCountIsExact { get; init; }
     public bool HasStaleColumns { get; init; }
     public uint LastPersistedChangeCounter { get; init; }
 }
@@ -156,6 +157,35 @@ public sealed class ColumnStatistics
     public DbValue MinValue { get; init; } = DbValue.Null;
     public DbValue MaxValue { get; init; } = DbValue.Null;
     public bool IsStale { get; init; }
+}
+
+public sealed class HistogramBucketStatistics
+{
+    public DbValue LowerBound { get; init; } = DbValue.Null;
+    public DbValue UpperBound { get; init; } = DbValue.Null;
+    public long RowCount { get; init; }
+}
+
+public sealed class FrequentValueStatistics
+{
+    public DbValue Value { get; init; } = DbValue.Null;
+    public long RowCount { get; init; }
+}
+
+public sealed class ColumnDistributionStatistics
+{
+    public required string TableName { get; init; }
+    public required string ColumnName { get; init; }
+    public IReadOnlyList<HistogramBucketStatistics> HistogramBuckets { get; init; } = Array.Empty<HistogramBucketStatistics>();
+    public IReadOnlyList<FrequentValueStatistics> FrequentValues { get; init; } = Array.Empty<FrequentValueStatistics>();
+}
+
+public sealed class IndexPrefixStatistics
+{
+    public required string IndexName { get; init; }
+    public required string TableName { get; init; }
+    public IReadOnlyList<string> PrefixColumns { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<long> PrefixDistinctCounts { get; init; } = Array.Empty<long>();
 }
 
 public enum TriggerTiming { Before, After }

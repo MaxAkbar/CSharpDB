@@ -36,6 +36,19 @@
 
 ---
 
+## Write Durability Modes
+
+Default CSharpDB benchmarks run in fully durable mode. CSharpDB also supports a less-durable buffered mode for workloads that want much higher write throughput and can tolerate a larger crash-loss window.
+
+| Mode | SQL Single INSERT | SQL Batch x100 | Collection Single PUT | Collection Batch x100 |
+|------|------------------:|---------------:|----------------------:|----------------------:|
+| Durable (default) | 265.9 ops/sec | 25.95K rows/sec | 273.9 ops/sec | 25.14K docs/sec |
+| Buffered | 22.25K ops/sec | 473.55K rows/sec | 20.26K ops/sec | 201.41K docs/sec |
+
+<sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+
+---
+
 ## Quick Start
 
 ```bash

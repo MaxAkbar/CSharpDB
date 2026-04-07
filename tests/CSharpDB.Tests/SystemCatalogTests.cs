@@ -394,11 +394,12 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         await _db.ExecuteAsync("CREATE TABLE stats_users (id INTEGER PRIMARY KEY, val INTEGER)", ct);
 
         await using var initialStats = await _db.ExecuteAsync(
-            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
+            "SELECT row_count, row_count_is_exact, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
             ct);
         var initialRow = Assert.Single(await initialStats.ToListAsync(ct));
         Assert.Equal(0L, initialRow[0].AsInteger);
-        Assert.Equal(0L, initialRow[1].AsInteger);
+        Assert.Equal(1L, initialRow[1].AsInteger);
+        Assert.Equal(0L, initialRow[2].AsInteger);
 
         await _db.ExecuteAsync("INSERT INTO stats_users VALUES (1, 10)", ct);
         await _db.ExecuteAsync("INSERT INTO stats_users VALUES (2, 20)", ct);
@@ -406,11 +407,12 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         await _db.ExecuteAsync("ANALYZE stats_users", ct);
 
         await using var refreshedStats = await _db.ExecuteAsync(
-            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
+            "SELECT row_count, row_count_is_exact, has_stale_columns FROM sys.table_stats WHERE table_name = 'stats_users'",
             ct);
         var refreshedRow = Assert.Single(await refreshedStats.ToListAsync(ct));
         Assert.Equal(1L, refreshedRow[0].AsInteger);
-        Assert.Equal(0L, refreshedRow[1].AsInteger);
+        Assert.Equal(1L, refreshedRow[1].AsInteger);
+        Assert.Equal(0L, refreshedRow[2].AsInteger);
 
         await using var tableStatsCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.table_stats", ct);
         Assert.Equal(1L, Assert.Single(await tableStatsCount.ToListAsync(ct))[0].AsInteger);
@@ -429,9 +431,11 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         _db = await Database.OpenAsync(_dbPath, ct);
 
         await using var statsResult = await _db.ExecuteAsync(
-            "SELECT row_count FROM sys.table_stats WHERE table_name = 'persisted_stats'",
+            "SELECT row_count, row_count_is_exact FROM sys.table_stats WHERE table_name = 'persisted_stats'",
             ct);
-        Assert.Equal(2L, Assert.Single(await statsResult.ToListAsync(ct))[0].AsInteger);
+        var persistedRow = Assert.Single(await statsResult.ToListAsync(ct));
+        Assert.Equal(2L, persistedRow[0].AsInteger);
+        Assert.Equal(1L, persistedRow[1].AsInteger);
 
         await using var countResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM persisted_stats", ct);
         Assert.Equal(2L, Assert.Single(await countResult.ToListAsync(ct))[0].AsInteger);
@@ -449,16 +453,20 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         await _db.ExecuteAsync("INSERT INTO rollback_stats VALUES (2, 20)", ct);
 
         await using var inTxStats = await _db.ExecuteAsync(
-            "SELECT row_count FROM sys.table_stats WHERE table_name = 'rollback_stats'",
+            "SELECT row_count, row_count_is_exact FROM sys.table_stats WHERE table_name = 'rollback_stats'",
             ct);
-        Assert.Equal(2L, Assert.Single(await inTxStats.ToListAsync(ct))[0].AsInteger);
+        var inTxRow = Assert.Single(await inTxStats.ToListAsync(ct));
+        Assert.Equal(2L, inTxRow[0].AsInteger);
+        Assert.Equal(1L, inTxRow[1].AsInteger);
 
         await _db.RollbackAsync(ct);
 
         await using var afterRollbackStats = await _db.ExecuteAsync(
-            "SELECT row_count FROM sys.table_stats WHERE table_name = 'rollback_stats'",
+            "SELECT row_count, row_count_is_exact FROM sys.table_stats WHERE table_name = 'rollback_stats'",
             ct);
-        Assert.Equal(1L, Assert.Single(await afterRollbackStats.ToListAsync(ct))[0].AsInteger);
+        var afterRollbackRow = Assert.Single(await afterRollbackStats.ToListAsync(ct));
+        Assert.Equal(1L, afterRollbackRow[0].AsInteger);
+        Assert.Equal(1L, afterRollbackRow[1].AsInteger);
 
         await using var countResult = await _db.ExecuteAsync("SELECT COUNT(*) FROM rollback_stats", ct);
         Assert.Equal(1L, Assert.Single(await countResult.ToListAsync(ct))[0].AsInteger);
@@ -617,11 +625,12 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         _db = await Database.OpenAsync(_dbPath, ct);
 
         await using var tableStats = await _db.ExecuteAsync(
-            "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'primary_stats'",
+            "SELECT row_count, row_count_is_exact, has_stale_columns FROM sys.table_stats WHERE table_name = 'primary_stats'",
             ct);
         var tableStatsRow = Assert.Single(await tableStats.ToListAsync(ct));
         Assert.Equal(2L, tableStatsRow[0].AsInteger);
-        Assert.Equal(0L, tableStatsRow[1].AsInteger);
+        Assert.Equal(1L, tableStatsRow[1].AsInteger);
+        Assert.Equal(0L, tableStatsRow[2].AsInteger);
 
         await using var columnStats = await _db.ExecuteAsync(
             """
@@ -660,11 +669,12 @@ public sealed class SystemCatalogTests : IAsyncLifetime
             await using var reopened = await Database.OpenAsync(dbPath, options, ct);
 
             await using var statsResult = await reopened.ExecuteAsync(
-                "SELECT row_count, has_stale_columns FROM sys.table_stats WHERE table_name = 'deferred_stats'",
+                "SELECT row_count, row_count_is_exact, has_stale_columns FROM sys.table_stats WHERE table_name = 'deferred_stats'",
                 ct);
             var statsRow = Assert.Single(await statsResult.ToListAsync(ct));
             Assert.Equal(3L, statsRow[0].AsInteger);
             Assert.Equal(1L, statsRow[1].AsInteger);
+            Assert.Equal(1L, statsRow[2].AsInteger);
 
             await using var staleColumnStats = await reopened.ExecuteAsync(
                 "SELECT COUNT(*) FROM sys.column_stats WHERE table_name = 'deferred_stats' AND is_stale = 1",

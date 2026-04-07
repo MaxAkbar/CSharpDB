@@ -1000,20 +1000,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                              bufferSize: buffer.Length,
                              useAsync: true))
             {
-                long offset = 0;
-                while (offset < logicalLength)
-                {
-                    int chunkLength = (int)Math.Min(buffer.Length, logicalLength - offset);
-                    int bytesRead = await _device.ReadAsync(offset, buffer.AsMemory(0, chunkLength), ct);
-                    if (bytesRead != chunkLength)
-                    {
-                        throw new InvalidOperationException(
-                            $"Short database read while saving snapshot (expected {chunkLength} bytes, read {bytesRead}).");
-                    }
-
-                    await stream.WriteAsync(buffer.AsMemory(0, chunkLength), ct);
-                    offset += chunkLength;
-                }
+                await StorageDeviceCopyBatcher.CopyDeviceRangeToStreamAsync(
+                    _device,
+                    sourceOffset: 0,
+                    byteCount: logicalLength,
+                    stream,
+                    ct,
+                    chunkBytes: buffer.Length);
 
                 await stream.FlushAsync(ct);
             }

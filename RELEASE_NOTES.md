@@ -1,25 +1,30 @@
 # What's New
 
-## v2.8.1
+## v2.9.0
 
-### Admin Query and View Responsiveness
+### Planner Statistics and Durable Write Batching
 
-- Removed the blocking upfront `COUNT(*)` requirement for ad-hoc SQL and view browsing in `CSharpDB.Admin`, so first-page results can render immediately.
-- Added unknown-total paging state for query and view grids, including improved row-range status when the full result count is not yet known.
-- Added a forward-only direct query cursor for view paging so sequential next-page navigation can continue without re-running the full view query.
-- Improved filtered view behavior by pushing simple outer predicates into the underlying view source instead of evaluating them only after the expanded join/view result.
+- Added the next phase of statistics-guided planning with richer `ANALYZE` data, including histogram, heavy-hitter, and composite-prefix statistics used by the optimizer for better cardinality and join-cost estimates.
+- Extended the planner to use bounded dynamic-programming join reordering on qualifying inner-join chains instead of relying only on simpler greedy choices.
+- Added durable-write batching infrastructure and shared storage copy batching so WAL- and maintenance-adjacent copy paths can batch work more efficiently without changing default durability semantics.
+- Added explicit `sys.table_stats.row_count_is_exact` semantics so planner costing can distinguish estimated row counts from exact counts and keep `COUNT(*)` fast paths honest.
 
-### SQL Planner and Execution Improvements
+### Planner and Runtime Stabilization
 
-- Added simple-view outer predicate rewrite and broader inner-join leaf predicate pushdown so selective filters can reach the correct base-table source earlier.
-- Extended these pushdown rules across qualifying inner-join chains instead of limiting the optimization to a fixed join count.
-- Normalized identity arithmetic join predicates such as `x + 0 = y` so they use normal join planning instead of falling back to slow nested-loop behavior.
-- Extended compact scan fast paths to cover simple projected `LIMIT/OFFSET` queries, including `SELECT *` single-table scans.
-- Extended fast indexed lookup paths so `LIMIT/OFFSET` is preserved on star, covered-projection, compact-payload, and generic projection indexed plans.
-- Tightened SQL parsing so `JOIN` syntax without the required `ON` clause is rejected as invalid instead of reaching execution.
+- Followed the main optimizer/storage work with stabilization updates across planner, checkpoint, and maintenance behavior after merge-time regressions surfaced in tests.
+- Tightened planner behavior around batch evaluation, join planning, and checkpoint-related validation to keep the new stats-guided and batching paths correct under the existing test suite.
+- Restored cache-hot covered composite-index lookup performance by exposing cache-only reads from the default B-tree index store and adding a direct planner fast path for exact covered composite projections, bringing the focused composite benchmark rows back ahead of baseline.
+- Added and refreshed regression coverage across planner statistics, WAL behavior, integration scenarios, page-read buffering, and hybrid/local database paths.
 
-### Benchmark and Validation Updates
+### CLI Console Experience
 
-- Reduced benchmark baseline storage to a single focused validation snapshot and updated guardrail configuration to use that single baseline consistently.
-- Renamed stale benchmark labels and baseline rows so guardrail comparisons match the current benchmark surface after the join and scan fast-path changes.
-- Refreshed the benchmark validation pass and confirmed the current release guardrail comparison is clean: `PASS=184, WARN=0, SKIP=0, FAIL=0`.
+- Migrated `CSharpDB.Cli` from the handwritten ANSI output layer to `Spectre.Console` so the shell, help text, query tables, schema panels, and status messages render with a more consistent console UI.
+- Added a shared `CliConsole` helper with the new ASCII startup banner, left-anchored branding, richer prompt/status rendering, and reusable table/panel helpers for CLI commands.
+- Added an interactive dot-command menu at the `csdb>` prompt. Pressing `.` as the first character at a fresh prompt now opens a keyboard-driven menu of supported dot commands with `Up`/`Down`, `Enter`, and `Esc`.
+- Hardened the dot-command menu renderer so it clamps itself to the console buffer and scrolls the visible command window instead of crashing near the bottom of the terminal.
+
+### Documentation Refresh
+
+- Added contributor-facing documentation for configuration, the query execution pipeline, SQL surface behavior, and combined query/durable-write performance guidance.
+- Refreshed the roadmap to reflect the current `v2.9.0` status of the optimizer, batch execution, and durable-write work.
+- Validated the branch with `dotnet build CSharpDB.slnx`, `dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj`, `dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj`, and `dotnet test CSharpDB.slnx`.

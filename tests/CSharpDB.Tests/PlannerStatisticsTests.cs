@@ -167,6 +167,56 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FilteredRowEstimate_UsesHeavyHittersForSkewedEqualityAndIn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSkewedEqualityTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_skew", ct);
+
+        long hotEqualityRows = InvokeEstimateFilteredRows(
+            "planner_skew",
+            "SELECT * FROM planner_skew WHERE hot_code = 1");
+        long mixedInRows = InvokeEstimateFilteredRows(
+            "planner_skew",
+            "SELECT * FROM planner_skew WHERE hot_code IN (1, 901, 902)");
+
+        Assert.Equal(900, hotEqualityRows);
+        Assert.Equal(902, mixedInRows);
+    }
+
+    [Fact]
+    public async Task FilteredRowEstimate_UsesHistogramsForSkewedRanges()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupHistogramRangeTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_hist", ct);
+
+        long hotRangeRows = InvokeEstimateFilteredRows(
+            "planner_hist",
+            "SELECT * FROM planner_hist WHERE value BETWEEN 1 AND 10");
+        long coldRangeRows = InvokeEstimateFilteredRows(
+            "planner_hist",
+            "SELECT * FROM planner_hist WHERE value BETWEEN 1000 AND 1099");
+
+        Assert.True(hotRangeRows > 500, $"Expected histogram-backed hot range estimate to stay high, got {hotRangeRows}.");
+        Assert.True(hotRangeRows > coldRangeRows, $"Expected hot range estimate {hotRangeRows} to exceed cold range estimate {coldRangeRows}.");
+    }
+
+    [Fact]
+    public async Task FilteredRowEstimate_UsesCompositePrefixStatisticsForCorrelatedEquality()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupCompositePrefixCorrelationTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_corr", ct);
+
+        long estimatedRows = InvokeEstimateFilteredRows(
+            "planner_corr",
+            "SELECT * FROM planner_corr WHERE region = 'East' AND city = 'EastCity'");
+
+        Assert.Equal(500, estimatedRows);
+    }
+
+    [Fact]
     public async Task FreshColumnStats_NonUniqueJoin_PrefersIndexLookupWhenExpectedMatchesAreLow()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -338,6 +388,25 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InnerJoinChain_LocalIsNullPredicate_IsFullyPushedDownIntoLeafPlan()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupReorderableJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder_small", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT b.payload, s.flag FROM planner_reorder_small s JOIN planner_reorder_mid m ON m.code = s.code JOIN planner_reorder_big b ON b.code = m.code WHERE b.nullable_tag IS NULL",
+            ct);
+
+        Assert.IsType<HashJoinOperator>(GetStoredOperator(result));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(5, rows.Count);
+    }
+
+    [Fact]
     public async Task InnerJoinChain_ReordersUsingSelectiveTopLevelOrPredicate()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -419,6 +488,22 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
         Assert.Equal(["b", "m", "s"], order);
     }
 
+    [Fact]
+    public async Task InnerJoinChain_BoundedChooser_OrdersFourLeafChainByEstimatedSize()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupBoundedReorderJoinChainTablesAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder4_big", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder4_mid", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder4_small", ct);
+        await _db.ExecuteAsync("ANALYZE planner_reorder4_tiny", ct);
+
+        var order = InvokeChooseBoundedInnerJoinOrder(
+            "SELECT b.id, t.flag FROM planner_reorder4_big b JOIN planner_reorder4_mid m ON b.code = m.code JOIN planner_reorder4_small s ON m.code = s.code JOIN planner_reorder4_tiny t ON s.code = t.code");
+
+        Assert.Equal(["t", "s", "m", "b"], order);
+    }
+
     private async ValueTask SetupSelectivityTableAsync(CancellationToken ct)
     {
         await _db.ExecuteAsync("CREATE TABLE planner_stats (id INTEGER PRIMARY KEY, low_group INTEGER, code INTEGER, nullable_code INTEGER)", ct);
@@ -433,6 +518,52 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
                 $"INSERT INTO planner_stats VALUES ({i}, {i % 2}, {i}, {nullableCode})",
                 ct);
         }
+        await _db.CommitAsync(ct);
+    }
+
+    private async ValueTask SetupSkewedEqualityTableAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_skew (id INTEGER PRIMARY KEY, hot_code INTEGER NOT NULL)", ct);
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 900; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_skew VALUES ({i}, 1)", ct);
+
+        for (int i = 901; i <= 1000; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_skew VALUES ({i}, {i})", ct);
+
+        await _db.CommitAsync(ct);
+    }
+
+    private async ValueTask SetupHistogramRangeTableAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_hist (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        int id = 1;
+        for (int value = 1; value <= 10; value++)
+        {
+            for (int repeat = 0; repeat < 90; repeat++, id++)
+                await _db.ExecuteAsync($"INSERT INTO planner_hist VALUES ({id}, {value})", ct);
+        }
+
+        for (int value = 1000; value < 1100; value++, id++)
+            await _db.ExecuteAsync($"INSERT INTO planner_hist VALUES ({id}, {value})", ct);
+
+        await _db.CommitAsync(ct);
+    }
+
+    private async ValueTask SetupCompositePrefixCorrelationTableAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_corr (id INTEGER PRIMARY KEY, region TEXT NOT NULL, city TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_planner_corr_region_city ON planner_corr(region, city)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 500; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_corr VALUES ({i}, 'East', 'EastCity')", ct);
+
+        for (int i = 501; i <= 1000; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_corr VALUES ({i}, 'West', 'WestCity')", ct);
+
         await _db.CommitAsync(ct);
     }
 
@@ -509,6 +640,29 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
             .ToArray();
     }
 
+    private string[] InvokeChooseBoundedInnerJoinOrder(string sql)
+    {
+        var (planner, leaves, predicates, where) = CollectReorderableJoinState(sql);
+
+        var applyMethod = planner.GetType().GetMethod("ApplyLocalPredicateRowEstimates", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(applyMethod);
+        applyMethod.Invoke(planner, [leaves, predicates, where]);
+
+        Type leafType = leaves.GetType().GetGenericArguments()[0];
+        object orderedLeaves = Activator.CreateInstance(typeof(List<>).MakeGenericType(leafType))!;
+
+        var chooseMethod = planner.GetType().GetMethod("TryChooseBoundedInnerJoinOrder", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(chooseMethod);
+        object?[] args = [leaves, predicates, orderedLeaves];
+        bool chose = (bool)(chooseMethod.Invoke(planner, args) ?? false);
+        Assert.True(chose);
+
+        return ((System.Collections.IEnumerable)args[2]!)
+            .Cast<object>()
+            .Select(leaf => (string)(leaf.GetType().GetProperty("Identifier")!.GetValue(leaf)!))
+            .ToArray();
+    }
+
     private long InvokeEstimateFilteredRows(string tableName, string sql)
         => InvokeEstimateFilteredRows(tableName, alias: null, sql);
 
@@ -561,13 +715,32 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
             catalog,
             estimateSchema,
             rowCount,
-            new List<Expression> { select.Where },
+            SplitConjuncts(select.Where),
             0L,
         ];
 
         bool estimated = (bool)(method.Invoke(null, args) ?? false);
         Assert.True(estimated);
         return (long)args[4]!;
+    }
+
+    private static List<Expression> SplitConjuncts(Expression expression)
+    {
+        var conjuncts = new List<Expression>();
+        CollectConjuncts(expression, conjuncts);
+        return conjuncts;
+    }
+
+    private static void CollectConjuncts(Expression expression, List<Expression> conjuncts)
+    {
+        if (expression is BinaryExpression { Op: BinaryOp.And } binary)
+        {
+            CollectConjuncts(binary.Left, conjuncts);
+            CollectConjuncts(binary.Right, conjuncts);
+            return;
+        }
+
+        conjuncts.Add(expression);
     }
 
     private (object Planner, object Leaves, object Predicates, Expression? Where) CollectReorderableJoinState(string sql)
@@ -726,6 +899,32 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
                 $"INSERT INTO planner_reorder_small VALUES ({i}, {i}, {i * 7})",
                 ct);
         }
+        await _db.CommitAsync(ct);
+    }
+
+    private async ValueTask SetupBoundedReorderJoinChainTablesAsync(CancellationToken ct)
+    {
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder4_big (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, payload INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder4_mid (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, marker INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder4_small (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, flag INTEGER NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE TABLE planner_reorder4_tiny (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, flag INTEGER NOT NULL)", ct);
+
+        await _db.BeginTransactionAsync(ct);
+        for (int i = 1; i <= 5000; i++)
+        {
+            int code = ((i - 1) % 200) + 1;
+            await _db.ExecuteAsync($"INSERT INTO planner_reorder4_big VALUES ({i}, {code}, {i * 3})", ct);
+        }
+
+        for (int i = 1; i <= 200; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_reorder4_mid VALUES ({i}, {i}, {i * 5})", ct);
+
+        for (int i = 1; i <= 10; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_reorder4_small VALUES ({i}, {i}, {i * 7})", ct);
+
+        for (int i = 1; i <= 2; i++)
+            await _db.ExecuteAsync($"INSERT INTO planner_reorder4_tiny VALUES ({i}, {i}, {i * 11})", ct);
+
         await _db.CommitAsync(ct);
     }
 

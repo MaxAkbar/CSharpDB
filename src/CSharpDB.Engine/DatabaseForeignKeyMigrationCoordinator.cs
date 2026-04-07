@@ -880,15 +880,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         BTree destinationTree,
         CancellationToken ct)
     {
-        var cursor = sourceTree.CreateCursor();
-        long count = 0;
-        while (await cursor.MoveNextAsync(ct))
-        {
-            await destinationTree.InsertAsync(cursor.CurrentKey, cursor.CurrentValue, ct);
-            count++;
-        }
-
-        return count;
+        return await BTreeCopyUtility.CopyAsync(sourceTree, destinationTree, ct);
     }
 
     private sealed class ValidationAccumulator(int sampleLimit)

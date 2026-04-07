@@ -781,17 +781,10 @@ public static class DatabaseMaintenanceCoordinator
         string tableName,
         CancellationToken ct)
     {
-        var sourceTree = source.Catalog.GetTableTree(tableName);
-        var destinationTree = destination.Catalog.GetTableTree(tableName);
-        var cursor = sourceTree.CreateCursor();
-        long count = 0;
-        while (await cursor.MoveNextAsync(ct))
-        {
-            await destinationTree.InsertAsync(cursor.CurrentKey, cursor.CurrentValue, ct);
-            count++;
-        }
-
-        return count;
+        return await BTreeCopyUtility.CopyAsync(
+            source.Catalog.GetTableTree(tableName),
+            destination.Catalog.GetTableTree(tableName),
+            ct);
     }
 
     private static async ValueTask<long> CopyMetadataTableRowsAsync(
@@ -800,20 +793,15 @@ public static class DatabaseMaintenanceCoordinator
         TableSchema schema,
         CancellationToken ct)
     {
-        var sourceTree = source.Catalog.GetTableTree(schema.TableName);
-        var destinationTree = destination.Catalog.GetTableTree(schema.TableName);
-        var cursor = sourceTree.CreateCursor();
-        long count = 0;
-
-        while (await cursor.MoveNextAsync(ct))
-        {
-            var values = source.RecordSerializer.Decode(cursor.CurrentValue.Span);
-            byte[] payload = destination.RecordSerializer.Encode(values);
-            await destinationTree.InsertAsync(cursor.CurrentKey, payload, ct);
-            count++;
-        }
-
-        return count;
+        return await BTreeCopyUtility.CopyAsync(
+            source.Catalog.GetTableTree(schema.TableName),
+            destination.Catalog.GetTableTree(schema.TableName),
+            payload =>
+            {
+                var values = source.RecordSerializer.Decode(payload.Span);
+                return destination.RecordSerializer.Encode(values);
+            },
+            ct);
     }
 
     private static bool IsClientMetadataTable(string tableName)

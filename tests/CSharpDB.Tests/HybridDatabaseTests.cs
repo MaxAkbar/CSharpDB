@@ -412,7 +412,7 @@ public sealed class HybridDatabaseTests : IDisposable
     }
 
     [Fact]
-    public async Task OpenAsync_FileBacked_RefetchesOwnedPagesAfterCheckpoint()
+    public async Task OpenAsync_FileBacked_RefetchesOwnedPagesAfterCheckpoint_WhenOwnedPagePreservationIsDisabled()
     {
         string filePath = NewTempDbPath();
         var interceptor = new RecordingPageOperationInterceptor();
@@ -424,6 +424,7 @@ public sealed class HybridDatabaseTests : IDisposable
                 {
                     CheckpointPolicy = new FrameCountCheckpointPolicy(1),
                     Interceptors = new[] { interceptor },
+                    PreserveOwnedPagesOnCheckpoint = false,
                 }
             }
         };

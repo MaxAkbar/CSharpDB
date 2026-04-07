@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.8.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.9.0` state of the repo.
 
 ---
 
@@ -77,10 +77,10 @@ Advanced features and fundamental architecture enhancements.
 | **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
-| **Advanced cost-based query optimizer** | In progress: phase-1 statistics-guided costing is already in place for non-unique lookup selection, hash-vs-lookup join choice, hash build-side choice, and limited greedy inner-join reordering for selective equality/range/`IN`/same-column `OR` filters; advanced histograms, skew/correlation modeling, and adaptive re-optimization remain future work | In Progress |
-| **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, and staged multi-page `AppendFrameAsync` commits now reduce syscall count on the main storage write paths; remaining batch/export paths still need auditing | In Progress |
-| **Low-latency durable writes** | Reduce file-backed durable auto-commit overhead by deferring advisory planner-stat persistence and separating exact versus estimated row-count semantics, while preserving exact per-commit WAL durability for committed user data | Planned |
-| **Group commit / deferred WAL flush** | Buffer committed WAL writes across transactions before flushing to improve auto-commit throughput | Planned |
+| **Advanced cost-based query optimizer** | In progress: phase-2 stats-guided costing is now in place through internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, and bounded DP reordering for small inner-join chains; adaptive re-optimization and public histogram inspection remain future work | In Progress |
+| **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path | In Progress |
+| **Low-latency durable writes** | Done in `v2.9.0`: advisory planner-stat persistence can stay deferred without weakening committed-row durability, and `sys.table_stats.row_count_is_exact` now makes exact versus estimated row-count semantics explicit to planner and `COUNT(*)` fast paths | Done |
+| **Group commit / deferred WAL flush** | Done in `v2.9.0`: opt-in `UseDurableCommitBatchWindow(...)` batches durable WAL flushes across contending in-process transactions and remains an expert measure-first knob rather than default behavior | Done |
 | **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |
 | **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
 | **WebAssembly sandboxed UDFs** | Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime | Research |
@@ -108,8 +108,8 @@ These are known simplifications in the current implementation:
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
-| **Storage** | Durable auto-commit single-row writes still pay a physical WAL flush per commit; current write-heavy presets mainly reduce checkpoint variance rather than the flush cost itself |
-| **Query** | Phase-1 cost-based planning is in place: `ANALYZE`, `sys.table_stats`, and `sys.column_stats` now feed join/access-path costing, but there are still no histograms, no adaptive re-optimization, and complex skew/correlation cases can still fall back to heuristics |
+| **Storage** | By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in `UseDurableCommitBatchWindow(...)` can trade some commit latency for higher throughput across contending in-process writers, but default behavior remains per-commit durable |
+| **Query** | Phase-2 cost-based planning is largely in place: `ANALYZE`, `sys.table_stats`, `sys.column_stats`, internal histograms/heavy hitters/prefix stats, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization and public histogram/diagnostic surfacing rather than missing core stats-guided costing |
 | **Query** | Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage |
 
 ---
@@ -131,7 +131,7 @@ Major features already implemented:
 - Composite (multi-column) indexes
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
-- Phase-1 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, and limited greedy inner-join reordering for selective filters
+- Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata
@@ -174,7 +174,7 @@ Major features already implemented:
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
-- [Low-Latency Durable Writes Plan](low-latency-durable-writes/README.md) — Exact-durability auto-commit write optimization plan, advisory stats deferral, and benchmark gates
+- [Query And Durable Write Performance Plan](query-and-durable-write-performance/README.md) — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog

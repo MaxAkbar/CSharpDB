@@ -458,22 +458,6 @@
       "maxAllocRegressionBytes": 65536.0
     },
     {
-      "csv": "CSharpDB.Benchmarks.Micro.WalBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
-      "keyColumns": [
-        "Method",
-        "WalFramesBeforeCheckpoint"
-      ],
-      "overrides": [
-        {
-          "match": {
-            "Method": "'Manual checkpoint after N writes'"
-          },
-          "maxMeanRegressionPercent": 25.0
-        }
-      ]
-    },
-    {
       "csv": "write-diagnostics-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",

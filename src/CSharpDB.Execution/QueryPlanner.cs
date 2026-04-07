@@ -15,6 +15,32 @@ namespace CSharpDB.Execution;
 public sealed class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
+    private const int AnalyzeHistogramBucketCount = 16;
+    private const int AnalyzeFrequentValueCount = 8;
+    private const int MaxJoinReorderDpLeafCount = 6;
+
+    private sealed class AnalyzedTableStatisticsResult
+    {
+        public required long RowCount { get; init; }
+        public required ColumnStatistics[] Columns { get; init; }
+        public required ColumnDistributionStatistics[] ColumnDistributions { get; init; }
+        public required IndexPrefixStatistics[] IndexPrefixes { get; init; }
+    }
+
+    private sealed class AnalyzeIndexPrefixPlan
+    {
+        public required IndexSchema Index { get; init; }
+        public required int[] ColumnIndices { get; init; }
+        public required HashSet<string>[] PrefixDistinctKeys { get; init; }
+    }
+
+    private sealed class JoinOrderState
+    {
+        public required List<ReorderableJoinLeaf> OrderedLeaves { get; init; }
+        public required HashSet<string> SelectedIds { get; init; }
+        public required long EstimatedRows { get; init; }
+        public required long TotalCost { get; init; }
+    }
 
     private readonly record struct ReorderableJoinLeaf(
         SimpleTableRef TableRef,
@@ -114,6 +140,7 @@ public sealed class QueryPlanner
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "row_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "row_count_is_exact", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "has_stale_columns", Type = DbType.Integer, Nullable = false },
     ];
 
@@ -188,6 +215,8 @@ public sealed class QueryPlanner
     private long? _systemForeignKeysCountCache;
     private readonly Dictionary<string, TableSchema> _systemCatalogSchemaCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SelectStatement, SelectPlanKind> _selectPlanCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<SelectStatement, CachedSelectBatchPlans> _selectBatchPlanCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<SelectStatement, CachedSelectJoinReorder> _selectJoinReorderCache = new(ReferenceEqualityComparer.Instance);
     private readonly Queue<SelectStatement> _selectPlanInsertionOrder = new();
     private long _selectPlanCacheHitCount;
     private long _selectPlanCacheMissCount;
@@ -212,6 +241,44 @@ public sealed class QueryPlanner
         SimpleGroupedIndexAggregate,
         SimpleConstantGroupAggregateColumn,
         General,
+    }
+
+    private enum SelectBatchPlanSlot
+    {
+        FastSimpleFilterOnly,
+        FastSimpleColumnProjection,
+        FastSimpleExpressionProjection,
+        GeneralFilterOnly,
+        GeneralColumnProjection,
+        GeneralExpressionProjection,
+    }
+
+    private sealed class CachedSelectBatchPlans
+    {
+        private readonly bool[] _initialized =
+            new bool[(int)SelectBatchPlanSlot.GeneralExpressionProjection + 1];
+        private readonly IFilterProjectionBatchPlan?[] _plans =
+            new IFilterProjectionBatchPlan?[(int)SelectBatchPlanSlot.GeneralExpressionProjection + 1];
+
+        public bool TryGet(SelectBatchPlanSlot slot, out IFilterProjectionBatchPlan? plan)
+        {
+            int index = (int)slot;
+            plan = _plans[index];
+            return _initialized[index];
+        }
+
+        public void Store(SelectBatchPlanSlot slot, IFilterProjectionBatchPlan? plan)
+        {
+            int index = (int)slot;
+            _initialized[index] = true;
+            _plans[index] = plan;
+        }
+    }
+
+    private sealed class CachedSelectJoinReorder
+    {
+        public bool Initialized { get; set; }
+        public TableRef? ReorderedFrom { get; set; }
     }
 
     internal readonly record struct SelectPlanCacheDiagnostics(
@@ -346,6 +413,8 @@ public sealed class QueryPlanner
         _systemIndexesCountCache = null;
         _systemForeignKeysCountCache = null;
         _selectPlanCache.Clear();
+        _selectBatchPlanCache.Clear();
+        _selectJoinReorderCache.Clear();
         _selectPlanInsertionOrder.Clear();
 
         _observedSchemaVersion = currentVersion;
@@ -1820,14 +1889,16 @@ public sealed class QueryPlanner
 
         var schema = GetSchema(tableName);
         var tree = _catalog.GetTableTree(tableName, _pager);
-        var columnStats = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
-        long rowCount = columnStats.RowCount;
+        var statistics = await CollectColumnStatisticsAsync(tableName, schema, tree, ct);
+        long rowCount = statistics.RowCount;
         await _catalog.SetTableRowCountAsync(tableName, rowCount, ct);
-        await _catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.Columns, ct);
+        await _catalog.ReplaceColumnStatisticsAsync(tableName, statistics.Columns, ct);
+        await _catalog.ReplaceColumnDistributionStatisticsAsync(tableName, statistics.ColumnDistributions, ct);
+        await _catalog.ReplaceIndexPrefixStatisticsForTableAsync(tableName, statistics.IndexPrefixes, ct);
         await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
     }
 
-    private async ValueTask<(long RowCount, ColumnStatistics[] Columns)> CollectColumnStatisticsAsync(
+    private async ValueTask<AnalyzedTableStatisticsResult> CollectColumnStatisticsAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
@@ -1835,10 +1906,13 @@ public sealed class QueryPlanner
     {
         int columnCount = schema.Columns.Count;
         var distinctSets = new HashSet<DbValue>[columnCount];
+        var valueFrequencies = new Dictionary<DbValue, long>[columnCount];
+        var sampledValues = new List<DbValue>[columnCount];
         var nonNullCounts = new long[columnCount];
         var minValues = new DbValue[columnCount];
         var maxValues = new DbValue[columnCount];
         var hasValues = new bool[columnCount];
+        var indexPrefixPlans = BuildAnalyzeIndexPrefixPlans(schema, _catalog.GetIndexesForTable(tableName));
 
         int? scanCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
         var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
@@ -1857,6 +1931,12 @@ public sealed class QueryPlanner
 
                 nonNullCounts[i]++;
                 (distinctSets[i] ??= new HashSet<DbValue>()).Add(value);
+                (sampledValues[i] ??= new List<DbValue>()).Add(value);
+
+                var frequencies = valueFrequencies[i] ??= new Dictionary<DbValue, long>();
+                frequencies[value] = frequencies.TryGetValue(value, out long existingCount)
+                    ? existingCount + 1
+                    : 1;
 
                 if (!hasValues[i])
                 {
@@ -1871,12 +1951,36 @@ public sealed class QueryPlanner
                 if (DbValue.Compare(value, maxValues[i]) > 0)
                     maxValues[i] = value;
             }
+
+            for (int planIndex = 0; planIndex < indexPrefixPlans.Count; planIndex++)
+            {
+                var plan = indexPrefixPlans[planIndex];
+                for (int prefixLength = 1; prefixLength <= plan.ColumnIndices.Length; prefixLength++)
+                {
+                    bool hasNull = false;
+                    for (int componentIndex = 0; componentIndex < prefixLength; componentIndex++)
+                    {
+                        if (row[plan.ColumnIndices[componentIndex]].IsNull)
+                        {
+                            hasNull = true;
+                            break;
+                        }
+                    }
+
+                    if (hasNull)
+                        break;
+
+                    plan.PrefixDistinctKeys[prefixLength - 1].Add(
+                        EncodeCompositeStatisticsPrefix(row, plan.ColumnIndices, prefixLength));
+                }
+            }
         }
 
-        var result = new ColumnStatistics[columnCount];
+        var columnStatistics = new ColumnStatistics[columnCount];
+        var columnDistributions = new ColumnDistributionStatistics[columnCount];
         for (int i = 0; i < columnCount; i++)
         {
-            result[i] = new ColumnStatistics
+            columnStatistics[i] = new ColumnStatistics
             {
                 TableName = tableName,
                 ColumnName = schema.Columns[i].Name,
@@ -1886,9 +1990,180 @@ public sealed class QueryPlanner
                 MaxValue = hasValues[i] ? maxValues[i] : DbValue.Null,
                 IsStale = false,
             };
+
+            columnDistributions[i] = new ColumnDistributionStatistics
+            {
+                TableName = tableName,
+                ColumnName = schema.Columns[i].Name,
+                FrequentValues = BuildFrequentValues(valueFrequencies[i]),
+                HistogramBuckets = BuildHistogramBuckets(sampledValues[i]),
+            };
         }
 
-        return (rowCount, result);
+        return new AnalyzedTableStatisticsResult
+        {
+            RowCount = rowCount,
+            Columns = columnStatistics,
+            ColumnDistributions = columnDistributions,
+            IndexPrefixes = BuildIndexPrefixStatistics(tableName, indexPrefixPlans),
+        };
+    }
+
+    private static List<AnalyzeIndexPrefixPlan> BuildAnalyzeIndexPrefixPlans(
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> indexes)
+    {
+        var plans = new List<AnalyzeIndexPrefixPlan>();
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var index = indexes[i];
+            if (index.Kind != IndexKind.Sql ||
+                index.State != IndexState.Ready ||
+                index.Columns.Count <= 1)
+            {
+                continue;
+            }
+
+            var columnIndices = new int[index.Columns.Count];
+            bool allColumnsResolved = true;
+            for (int columnIndex = 0; columnIndex < index.Columns.Count; columnIndex++)
+            {
+                int resolvedIndex = schema.GetColumnIndex(index.Columns[columnIndex]);
+                if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
+                {
+                    allColumnsResolved = false;
+                    break;
+                }
+
+                columnIndices[columnIndex] = resolvedIndex;
+            }
+
+            if (!allColumnsResolved)
+                continue;
+
+            var prefixDistinctKeys = new HashSet<string>[columnIndices.Length];
+            for (int prefixLength = 0; prefixLength < prefixDistinctKeys.Length; prefixLength++)
+                prefixDistinctKeys[prefixLength] = new HashSet<string>(StringComparer.Ordinal);
+
+            plans.Add(new AnalyzeIndexPrefixPlan
+            {
+                Index = index,
+                ColumnIndices = columnIndices,
+                PrefixDistinctKeys = prefixDistinctKeys,
+            });
+        }
+
+        return plans;
+    }
+
+    private static FrequentValueStatistics[] BuildFrequentValues(Dictionary<DbValue, long>? frequencies)
+    {
+        if (frequencies == null || frequencies.Count == 0)
+            return Array.Empty<FrequentValueStatistics>();
+
+        return frequencies
+            .Where(static pair => pair.Value > 1)
+            .OrderByDescending(static pair => pair.Value)
+            .ThenBy(static pair => pair.Key, Comparer<DbValue>.Create(static (left, right) => DbValue.Compare(left, right)))
+            .Take(AnalyzeFrequentValueCount)
+            .Select(static pair => new FrequentValueStatistics
+            {
+                Value = pair.Key,
+                RowCount = pair.Value,
+            })
+            .ToArray();
+    }
+
+    private static HistogramBucketStatistics[] BuildHistogramBuckets(List<DbValue>? values)
+    {
+        if (values == null || values.Count == 0)
+            return Array.Empty<HistogramBucketStatistics>();
+
+        values.Sort(static (left, right) => DbValue.Compare(left, right));
+        int bucketCount = Math.Min(AnalyzeHistogramBucketCount, values.Count);
+        int bucketSize = (int)DivideRoundUp(values.Count, bucketCount);
+        var buckets = new List<HistogramBucketStatistics>(bucketCount);
+
+        for (int start = 0; start < values.Count; start += bucketSize)
+        {
+            int endExclusive = Math.Min(values.Count, start + bucketSize);
+            buckets.Add(new HistogramBucketStatistics
+            {
+                LowerBound = values[start],
+                UpperBound = values[endExclusive - 1],
+                RowCount = endExclusive - start,
+            });
+        }
+
+        return buckets.ToArray();
+    }
+
+    private static IndexPrefixStatistics[] BuildIndexPrefixStatistics(
+        string tableName,
+        IReadOnlyList<AnalyzeIndexPrefixPlan> plans)
+    {
+        if (plans.Count == 0)
+            return Array.Empty<IndexPrefixStatistics>();
+
+        var statistics = new List<IndexPrefixStatistics>(plans.Count);
+        for (int i = 0; i < plans.Count; i++)
+        {
+            var plan = plans[i];
+            var prefixDistinctCounts = new long[plan.PrefixDistinctKeys.Length];
+            for (int prefixLength = 0; prefixLength < plan.PrefixDistinctKeys.Length; prefixLength++)
+                prefixDistinctCounts[prefixLength] = plan.PrefixDistinctKeys[prefixLength].Count;
+
+            statistics.Add(new IndexPrefixStatistics
+            {
+                IndexName = plan.Index.IndexName,
+                TableName = tableName,
+                PrefixColumns = plan.Index.Columns.ToArray(),
+                PrefixDistinctCounts = prefixDistinctCounts,
+            });
+        }
+
+        return statistics.ToArray();
+    }
+
+    private static string EncodeCompositeStatisticsPrefix(
+        DbValue[] row,
+        IReadOnlyList<int> columnIndices,
+        int prefixLength)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < prefixLength; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+
+            AppendCompositeStatisticsValue(builder, row[columnIndices[i]]);
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendCompositeStatisticsValue(StringBuilder builder, DbValue value)
+    {
+        builder.Append((int)value.Type).Append(':');
+        switch (value.Type)
+        {
+            case DbType.Null:
+                break;
+            case DbType.Integer:
+                builder.Append(value.AsInteger);
+                break;
+            case DbType.Real:
+                builder.Append(BitConverter.DoubleToInt64Bits(value.AsReal));
+                break;
+            case DbType.Text:
+                builder.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(value.AsText)));
+                break;
+            case DbType.Blob:
+                builder.Append(Convert.ToBase64String(value.AsBlob));
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported statistics value type '{value.Type}'.");
+        }
     }
 
     /// <summary>
@@ -3143,16 +3418,46 @@ public sealed class QueryPlanner
         {
             var evicted = _selectPlanInsertionOrder.Dequeue();
             _selectPlanCache.Remove(evicted);
+            _selectBatchPlanCache.Remove(evicted);
+            _selectJoinReorderCache.Remove(evicted);
         }
+    }
+
+    private TableRef GetOrCreateCachedJoinReorder(SelectStatement stmt)
+    {
+        if (!_selectJoinReorderCache.TryGetValue(stmt, out var cached))
+        {
+            cached = new CachedSelectJoinReorder();
+            _selectJoinReorderCache[stmt] = cached;
+        }
+
+        if (!cached.Initialized)
+        {
+            cached.ReorderedFrom =
+                stmt.From is JoinTableRef join &&
+                TryReorderInnerJoinChain(join, stmt.Where, out var reordered)
+                    ? reordered
+                    : null;
+            cached.Initialized = true;
+        }
+
+        return cached.ReorderedFrom ?? stmt.From;
     }
 
     private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
     {
+        TableRef fromRef = GetOrCreateCachedJoinReorder(stmt);
+        HashSet<Expression>? consumedOuterPredicates = fromRef is JoinTableRef
+            ? new HashSet<Expression>(ReferenceEqualityComparer.Instance)
+            : null;
+
         // Build the FROM operator (single table scan, join tree, or view expansion)
         var (op, schema) = BuildFromOperator(
-            stmt.From,
+            fromRef,
             stmt.Where,
-            pushDownOuterLocalPredicates: stmt.From is JoinTableRef);
+            pushDownOuterLocalPredicates: fromRef is JoinTableRef,
+            allowJoinReorder: false,
+            consumedOuterPredicates: consumedOuterPredicates);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -3163,9 +3468,8 @@ public sealed class QueryPlanner
 
         // Try index-based scan for simple equality WHERE on a single table
         Expression? remainingWhere = stmt.Where;
-        if (stmt.From is JoinTableRef joinRef)
+        if (fromRef is JoinTableRef joinRef)
             remainingWhere = RemoveRedundantInnerJoinLocalLeafPredicates(joinRef, remainingWhere);
-
         if (stmt.From is SimpleTableRef simpleRef &&
             !_catalog.IsView(simpleRef.TableName) &&
             !IsSystemCatalogTable(simpleRef.TableName))
@@ -3235,7 +3539,7 @@ public sealed class QueryPlanner
             op = new FilterOperator(
                 op,
                 GetOrCompileSpanExpression(remainingWhere, schema),
-                TryCreateFilterBatchPlan(op, remainingWhere, schema));
+                TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
 
         if (hasAggregates)
         {
@@ -3316,7 +3620,7 @@ public sealed class QueryPlanner
                     {
                         var projectionExpressions = stmt.Columns.Select(c => c.Expression!).ToArray();
                         var batchPlan = remainingWhereEvaluator != null
-                            ? TryCreateBatchPlan(op, remainingWhere, projectionExpressions, schema)
+                            ? TryCreateCachedBatchPlan(stmt, SelectBatchPlanSlot.GeneralColumnProjection, op, remainingWhere, projectionExpressions, schema)
                             : null;
 
                         if (remainingWhereEvaluator != null)
@@ -3338,7 +3642,13 @@ public sealed class QueryPlanner
                         outputCols[i] = InferColumnDef(expressions[i], stmt.Columns[i].Alias, schema, i);
                     }
                     var expressionEvaluators = GetOrCompileSpanExpressions(expressions, schema);
-                    var batchPlan = TryCreateBatchPlan(op, remainingWhere, expressions, schema);
+                    var batchPlan = TryCreateCachedBatchPlan(
+                        stmt,
+                        SelectBatchPlanSlot.GeneralExpressionProjection,
+                        op,
+                        remainingWhere,
+                        expressions,
+                        schema);
                     op = remainingWhereEvaluator != null
                         ? new FilterProjectionOperator(op, remainingWhereEvaluator, outputCols, expressionEvaluators, batchPlan, useSpanEvaluator: true)
                         : batchPlan != null
@@ -5807,7 +6117,9 @@ public sealed class QueryPlanner
     private (IOperator op, TableSchema schema) BuildFromOperator(
         TableRef tableRef,
         Expression? outerWhere = null,
-        bool pushDownOuterLocalPredicates = false)
+        bool pushDownOuterLocalPredicates = false,
+        bool allowJoinReorder = true,
+        HashSet<Expression>? consumedOuterPredicates = null)
     {
         if (tableRef is SimpleTableRef simple)
         {
@@ -5981,8 +6293,8 @@ public sealed class QueryPlanner
             };
 
             if (pushDownOuterLocalPredicates &&
-                TryExtractLocalJoinLeafPredicate(outerWhere, simple, qualifiedTableSchema, out var localPredicate) &&
-                localPredicate != null)
+                TryCollectLocalJoinLeafPredicates(outerWhere, simple, qualifiedTableSchema, out var localConjuncts) &&
+                CombineConjuncts(localConjuncts) is { } localPredicate)
             {
                 Expression? remainingLocalPredicate = localPredicate;
                 var indexedLocalOp = TryBuildIndexScan(simple.TableName, localPredicate, qualifiedTableSchema, out var localResidualPredicate);
@@ -6012,11 +6324,14 @@ public sealed class QueryPlanner
 
         if (tableRef is JoinTableRef join)
         {
-            if (TryReorderInnerJoinChain(join, outerWhere, out var reordered))
-                return BuildFromOperator(reordered, outerWhere, pushDownOuterLocalPredicates);
+            if (allowJoinReorder &&
+                TryReorderInnerJoinChain(join, outerWhere, out var reordered))
+            {
+                return BuildFromOperator(reordered, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder: false, consumedOuterPredicates);
+            }
 
-            var (leftOp, leftSchema) = BuildFromOperator(join.Left, outerWhere, pushDownOuterLocalPredicates);
-            var (rightOp, rightSchema) = BuildFromOperator(join.Right, outerWhere, pushDownOuterLocalPredicates);
+            var (leftOp, leftSchema) = BuildFromOperator(join.Left, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder, consumedOuterPredicates);
+            var (rightOp, rightSchema) = BuildFromOperator(join.Right, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder, consumedOuterPredicates);
 
             // Build composite schema that inherits all qualified mappings
             var compositeSchema = TableSchema.CreateJoinSchema(leftSchema, rightSchema);
@@ -6462,8 +6777,20 @@ public sealed class QueryPlanner
         ApplyLocalPredicateRowEstimates(leaves, predicates, outerWhere);
 
         var originalOrder = leaves.OrderBy(static l => l.OriginalIndex).Select(static l => l.Identifier).ToArray();
-        if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out var orderedLeaves))
+        List<ReorderableJoinLeaf> orderedLeaves;
+        if (TryChooseBoundedInnerJoinOrder(leaves, predicates, out orderedLeaves))
+        {
+            var boundedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
+            if (originalOrder.SequenceEqual(boundedOrder, StringComparer.OrdinalIgnoreCase) &&
+                !TryChooseGreedyInnerJoinOrder(leaves, predicates, out orderedLeaves))
+            {
+                return false;
+            }
+        }
+        else if (!TryChooseGreedyInnerJoinOrder(leaves, predicates, out orderedLeaves))
+        {
             return false;
+        }
 
         var reorderedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
         if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
@@ -6519,13 +6846,13 @@ public sealed class QueryPlanner
         return true;
     }
 
-    private static bool TryExtractLocalJoinLeafPredicate(
+    private static bool TryCollectLocalJoinLeafPredicates(
         Expression? outerWhere,
         SimpleTableRef simple,
         TableSchema qualifiedSchema,
-        out Expression? localPredicate)
+        out List<Expression> localConjuncts)
     {
-        localPredicate = null;
+        localConjuncts = [];
 
         if (outerWhere == null)
             return false;
@@ -6543,7 +6870,6 @@ public sealed class QueryPlanner
         var conjuncts = new List<Expression>();
         CollectAndConjuncts(outerWhere, conjuncts);
 
-        var localConjuncts = new List<Expression>();
         for (int i = 0; i < conjuncts.Count; i++)
         {
             if (!TryResolveReferencedJoinTables(conjuncts[i], leaves, out var referencedTables) ||
@@ -6559,8 +6885,42 @@ public sealed class QueryPlanner
         if (localConjuncts.Count == 0)
             return false;
 
-        localPredicate = CombineConjuncts(localConjuncts);
-        return localPredicate != null;
+        return true;
+    }
+
+    private static void TrackConsumedOuterPredicates(
+        IReadOnlyList<Expression> localConjuncts,
+        Expression? localRemaining,
+        HashSet<Expression> consumedOuterPredicates)
+    {
+        var residualConjuncts = new HashSet<Expression>(ReferenceEqualityComparer.Instance);
+        if (localRemaining != null)
+        {
+            var residualTerms = new List<Expression>();
+            CollectAndConjuncts(localRemaining, residualTerms);
+            for (int i = 0; i < residualTerms.Count; i++)
+                residualConjuncts.Add(residualTerms[i]);
+        }
+
+        for (int i = 0; i < localConjuncts.Count; i++)
+        {
+            if (!residualConjuncts.Contains(localConjuncts[i]))
+                consumedOuterPredicates.Add(localConjuncts[i]);
+        }
+    }
+
+    private static Expression? RemoveConsumedConjuncts(
+        Expression where,
+        HashSet<Expression> consumedOuterPredicates)
+    {
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(where, conjuncts);
+
+        var remainingConjuncts = conjuncts
+            .Where(conjunct => !consumedOuterPredicates.Contains(conjunct))
+            .ToList();
+
+        return CombineConjuncts(remainingConjuncts);
     }
 
     private Expression? RemoveRedundantInnerJoinLocalLeafPredicates(
@@ -6785,6 +7145,143 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private bool TryChooseBoundedInnerJoinOrder(
+        List<ReorderableJoinLeaf> leaves,
+        List<ReorderableJoinPredicate> predicates,
+        out List<ReorderableJoinLeaf> orderedLeaves)
+    {
+        orderedLeaves = new List<ReorderableJoinLeaf>(leaves.Count);
+
+        if (leaves.Count < 4 || leaves.Count > MaxJoinReorderDpLeafCount)
+            return false;
+
+        var states = new Dictionary<int, JoinOrderState>();
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            states[1 << i] = new JoinOrderState
+            {
+                OrderedLeaves = [leaves[i]],
+                SelectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { leaves[i].Identifier },
+                EstimatedRows = leaves[i].RowCount,
+                TotalCost = leaves[i].RowCount,
+            };
+        }
+
+        int fullMask = (1 << leaves.Count) - 1;
+        for (int subsetSize = 2; subsetSize <= leaves.Count; subsetSize++)
+        {
+            for (int mask = 1; mask <= fullMask; mask++)
+            {
+                if (CountBits(mask) != subsetSize)
+                    continue;
+
+                JoinOrderState? bestState = null;
+                long bestTotalCost = long.MaxValue;
+                long bestEstimate = long.MaxValue;
+                long bestLastRowCount = long.MaxValue;
+                int bestLastOriginalIndex = int.MaxValue;
+
+                for (int leafIndex = 0; leafIndex < leaves.Count; leafIndex++)
+                {
+                    int leafMask = 1 << leafIndex;
+                    if ((mask & leafMask) == 0)
+                        continue;
+
+                    int previousMask = mask & ~leafMask;
+                    if (previousMask == 0 || !states.TryGetValue(previousMask, out var previousState))
+                        continue;
+
+                    var candidate = leaves[leafIndex];
+                    if (!TryEstimateNextJoinStep(
+                            leaves,
+                            predicates,
+                            previousState.OrderedLeaves,
+                            previousState.SelectedIds,
+                            previousState.EstimatedRows,
+                            candidate,
+                            out long estimatedRows))
+                    {
+                        continue;
+                    }
+
+                    long totalCost = SafeAdd(previousState.TotalCost, estimatedRows);
+
+                    if (bestState != null &&
+                        totalCost > bestTotalCost)
+                    {
+                        continue;
+                    }
+
+                    if (bestState != null &&
+                        totalCost == bestTotalCost &&
+                        estimatedRows > bestEstimate)
+                    {
+                        continue;
+                    }
+
+                    if (bestState != null &&
+                        totalCost == bestTotalCost &&
+                        estimatedRows == bestEstimate &&
+                        (candidate.RowCount > bestLastRowCount ||
+                         (candidate.RowCount == bestLastRowCount && candidate.OriginalIndex >= bestLastOriginalIndex)))
+                    {
+                        continue;
+                    }
+
+                    var ordered = new List<ReorderableJoinLeaf>(previousState.OrderedLeaves.Count + 1);
+                    ordered.AddRange(previousState.OrderedLeaves);
+                    ordered.Add(candidate);
+
+                    var selectedIds = new HashSet<string>(previousState.SelectedIds, StringComparer.OrdinalIgnoreCase)
+                    {
+                        candidate.Identifier
+                    };
+
+                    bestState = new JoinOrderState
+                    {
+                        OrderedLeaves = ordered,
+                        SelectedIds = selectedIds,
+                        EstimatedRows = estimatedRows,
+                        TotalCost = totalCost,
+                    };
+                    bestTotalCost = totalCost;
+                    bestEstimate = estimatedRows;
+                    bestLastRowCount = candidate.RowCount;
+                    bestLastOriginalIndex = candidate.OriginalIndex;
+                }
+
+                if (bestState != null)
+                    states[mask] = bestState;
+            }
+        }
+
+        if (!states.TryGetValue(fullMask, out var finalState))
+            return false;
+
+        orderedLeaves = finalState.OrderedLeaves;
+        return true;
+    }
+
+    private static int CountBits(int value)
+    {
+        int count = 0;
+        while (value != 0)
+        {
+            value &= value - 1;
+            count++;
+        }
+
+        return count;
+    }
+
+    private static long SafeAdd(long left, long right)
+    {
+        if (left >= long.MaxValue - right)
+            return long.MaxValue;
+
+        return left + right;
     }
 
     private bool TryEstimateNextJoinStep(
@@ -8001,7 +8498,7 @@ public sealed class QueryPlanner
         long estimatedRows = 0;
         long tableRowCount = 0;
         bool hasEstimatedRows = !matchedIndex.IsUnique &&
-            TryEstimateLookupRowCount(tableName, columnName, out estimatedRows, out tableRowCount);
+            TryEstimateLookupRowCount(tableName, columnName, lookupLiteral, out estimatedRows, out tableRowCount);
 
         candidate = new LookupCandidate(
             lookupValue,
@@ -8020,13 +8517,14 @@ public sealed class QueryPlanner
         return true;
     }
 
-    private bool TryEstimateLookupRowCount(string tableName, string columnName, out long estimatedRows, out long tableRowCount)
+    private bool TryEstimateLookupRowCount(string tableName, string columnName, DbValue lookupValue, out long estimatedRows, out long tableRowCount)
     {
         return CardinalityEstimator.TryEstimateLookupRowCount(
             _tableRowCountProvider,
             _catalog,
             tableName,
             columnName,
+            lookupValue,
             out estimatedRows,
             out tableRowCount);
     }
@@ -8661,6 +9159,19 @@ public sealed class QueryPlanner
         var schema = CreateSimpleTableQuerySchema(baseSchema, simpleRef.Alias);
         var serializer = GetReadSerializer(baseSchema);
 
+        if (!stmt.Columns.Any(c => c.IsStar) &&
+            TryBuildColumnProjection(stmt.Columns, schema, out var directProjectionColumnIndices, out var directOutputColumns) &&
+            TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+                simpleRef.TableName,
+                stmt,
+                schema,
+                directOutputColumns,
+                directProjectionColumnIndices,
+                out result))
+        {
+            return true;
+        }
+
         var indexOp = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out var remainingWhere)
             ?? TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere)
             ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out remainingWhere);
@@ -8673,29 +9184,43 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
 
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
-                    preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
+            if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+                ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
         }
 
         if (stmt.Columns.Any(c => c.IsStar))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, op.OutputSchema, null, out result))
+                {
+                    return true;
+                }
+            }
+
             if (remainingWhere != null)
                 op = new FilterOperator(
                     op,
                     GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
+                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
 
         if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
         {
+            if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
+            {
+                if (CanUseSyncIndexedLookupShortcut(stmt) &&
+                    TryMaterializeSyncIndexedLookupResult(indexOp, schema, serializer, outputCols, columnIndices, out result))
+                {
+                    return true;
+                }
+            }
+
             if (remainingWhere == null &&
                 op is IndexOrderedScanOperator orderedScan &&
                 TryBuildCoveredOrderedIndexProjectionOperator(
@@ -8730,7 +9255,12 @@ public sealed class QueryPlanner
                 {
                     var projectionExpressions = stmt.Columns.Select(c => c.Expression!).ToArray();
                     var batchPlan = remainingWhere != null
-                        ? TryCreateCompactBatchPlan(remainingWhere, projectionExpressions, compactSchema)
+                        ? TryCreateCachedCompactBatchPlan(
+                            stmt,
+                            SelectBatchPlanSlot.GeneralColumnProjection,
+                            remainingWhere,
+                            projectionExpressions,
+                            compactSchema)
                         : null;
 
                     var compactOp = new CompactPayloadProjectionOperator(
@@ -8769,7 +9299,7 @@ public sealed class QueryPlanner
                 op = new FilterOperator(
                     op,
                     GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
+                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
@@ -8793,7 +9323,12 @@ public sealed class QueryPlanner
                 GetOrCompileExpressions(expressions, compactSchema));
             if (remainingWhere != null)
                 compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
-            var compactBatchPlan = TryCreateCompactBatchPlan(remainingWhere, expressions, compactSchema);
+            var compactBatchPlan = TryCreateCachedCompactBatchPlan(
+                stmt,
+                SelectBatchPlanSlot.GeneralExpressionProjection,
+                remainingWhere,
+                expressions,
+                compactSchema);
             if (compactBatchPlan != null)
             {
                 compactExpressionOp.SetBatchPlan(compactBatchPlan);
@@ -8808,6 +9343,74 @@ public sealed class QueryPlanner
         return false;
     }
 
+    private bool TryMaterializeSyncCompositeCoveredIndexProjectionFromCache(
+        string tableName,
+        SelectStatement stmt,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        int[] projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (!PreferSyncPointLookups ||
+            stmt.Where == null ||
+            !CanUseSyncIndexedLookupShortcut(stmt))
+        {
+            return false;
+        }
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(stmt.Where, conjuncts);
+        if (!TryPickCompositeLookupCandidate(
+                conjuncts,
+                schema,
+                _catalog.GetSqlIndexesForTable(tableName),
+                out var compositeIndex,
+                out long lookupKey,
+                out var keyColumnIndices,
+                out var keyComponents) ||
+            keyColumnIndices == null ||
+            keyComponents == null)
+        {
+            return false;
+        }
+
+        Expression? remainingWhere = BuildResidualTermsExcludingLookupKeyTerms(
+            conjuncts,
+            schema,
+            keyColumnIndices,
+            keyComponents);
+        if (remainingWhere != null ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices, schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        var expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(keyComponents);
+        if (!TryResolveSingleCachedIndexRowId(
+                _catalog.GetIndexStore(compositeIndex!.IndexName, _pager),
+                lookupKey,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload: false,
+                out bool foundRow,
+                out long rowId))
+        {
+            return false;
+        }
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices,
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
+    }
+
     private bool TryMaterializeSyncIndexedLookupResult(
         IOperator lookupOp,
         TableSchema schema,
@@ -8818,11 +9421,20 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups ||
-            !TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+        if (!PreferSyncPointLookups)
         {
             return false;
         }
+
+        if (projectionColumnIndices != null &&
+            lookupOp is IndexScanOperator indexScan &&
+            TryMaterializeSyncCoveredIndexProjection(indexScan, schema, outputSchema, projectionColumnIndices, out result))
+        {
+            return true;
+        }
+
+        if (!TryGetSingleCachedLookupRowPayload(lookupOp, out var rowPayload))
+            return false;
 
         if (projectionColumnIndices == null)
         {
@@ -8865,6 +9477,82 @@ public sealed class QueryPlanner
 
         result = QueryResult.FromSyncLookup(projectedRow, outputSchema);
         return true;
+    }
+
+    private static bool TryMaterializeSyncCoveredIndexProjection(
+        IndexScanOperator indexScan,
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        out QueryResult result)
+    {
+        result = null!;
+
+        if (indexScan.ExpectedKeyColumnIndices is not { Length: > 0 } keyColumnIndices ||
+            indexScan.ExpectedKeyComponents is not { Length: > 0 } keyComponents ||
+            !CanProjectPrimaryKeyOrKeyColumns(projectionColumnIndices.ToArray(), schema, keyColumnIndices))
+        {
+            return false;
+        }
+
+        if (!TryResolveSingleCachedIndexRowId(indexScan, out bool foundRow, out long rowId))
+            return false;
+
+        result = CreateSyncCoveredIndexProjectionResult(
+            schema,
+            outputSchema,
+            projectionColumnIndices.ToArray(),
+            keyColumnIndices,
+            keyComponents,
+            foundRow,
+            rowId);
+        return true;
+    }
+
+    private static QueryResult CreateSyncCoveredIndexProjectionResult(
+        TableSchema schema,
+        ColumnDefinition[] outputSchema,
+        ReadOnlySpan<int> projectionColumnIndices,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents,
+        bool foundRow,
+        long rowId)
+    {
+        if (!foundRow)
+            return QueryResult.FromSyncLookup(null, outputSchema);
+
+        var row = projectionColumnIndices.Length == 0
+            ? Array.Empty<DbValue>()
+            : new DbValue[projectionColumnIndices.Length];
+        int primaryKeyIndex = schema.PrimaryKeyColumnIndex;
+        DbValue rowIdValue = DbValue.FromInteger(rowId);
+
+        for (int i = 0; i < projectionColumnIndices.Length; i++)
+        {
+            int columnIndex = projectionColumnIndices[i];
+            if (columnIndex == primaryKeyIndex)
+            {
+                row[i] = rowIdValue;
+                continue;
+            }
+
+            int keyComponentIndex = -1;
+            for (int j = 0; j < keyColumnIndices.Length; j++)
+            {
+                if (keyColumnIndices[j] == columnIndex)
+                {
+                    keyComponentIndex = j;
+                    break;
+                }
+            }
+
+            if (keyComponentIndex < 0)
+                return QueryResult.FromSyncLookup(null, outputSchema);
+
+            row[i] = keyComponents[keyComponentIndex];
+        }
+
+        return QueryResult.FromSyncLookup(row, outputSchema);
     }
 
     private static bool TryGetSingleCachedLookupRowPayload(IOperator lookupOp, out ReadOnlyMemory<byte>? rowPayload)
@@ -8925,29 +9613,55 @@ public sealed class QueryPlanner
         out bool foundRow,
         out long rowId)
     {
+        return TryResolveSingleCachedIndexRowId(
+            indexScan.IndexStore,
+            indexScan.SeekValue,
+            indexScan.ExpectedKeyComponents,
+            indexScan.ExpectedKeyTextBytes,
+            indexScan.UsesOrderedTextPayload,
+            out foundRow,
+            out rowId);
+    }
+
+    private static bool TryResolveSingleCachedIndexRowId(
+        IIndexStore indexStore,
+        long seekValue,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
+        out bool foundRow,
+        out long rowId)
+    {
         foundRow = false;
         rowId = 0;
 
-        if (indexScan.IndexStore is not ICacheAwareIndexStore cacheAware ||
-            !cacheAware.TryFindCached(indexScan.SeekValue, out var cachedIndexPayload))
+        if (indexStore is not ICacheAwareIndexStore cacheAware ||
+            !cacheAware.TryFindCached(seekValue, out var cachedIndexPayload))
         {
             return false;
         }
 
         if (cachedIndexPayload is { Length: > 0 } &&
-            indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents &&
+            keyComponents is { Length: > 0 } &&
             HashedIndexPayloadCodec.TryGetSingleMatchingRowId(
                 cachedIndexPayload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out foundRow,
                 out rowId))
         {
             return true;
         }
 
-        if (!TryGetCachedIndexRowIdPayload(indexScan, cachedIndexPayload, out var rowIdPayload))
+        if (!TryGetCachedIndexRowIdPayload(
+                cachedIndexPayload,
+                keyComponents,
+                expectedKeyTextBytes,
+                usesOrderedTextPayload,
+                out var rowIdPayload))
+        {
             return false;
+        }
 
         if (rowIdPayload.IsEmpty)
             return true;
@@ -8961,8 +9675,10 @@ public sealed class QueryPlanner
     }
 
     private static bool TryGetCachedIndexRowIdPayload(
-        IndexScanOperator indexScan,
         byte[]? payload,
+        DbValue[]? keyComponents,
+        byte[][]? expectedKeyTextBytes,
+        bool usesOrderedTextPayload,
         out ReadOnlyMemory<byte> rowIdPayload)
     {
         rowIdPayload = ReadOnlyMemory<byte>.Empty;
@@ -8970,9 +9686,9 @@ public sealed class QueryPlanner
         if (payload is not { Length: > 0 })
             return true;
 
-        if (indexScan.UsesOrderedTextPayload)
+        if (usesOrderedTextPayload)
         {
-            if (indexScan.ExpectedKeyComponents is [var keyComponent] &&
+            if (keyComponents is [var keyComponent] &&
                 keyComponent.Type == DbType.Text &&
                 OrderedTextIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                     payload,
@@ -8986,12 +9702,12 @@ public sealed class QueryPlanner
             return false;
         }
 
-        if (indexScan.ExpectedKeyComponents is { Length: > 0 } keyComponents)
+        if (keyComponents is { Length: > 0 })
         {
             rowIdPayload = HashedIndexPayloadCodec.TryGetMatchingRowIdPayloadSlice(
                 payload,
                 keyComponents,
-                indexScan.ExpectedKeyTextBytes,
+                expectedKeyTextBytes,
                 out var hashedRowIds)
                 ? hashedRowIds
                 : ReadOnlyMemory<byte>.Empty;
@@ -9001,6 +9717,10 @@ public sealed class QueryPlanner
         rowIdPayload = payload;
         return true;
     }
+
+    private static bool CanUseSyncIndexedLookupShortcut(SelectStatement stmt)
+        => stmt.Offset.GetValueOrDefault() == 0 &&
+           !stmt.Limit.HasValue;
 
     private static bool AreStrictlyAscendingUnique(ReadOnlySpan<int> values)
     {
@@ -9056,7 +9776,7 @@ public sealed class QueryPlanner
                 if (remainingWhere != null &&
                     TryExtractPushdownPredicates(remainingWhere, schema, out var starExtractedPredicates, out var starResidualWhere))
                 {
-                    remainingWhere = starResidualWhere;
+                    remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
                     var compactStarOp = BuildCompactSelectStarScanOperator(
                         tableTree,
                         schema,
@@ -9098,7 +9818,7 @@ public sealed class QueryPlanner
                 op = new FilterOperator(
                     op,
                     GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateFilterBatchPlan(op, remainingWhere, schema));
+                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema));
 
             op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
             result = CreateQueryResult(op);
@@ -9110,7 +9830,7 @@ public sealed class QueryPlanner
             TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
         {
             pushedPredicates = extractedPredicates;
-            remainingWhere = residualWhere;
+            remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
         }
 
         if (!TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
@@ -9122,7 +9842,12 @@ public sealed class QueryPlanner
         {
             var projectionExpressions = stmt.Columns.Select(c => c.Expression!).ToArray();
             var batchPlan = remainingWhere != null
-                ? TryCreateCompactBatchPlan(remainingWhere, projectionExpressions, compactSchema)
+                ? TryCreateCachedCompactBatchPlan(
+                    stmt,
+                    SelectBatchPlanSlot.FastSimpleColumnProjection,
+                    remainingWhere,
+                    projectionExpressions,
+                    compactSchema)
                 : null;
 
             var compactOp = new CompactTableScanProjectionOperator(
@@ -9134,13 +9859,7 @@ public sealed class QueryPlanner
                 estimatedRowCount);
 
             if (pushedPredicates is { Count: > 0 })
-            {
-                for (int i = 0; i < pushedPredicates.Count; i++)
-                {
-                    var predicate = pushedPredicates[i];
-                    compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-                }
-            }
+                ApplyPushdownPredicates(compactOp, pushedPredicates);
 
             if (remainingWhere != null)
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
@@ -9168,17 +9887,16 @@ public sealed class QueryPlanner
             estimatedRowCount);
 
         if (pushedPredicates is { Count: > 0 })
-        {
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                compactExpressionOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-        }
+            ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
 
         if (remainingWhere != null)
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
-        var compactBatchPlan = TryCreateCompactBatchPlan(remainingWhere, expressions, compactSchema);
+        var compactBatchPlan = TryCreateCachedCompactBatchPlan(
+            stmt,
+            SelectBatchPlanSlot.FastSimpleExpressionProjection,
+            remainingWhere,
+            expressions,
+            compactSchema);
         if (compactBatchPlan != null)
         {
             compactExpressionOp.SetBatchPlan(compactBatchPlan);
@@ -9207,13 +9925,7 @@ public sealed class QueryPlanner
             estimatedRowCount);
 
         if (pushedPredicates is { Count: > 0 })
-        {
-            for (int i = 0; i < pushedPredicates.Count; i++)
-            {
-                var predicate = pushedPredicates[i];
-                compactOp.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-        }
+            ApplyPushdownPredicates(compactOp, pushedPredicates);
 
         if (remainingWhere != null)
         {
@@ -9227,6 +9939,60 @@ public sealed class QueryPlanner
         }
 
         return compactOp;
+    }
+
+    private void ApplyPushdownPredicates(
+        IPreDecodeFilterSupport preDecodeFilterTarget,
+        IReadOnlyList<PushdownPredicateSpec> predicates)
+    {
+        for (int i = 0; i < predicates.Count; i++)
+        {
+            var predicate = predicates[i];
+            if (predicate.Kind == PreDecodeFilterKind.Comparison)
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
+            }
+            else
+            {
+                preDecodeFilterTarget.SetPreDecodeFilter(new PreDecodeFilterSpec(
+                    _recordSerializer,
+                    predicate.ColumnIndex,
+                    isNotNull: predicate.Kind == PreDecodeFilterKind.IsNotNull));
+            }
+        }
+    }
+
+    private static Expression? RetainPushdownNullResidual(
+        Expression originalWhere,
+        Expression? residualWhere,
+        TableSchema schema)
+    {
+        if (residualWhere != null)
+            return residualWhere;
+
+        if (originalWhere is IsNullExpression singleNull &&
+            TryGetPushdownNullCheck(singleNull, schema, out _))
+        {
+            return originalWhere;
+        }
+
+        if (originalWhere is not BinaryExpression { Op: BinaryOp.And })
+            return null;
+
+        var conjuncts = new List<Expression>();
+        CollectAndConjuncts(originalWhere, conjuncts);
+
+        var retainedNullTerms = new List<Expression>(conjuncts.Count);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (conjuncts[i] is IsNullExpression isNull &&
+                TryGetPushdownNullCheck(isNull, schema, out _))
+            {
+                retainedNullTerms.Add(conjuncts[i]);
+            }
+        }
+
+        return CombineConjuncts(retainedNullTerms);
     }
 
     private static int[] CreateIdentityColumnIndices(int count)
@@ -9941,7 +10707,7 @@ public sealed class QueryPlanner
         return lowerInclusive && upperInclusive;
     }
 
-    private static bool TryPushDownSimplePreDecodeFilter(
+    private bool TryPushDownSimplePreDecodeFilter(
         IOperator op,
         Expression where,
         TableSchema schema,
@@ -9954,12 +10720,7 @@ public sealed class QueryPlanner
 
         if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
         {
-            for (int i = 0; i < predicates.Count; i++)
-            {
-                var predicate = predicates[i];
-                preDecodeFilterTarget.SetPreDecodeFilter(predicate.ColumnIndex, predicate.Op, predicate.Literal);
-            }
-
+            ApplyPushdownPredicates(preDecodeFilterTarget, predicates);
             remaining = residual;
             return true;
         }
@@ -9975,6 +10736,16 @@ public sealed class QueryPlanner
     {
         predicates = [];
         remaining = where;
+
+        if (where is IsNullExpression singleNull &&
+            TryGetPushdownNullCheck(singleNull, schema, out int nullColumnIndex))
+        {
+            predicates.Add(new PushdownPredicateSpec(
+                nullColumnIndex,
+                singleNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
+            remaining = null;
+            return true;
+        }
 
         if (where is BinaryExpression singleBin &&
             IsPushdownComparison(singleBin.Op) &&
@@ -9995,7 +10766,14 @@ public sealed class QueryPlanner
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
-            if (conjuncts[i] is BinaryExpression bin &&
+            if (conjuncts[i] is IsNullExpression isNull &&
+                TryGetPushdownNullCheck(isNull, schema, out int nullCheckColumnIndex))
+            {
+                predicates.Add(new PushdownPredicateSpec(
+                    nullCheckColumnIndex,
+                    isNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
+            }
+            else if (conjuncts[i] is BinaryExpression bin &&
                 IsPushdownComparison(bin.Op) &&
                 TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
             {
@@ -10011,23 +10789,42 @@ public sealed class QueryPlanner
             return false;
 
         predicates.Sort(static (left, right) =>
-            GetPushdownComparisonRank(left.Op).CompareTo(GetPushdownComparisonRank(right.Op)));
+            GetPushdownPredicateRank(left).CompareTo(GetPushdownPredicateRank(right)));
         remaining = CombineConjuncts(residualTerms);
         return true;
     }
 
     private readonly struct PushdownPredicateSpec
     {
+        public PushdownPredicateSpec(int columnIndex, PreDecodeFilterKind kind)
+        {
+            ColumnIndex = columnIndex;
+            Kind = kind;
+            Op = BinaryOp.Equals;
+            Literal = DbValue.Null;
+        }
+
         public PushdownPredicateSpec(int columnIndex, BinaryOp op, DbValue literal)
         {
             ColumnIndex = columnIndex;
+            Kind = PreDecodeFilterKind.Comparison;
             Op = op;
             Literal = literal;
         }
 
         public int ColumnIndex { get; }
+        public PreDecodeFilterKind Kind { get; }
         public BinaryOp Op { get; }
         public DbValue Literal { get; }
+    }
+
+    private static int GetPushdownPredicateRank(PushdownPredicateSpec predicate)
+    {
+        return predicate.Kind switch
+        {
+            PreDecodeFilterKind.IsNull or PreDecodeFilterKind.IsNotNull => 0,
+            _ => GetPushdownComparisonRank(predicate.Op),
+        };
     }
 
     private static int GetPushdownComparisonRank(BinaryOp op)
@@ -10049,6 +10846,24 @@ public sealed class QueryPlanner
             or BinaryOp.GreaterThan
             or BinaryOp.LessOrEqual
             or BinaryOp.GreaterOrEqual;
+    }
+
+    private static bool TryGetPushdownNullCheck(
+        IsNullExpression isNull,
+        TableSchema schema,
+        out int columnIndex)
+    {
+        columnIndex = -1;
+
+        Expression operand = CollationSupport.StripCollation(isNull.Operand);
+        if (operand is not ColumnRefExpression columnRef)
+            return false;
+
+        columnIndex = columnRef.TableAlias != null
+            ? schema.GetQualifiedColumnIndex(columnRef.TableAlias, columnRef.ColumnName)
+            : schema.GetColumnIndex(columnRef.ColumnName);
+
+        return columnIndex >= 0;
     }
 
     private static bool TryGetPushdownOperands(
@@ -11274,6 +12089,73 @@ public sealed class QueryPlanner
         return evaluators;
     }
 
+    private IFilterProjectionBatchPlan? GetOrCreateCachedSelectBatchPlan(
+        SelectStatement stmt,
+        SelectBatchPlanSlot slot,
+        Func<IFilterProjectionBatchPlan?> factory)
+    {
+        if (!_selectBatchPlanCache.TryGetValue(stmt, out var cachedPlans))
+        {
+            cachedPlans = new CachedSelectBatchPlans();
+            _selectBatchPlanCache[stmt] = cachedPlans;
+        }
+
+        if (cachedPlans.TryGet(slot, out var cachedPlan))
+            return cachedPlan;
+
+        IFilterProjectionBatchPlan? createdPlan = factory();
+        cachedPlans.Store(slot, createdPlan);
+        return createdPlan;
+    }
+
+    private IFilterProjectionBatchPlan? TryCreateCachedBatchPlan(
+        SelectStatement stmt,
+        SelectBatchPlanSlot slot,
+        IOperator source,
+        Expression? predicate,
+        Expression[] projections,
+        TableSchema schema)
+    {
+        if (!IsBatchPlanEligibleSource(source))
+            return null;
+
+        IFilterProjectionBatchPlan? batchPlan = GetOrCreateCachedSelectBatchPlan(
+            stmt,
+            slot,
+            () => BatchPlanCompiler.TryCreate(predicate, projections, schema));
+        ApplyBatchPlanPreDecodeFilters(source, batchPlan);
+        return batchPlan;
+    }
+
+    private IFilterProjectionBatchPlan? TryCreateCachedFilterBatchPlan(
+        SelectStatement stmt,
+        SelectBatchPlanSlot slot,
+        IOperator source,
+        Expression? predicate,
+        TableSchema schema)
+    {
+        if (predicate == null || !IsBatchPlanEligibleSource(source))
+            return null;
+
+        IFilterProjectionBatchPlan? batchPlan = GetOrCreateCachedSelectBatchPlan(
+            stmt,
+            slot,
+            () => BatchPlanCompiler.TryCreateFilter(predicate, schema));
+        ApplyBatchPlanPreDecodeFilters(source, batchPlan);
+        return batchPlan;
+    }
+
+    private IFilterProjectionBatchPlan? TryCreateCachedCompactBatchPlan(
+        SelectStatement stmt,
+        SelectBatchPlanSlot slot,
+        Expression? predicate,
+        Expression[] projections,
+        TableSchema schema)
+        => GetOrCreateCachedSelectBatchPlan(
+            stmt,
+            slot,
+            () => BatchPlanCompiler.TryCreate(predicate, projections, schema));
+
     private IFilterProjectionBatchPlan? TryCreateBatchPlan(
         IOperator source,
         Expression? predicate,
@@ -11868,6 +12750,7 @@ public sealed class QueryPlanner
             [
                 DbValue.FromText(stats.TableName),
                 DbValue.FromInteger(stats.RowCount),
+                DbValue.FromInteger(stats.RowCountIsExact ? 1 : 0),
                 DbValue.FromInteger(stats.HasStaleColumns ? 1 : 0),
             ]);
         }

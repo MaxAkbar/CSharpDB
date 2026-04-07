@@ -85,6 +85,12 @@ public sealed class SchemaCatalog
     public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats) =>
         _service.TryGetFreshColumnStatistics(tableName, columnName, out stats);
 
+    public bool TryGetFreshColumnDistributionStatistics(string tableName, string columnName, out ColumnDistributionStatistics stats) =>
+        _service.TryGetFreshColumnDistributionStatistics(tableName, columnName, out stats);
+
+    public bool TryGetFreshIndexPrefixStatistics(string indexName, out IndexPrefixStatistics stats) =>
+        _service.TryGetFreshIndexPrefixStatistics(indexName, out stats);
+
     public bool TryGetTableRowCount(string tableName, out long rowCount) =>
         _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
 
@@ -144,6 +150,18 @@ public sealed class SchemaCatalog
         IReadOnlyList<ColumnStatistics> columnStatistics,
         CancellationToken ct = default) =>
         _service.ReplaceColumnStatisticsAsync(tableName, columnStatistics, ct);
+
+    public ValueTask ReplaceColumnDistributionStatisticsAsync(
+        string tableName,
+        IReadOnlyList<ColumnDistributionStatistics> columnStatistics,
+        CancellationToken ct = default) =>
+        _service.ReplaceColumnDistributionStatisticsAsync(tableName, columnStatistics, ct);
+
+    public ValueTask ReplaceIndexPrefixStatisticsForTableAsync(
+        string tableName,
+        IReadOnlyList<IndexPrefixStatistics> indexStatistics,
+        CancellationToken ct = default) =>
+        _service.ReplaceIndexPrefixStatisticsForTableAsync(tableName, indexStatistics, ct);
 
     public ValueTask MarkTableColumnStatisticsStaleAsync(string tableName, CancellationToken ct = default) =>
         _service.MarkTableColumnStatisticsStaleAsync(tableName, ct);

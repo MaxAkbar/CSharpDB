@@ -113,6 +113,31 @@ public sealed class CliIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task CliProcess_DotCommand_ShowsHelpWhenInputIsRedirected()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string workDir = NewTempDirectory();
+
+        try
+        {
+            var result = await RunCliAsync(
+                [],
+                "." + Environment.NewLine + ".quit" + Environment.NewLine,
+                workDir,
+                ct);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Available Commands", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(".tables", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.True(string.IsNullOrWhiteSpace(result.StdErr));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workDir);
+        }
+    }
+
     private static async Task<CliProcessResult> RunCliAsync(
         IReadOnlyList<string> args,
         string input,

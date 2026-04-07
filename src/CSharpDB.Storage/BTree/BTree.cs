@@ -29,12 +29,20 @@ public sealed class BTree
     private readonly Pager _pager;
     private uint _rootPageId;
     private long? _cachedEntryCount;
+    private readonly Dictionary<uint, CachedInteriorRouting> _interiorRoutingCache = new();
 
     // Leaf page hint cache: skip interior traversal when the target key falls within the cached leaf's key range
     private uint _hintLeafPageId;
     private long _hintLeafMinKey;
     private long _hintLeafMaxKey;
     private bool _hintValid;
+
+    private sealed class CachedInteriorRouting
+    {
+        public required long[] Keys { get; init; }
+        public required uint[] LeftChildren { get; init; }
+        public required uint RightChild { get; init; }
+    }
 
     public uint RootPageId => _rootPageId;
 
@@ -133,6 +141,12 @@ public sealed class BTree
             uint mutablePageId = _rootPageId;
             while (true)
             {
+                if (TryGetCachedInteriorChildPage(mutablePageId, key, out uint cachedChildPageId))
+                {
+                    mutablePageId = cachedChildPageId;
+                    continue;
+                }
+
                 var page = await _pager.GetPageAsync(mutablePageId, ct);
                 var sp = new SlottedPage(page, mutablePageId);
 
@@ -151,6 +165,7 @@ public sealed class BTree
                     return ReadLeafPayloadMemory(sp, idx);
                 }
 
+                CacheInteriorRouting(mutablePageId, sp);
                 mutablePageId = FindChildPage(sp, key);
             }
         }
@@ -180,6 +195,12 @@ public sealed class BTree
 
         while (true)
         {
+            if (TryGetCachedInteriorChildPage(pageId, key, out uint cachedChildPageId))
+            {
+                pageId = cachedChildPageId;
+                continue;
+            }
+
             var page = await _pager.GetPageReadAsync(pageId, ct);
             var sp = new ReadOnlySlottedPage(page.Memory, pageId);
 
@@ -198,10 +219,9 @@ public sealed class BTree
                 if (idx < 0) return null;
                 return ReadLeafPayloadMemory(sp, idx);
             }
-            else
-            {
-                pageId = FindChildPage(sp, key);
-            }
+
+            CacheInteriorRouting(pageId, sp);
+            pageId = FindChildPage(sp, key);
         }
     }
 
@@ -284,6 +304,12 @@ public sealed class BTree
             uint mutablePageId = _rootPageId;
             while (true)
             {
+                if (TryGetCachedInteriorChildPage(mutablePageId, key, out uint cachedChildPageId))
+                {
+                    mutablePageId = cachedChildPageId;
+                    continue;
+                }
+
                 var page = _pager.TryGetCachedPageAndRecordRead(mutablePageId);
                 if (page == null)
                     return false;
@@ -304,6 +330,7 @@ public sealed class BTree
                     return true;
                 }
 
+                CacheInteriorRouting(mutablePageId, sp);
                 mutablePageId = FindChildPage(sp, key);
             }
         }
@@ -333,6 +360,12 @@ public sealed class BTree
         uint pageId = _rootPageId;
         while (true)
         {
+            if (TryGetCachedInteriorChildPage(pageId, key, out uint cachedChildPageId))
+            {
+                pageId = cachedChildPageId;
+                continue;
+            }
+
             if (!_pager.TryGetCachedPageReadBufferAndRecordRead(pageId, out var page))
                 return false; // cache miss → fallback
 
@@ -353,10 +386,9 @@ public sealed class BTree
                 payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
                 return true; // cache hit, definitive answer
             }
-            else
-            {
-                pageId = FindChildPage(sp, key);
-            }
+
+            CacheInteriorRouting(pageId, sp);
+            pageId = FindChildPage(sp, key);
         }
     }
 
@@ -415,6 +447,7 @@ public sealed class BTree
         ArgumentNullException.ThrowIfNull(traversalPath);
         ArgumentNullException.ThrowIfNull(traversalSet);
 
+        InvalidateReadRoutingCaches();
         traversalPath.Clear();
         traversalSet.Clear();
 
@@ -440,7 +473,6 @@ public sealed class BTree
         }
 
         _cachedEntryCount = null;
-        _hintValid = false;
     }
 
     /// <summary>
@@ -448,6 +480,7 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
+        InvalidateReadRoutingCaches();
         var traversalPath = new List<uint>(capacity: 8);
         var traversalSet = new HashSet<uint>();
         var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
@@ -470,7 +503,6 @@ public sealed class BTree
             _rootPageId = newRootId;
         }
 
-        _hintValid = false;
         return true;
     }
 
@@ -479,13 +511,13 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
     {
+        InvalidateReadRoutingCaches();
         var result = await DeleteRecursiveAsync(_rootPageId, key, isRoot: true, ct);
         bool deleted = result.Deleted;
         if (deleted)
         {
             await CollapseRootIfNeededAsync(ct);
             _cachedEntryCount = null;
-            _hintValid = false;
         }
         return deleted;
     }
@@ -507,11 +539,11 @@ public sealed class BTree
         if (_rootPageId == PageConstants.NullPageId)
             return;
 
+        InvalidateReadRoutingCaches();
         var visited = new HashSet<uint>();
         await ReclaimPageAsync(_rootPageId, visited, ct);
         _rootPageId = PageConstants.NullPageId;
         _cachedEntryCount = 0;
-        _hintValid = false;
     }
 
     /// <summary>
@@ -633,6 +665,68 @@ public sealed class BTree
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         _cachedEntryCount = count;
+    }
+
+    private void InvalidateReadRoutingCaches()
+    {
+        _hintValid = false;
+        _interiorRoutingCache.Clear();
+    }
+
+    private bool TryGetCachedInteriorChildPage(uint pageId, long key, out uint childPageId)
+    {
+        if (_interiorRoutingCache.TryGetValue(pageId, out var routing))
+        {
+            childPageId = FindChildPage(routing, key);
+            return true;
+        }
+
+        childPageId = PageConstants.NullPageId;
+        return false;
+    }
+
+    private void CacheInteriorRouting(uint pageId, SlottedPage sp)
+    {
+        if (sp.PageType != PageConstants.PageTypeInterior)
+            return;
+
+        int cellCount = sp.CellCount;
+        var keys = new long[cellCount];
+        var leftChildren = new uint[cellCount];
+        for (int i = 0; i < cellCount; i++)
+        {
+            keys[i] = ReadInteriorKey(sp, i);
+            leftChildren[i] = ReadInteriorLeftChild(sp, i);
+        }
+
+        _interiorRoutingCache[pageId] = new CachedInteriorRouting
+        {
+            Keys = keys,
+            LeftChildren = leftChildren,
+            RightChild = sp.RightChildOrNextLeaf,
+        };
+    }
+
+    private void CacheInteriorRouting(uint pageId, ReadOnlySlottedPage sp)
+    {
+        if (sp.PageType != PageConstants.PageTypeInterior)
+            return;
+
+        int cellCount = sp.CellCount;
+        var keys = new long[cellCount];
+        var leftChildren = new uint[cellCount];
+        for (int i = 0; i < cellCount; i++)
+        {
+            keys[i] = ReadInteriorKey(sp, i);
+            leftChildren[i] = ReadInteriorLeftChild(sp, i);
+        }
+
+        _interiorRoutingCache[pageId] = new CachedInteriorRouting
+        {
+            Keys = keys,
+            LeftChildren = leftChildren,
+            RightChild = sp.RightChildOrNextLeaf,
+        };
     }
 
     #region Internal Insert
@@ -1605,6 +1699,14 @@ public sealed class BTree
             : sp.RightChildOrNextLeaf;
     }
 
+    private static uint FindChildPage(CachedInteriorRouting routing, long key)
+    {
+        int childIndex = UpperBoundInterior(routing.Keys, key);
+        return childIndex < routing.LeftChildren.Length
+            ? routing.LeftChildren[childIndex]
+            : routing.RightChild;
+    }
+
     private uint FindChildPageWithIndex(SlottedPage sp, long key, out int childIndex)
     {
         childIndex = UpperBoundInterior(sp, key);
@@ -1708,6 +1810,22 @@ public sealed class BTree
             else
                 lo = mid + 1;
         }
+        return lo;
+    }
+
+    private static int UpperBoundInterior(long[] keys, long key)
+    {
+        int lo = 0;
+        int hi = keys.Length;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (key < keys[mid])
+                hi = mid;
+            else
+                lo = mid + 1;
+        }
+
         return lo;
     }
 
