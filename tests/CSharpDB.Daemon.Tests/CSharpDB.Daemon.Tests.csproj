@@ -18,4 +18,8 @@
     <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.4.0" />
+  </ItemGroup>
+
 </Project>

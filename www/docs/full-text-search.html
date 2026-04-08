@@ -75,9 +75,10 @@
 <span class="cm">// Use results to fetch full rows</span>
 <span class="kw">foreach</span> (<span class="kw">var</span> hit <span class="kw">in</span> hits)
 {
-    <span class="kw">var</span> row = <span class="kw">await</span> db.QuerySingleAsync(
+    <span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(
         <span class="str">$"SELECT * FROM docs WHERE id = {hit.RowId}"</span>);
-    Console.WriteLine(<span class="str">$"[{hit.Score:F2}] {row["title"]}"</span>);
+    <span class="kw">if</span> (<span class="kw">await</span> result.MoveNextAsync())
+        Console.WriteLine(<span class="str">$"[{hit.Score:F2}] {result.Current[1].AsText}"</span>);
 }</code></pre>
                 </div>
 

@@ -73,12 +73,16 @@
                 <h2>TableSchema</h2>
                 <p>Defines the structure of a table: its name, columns, types, nullability, and primary key.</p>
                 <div class="code-block" data-title="Schema Definition">
-                    <pre><code><span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>(<span class="str">"Orders"</span>, [
-    <span class="kw">new</span>(<span class="str">"OrderId"</span>,   <span class="tp">DbType</span>.Integer, isPrimaryKey: <span class="kw">true</span>),
-    <span class="kw">new</span>(<span class="str">"CustomerId"</span>,<span class="tp">DbType</span>.Integer),
-    <span class="kw">new</span>(<span class="str">"Total"</span>,     <span class="tp">DbType</span>.Real),
-    <span class="kw">new</span>(<span class="str">"Notes"</span>,     <span class="tp">DbType</span>.Text, nullable: <span class="kw">true</span>),
-]);
+                    <pre><code><span class="kw">var</span> schema = <span class="kw">new</span> <span class="tp">TableSchema</span>
+{
+    TableName = <span class="str">"Orders"</span>,
+    Columns = [
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"OrderId"</span>,    Type = <span class="tp">DbType</span>.Integer, IsPrimaryKey = <span class="kw">true</span> },
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"CustomerId"</span>, Type = <span class="tp">DbType</span>.Integer },
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"Total"</span>,      Type = <span class="tp">DbType</span>.Real },
+        <span class="kw">new</span> <span class="tp">ColumnDefinition</span> { Name = <span class="str">"Notes"</span>,      Type = <span class="tp">DbType</span>.Text, Nullable = <span class="kw">true</span> },
+    ]
+};
 
 <span class="cm">// Access column info</span>
 <span class="kw">int</span> idx = schema.GetColumnIndex(<span class="str">"Total"</span>);  <span class="cm">// 2</span>
@@ -88,12 +92,13 @@
                 <h2>IndexSchema</h2>
                 <p><code>IndexSchema</code> defines secondary indexes on table columns. Indexes support composite keys, unique constraints, and efficient range scans via <code>BTreeIndexCursor</code>.</p>
                 <div class="code-block" data-title="Index Definition">
-                    <pre><code><span class="kw">var</span> index = <span class="kw">new</span> <span class="tp">IndexSchema</span>(
-    name: <span class="str">"idx_orders_customer"</span>,
-    tableName: <span class="str">"Orders"</span>,
-    columns: [<span class="str">"CustomerId"</span>],
-    isUnique: <span class="kw">false</span>
-);</code></pre>
+                    <pre><code><span class="kw">var</span> index = <span class="kw">new</span> <span class="tp">IndexSchema</span>
+{
+    IndexName = <span class="str">"idx_orders_customer"</span>,
+    TableName = <span class="str">"Orders"</span>,
+    Columns = [<span class="str">"CustomerId"</span>],
+    IsUnique = <span class="kw">false</span>,
+};</code></pre>
                 </div>
 
                 <h2>TriggerSchema</h2>

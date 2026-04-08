@@ -170,13 +170,14 @@
                 <h2>Configuration</h2>
                 <div class="code-block" data-title="Custom Options">
                     <pre><code><span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">StorageEngineOptionsBuilder</span>()
-    .WithCacheSize(<span class="num">4096</span>)                        <span class="cm">// Page cache slots</span>
-    .WithLockTimeout(<span class="tp">TimeSpan</span>.FromSeconds(<span class="num">30</span>)) <span class="cm">// Write lock timeout</span>
-    .WithCheckpointPolicy(
-        <span class="kw">new</span> <span class="tp">AnyCheckpointPolicy</span>(
+    .UsePagerOptions(<span class="kw">new</span> <span class="tp">PagerOptions</span>
+    {
+        MaxCachedPages = <span class="num">4096</span>,                        <span class="cm">// Page cache slots</span>
+        WriterLockTimeout = <span class="tp">TimeSpan</span>.FromSeconds(<span class="num">30</span>), <span class="cm">// Write lock timeout</span>
+        CheckpointPolicy = <span class="kw">new</span> <span class="tp">AnyCheckpointPolicy</span>(
             <span class="kw">new</span> <span class="tp">FrameCountCheckpointPolicy</span>(<span class="num">1000</span>),
-            <span class="kw">new</span> <span class="tp">WalSizeCheckpointPolicy</span>(<span class="num">10</span> * <span class="num">1024</span> * <span class="num">1024</span>)
-        ))
+            <span class="kw">new</span> <span class="tp">WalSizeCheckpointPolicy</span>(<span class="num">10</span> * <span class="num">1024</span> * <span class="num">1024</span>)),
+    })
     .Build();</code></pre>
                 </div>
 
