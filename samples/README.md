@@ -13,6 +13,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `school-district/` | Education + attendance | `schema.sql`, `procedures.json` |
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
+| `platform-showcase/` | Broad relational feature tour + optional API demo | `schema.sql`, `procedures.json`, `queries.sql`, `.csproj`, `Program.cs` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 
@@ -66,6 +67,15 @@ Root-level helpers:
 - Queries: [queries.sql](procurement-analytics/queries.sql)
 - Domain: suppliers, warehouses, products, purchase orders, and quality incidents
 - Good for: `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, `ANALYZE`, and `sys.table_stats` / `sys.column_stats`
+
+### Atlas Platform Showcase
+
+- SQL: [schema.sql](platform-showcase/schema.sql)
+- Procedures: [procedures.json](platform-showcase/procedures.json)
+- Queries: [queries.sql](platform-showcase/queries.sql)
+- Demo: [PlatformShowcaseSample.csproj](platform-showcase/PlatformShowcaseSample.csproj)
+- Domain: subscriptions, orders, support operations, inventory, knowledge articles, and dashboard presets
+- Good for: foreign keys, collations, unique + composite indexes, views, triggers, `IDENTITY` audit rows, joins, CTEs, subqueries, set operations, `TEXT(...)`, `ANALYZE`, full-text search, and `Collection<T>`
 
 ### Collection Indexing Walkthrough
 
@@ -165,6 +175,14 @@ dotnet run --project samples/generated-collections/GeneratedCollectionsSample.cs
 
 This sample is the quickest way to see the source-generated collection API, generated descriptors, and trim/AOT-friendly collection access with real seed data and console output.
 
+### Option 6: Run the Platform Showcase Demo
+
+```bash
+dotnet run --project samples/platform-showcase/PlatformShowcaseSample.csproj
+```
+
+This demo loads the broad SQL showcase schema, adds a full-text index over the knowledge-base articles, seeds a typed collection of dashboard filters, and prints a few representative queries.
+
 ## v2.2.0 API Examples
 
 The SQL samples above cover the relational surface. The following snippets show v2.2.0 features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
@@ -231,6 +249,7 @@ var restoreResult = await client.RestoreAsync(new RestoreRequest
 - The SQL samples are setup scripts, not migrations. Re-running them against the same database will fail on existing objects.
 - The API importer is idempotent for procedures (`POST`, then `PUT` on conflict).
 - `feature-tour/queries.sql` is intentionally read-only. The `EXEC ...` examples in that file are commented so you can copy them into the Admin Query tab as needed.
+- `platform-showcase/queries.sql` follows the same read-only pattern, while `PlatformShowcaseSample.csproj` covers API-only features like full-text search and collections.
 - The API uses `Data Source=csharpdb.db` by default (`src/CSharpDB.Api/appsettings.json`).
 
 ## Storage Engine Tutorials

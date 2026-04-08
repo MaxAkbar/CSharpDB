@@ -218,9 +218,15 @@
   </url>
   <url>
     <loc>https://csharpdb.com/blog/</loc>
-    <lastmod>2026-03-31</lastmod>
+    <lastmod>2026-04-08</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/blog/using-csharpdb-from-multiple-threads.html</loc>
+    <lastmod>2026-04-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/blog/getting-started-with-csharpdb.html</loc>
