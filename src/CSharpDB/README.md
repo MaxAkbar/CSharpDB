@@ -330,6 +330,7 @@ The `CSharpDB` meta-package pulls in the full library set:
 | `CSharpDB.Sql` | SQL lexer, parser, and AST |
 | `CSharpDB.Storage` | B+tree, pager, WAL, checkpointing, serialization |
 | `CSharpDB.Execution` | Query planner, operator pipeline |
+| `CSharpDB.Pipelines` | ETL pipeline contracts and runtime foundation |
 | `CSharpDB.Engine` | Top-level `Database` API — SQL, Collections, FTS, Pipelines |
 | `CSharpDB.Client` | Unified client SDK (Direct, HTTP, gRPC, Named Pipes) |
 | `CSharpDB.Data` | ADO.NET provider (`DbConnection`, `DbCommand`, `DbDataReader`) |

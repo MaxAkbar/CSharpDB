@@ -15,6 +15,7 @@
     <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
     <ProjectReference Include="..\CSharpDB.Execution\CSharpDB.Execution.csproj" />
+    <ProjectReference Include="..\CSharpDB.Pipelines\CSharpDB.Pipelines.csproj" />
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.Data\CSharpDB.Data.csproj" />
