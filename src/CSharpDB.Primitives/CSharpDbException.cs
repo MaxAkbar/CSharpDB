@@ -17,6 +17,7 @@ public enum ErrorCode
     TriggerAlreadyExists,
     WalError,
     Busy,
+    TransactionConflict,
 }
 
 public class CSharpDbException : Exception
@@ -33,5 +34,18 @@ public class CSharpDbException : Exception
         : base(message, innerException)
     {
         Code = code;
+    }
+}
+
+public sealed class CSharpDbConflictException : CSharpDbException
+{
+    public CSharpDbConflictException(string message)
+        : base(ErrorCode.TransactionConflict, message)
+    {
+    }
+
+    public CSharpDbConflictException(string message, Exception innerException)
+        : base(ErrorCode.TransactionConflict, message, innerException)
+    {
     }
 }

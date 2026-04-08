@@ -201,7 +201,7 @@ public sealed class DataEntryTests
         SetProperty(component, "SchemaProvider", schemaProvider);
         SetProperty(component, "ValidationService", new PassThroughValidationService());
         SetProperty(component, "JS", new StubJsRuntime());
-        component.FormId = form.FormId;
+        SetProperty(component, nameof(DataEntry.FormId), form.FormId);
 
         await InvokeNonPublicAsync(component, "OnParametersSetAsync");
         return component;

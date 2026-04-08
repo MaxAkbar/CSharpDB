@@ -7,6 +7,7 @@ using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
+using CSharpDB.Storage.Transactions;
 using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Engine;
@@ -17,6 +18,7 @@ namespace CSharpDB.Engine;
 public sealed class Database : IAsyncDisposable
 {
     private const int DefaultStatementCacheCapacity = 512;
+    private const int DefaultImplicitConflictRetries = 10;
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
@@ -27,6 +29,7 @@ public sealed class Database : IAsyncDisposable
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
+    private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _observedSchemaVersion;
     private bool _inTransaction;
 
@@ -68,6 +71,105 @@ public sealed class Database : IAsyncDisposable
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
+    }
+
+    /// <summary>
+    /// Begin an explicit multi-writer transaction with its own isolated catalog and planner context.
+    /// </summary>
+    public async ValueTask<WriteTransaction> BeginWriteTransactionAsync(CancellationToken ct = default)
+    {
+        if (_inTransaction)
+            throw new InvalidOperationException("Cannot start a multi-writer transaction while a legacy explicit transaction is active.");
+
+        PagerWriteTransaction storageTransaction = await _pager.BeginWriteTransactionAsync(ct);
+        try
+        {
+            using var binding = storageTransaction.Bind();
+            var transactionCatalog = await SchemaCatalog.CreateAsync(_pager, ct);
+            var transactionPlanner = new QueryPlanner(_pager, transactionCatalog, _recordSerializer)
+            {
+                PreferSyncPointLookups = PreferSyncPointLookups,
+            };
+
+            return new WriteTransaction(this, storageTransaction, transactionCatalog, transactionPlanner);
+        }
+        catch
+        {
+            await storageTransaction.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Run a multi-writer transaction with automatic retry on transaction conflicts.
+    /// </summary>
+    public async ValueTask RunWriteTransactionAsync(
+        Func<WriteTransaction, CancellationToken, ValueTask> action,
+        WriteTransactionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        options ??= new WriteTransactionOptions();
+
+        for (int attempt = 0; ; attempt++)
+        {
+            await using WriteTransaction transaction = await BeginWriteTransactionAsync(ct);
+            try
+            {
+                await action(transaction, ct);
+                await transaction.CommitAsync(ct);
+                return;
+            }
+            catch (CSharpDbConflictException) when (attempt < options.MaxRetries)
+            {
+                await options.DelayBeforeRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Run a multi-writer transaction with automatic retry on transaction conflicts.
+    /// </summary>
+    public async ValueTask<TResult> RunWriteTransactionAsync<TResult>(
+        Func<WriteTransaction, CancellationToken, ValueTask<TResult>> action,
+        WriteTransactionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        options ??= new WriteTransactionOptions();
+
+        for (int attempt = 0; ; attempt++)
+        {
+            await using WriteTransaction transaction = await BeginWriteTransactionAsync(ct);
+            try
+            {
+                TResult result = await action(transaction, ct);
+                await transaction.CommitAsync(ct);
+                return result;
+            }
+            catch (CSharpDbConflictException) when (attempt < options.MaxRetries)
+            {
+                await options.DelayBeforeRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    internal async ValueTask OnExternalWriteTransactionCommittedAsync(CancellationToken ct)
+    {
+        await _sharedStateGate.WaitAsync(ct);
+        try
+        {
+            await _catalog.ReloadAsync(ct);
+            _collectionCache.Clear();
+            _statementCache.Clear();
+            _observedSchemaVersion = _catalog.SchemaVersion;
+        }
+        finally
+        {
+            _sharedStateGate.Release();
+        }
+
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
     }
 
     /// <summary>
@@ -346,17 +448,42 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
+        if (_inTransaction)
+        {
+            if (stmt is InsertStatement explicitInsert)
+            {
+                return await _planner.ExecuteInsertAsync(
+                    explicitInsert,
+                    persistRootChanges: false,
+                    ct);
+            }
+
+            return await _planner.ExecuteAsync(stmt, ct);
+        }
+
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteImplicitWriteStatementCoreAsync(stmt, ct);
+            }
+            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+            {
+                await DelayImplicitConflictRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    private async ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct)
+    {
         QueryResult result;
         string? insertedTableName = null;
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
         {
-            if (!_inTransaction)
-            {
-                writeScope = await AcquireWriteOperationScopeAsync(ct);
-                await _pager.BeginTransactionAsync(ct);
-            }
+            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
 
             if (stmt is InsertStatement insert)
             {
@@ -371,64 +498,92 @@ public sealed class Database : IAsyncDisposable
                 result = await _planner.ExecuteAsync(stmt, ct);
             }
 
-            if (!_inTransaction)
-            {
-                commit = insertedTableName != null
-                    ? await BeginCommitForTableWithCatalogSyncAsync(insertedTableName, ct)
-                    : await BeginCommitWithCatalogSyncAsync(ct);
-            }
+            commit = insertedTableName != null
+                ? await BeginCommitForTableWithCatalogSyncAsync(insertedTableName, ct)
+                : await BeginCommitWithCatalogSyncAsync(ct);
         }
         catch
         {
-            if (!_inTransaction)
-                await RecoverCatalogStateAfterFailedCommitAsync();
+            await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
         {
-            writeScope?.Dispose();
+            if (writeScope is not null)
+            {
+                try
+                {
+                    await CompleteImplicitCommitAsync(commit, ct);
+                }
+                finally
+                {
+                    writeScope.Dispose();
+                }
+            }
         }
-
-        if (!_inTransaction)
-            await CompleteImplicitCommitAsync(commit, ct);
 
         return result;
     }
 
     private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
     {
+        if (_inTransaction)
+        {
+            return await _planner.ExecuteSimpleInsertAsync(
+                insert,
+                persistRootChanges: false,
+                ct);
+        }
+
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteImplicitSimpleInsertCoreAsync(insert, ct);
+            }
+            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+            {
+                await DelayImplicitConflictRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    private async ValueTask<QueryResult> ExecuteImplicitSimpleInsertCoreAsync(SimpleInsertSql insert, CancellationToken ct)
+    {
         QueryResult result;
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
         {
-            if (!_inTransaction)
-            {
-                writeScope = await AcquireWriteOperationScopeAsync(ct);
-                await _pager.BeginTransactionAsync(ct);
-            }
+            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
 
             result = await _planner.ExecuteSimpleInsertAsync(
                 insert,
                 persistRootChanges: false,
                 ct);
 
-            if (!_inTransaction)
-                commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
+            commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
         }
         catch
         {
-            if (!_inTransaction)
-                await RecoverCatalogStateAfterFailedCommitAsync();
+            await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
         {
-            writeScope?.Dispose();
+            if (writeScope is not null)
+            {
+                try
+                {
+                    await CompleteImplicitCommitAsync(commit, ct);
+                }
+                finally
+                {
+                    writeScope.Dispose();
+                }
+            }
         }
-
-        if (!_inTransaction)
-            await CompleteImplicitCommitAsync(commit, ct);
 
         return result;
     }
@@ -1083,6 +1238,15 @@ public sealed class Database : IAsyncDisposable
         return await tree.CountEntriesAsync(ct);
     }
 
+    private static async ValueTask DelayImplicitConflictRetryAsync(int attempt, CancellationToken ct)
+    {
+        double delayMs = Math.Min(20, 0.25 * Math.Pow(2, Math.Max(0, attempt)));
+        double jitterMs = delayMs <= 0 ? 0 : Random.Shared.NextDouble() * delayMs;
+        TimeSpan delay = TimeSpan.FromMilliseconds(jitterMs);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, ct);
+    }
+
     private async ValueTask<IDisposable> AcquireWriteOperationScopeAsync(CancellationToken ct)
     {
         await _writeOperationGate.WaitAsync(ct);
@@ -1224,6 +1388,7 @@ public sealed class Database : IAsyncDisposable
             await _pager.DisposeAsync();
             _hybridPersistenceCoordinator?.Dispose();
             _writeOperationGate.Dispose();
+            _sharedStateGate.Dispose();
         }
     }
 

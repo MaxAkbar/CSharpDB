@@ -14,20 +14,20 @@ public sealed class ChildDataGridTests
         var component = new ChildDataGrid();
         SetProperty(component, "RecordService", service);
 
-        component.ChildTableName = "Orders";
-        component.ForeignKeyField = "CustomerId";
-        component.ParentKeyValue = 7L;
-        component.ChildFormTableDefinition = CreateTableDefinition("Orders", "OrderId", "CustomerId");
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "CustomerId");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), 7L);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
 
         await InvokeNonPublicAsync(component, "OnParametersSetAsync");
 
         Assert.Equal(["Orders"], service.RequestedTables);
         Assert.Equal([101L], ReadRows(component).Select(row => (long)row["OrderId"]!).ToArray());
 
-        component.ChildTableName = "Payments";
-        component.ForeignKeyField = "CustomerId";
-        component.ParentKeyValue = 7L;
-        component.ChildFormTableDefinition = CreateTableDefinition("Payments", "PaymentId", "CustomerId");
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Payments");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "CustomerId");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), 7L);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Payments", "PaymentId", "CustomerId"));
 
         await InvokeNonPublicAsync(component, "OnParametersSetAsync");
 

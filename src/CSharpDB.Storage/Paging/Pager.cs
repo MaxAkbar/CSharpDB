@@ -25,6 +25,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly TransactionCoordinator? _transactions;
     private readonly CheckpointCoordinator? _checkpoints;
     private readonly Func<CancellationToken, ValueTask>? _checkpointAction;
+    private readonly AsyncLocal<PagerTransactionState?> _ambientTransaction = new();
 
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
@@ -38,10 +39,74 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _backgroundCheckpointStartCount;
 
     // File header state (cached in memory)
-    public uint PageCount { get; internal set; }
-    public uint SchemaRootPage { get; set; }
-    public uint FreelistHead { get; set; }
-    public uint ChangeCounter { get; private set; }
+    private uint _pageCount;
+    private uint _schemaRootPage;
+    private uint _freelistHead;
+    private uint _changeCounter;
+
+    public uint PageCount
+    {
+        get => GetCurrentTransaction() is { } tx ? tx.PageCount : _pageCount;
+        internal set
+        {
+            if (GetCurrentTransaction() is { } tx)
+            {
+                tx.PageCount = value;
+                tx.HasPageCountOverride = true;
+                return;
+            }
+
+            _pageCount = value;
+            _transactions?.EnsureNextReservedPageIdAtLeast(value);
+        }
+    }
+
+    public uint SchemaRootPage
+    {
+        get => GetCurrentTransaction() is { } tx ? tx.SchemaRootPage : _schemaRootPage;
+        set
+        {
+            if (GetCurrentTransaction() is { } tx)
+            {
+                tx.SchemaRootPage = value;
+                tx.HasSchemaRootPageOverride = true;
+                return;
+            }
+
+            _schemaRootPage = value;
+        }
+    }
+
+    public uint FreelistHead
+    {
+        get => GetCurrentTransaction() is { } tx ? tx.FreelistHead : _freelistHead;
+        set
+        {
+            if (GetCurrentTransaction() is { } tx)
+            {
+                tx.FreelistHead = value;
+                tx.HasFreelistHeadOverride = true;
+                return;
+            }
+
+            _freelistHead = value;
+        }
+    }
+
+    public uint ChangeCounter
+    {
+        get => GetCurrentTransaction() is { } tx ? tx.ChangeCounter : _changeCounter;
+        private set
+        {
+            if (GetCurrentTransaction() is { } tx)
+            {
+                tx.ChangeCounter = value;
+                return;
+            }
+
+            _changeCounter = value;
+        }
+    }
     public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
 
     internal WalFlushDiagnosticsSnapshot GetWalFlushDiagnosticsSnapshot()
@@ -314,31 +379,75 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public byte[]? TryGetCachedPage(uint pageId)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+                return modified;
+
+            return null;
+        }
+
         return _buffers.TryGetCachedPage(pageId);
     }
 
     internal byte[]? TryGetCachedPageAndRecordRead(uint pageId)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+                return modified;
+
+            return null;
+        }
+
         return _buffers.TryGetCachedPageAndRecordRead(pageId);
     }
 
     internal bool TryGetCachedPageReadBuffer(uint pageId, out PageReadBuffer page)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+            {
+                page = PageReadBuffer.FromOwnedBuffer(modified);
+                return true;
+            }
+
+            return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, tx.Snapshot, out page);
+        }
+
         return _buffers.TryGetCachedPageReadBuffer(pageId, out page);
     }
 
     internal bool TryGetCachedPageReadBufferAndRecordRead(uint pageId, out PageReadBuffer page)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+            {
+                page = PageReadBuffer.FromOwnedBuffer(modified);
+                return true;
+            }
+
+            return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, tx.Snapshot, out page);
+        }
+
         return _buffers.TryGetCachedPageReadBufferAndRecordRead(pageId, out page);
     }
 
     public ValueTask<byte[]> GetPageAsync(uint pageId, CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+            return GetTransactionPageAsync(tx, pageId, ct);
+
         return _buffers.GetPageAsync(pageId, ct);
     }
 
     internal ValueTask<PageReadBuffer> GetPageReadAsync(uint pageId, CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+            return GetTransactionPageReadAsync(tx, pageId, ct);
+
         return _buffers.GetPageReadAsync(pageId, ct);
     }
 
@@ -352,6 +461,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     internal ValueTask<PageReadBuffer> ReadPageUncachedAsync(uint pageId, CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+                return ValueTask.FromResult(PageReadBuffer.FromOwnedBuffer(modified));
+
+            return _buffers.GetSnapshotPageReadAsync(pageId, tx.Snapshot, ct);
+        }
+
         return _buffers.ReadPageUncachedAsync(pageId, ct);
     }
 
@@ -366,7 +483,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     internal bool CanSpeculativePageReads =>
         _options.EnableSequentialLeafReadAhead &&
         !_buffers.HasInterceptor &&
-        (_transactions?.InTransaction != true);
+        GetCurrentTransaction() is null &&
+        _transactions?.InTransaction != true;
 
     internal bool UsesReadOnlyPageViews =>
         _options.UseMemoryMappedReads ||
@@ -374,9 +492,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     public ValueTask MarkDirtyAsync(uint pageId, CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            tx.DirtyPages.Add(pageId);
+            return ValueTask.CompletedTask;
+        }
+
         return _buffers.MarkDirtyAsync(
             pageId,
-            _transactions?.InTransaction == true,
+            inTransaction: true,
             GetPageAsync,
             ct);
     }
@@ -387,6 +511,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public ValueTask<uint> AllocatePageAsync(CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+        {
+            if (_isSnapshotReader)
+                throw new InvalidOperationException("Cannot allocate pages on a read-only snapshot pager.");
+
+            uint pageId = _transactions!.ReserveNewPageId();
+            tx.PageCount = Math.Max(tx.PageCount, pageId + 1);
+            tx.HasPageCountOverride = true;
+            tx.ModifiedPages[pageId] = new byte[PageConstants.PageSize];
+            tx.DirtyPages.Add(pageId);
+            return ValueTask.FromResult(pageId);
+        }
+
         return _allocator.AllocatePageAsync(ct);
     }
 
@@ -395,6 +532,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public ValueTask FreePageAsync(uint pageId, CancellationToken ct = default)
     {
+        if (GetCurrentTransaction() is { } tx)
+            return FreeTransactionPageAsync(tx, pageId, ct);
+
         return _allocator.FreePageAsync(pageId, ct);
     }
 
@@ -402,6 +542,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot begin transactions on a read-only snapshot pager.");
+        if (GetCurrentTransaction() != null || _transactions?.InTransaction == true)
+            throw new CSharpDbException(ErrorCode.Unknown, "Nested transactions are not supported.");
+
         await WaitForBackgroundCheckpointAsync(ct);
         if (!_wal.IsOpen)
             await _wal.OpenAsync(PageCount, ct);
@@ -418,23 +561,157 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// Starts committing the active transaction and returns a handle that completes
     /// after durable WAL flush and pager post-commit finalization finish.
     /// </summary>
-    public async ValueTask<PagerCommitResult> BeginCommitAsync(CancellationToken ct = default)
+    public ValueTask<PagerCommitResult> BeginCommitAsync(CancellationToken ct = default)
     {
+        PagerTransactionState? tx = GetCurrentTransaction();
+        if (tx is not null)
+        {
+            if (tx.Completed)
+                throw new CSharpDbException(ErrorCode.Unknown, "No active transaction to commit.");
+            if (tx.CommitStarted)
+                throw new CSharpDbException(ErrorCode.Unknown, "Commit already started for the current transaction.");
+
+            tx.CommitStarted = true;
+            _ambientTransaction.Value = null;
+            return ValueTask.FromResult(new PagerCommitResult(CommitExplicitTransactionAsync(tx, ct)));
+        }
+
         if (_transactions is null || !_transactions.InTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction to commit.");
+
+        return BeginLegacyCommitAsync(ct);
+    }
+
+    public async ValueTask RollbackAsync(CancellationToken ct = default)
+    {
+        PagerTransactionState? tx = GetCurrentTransaction();
+        if (tx is not null)
+        {
+            tx.Completed = true;
+            _ambientTransaction.Value = null;
+            tx.ReleaseSnapshot();
+            return;
+        }
+
+        if (_transactions is null || !_transactions.TryBeginRollback())
+            return;
+
+        await _wal.RollbackAsync(ct);
+        _transactions.CompleteRollback();
+        await ResetPagerStateFromCommittedStorageAsync(ct);
+    }
+
+    internal async ValueTask<PagerWriteTransaction> BeginWriteTransactionAsync(CancellationToken ct = default)
+    {
+        if (_isSnapshotReader)
+            throw new InvalidOperationException("Cannot begin transactions on a read-only snapshot pager.");
+
+        await WaitForBackgroundCheckpointAsync(ct);
+        if (!_wal.IsOpen)
+            await _wal.OpenAsync(PageCount, ct);
+
+        IDisposable? beginBarrier = _transactions is not null
+            ? await _transactions.AcquireBeginBarrierAsync(ct)
+            : null;
+
+        try
+        {
+            WalSnapshot snapshot = AcquireReaderSnapshot();
+            var state = new PagerTransactionState(
+                _transactions?.CreateTransactionId() ?? 0,
+                _transactions?.CurrentCommitVersion ?? 0,
+                snapshot,
+                _pageCount,
+                _schemaRootPage,
+                _freelistHead,
+                _changeCounter,
+                ReleaseReaderSnapshot);
+            return new PagerWriteTransaction(this, state);
+        }
+        finally
+        {
+            beginBarrier?.Dispose();
+        }
+    }
+
+    internal IDisposable BindTransaction(PagerTransactionState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        PagerTransactionState? previous = _ambientTransaction.Value;
+        _ambientTransaction.Value = state;
+        return new AmbientTransactionBinding(_ambientTransaction, previous);
+    }
+
+    private PagerTransactionState? GetCurrentTransaction() => _ambientTransaction.Value;
+
+    private async ValueTask<byte[]> GetTransactionPageAsync(
+        PagerTransactionState tx,
+        uint pageId,
+        CancellationToken ct)
+    {
+        if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+            return modified;
+
+        byte[] clonedPage = await CloneSnapshotPageAsync(tx, pageId, ct);
+        tx.ModifiedPages[pageId] = clonedPage;
+        return clonedPage;
+    }
+
+    private async ValueTask<PageReadBuffer> GetTransactionPageReadAsync(
+        PagerTransactionState tx,
+        uint pageId,
+        CancellationToken ct)
+    {
+        if (tx.ModifiedPages.TryGetValue(pageId, out var modified))
+            return PageReadBuffer.FromOwnedBuffer(modified);
+
+        return await _buffers.GetSnapshotPageReadAsync(pageId, tx.Snapshot, ct);
+    }
+
+    private async ValueTask<byte[]> CloneSnapshotPageAsync(
+        PagerTransactionState tx,
+        uint pageId,
+        CancellationToken ct)
+    {
+        PageReadBuffer sourcePage = await _buffers.GetSnapshotPageReadAsync(pageId, tx.Snapshot, ct);
+        byte[] clone = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+        sourcePage.Memory.Span.CopyTo(clone);
+        return clone;
+    }
+
+    private async ValueTask FreeTransactionPageAsync(
+        PagerTransactionState tx,
+        uint pageId,
+        CancellationToken ct)
+    {
+        if (_isSnapshotReader)
+            throw new InvalidOperationException("Cannot free pages on a read-only snapshot pager.");
+        if (pageId == PageConstants.NullPageId)
+            throw new CSharpDbException(ErrorCode.CorruptDatabase, "Cannot free the database header page.");
+
+        byte[] page = await GetTransactionPageAsync(tx, pageId, ct);
+        Array.Clear(page);
+        int contentOffset = PageConstants.ContentOffset(pageId);
+        BitConverter.TryWriteBytes(page.AsSpan(contentOffset + PageConstants.FreelistNextOffset, sizeof(uint)), PageConstants.NullPageId);
+        page[contentOffset + PageConstants.PageTypeOffset] = PageConstants.PageTypeFreelist;
+        tx.DirtyPages.Add(pageId);
+    }
+
+    private async ValueTask<PagerCommitResult> BeginLegacyCommitAsync(CancellationToken ct)
+    {
         try
         {
             ChangeCounter++;
 
-            // Update file header in page 0
-            var page0 = await GetPageAsync(0, ct);
+            byte[] page0 = await GetPageAsync(0, ct);
             WriteFileHeaderTo(page0);
             _buffers.AddDirty(0);
             int dirtyCount = _buffers.DirtyPages.Count;
 
             return _hasInterceptor
-                ? await BeginCommitWithInterceptorAsync(dirtyCount, ct)
-                : await BeginCommitFastAsync(dirtyCount, ct);
+                ? await BeginLegacyCommitWithInterceptorAsync(dirtyCount, ct)
+                : await BeginLegacyCommitFastAsync(dirtyCount, ct);
         }
         catch
         {
@@ -444,7 +721,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private async ValueTask<PagerCommitResult> BeginCommitWithInterceptorAsync(int dirtyCount, CancellationToken ct)
+    private async ValueTask<PagerCommitResult> BeginLegacyCommitWithInterceptorAsync(int dirtyCount, CancellationToken ct)
     {
         await _interceptor.OnCommitStartAsync(dirtyCount, ct);
 
@@ -456,7 +733,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             orderedDirtyPageIds = RentSortedPageIds(_buffers.DirtyPages, out orderedDirtyCount);
             long walAppendStartTicks = Stopwatch.GetTimestamp();
 
-            // Write all dirty pages to WAL with per-page interceptor hooks.
             for (int i = 0; i < orderedDirtyCount; i++)
             {
                 uint pageId = orderedDirtyPageIds[i];
@@ -484,7 +760,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             RecordWalAppendDiagnostics(walAppendStartTicks);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
-            return new PagerCommitResult(CompleteCommitWithInterceptorAsync(commitResult, transactionId, dirtyCount));
+            return new PagerCommitResult(CompleteLegacyCommitWithInterceptorAsync(commitResult, transactionId, dirtyCount));
         }
         catch
         {
@@ -493,16 +769,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         finally
         {
-            if (orderedDirtyPageIds != null)
+            if (orderedDirtyPageIds is not null)
                 ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
         }
     }
 
-    private async ValueTask<PagerCommitResult> BeginCommitFastAsync(int dirtyCount, CancellationToken ct)
+    private async ValueTask<PagerCommitResult> BeginLegacyCommitFastAsync(int dirtyCount, CancellationToken ct)
     {
         EnforceReaderWalBackpressure(dirtyCount);
 
-        // Fast path: no interceptor — batch WAL appends to reduce per-frame write overhead.
         uint[]? orderedDirtyPageIds = null;
         int orderedDirtyCount = 0;
         WalFrameWrite[]? frameBatch = null;
@@ -532,27 +807,27 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             RecordWalAppendDiagnostics(walAppendStartTicks);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
-            return new PagerCommitResult(CompleteCommitAsync(commitResult, transactionId));
+            return new PagerCommitResult(CompleteLegacyCommitAsync(commitResult, transactionId));
         }
         finally
         {
-            if (frameBatch != null)
+            if (frameBatch is not null)
             {
                 frameBatch.AsSpan(0, frameCount).Clear();
                 ArrayPool<WalFrameWrite>.Shared.Return(frameBatch, clearArray: false);
             }
 
-            if (orderedDirtyPageIds != null)
+            if (orderedDirtyPageIds is not null)
                 ArrayPool<uint>.Shared.Return(orderedDirtyPageIds, clearArray: false);
         }
     }
 
-    private async Task CompleteCommitAsync(WalCommitResult commitResult, long transactionId)
+    private async Task CompleteLegacyCommitAsync(WalCommitResult commitResult, long transactionId)
     {
         try
         {
             await commitResult.WaitAsync();
-            await FinalizeCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+            await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
         }
         catch
         {
@@ -561,13 +836,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task CompleteCommitWithInterceptorAsync(WalCommitResult commitResult, long transactionId, int dirtyCount)
+    private async Task CompleteLegacyCommitWithInterceptorAsync(
+        WalCommitResult commitResult,
+        long transactionId,
+        int dirtyCount)
     {
         bool commitSucceeded = false;
         try
         {
             await commitResult.WaitAsync();
-            await FinalizeCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+            await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
             commitSucceeded = true;
         }
         catch
@@ -582,17 +860,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     }
 
     private ValueTask<WalCommitResult> PrepareWalCommitAsync(CancellationToken ct)
-    {
-        // Commit the WAL (makes frames durable and visible to new readers)
-        return _wal.CommitAsync(PageCount, ct);
-    }
+        => _wal.CommitAsync(PageCount, ct);
 
-    private async ValueTask FinalizeCommitAndCheckpointAsync(long transactionId, CancellationToken ct)
+    private async ValueTask FinalizeLegacyCommitAndCheckpointAsync(long transactionId, CancellationToken ct)
     {
         long finalizeStartTicks = Stopwatch.GetTimestamp();
         _transactions!.CompleteCommit(transactionId);
 
-        // Auto-checkpoint according to policy
         long checkpointDecisionStartTicks = Stopwatch.GetTimestamp();
         bool shouldCheckpoint = _checkpoints!.ShouldCheckpoint(
             CheckpointPolicy,
@@ -631,23 +905,232 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         catch
         {
-            // The WAL commit is already durable and visible once we reach post-commit
-            // checkpointing. Keep the checkpoint request pending so maintenance can
-            // retry later, but do not fault the committed write.
             _checkpoints?.RequestDeferredCheckpoint();
         }
     }
 
-    public async ValueTask RollbackAsync(CancellationToken ct = default)
+    private async Task CommitExplicitTransactionAsync(PagerTransactionState tx, CancellationToken ct)
     {
-        if (_transactions is null || !_transactions.TryBeginRollback())
+        uint[] writePageIds = tx.DirtyPages
+            .Where(static pageId => pageId != 0)
+            .ToArray();
+        if (writePageIds.Length > 1)
+            Array.Sort(writePageIds);
+
+        int dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
+        bool commitSucceeded = false;
+
+        if (_hasInterceptor)
+            await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+
+        try
+        {
+            if (writePageIds.Length == 0 &&
+                !tx.HasPageCountOverride &&
+                !tx.HasSchemaRootPageOverride &&
+                !tx.HasFreelistHeadOverride)
+            {
+                commitSucceeded = true;
+                tx.Completed = true;
+                return;
+            }
+
+            EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
+
+            IDisposable? commitLock = _transactions is not null
+                ? await _transactions.AcquireCommitLockAsync(ct)
+                : null;
+            try
+            {
+                if (_transactions is not null &&
+                    _transactions.HasWriteConflict(writePageIds, tx.StartVersion, out uint conflictPageId))
+                {
+                    throw new CSharpDbConflictException(
+                        $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                }
+
+                uint committedPageCount = _pageCount;
+                uint newPageCount = Math.Max(committedPageCount, tx.PageCount);
+                uint newSchemaRootPage = tx.HasSchemaRootPageOverride ? tx.SchemaRootPage : _schemaRootPage;
+                uint newFreelistHead = tx.HasFreelistHeadOverride ? tx.FreelistHead : _freelistHead;
+                uint newChangeCounter = checked(_changeCounter + 1);
+
+                byte[] page0 = await BuildCommittedHeaderPageAsync(
+                    tx,
+                    newPageCount,
+                    newSchemaRootPage,
+                    newFreelistHead,
+                    newChangeCounter,
+                    ct);
+
+                long walAppendStartTicks = Stopwatch.GetTimestamp();
+                WalCommitResult walCommit;
+
+                if (_hasInterceptor)
+                {
+                    _wal.BeginTransaction();
+                    try
+                    {
+                        await AppendPageWithInterceptorAsync(0, page0, ct);
+                        for (int i = 0; i < writePageIds.Length; i++)
+                            await AppendPageWithInterceptorAsync(writePageIds[i], tx.ModifiedPages[writePageIds[i]], ct);
+
+                        walCommit = await _wal.CommitAsync(newPageCount, ct);
+                    }
+                    catch
+                    {
+                        try { await _wal.RollbackAsync(ct); } catch { }
+                        throw;
+                    }
+                }
+                else
+                {
+                    WalFrameWrite[] frameBatch = new WalFrameWrite[dirtyCount];
+                    frameBatch[0] = new WalFrameWrite(0, page0);
+                    for (int i = 0; i < writePageIds.Length; i++)
+                        frameBatch[i + 1] = new WalFrameWrite(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
+
+                    walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, newPageCount, ct);
+                }
+
+                RecordWalAppendDiagnostics(walAppendStartTicks);
+                await walCommit.WaitAsync(ct);
+
+                long finalizeStartTicks = Stopwatch.GetTimestamp();
+                _pageCount = newPageCount;
+                _schemaRootPage = newSchemaRootPage;
+                _freelistHead = newFreelistHead;
+                _changeCounter = newChangeCounter;
+                _buffers.SetCached(0, page0);
+                for (int i = 0; i < writePageIds.Length; i++)
+                    _buffers.SetCached(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
+
+                _transactions?.PublishCommit(writePageIds);
+
+                long checkpointDecisionStartTicks = Stopwatch.GetTimestamp();
+                if (_checkpoints is not null &&
+                    _checkpoints.ShouldCheckpoint(
+                        CheckpointPolicy,
+                        _walIndex.FrameCount,
+                        CheckpointThreshold,
+                        EstimateCommittedWalBytes(_walIndex.FrameCount)))
+                {
+                    _checkpoints.RequestDeferredCheckpoint();
+                }
+
+                RecordCheckpointDecisionDiagnostics(checkpointDecisionStartTicks);
+                RecordFinalizeCommitDiagnostics(finalizeStartTicks);
+                commitSucceeded = true;
+                tx.Completed = true;
+            }
+            finally
+            {
+                commitLock?.Dispose();
+            }
+        }
+        finally
+        {
+            tx.ReleaseSnapshot();
+
+            if (_hasInterceptor)
+                await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+
+            if (commitSucceeded)
+                await RunPostCommitCheckpointIfNeededAsync(CancellationToken.None);
+        }
+    }
+
+    private async ValueTask<byte[]> BuildCommittedHeaderPageAsync(
+        PagerTransactionState tx,
+        uint pageCount,
+        uint schemaRootPage,
+        uint freelistHead,
+        uint changeCounter,
+        CancellationToken ct)
+    {
+        byte[] page0;
+        if (tx.ModifiedPages.TryGetValue(0, out var existingHeaderPage))
+        {
+            page0 = existingHeaderPage;
+        }
+        else
+        {
+            PageReadBuffer headerSource = await _buffers.GetSnapshotPageReadAsync(0, tx.Snapshot, ct);
+            page0 = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+            headerSource.Memory.Span.CopyTo(page0);
+        }
+
+        PageConstants.MagicBytes.AsSpan().CopyTo(page0.AsSpan(PageConstants.MagicOffset, PageConstants.MagicBytes.Length));
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.VersionOffset, sizeof(int)), PageConstants.FormatVersion);
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.PageSizeOffset, sizeof(int)), PageConstants.PageSize);
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.PageCountOffset, sizeof(uint)), pageCount);
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.SchemaRootPageOffset, sizeof(uint)), schemaRootPage);
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.FreelistHeadOffset, sizeof(uint)), freelistHead);
+        BitConverter.TryWriteBytes(page0.AsSpan(PageConstants.ChangeCounterOffset, sizeof(uint)), changeCounter);
+        return page0;
+    }
+
+    private async ValueTask AppendPageWithInterceptorAsync(uint pageId, byte[] pageData, CancellationToken ct)
+    {
+        bool writeSucceeded = false;
+        await _interceptor.OnBeforeWriteAsync(pageId, ct);
+        try
+        {
+            await _wal.AppendFrameAsync(pageId, pageData, ct);
+            writeSucceeded = true;
+        }
+        finally
+        {
+            await _interceptor.OnAfterWriteAsync(pageId, writeSucceeded, ct);
+        }
+    }
+
+    private async ValueTask RunPostCommitCheckpointIfNeededAsync(CancellationToken ct)
+    {
+        if (_checkpoints is null || !_checkpoints.HasPendingCheckpointRequest)
             return;
 
-        // Truncate uncommitted frames from WAL
-        await _wal.RollbackAsync(ct);
+        if (_options.AutoCheckpointExecutionMode == AutoCheckpointExecutionMode.Background)
+        {
+            ScheduleBackgroundCheckpointIfNeeded();
+            return;
+        }
 
-        _transactions.CompleteRollback();
-        await ResetPagerStateFromCommittedStorageAsync(ct);
+        try
+        {
+            await CheckpointAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            _checkpoints.RequestDeferredCheckpoint();
+        }
+    }
+
+    private sealed class AmbientTransactionBinding : IDisposable
+    {
+        private readonly AsyncLocal<PagerTransactionState?> _ambientTransaction;
+        private readonly PagerTransactionState? _previous;
+        private int _disposed;
+
+        public AmbientTransactionBinding(
+            AsyncLocal<PagerTransactionState?> ambientTransaction,
+            PagerTransactionState? previous)
+        {
+            _ambientTransaction = ambientTransaction;
+            _previous = previous;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            _ambientTransaction.Value = _previous;
+        }
     }
 
     private void ReadFileHeaderFrom(byte[] page0)
@@ -832,7 +1315,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_checkpoints is null)
             return false;
-        if (_transactions?.InTransaction == true || _wal.HasPendingCommitWork)
+        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true || _wal.HasPendingCommitWork)
             return false;
 
         int frameCount = _walIndex.FrameCount;
@@ -941,7 +1424,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return; // Snapshot readers don't own resources
         }
 
-        if (_transactions?.InTransaction == true)
+        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
             await RollbackAsync();
 
         await WaitForBackgroundCheckpointAsync();
@@ -973,7 +1456,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot save from a read-only snapshot pager.");
-        if (_transactions?.InTransaction == true)
+        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
             throw new InvalidOperationException("Cannot save while a transaction is active.");
         if (ActiveReaderCount > 0)
             throw new InvalidOperationException("Cannot save while reader snapshots are active.");
@@ -1040,7 +1523,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return;
         }
 
-        if (_transactions?.InTransaction == true)
+        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
             RollbackAsync().AsTask().GetAwaiter().GetResult();
         WaitForBackgroundCheckpointAsync().AsTask().GetAwaiter().GetResult();
         if (_ownsPageReadProviders)
@@ -1055,6 +1538,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_isSnapshotReader ||
             _checkpoints is null ||
             _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background ||
+            GetCurrentTransaction() is not null ||
             _transactions?.InTransaction == true ||
             _wal.HasPendingCommitWork)
         {
@@ -1228,7 +1712,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             disposablePageReads.Dispose();
     }
 
-    private void EnforceReaderWalBackpressure(int dirtyPageCount)
+    private void EnforceReaderWalBackpressure(int dirtyPageCount, int ignoredActiveReaders = 0)
     {
         if (dirtyPageCount <= 0)
             return;
@@ -1237,7 +1721,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (!limitBytes.HasValue)
             return;
 
-        int activeReaders = _checkpoints?.ActiveReaderCount ?? 0;
+        int activeReaders = (_checkpoints?.ActiveReaderCount ?? 0) - ignoredActiveReaders;
         if (activeReaders <= 0)
             return;
 

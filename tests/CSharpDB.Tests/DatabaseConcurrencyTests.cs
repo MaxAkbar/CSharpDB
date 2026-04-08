@@ -1,4 +1,5 @@
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Tests;
 
@@ -77,6 +78,53 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         Assert.Equal(writerCount * documentsPerWriter, await users.CountAsync(ct));
         Assert.NotNull(await users.GetAsync("user:0", ct));
         Assert.NotNull(await users.GetAsync($"user:{(writerCount * documentsPerWriter) - 1}", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_WithRetry_ProduceExpectedRowCount()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE tx_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+        const int writerCount = 4;
+        const int insertsPerWriter = 12;
+        await RunConcurrentWritersAsync(
+            writerCount,
+            writerId => _db.RunWriteTransactionAsync(
+                async (tx, innerCt) =>
+                {
+                    for (int i = 0; i < insertsPerWriter; i++)
+                    {
+                        int id = (writerId * insertsPerWriter) + i + 1;
+                        await tx.ExecuteAsync($"INSERT INTO tx_bench VALUES ({id}, {writerId})", innerCt);
+                    }
+                },
+                ct: ct).AsTask(),
+            ct);
+
+        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM tx_bench", ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(writerCount * insertsPerWriter, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_WithoutRetry_SurfaceConflict()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE conflict_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO conflict_bench VALUES (1, 1)", ct);
+        await tx2.ExecuteAsync("INSERT INTO conflict_bench VALUES (2, 2)", ct);
+
+        await tx1.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx2.CommitAsync(ct).AsTask());
+
+        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM conflict_bench", ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(1, rows[0][0].AsInteger);
     }
 
     private static async Task RunConcurrentWritersAsync(

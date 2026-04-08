@@ -30,6 +30,7 @@ public sealed class Collection<
 {
     private const int MaxProbeDistance = 128;
     private const string CollectionIndexPrefix = "_cidx_";
+    private const int DefaultImplicitConflictRetries = 10;
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
@@ -1394,6 +1395,22 @@ public sealed class Collection<
             return;
         }
 
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await ExecuteImplicitAutoCommitCoreAsync(action, ct);
+                return;
+            }
+            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+            {
+                await DelayImplicitConflictRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    private async ValueTask ExecuteImplicitAutoCommitCoreAsync(Func<ValueTask> action, CancellationToken ct)
+    {
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
@@ -1408,11 +1425,6 @@ public sealed class Collection<
             await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
-        finally
-        {
-            writeScope?.Dispose();
-        }
-
         try
         {
             await commit.WaitAsync();
@@ -1422,7 +1434,20 @@ public sealed class Collection<
             await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
+        finally
+        {
+            writeScope?.Dispose();
+        }
 
         await _afterImplicitCommitAsync(ct);
+    }
+
+    private static async ValueTask DelayImplicitConflictRetryAsync(int attempt, CancellationToken ct)
+    {
+        double delayMs = Math.Min(20, 0.25 * Math.Pow(2, Math.Max(0, attempt)));
+        double jitterMs = delayMs <= 0 ? 0 : Random.Shared.NextDouble() * delayMs;
+        TimeSpan delay = TimeSpan.FromMilliseconds(jitterMs);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, ct);
     }
 }
