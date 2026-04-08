@@ -35,6 +35,7 @@ param(
     [switch]$SkipScaling,
     [switch]$SkipWriteDiagnostics,
     [switch]$SkipConcurrentWriteDiagnostics,
+    [switch]$SkipWriteTransactionDiagnostics,
     [switch]$SkipDurableSqlBatching,
     [switch]$SkipRepro
 )
@@ -317,6 +318,29 @@ if (-not $SkipDurableSqlBatching)
         -TargetFileName ("durable-sql-batching-median-of-{0}.csv" -f $DurabilityRepeatCount)
 }
 
+$writeTransactionDiagnosticsCapturePath = ""
+if (-not $SkipWriteTransactionDiagnostics)
+{
+    $writeTransactionDiagnosticsArgs = @("--write-transaction-diagnostics")
+    if ($DurabilityRepeatCount -gt 1)
+    {
+        $writeTransactionDiagnosticsArgs += @("--repeat", $DurabilityRepeatCount.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if (-not $SkipRepro)
+    {
+        $writeTransactionDiagnosticsArgs += "--repro"
+    }
+
+    $writeTransactionDiagnosticsStartUtc = (Get-Date).ToUniversalTime()
+    Invoke-BenchmarkRun -Label "WriteTransaction Diagnostics" -Arguments $writeTransactionDiagnosticsArgs
+    $writeTransactionDiagnosticsCapturePath = Copy-LatestArtifactToSnapshot `
+        -SourceDir (Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)) `
+        -Pattern ("write-transaction-diagnostics-*-median-of-{0}.csv" -f $DurabilityRepeatCount) `
+        -NotBeforeUtc $writeTransactionDiagnosticsStartUtc `
+        -TargetSubDir "macro-stress-scaling" `
+        -TargetFileName ("write-transaction-diagnostics-median-of-{0}.csv" -f $DurabilityRepeatCount)
+}
+
 $concurrentWriteDiagnosticsCapturePath = ""
 if (-not $SkipConcurrentWriteDiagnostics)
 {
@@ -395,6 +419,7 @@ $machineFingerprint = Get-MachineFingerprint
     "Macro/Stress/Scaling CSV copied: $copiedMacro"
     "Write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeDiagnosticsCapturePath)) { "skipped" } else { $writeDiagnosticsCapturePath })"
     "Durable SQL batching capture: $(if ([string]::IsNullOrWhiteSpace($durableSqlBatchingCapturePath)) { "skipped" } else { $durableSqlBatchingCapturePath })"
+    "WriteTransaction diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($writeTransactionDiagnosticsCapturePath)) { "skipped" } else { $writeTransactionDiagnosticsCapturePath })"
     "Concurrent write diagnostics capture: $(if ([string]::IsNullOrWhiteSpace($concurrentWriteDiagnosticsCapturePath)) { "skipped" } else { $concurrentWriteDiagnosticsCapturePath })"
     "Machine fingerprint: $(Split-Path -Leaf $machineFingerprintPath)"
     ""

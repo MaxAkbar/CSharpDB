@@ -37,6 +37,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _checkpointDecisionCount;
     private long _checkpointDecisionTicks;
     private long _backgroundCheckpointStartCount;
+    private readonly object _explicitCommitStateGate = new();
+    private uint _scheduledExplicitPageCount;
+    private uint _scheduledExplicitSchemaRootPage;
+    private uint _scheduledExplicitFreelistHead;
+    private uint _scheduledExplicitChangeCounter;
+    private int _pendingExplicitCommitCount;
+    private long _lastAppliedExplicitCommitVersion;
 
     // File header state (cached in memory)
     private uint _pageCount;
@@ -573,7 +580,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             tx.CommitStarted = true;
             _ambientTransaction.Value = null;
-            return ValueTask.FromResult(new PagerCommitResult(CommitExplicitTransactionAsync(tx, ct)));
+            return BeginExplicitCommitAsync(tx, ct);
         }
 
         if (_transactions is null || !_transactions.InTransaction)
@@ -909,7 +916,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task CommitExplicitTransactionAsync(PagerTransactionState tx, CancellationToken ct)
+    private async ValueTask<PagerCommitResult> BeginExplicitCommitAsync(PagerTransactionState tx, CancellationToken ct)
     {
         uint[] writePageIds = tx.DirtyPages
             .Where(static pageId => pageId != 0)
@@ -918,7 +925,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             Array.Sort(writePageIds);
 
         int dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
-        bool commitSucceeded = false;
 
         if (_hasInterceptor)
             await _interceptor.OnCommitStartAsync(dirtyCount, ct);
@@ -930,113 +936,251 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 !tx.HasSchemaRootPageOverride &&
                 !tx.HasFreelistHeadOverride)
             {
-                commitSucceeded = true;
                 tx.Completed = true;
-                return;
+                tx.ReleaseSnapshot();
+                if (_hasInterceptor)
+                    await _interceptor.OnCommitEndAsync(dirtyCount, succeeded: true, CancellationToken.None);
+                return PagerCommitResult.Completed;
             }
 
             EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
 
-            IDisposable? commitLock = _transactions is not null
-                ? await _transactions.AcquireCommitLockAsync(ct)
-                : null;
+            WalCommitResult walCommit;
+            byte[] page0;
+            IDisposable? pendingCommitWindow = null;
+            ExplicitCommitHeaderReservation? headerReservation = null;
+            TransactionCoordinator.PendingCommitReservation? pendingCommitReservation = null;
+
             try
             {
-                if (_transactions is not null &&
-                    _transactions.HasWriteConflict(writePageIds, tx.StartVersion, out uint conflictPageId))
+                IDisposable? commitLock = _transactions is not null
+                    ? await _transactions.AcquireCommitLockAsync(ct)
+                    : null;
+                try
                 {
-                    throw new CSharpDbConflictException(
-                        $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
-                }
-
-                uint committedPageCount = _pageCount;
-                uint newPageCount = Math.Max(committedPageCount, tx.PageCount);
-                uint newSchemaRootPage = tx.HasSchemaRootPageOverride ? tx.SchemaRootPage : _schemaRootPage;
-                uint newFreelistHead = tx.HasFreelistHeadOverride ? tx.FreelistHead : _freelistHead;
-                uint newChangeCounter = checked(_changeCounter + 1);
-
-                byte[] page0 = await BuildCommittedHeaderPageAsync(
-                    tx,
-                    newPageCount,
-                    newSchemaRootPage,
-                    newFreelistHead,
-                    newChangeCounter,
-                    ct);
-
-                long walAppendStartTicks = Stopwatch.GetTimestamp();
-                WalCommitResult walCommit;
-
-                if (_hasInterceptor)
-                {
-                    _wal.BeginTransaction();
-                    try
+                    if (_transactions is not null &&
+                        _transactions.HasWriteConflict(writePageIds, tx.StartVersion, out uint conflictPageId))
                     {
-                        await AppendPageWithInterceptorAsync(0, page0, ct);
+                        throw new CSharpDbConflictException(
+                            $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                    }
+
+                    pendingCommitWindow = _transactions is not null
+                        ? await _transactions.EnterPendingCommitWindowAsync(ct)
+                        : null;
+                    headerReservation = ReserveExplicitCommitHeaderState(tx);
+                    page0 = await BuildCommittedHeaderPageAsync(
+                        tx,
+                        headerReservation.PageCount,
+                        headerReservation.SchemaRootPage,
+                        headerReservation.FreelistHead,
+                        headerReservation.ChangeCounter,
+                        ct);
+
+                    long walAppendStartTicks = Stopwatch.GetTimestamp();
+
+                    if (_hasInterceptor)
+                    {
+                        _wal.BeginTransaction();
+                        try
+                        {
+                            await AppendPageWithInterceptorAsync(0, page0, ct);
+                            for (int i = 0; i < writePageIds.Length; i++)
+                                await AppendPageWithInterceptorAsync(writePageIds[i], tx.ModifiedPages[writePageIds[i]], ct);
+
+                            walCommit = await _wal.CommitAsync(headerReservation.PageCount, ct);
+                        }
+                        catch
+                        {
+                            try { await _wal.RollbackAsync(ct); } catch { }
+                            throw;
+                        }
+                    }
+                    else
+                    {
+                        WalFrameWrite[] frameBatch = new WalFrameWrite[dirtyCount];
+                        frameBatch[0] = new WalFrameWrite(0, page0);
                         for (int i = 0; i < writePageIds.Length; i++)
-                            await AppendPageWithInterceptorAsync(writePageIds[i], tx.ModifiedPages[writePageIds[i]], ct);
+                            frameBatch[i + 1] = new WalFrameWrite(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
 
-                        walCommit = await _wal.CommitAsync(newPageCount, ct);
+                        walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, headerReservation.PageCount, ct);
                     }
-                    catch
-                    {
-                        try { await _wal.RollbackAsync(ct); } catch { }
-                        throw;
-                    }
+
+                    RecordWalAppendDiagnostics(walAppendStartTicks);
+                    pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds)
+                        ?? throw new InvalidOperationException("Explicit write transactions require a transaction coordinator.");
                 }
-                else
+                finally
                 {
-                    WalFrameWrite[] frameBatch = new WalFrameWrite[dirtyCount];
-                    frameBatch[0] = new WalFrameWrite(0, page0);
-                    for (int i = 0; i < writePageIds.Length; i++)
-                        frameBatch[i + 1] = new WalFrameWrite(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
-
-                    walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, newPageCount, ct);
+                    commitLock?.Dispose();
                 }
-
-                RecordWalAppendDiagnostics(walAppendStartTicks);
-                await walCommit.WaitAsync(ct);
-
-                long finalizeStartTicks = Stopwatch.GetTimestamp();
-                _pageCount = newPageCount;
-                _schemaRootPage = newSchemaRootPage;
-                _freelistHead = newFreelistHead;
-                _changeCounter = newChangeCounter;
-                _buffers.SetCached(0, page0);
-                for (int i = 0; i < writePageIds.Length; i++)
-                    _buffers.SetCached(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
-
-                _transactions?.PublishCommit(writePageIds);
-
-                long checkpointDecisionStartTicks = Stopwatch.GetTimestamp();
-                if (_checkpoints is not null &&
-                    _checkpoints.ShouldCheckpoint(
-                        CheckpointPolicy,
-                        _walIndex.FrameCount,
-                        CheckpointThreshold,
-                        EstimateCommittedWalBytes(_walIndex.FrameCount)))
-                {
-                    _checkpoints.RequestDeferredCheckpoint();
-                }
-
-                RecordCheckpointDecisionDiagnostics(checkpointDecisionStartTicks);
-                RecordFinalizeCommitDiagnostics(finalizeStartTicks);
-                commitSucceeded = true;
-                tx.Completed = true;
             }
             finally
             {
-                commitLock?.Dispose();
+                if (headerReservation is null)
+                {
+                    pendingCommitWindow?.Dispose();
+                }
             }
+
+            return new PagerCommitResult(
+                CompleteExplicitCommitAsync(
+                    tx,
+                    dirtyCount,
+                    writePageIds,
+                    page0,
+                    headerReservation!,
+                    pendingCommitReservation!,
+                    walCommit,
+                    pendingCommitWindow));
+        }
+        catch
+        {
+            tx.Completed = true;
+            tx.ReleaseSnapshot();
+            if (_hasInterceptor)
+                await _interceptor.OnCommitEndAsync(dirtyCount, succeeded: false, CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task CompleteExplicitCommitAsync(
+        PagerTransactionState tx,
+        int dirtyCount,
+        uint[] writePageIds,
+        byte[] page0,
+        ExplicitCommitHeaderReservation headerReservation,
+        TransactionCoordinator.PendingCommitReservation pendingCommitReservation,
+        WalCommitResult walCommit,
+        IDisposable? pendingCommitWindow)
+    {
+        bool commitSucceeded = false;
+        try
+        {
+            await walCommit.WaitAsync();
+
+            long finalizeStartTicks = Stopwatch.GetTimestamp();
+            _transactions?.PublishPendingCommit(pendingCommitReservation);
+            PublishExplicitCommitState(tx, writePageIds, page0, headerReservation, pendingCommitReservation.CommitVersion);
+
+            long checkpointDecisionStartTicks = Stopwatch.GetTimestamp();
+            if (_checkpoints is not null &&
+                _checkpoints.ShouldCheckpoint(
+                    CheckpointPolicy,
+                    _walIndex.FrameCount,
+                    CheckpointThreshold,
+                    EstimateCommittedWalBytes(_walIndex.FrameCount)))
+            {
+                _checkpoints.RequestDeferredCheckpoint();
+            }
+
+            RecordCheckpointDecisionDiagnostics(checkpointDecisionStartTicks);
+            RecordFinalizeCommitDiagnostics(finalizeStartTicks);
+            commitSucceeded = true;
+            tx.Completed = true;
+        }
+        catch
+        {
+            _transactions?.RevertPendingCommit(pendingCommitReservation);
+            await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
+            RevertExplicitCommitState(headerReservation);
+            tx.Completed = true;
+            throw;
         }
         finally
         {
             tx.ReleaseSnapshot();
+            pendingCommitWindow?.Dispose();
 
             if (_hasInterceptor)
                 await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
 
             if (commitSucceeded)
                 await RunPostCommitCheckpointIfNeededAsync(CancellationToken.None);
+        }
+    }
+
+    private ExplicitCommitHeaderReservation ReserveExplicitCommitHeaderState(PagerTransactionState tx)
+    {
+        lock (_explicitCommitStateGate)
+        {
+            if (_pendingExplicitCommitCount == 0)
+            {
+                _scheduledExplicitPageCount = _pageCount;
+                _scheduledExplicitSchemaRootPage = _schemaRootPage;
+                _scheduledExplicitFreelistHead = _freelistHead;
+                _scheduledExplicitChangeCounter = _changeCounter;
+            }
+
+            uint newPageCount = Math.Max(_scheduledExplicitPageCount, tx.PageCount);
+            uint newSchemaRootPage = tx.HasSchemaRootPageOverride ? tx.SchemaRootPage : _scheduledExplicitSchemaRootPage;
+            uint newFreelistHead = tx.HasFreelistHeadOverride ? tx.FreelistHead : _scheduledExplicitFreelistHead;
+            uint newChangeCounter = checked(_scheduledExplicitChangeCounter + 1);
+
+            _scheduledExplicitPageCount = newPageCount;
+            _scheduledExplicitSchemaRootPage = newSchemaRootPage;
+            _scheduledExplicitFreelistHead = newFreelistHead;
+            _scheduledExplicitChangeCounter = newChangeCounter;
+            _pendingExplicitCommitCount++;
+
+            return new ExplicitCommitHeaderReservation(
+                newPageCount,
+                newSchemaRootPage,
+                newFreelistHead,
+                newChangeCounter);
+        }
+    }
+
+    private void PublishExplicitCommitState(
+        PagerTransactionState tx,
+        uint[] writePageIds,
+        byte[] page0,
+        ExplicitCommitHeaderReservation headerReservation,
+        long commitVersion)
+    {
+        lock (_explicitCommitStateGate)
+        {
+            if (commitVersion > _lastAppliedExplicitCommitVersion)
+            {
+                _pageCount = headerReservation.PageCount;
+                _schemaRootPage = headerReservation.SchemaRootPage;
+                _freelistHead = headerReservation.FreelistHead;
+                _changeCounter = headerReservation.ChangeCounter;
+                _buffers.SetCached(0, page0);
+                _lastAppliedExplicitCommitVersion = commitVersion;
+                _transactions?.EnsureNextReservedPageIdAtLeast(_pageCount);
+            }
+
+            for (int i = 0; i < writePageIds.Length; i++)
+                _buffers.SetCached(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
+
+            if (_pendingExplicitCommitCount > 0)
+                _pendingExplicitCommitCount--;
+
+            if (_pendingExplicitCommitCount == 0)
+            {
+                _scheduledExplicitPageCount = _pageCount;
+                _scheduledExplicitSchemaRootPage = _schemaRootPage;
+                _scheduledExplicitFreelistHead = _freelistHead;
+                _scheduledExplicitChangeCounter = _changeCounter;
+            }
+        }
+    }
+
+    private void RevertExplicitCommitState(ExplicitCommitHeaderReservation headerReservation)
+    {
+        lock (_explicitCommitStateGate)
+        {
+            if (_pendingExplicitCommitCount > 0)
+                _pendingExplicitCommitCount--;
+
+            if (_pendingExplicitCommitCount == 0)
+            {
+                _scheduledExplicitPageCount = _pageCount;
+                _scheduledExplicitSchemaRootPage = _schemaRootPage;
+                _scheduledExplicitFreelistHead = _freelistHead;
+                _scheduledExplicitChangeCounter = _changeCounter;
+            }
         }
     }
 
@@ -1109,6 +1253,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _checkpoints.RequestDeferredCheckpoint();
         }
     }
+
+    private sealed record ExplicitCommitHeaderReservation(
+        uint PageCount,
+        uint SchemaRootPage,
+        uint FreelistHead,
+        uint ChangeCounter);
 
     private sealed class AmbientTransactionBinding : IDisposable
     {

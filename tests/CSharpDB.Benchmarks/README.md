@@ -174,6 +174,9 @@ dotnet run -c Release -- --write-diagnostics --repeat 3 --repro
 # Durable SQL batching diagnostics
 dotnet run -c Release -- --durable-sql-batching --repeat 3 --repro
 
+# Explicit WriteTransaction diagnostics
+dotnet run -c Release -- --write-transaction-diagnostics --repeat 3 --repro
+
 # Concurrent durable write diagnostics
 dotnet run -c Release -- --concurrent-write-diagnostics --repeat 3 --repro
 
@@ -237,6 +240,15 @@ Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table h
 - `Ops/sec` in the concurrent durability CSVs is total successful commits per second across all writers combined, not per-writer throughput.
 - The high shared-engine throughput rows therefore belong to the `8`-writer scenarios in `concurrent-write-diagnostics-*.csv`, while the much lower single-writer rows belong to the separate `write-diagnostics-*.csv` and `durable-sql-batching-*.csv` harnesses.
 
+### Explicit WriteTransaction Methodology
+
+- `WriteTransactionDiagnosticsBenchmark` exercises the phase-1 `Database.RunWriteTransactionAsync(...)` API directly rather than the legacy auto-commit or `BeginTransactionAsync/CommitAsync` paths.
+- Each logical transaction precomputes its row ids before entering the retry loop so retries re-run the same transaction body instead of inventing new keys.
+- The suite reports committed transactions as `Ops/sec`, puts `rowsPerSec`, retry counts, and exhausted conflict counts into `ExtraInfo`, and now includes two workload shapes:
+- `HotInsert`: concurrent explicit inserts into one table, which intentionally exposes leaf-page conflict pressure and retry behavior.
+- `DisjointUpdate`: concurrent explicit updates against far-apart preseeded rows, which minimizes page conflicts so commit-window coalescing and WAL batching can be observed directly.
+- The tuned rows keep the same batch-window and WAL-preallocation knobs as the existing concurrent auto-commit suite so phase-1 transaction behavior can be compared against the older shared-engine write benchmark.
+
 ### New In-Memory Suites
 
 - `InMemorySqlBenchmarks`: file-backed vs in-memory SQL point lookups and inserts
@@ -251,6 +263,7 @@ Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table h
 - `StorageTuningBenchmarks`: cache-size, index-provider, and reader-session matrix for file-backed indexed lookups
 - `DurableWriteDiagnosticsBenchmark`: file-backed single-row write diagnostics across frame-count and WAL-size checkpoint policies, including background sliced auto-checkpoint scheduling
 - `DurableSqlBatchingBenchmark`: file-backed durable SQL ingest sweep covering auto-commit single-row inserts, analyzed-table single-row inserts, and explicit transaction batches of `10`, `100`, and `1000` rows with commit-path stage diagnostics
+- `WriteTransactionDiagnosticsBenchmark`: file-backed phase-1 explicit `WriteTransaction` sweep covering both hot-conflict inserts and disjoint-page updates so retry pressure and commit coalescing can be measured separately on the new transaction API
 - `ConcurrentDurableWriteBenchmark`: shared-database multi-writer auto-commit sweep where `4` or `8` in-process writer tasks hit one shared `Database` instance for durable batch-window tuning under actual writer contention
 - `InMemoryBatchBenchmark`: rotating x100 batch throughput for in-memory SQL and collections
 - `InMemoryWorkloadBenchmark`: macro mixed workloads for SQL and collections in memory vs file-backed
@@ -280,7 +293,7 @@ Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table h
 - `CompositeGroupedIndexBenchmarks`: isolates `GROUP BY` on composite indexed keys and leftmost-prefix grouped scans so composite grouped fast paths can be compared against generic grouped scans
 - `CollectionFieldExtractionBenchmarks`: isolates early/middle/late extraction cost, nested-path access, miss cost, and full document hydration comparison for collection payload scans
 - `CollectionLookupFallbackBenchmarks`: isolates collection equality lookups on unindexed fields to measure the direct-payload compare fallback before full document hydration
-- `Run-Phase1-Baselines.ps1`: runs the focused phase-1 benchmark set without the larger macro, stress, or scaling suites
+- `Run-Phase1-Baselines.ps1`: runs the focused phase-1 micro set plus the repeat-3 explicit `WriteTransaction` diagnostics without the larger macro, stress, or scaling suites
 - `CollectionFieldExtractionBenchmarks`, `CollectionPayloadBenchmarks`, and `CollectionAccessBenchmarks` use an in-process BenchmarkDotNet toolchain on this machine because that was the smallest stable fix for local child-job generation/runtime issues
 
 ### Baselines and Guardrails

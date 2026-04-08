@@ -537,6 +537,48 @@
       "outputPattern": "durable-sql-batching-*-median-of-3.csv"
     },
     {
+      "csv": "write-transaction-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "WriteTransactionDiagnostics_W1_Rows100_Batch0_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W4_Rows1_Batch250us_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows10_Batch250us_Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 20.0,
+      "skipAllocationComparison": true,
+      "overrides": [
+        {
+          "match": {
+            "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows10_Batch250us_Prealloc1MiB_10s"
+          },
+          "maxMeanRegressionPercent": 30.0
+        }
+      ],
+      "suiteKey": "write-transaction-diagnostics",
+      "suiteLabel": "WriteTransaction Diagnostics",
+      "suiteArgs": [
+        "--write-transaction-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "write-transaction-diagnostics-*-median-of-3.csv"
+    },
+    {
       "csv": "concurrent-write-diagnostics-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",

@@ -1,0 +1,22 @@
+UTC Timestamp: 20260330-122507
+Purpose: Focused validation guardrail baseline
+Commit: b59a8d1327137699f4c687d22fafbe6f255da876
+Repository: C:\Users\maxim\source\Code\CSharpDB
+Source broad main sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260330-081102.csv
+Source broad direct transport sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260330-081709.csv
+Source broad hybrid storage sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260330-082134.csv
+Source broad hybrid cold-open sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260330-082420.csv
+Source broad hybrid hot-set sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260330-082434.csv
+Source broad hybrid post-checkpoint sweep: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260330-082443.csv
+Source broad micro sweep: BenchmarkDotNet.Artifacts/results refreshed by dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --all on main
+Source write diagnostics CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260330-121058-median-of-3.csv
+Source durable SQL batching CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260330-122006-median-of-3.csv
+Source concurrent write diagnostics CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260330-122507-median-of-3.csv
+Stable staged write diagnostics CSV: macro-stress-scaling/write-diagnostics-median-of-3.csv
+Stable staged durable SQL batching CSV: macro-stress-scaling/durable-sql-batching-median-of-3.csv
+Stable staged concurrent diagnostics CSV: macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv
+Tracked micro baseline CSVs: micro-results/*.csv
+Source micro snapshots: full broad main sweep on 2026-03-30
+Machine fingerprint: machine.json
+
+git status --short:

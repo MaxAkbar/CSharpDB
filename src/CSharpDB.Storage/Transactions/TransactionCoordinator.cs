@@ -18,10 +18,13 @@ internal sealed class TransactionCoordinator : IDisposable
     private long _currentTransactionId;
     private long _nextTransactionId;
     private long _commitVersion;
+    private long _nextReservedCommitVersion;
     private long _nextReservedPageId;
     private int _inTransactionFlag;
     private bool _inTransaction;
     private bool _writerLockReleased;
+    private int _pendingCommitWindowCount;
+    private bool _pendingCommitBarrierHeld;
 
     public bool InTransaction => Volatile.Read(ref _inTransactionFlag) != 0;
 
@@ -194,6 +197,39 @@ internal sealed class TransactionCoordinator : IDisposable
         return new SemaphoreReservation(_commitLock);
     }
 
+    public async ValueTask<IDisposable> EnterPendingCommitWindowAsync(CancellationToken ct = default)
+    {
+        bool acquireBarrier;
+        lock (_stateGate)
+        {
+            acquireBarrier = _pendingCommitWindowCount == 0;
+            _pendingCommitWindowCount++;
+        }
+
+        if (acquireBarrier)
+        {
+            try
+            {
+                await _beginBarrier.WaitAsync(ct);
+                lock (_stateGate)
+                {
+                    _pendingCommitBarrierHeld = true;
+                }
+            }
+            catch
+            {
+                lock (_stateGate)
+                {
+                    _pendingCommitWindowCount--;
+                }
+
+                throw;
+            }
+        }
+
+        return new PendingCommitWindowReservation(this);
+    }
+
     public bool HasWriteConflict(IEnumerable<uint> pageIds, long startVersion, out uint conflictPageId)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
@@ -217,18 +253,62 @@ internal sealed class TransactionCoordinator : IDisposable
         return false;
     }
 
-    public long PublishCommit(IEnumerable<uint> pageIds)
+    public PendingCommitReservation ReservePendingCommit(IEnumerable<uint> pageIds)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
 
-        long commitVersion = Interlocked.Increment(ref _commitVersion);
+        Dictionary<uint, long?> previousVersions = new();
+        long commitVersion;
         lock (_pageVersionGate)
         {
+            commitVersion = Interlocked.Increment(ref _nextReservedCommitVersion);
             foreach (uint pageId in pageIds)
+            {
+                previousVersions[pageId] = _pageLastWriteVersion.TryGetValue(pageId, out long previousVersion)
+                    ? previousVersion
+                    : null;
                 _pageLastWriteVersion[pageId] = commitVersion;
+            }
         }
 
-        return commitVersion;
+        return new PendingCommitReservation(commitVersion, previousVersions);
+    }
+
+    public void PublishPendingCommit(PendingCommitReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        while (true)
+        {
+            long current = Volatile.Read(ref _commitVersion);
+            if (current >= reservation.CommitVersion)
+                return;
+
+            if (Interlocked.CompareExchange(ref _commitVersion, reservation.CommitVersion, current) == current)
+                return;
+        }
+    }
+
+    public void RevertPendingCommit(PendingCommitReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        lock (_pageVersionGate)
+        {
+            foreach ((uint pageId, long? previousVersion) in reservation.PreviousPageVersions)
+            {
+                if (!_pageLastWriteVersion.TryGetValue(pageId, out long currentVersion) ||
+                    currentVersion != reservation.CommitVersion)
+                {
+                    continue;
+                }
+
+                if (previousVersion.HasValue)
+                    _pageLastWriteVersion[pageId] = previousVersion.Value;
+                else
+                    _pageLastWriteVersion.Remove(pageId);
+            }
+        }
     }
 
     public void Dispose()
@@ -236,6 +316,26 @@ internal sealed class TransactionCoordinator : IDisposable
         _beginBarrier.Dispose();
         _writerLock.Dispose();
         _commitLock.Dispose();
+    }
+
+    private void ReleasePendingCommitWindow()
+    {
+        bool releaseBarrier = false;
+        lock (_stateGate)
+        {
+            if (_pendingCommitWindowCount <= 0)
+                return;
+
+            _pendingCommitWindowCount--;
+            if (_pendingCommitWindowCount == 0 && _pendingCommitBarrierHeld)
+            {
+                _pendingCommitBarrierHeld = false;
+                releaseBarrier = true;
+            }
+        }
+
+        if (releaseBarrier)
+            _beginBarrier.Release();
     }
 
     private sealed class SemaphoreReservation : IDisposable
@@ -279,5 +379,34 @@ internal sealed class TransactionCoordinator : IDisposable
                 beginBarrier?.Release();
             }
         }
+    }
+
+    private sealed class PendingCommitWindowReservation : IDisposable
+    {
+        private TransactionCoordinator? _coordinator;
+
+        public PendingCommitWindowReservation(TransactionCoordinator coordinator)
+        {
+            _coordinator = coordinator;
+        }
+
+        public void Dispose()
+        {
+            TransactionCoordinator? coordinator = Interlocked.Exchange(ref _coordinator, null);
+            coordinator?.ReleasePendingCommitWindow();
+        }
+    }
+
+    public sealed class PendingCommitReservation
+    {
+        internal PendingCommitReservation(long commitVersion, IReadOnlyDictionary<uint, long?> previousPageVersions)
+        {
+            CommitVersion = commitVersion;
+            PreviousPageVersions = previousPageVersions;
+        }
+
+        public long CommitVersion { get; }
+
+        internal IReadOnlyDictionary<uint, long?> PreviousPageVersions { get; }
     }
 }

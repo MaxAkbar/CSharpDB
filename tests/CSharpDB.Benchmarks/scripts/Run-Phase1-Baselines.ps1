@@ -36,3 +36,5 @@ foreach ($filter in $MicroFilters)
 {
     Invoke-BenchmarkRun -Label "Phase 1 Micro ($filter)" -Arguments @("--micro", "--filter", $filter)
 }
+
+Invoke-BenchmarkRun -Label "Phase 1 Explicit Write Transactions" -Arguments @("--write-transaction-diagnostics", "--repeat", "3", "--repro")
