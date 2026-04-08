@@ -817,7 +817,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     return;
                 }
 
-                await Task.Yield();
+                // Keep draining while the pager is idle. The checkpoint barrier is already held
+                // for this worker, so yielding here only makes completion depend on thread-pool
+                // scheduling rather than allowing additional writer interleaving.
             }
         }
         finally
