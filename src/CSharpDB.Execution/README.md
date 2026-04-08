@@ -32,7 +32,7 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 
 ### Expression Evaluation
 - **`ExpressionEvaluator`** - Static interpreter for simple/infrequent evaluations
-- **`ExpressionCompiler`** - Compiles expression ASTs into `Func<DbValue[], DbValue>` delegates with column indices bound at compile time, eliminating per-row schema lookups
+- **`ExpressionCompiler`** (internal) - Compiles expression ASTs into `Func<DbValue[], DbValue>` delegates with column indices bound at compile time, eliminating per-row schema lookups
 
 ### Query Result
 - Wraps operator output (SELECT) or rows-affected counts (DML/DDL)

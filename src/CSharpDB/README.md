@@ -21,10 +21,10 @@ await using var db = await Database.OpenAsync("myapp.db");
 // SQL
 await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
 await db.ExecuteAsync("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')");
-var rows = await db.QueryAsync("SELECT * FROM users WHERE name = 'Alice'");
+await using var result = await db.ExecuteAsync("SELECT * FROM users WHERE name = 'Alice'");
 
 // NoSQL Collections
-var customers = await db.GetCollectionAsync<Customer>();
+var customers = await db.GetCollectionAsync<Customer>("customers");
 await customers.PutAsync("c1", new Customer("Alice", "alice@example.com"));
 var alice = await customers.GetAsync("c1");
 
@@ -75,7 +75,7 @@ await db.ExecuteAsync("UPDATE orders SET total = 109.50 WHERE id = 1");
 await db.ExecuteAsync("DELETE FROM orders WHERE id = 1");
 
 // JOINs, aggregates, CTEs, subqueries
-var rows = await db.QueryAsync(@"
+await using var result = await db.ExecuteAsync(@"
     WITH top_customers AS (
         SELECT customer_id, SUM(total) AS spend
         FROM orders
@@ -110,7 +110,7 @@ A typed document API that serializes C# objects to JSON and stores them in B+tre
 public record Customer(string Name, string Email, Address Address, string[] Tags);
 public record Address(string City, string State, string Zip);
 
-var customers = await db.GetCollectionAsync<Customer>();
+var customers = await db.GetCollectionAsync<Customer>("customers");
 
 // CRUD
 await customers.PutAsync("c1", new Customer("Alice", "alice@example.com",
@@ -182,19 +182,34 @@ catch
 Built-in pipeline runtime with CSV/JSON connectors, transforms, validation, checkpoint/resume, and run history.
 
 ```csharp
-var orchestrator = new PipelineOrchestrator(componentFactory, checkpointStore, runLogger);
+var orchestrator = new PipelineOrchestrator(
+    new DefaultPipelineComponentFactory(),
+    NullPipelineCheckpointStore.Instance,
+    NullPipelineRunLogger.Instance);
 
 await orchestrator.ExecuteAsync(new PipelineRunRequest
 {
     Package = new PipelinePackageDefinition
     {
         Name = "import-customers",
-        Source = new() { Type = "csv", Properties = { ["path"] = "customers.csv" } },
-        Destination = new() { Type = "json", Properties = { ["path"] = "output.json" } },
-        ErrorMode = ErrorMode.SkipBadRows,
-        MaxRejects = 100,
+        Source = new PipelineSourceDefinition
+        {
+            Kind = PipelineSourceKind.CsvFile,
+            Path = "customers.csv",
+            HasHeaderRow = true,
+        },
+        Destination = new PipelineDestinationDefinition
+        {
+            Kind = PipelineDestinationKind.JsonFile,
+            Path = "output.json",
+        },
+        Options = new PipelineExecutionOptions
+        {
+            ErrorMode = PipelineErrorMode.SkipBadRows,
+            MaxRejects = 100,
+        },
     },
-    Mode = PipelineRunMode.Run,
+    Mode = PipelineExecutionMode.Run,
 });
 ```
 

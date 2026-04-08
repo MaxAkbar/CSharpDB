@@ -1006,7 +1006,7 @@ For **Android**, use JNA or JNI and place the `.so` in `jniLibs/arm64-v8a/`.
 ```dart
 import 'dart:ffi';
 import 'dart:io';
-import 'package:ffi/package:ffi.dart';
+import 'package:ffi/ffi.dart';
 
 // Type definitions
 typedef CsharpdbOpenNative = Pointer<Void> Function(Pointer<Utf8>);
@@ -1209,7 +1209,7 @@ class CSharpDB {
             row[columns[i]] = null;
         }
       }
-      rows.add ? rows.push(row) : rows.push(row);
+      rows.push(row);
     }
 
     this._resultFree(r);
