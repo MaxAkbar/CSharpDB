@@ -1,5 +1,7 @@
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Checkpointing;
+using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Tests;
 
@@ -243,6 +245,111 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task ActiveExplicitWriteTransaction_BlocksManualCheckpointUntilTransactionCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_manual_checkpoint_test_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UsePagerOptions(new PagerOptions
+            {
+                CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+            }));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE tx_checkpoint (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+
+            await using (var tx = await db.BeginWriteTransactionAsync(ct))
+            {
+                await tx.ExecuteAsync("SELECT COUNT(*) FROM tx_checkpoint", ct);
+                await db.ExecuteAsync("INSERT INTO tx_checkpoint VALUES (1, 10)", ct);
+                await db.CheckpointAsync(ct);
+
+                Assert.True(File.Exists(walPath));
+                long walLengthWhileTransactionActive = new FileInfo(walPath).Length;
+                Assert.True(
+                    walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
+                    $"Expected checkpoint to defer while an explicit write transaction holds a snapshot, observed walLength={walLengthWhileTransactionActive}.");
+            }
+
+            await db.CheckpointAsync(ct);
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM tx_checkpoint", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Equal(1L, rows[0][0].AsInteger);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(walPath))
+                File.Delete(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task ActiveExplicitWriteTransaction_BlocksBackgroundCheckpointUntilTransactionCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_background_checkpoint_test_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UsePagerOptions(new PagerOptions
+            {
+                CheckpointPolicy = new FrameCountCheckpointPolicy(1),
+                AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            }));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE tx_background_checkpoint (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+            await db.CheckpointAsync(ct);
+
+            await using (var tx = await db.BeginWriteTransactionAsync(ct))
+            {
+                await tx.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct);
+                await db.ExecuteAsync("INSERT INTO tx_background_checkpoint VALUES (1, 10)", ct);
+
+                Assert.True(File.Exists(walPath));
+                long walLengthWhileTransactionActive = new FileInfo(walPath).Length;
+                Assert.True(
+                    walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
+                    $"Expected WAL frames to remain while an explicit write transaction blocks background checkpoint, observed walLength={walLengthWhileTransactionActive}.");
+
+                await Task.Delay(200, ct);
+
+                walLengthWhileTransactionActive = new FileInfo(walPath).Length;
+                Assert.True(
+                    walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
+                    $"Expected background checkpoint to remain deferred while the explicit write transaction is active, observed walLength={walLengthWhileTransactionActive}.");
+            }
+
+            await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
+
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct);
+            var rows = await result.ToListAsync(ct);
+            Assert.Equal(1L, rows[0][0].AsInteger);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(walPath))
+                File.Delete(walPath);
+        }
+    }
+
     private static async Task RunConcurrentWritersAsync(
         int writerCount,
         Func<int, Task> writerAction,
@@ -287,6 +394,31 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
                 },
                 ct: ct);
         }
+    }
+
+    private static async Task WaitForWalLengthAsync(
+        string walPath,
+        long expectedLength,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            long currentLength = File.Exists(walPath)
+                ? new FileInfo(walPath).Length
+                : 0;
+            if (currentLength == expectedLength)
+                return;
+
+            await Task.Delay(25, ct);
+        }
+
+        long finalLength = File.Exists(walPath)
+            ? new FileInfo(walPath).Length
+            : 0;
+        throw new Xunit.Sdk.XunitException(
+            $"Timed out waiting for WAL length {expectedLength}, observed {finalLength}.");
     }
 
     private sealed record UserDocument(string Name, int Age);
