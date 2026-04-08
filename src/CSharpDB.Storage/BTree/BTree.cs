@@ -114,7 +114,17 @@ public sealed class BTree
     /// Look up a single key. Returns a view over the page-backed payload or null if not found.
     /// Callers should consume the returned memory immediately and not retain it across writes.
     /// </summary>
-    public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(long key, CancellationToken ct = default)
+    public ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(long key, CancellationToken ct = default)
+        => FindMemoryAsync(key, populateReadRoutingCache: true, ct);
+
+    /// <summary>
+    /// Look up a single key. Callers can disable read-routing cache population when the lookup is part of
+    /// a write probe that will immediately invalidate the cache again.
+    /// </summary>
+    public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryAsync(
+        long key,
+        bool populateReadRoutingCache,
+        CancellationToken ct = default)
     {
         if (!_pager.UsesReadOnlyPageViews)
         {
@@ -165,7 +175,8 @@ public sealed class BTree
                     return ReadLeafPayloadMemory(sp, idx);
                 }
 
-                CacheInteriorRouting(mutablePageId, sp);
+                if (populateReadRoutingCache)
+                    CacheInteriorRouting(mutablePageId, sp);
                 mutablePageId = FindChildPage(sp, key);
             }
         }
@@ -220,7 +231,54 @@ public sealed class BTree
                 return ReadLeafPayloadMemory(sp, idx);
             }
 
-            CacheInteriorRouting(pageId, sp);
+            if (populateReadRoutingCache)
+                CacheInteriorRouting(pageId, sp);
+            pageId = FindChildPage(sp, key);
+        }
+    }
+
+    /// <summary>
+    /// Look up a single key on the lean write-probe path. This bypasses leaf hints and read-routing caches
+    /// because the very next write invalidates them anyway.
+    /// </summary>
+    public async ValueTask<ReadOnlyMemory<byte>?> FindMemoryForWriteAsync(long key, CancellationToken ct = default)
+    {
+        if (!_pager.UsesReadOnlyPageViews)
+        {
+            uint mutablePageId = _rootPageId;
+            while (true)
+            {
+                var page = await _pager.GetPageAsync(mutablePageId, ct);
+                var sp = new SlottedPage(page, mutablePageId);
+
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                {
+                    int idx = FindKeyInLeaf(sp, key);
+                    if (idx < 0)
+                        return null;
+
+                    return ReadLeafPayloadMemory(sp, idx);
+                }
+
+                mutablePageId = FindChildPage(sp, key);
+            }
+        }
+
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            var page = await _pager.GetPageReadAsync(pageId, ct);
+            var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+
+            if (sp.PageType == PageConstants.PageTypeLeaf)
+            {
+                int idx = FindKeyInLeaf(sp, key);
+                if (idx < 0)
+                    return null;
+
+                return ReadLeafPayloadMemory(sp, idx);
+            }
+
             pageId = FindChildPage(sp, key);
         }
     }
@@ -480,9 +538,27 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        InvalidateReadRoutingCaches();
         var traversalPath = new List<uint>(capacity: 8);
         var traversalSet = new HashSet<uint>();
+        return await ReplaceAsync(key, payload, traversalPath, traversalSet, ct);
+    }
+
+    /// <summary>
+    /// Replace the payload for an existing key while reusing caller-provided traversal scratch state.
+    /// </summary>
+    public async ValueTask<bool> ReplaceAsync(
+        long key,
+        ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(traversalPath);
+        ArgumentNullException.ThrowIfNull(traversalSet);
+
+        InvalidateReadRoutingCaches();
+        traversalPath.Clear();
+        traversalSet.Clear();
         var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
         if (!result.Found)
             return false;

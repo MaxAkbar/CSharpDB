@@ -7,7 +7,7 @@ namespace CSharpDB.Storage.Serialization;
 /// Binary payload codec for collection documents stored directly in table B+trees.
 /// Supports both the legacy direct JSON wrapper and the newer binary document payload.
 /// </summary>
-internal static class CollectionPayloadCodec
+public static class CollectionPayloadCodec
 {
     internal const byte LegacyJsonFormatMarker = 0xC1;
     internal const byte BinaryFormatMarker = 0xC2;

@@ -901,10 +901,10 @@ Console.WriteLine(<span class="str">$"Schema version: {catalog.SchemaVersion}"</
         updated_at   TEXT NOT NULL
     )"</span>);
 
-<span class="kw">var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+<span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(
     <span class="str">"SELECT name, size_bytes FROM files WHERE folder_path = '/documents'"</span>);
-<span class="kw">foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> result.Rows)
-    Console.WriteLine(<span class="str">$"{row[0]}  ({row[1]} bytes)"</span>);</code></pre>
+<span class="kw">while</span> (<span class="kw">await</span> result.MoveNextAsync())
+    Console.WriteLine(<span class="str">$"{result.Current[0]}  ({result.Current[1]} bytes)"</span>);</code></pre>
                 </div>
 
                 <!-- ───────────────── Design Notes ───────────────── -->

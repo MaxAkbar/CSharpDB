@@ -224,17 +224,19 @@
                 <p>CSharpDB supports stored procedures with typed parameters, persisted in the database catalog.</p>
                 <div class="code-block" data-title="Procedures via Client SDK">
                     <pre><code><span class="cm">// Create a procedure</span>
-<span class="kw">await</span> client.Procedures.CreateAsync(<span class="kw">new</span> {
+<span class="kw">await</span> client.CreateProcedureAsync(<span class="kw">new</span> <span class="tp">ProcedureDefinition</span>
+{
     Name = <span class="str">"GetEmployeesByDept"</span>,
-    Body = <span class="str">"SELECT * FROM Employees WHERE DeptId = @deptId"</span>,
-    Parameters = <span class="kw">new</span>[] {
-        <span class="kw">new</span> { Name = <span class="str">"deptId"</span>, Type = <span class="str">"INTEGER"</span>, Direction = <span class="str">"IN"</span> }
-    }
+    BodySql = <span class="str">"SELECT * FROM Employees WHERE DeptId = @deptId"</span>,
+    Parameters = [
+        <span class="kw">new</span> <span class="tp">ProcedureParameterDefinition</span> { Name = <span class="str">"deptId"</span>, Type = <span class="tp">DbType</span>.Integer }
+    ]
 });
 
 <span class="cm">// Execute</span>
-<span class="kw">var</span> result = <span class="kw">await</span> client.Procedures.ExecuteAsync(
-    <span class="str">"GetEmployeesByDept"</span>, <span class="kw">new</span> { deptId = <span class="num">10</span> });</code></pre>
+<span class="kw">var</span> result = <span class="kw">await</span> client.ExecuteProcedureAsync(
+    <span class="str">"GetEmployeesByDept"</span>,
+    <span class="kw">new</span> <span class="tp">Dictionary</span>&lt;<span class="kw">string</span>, <span class="kw">object</span>?&gt; { [<span class="str">"deptId"</span>] = <span class="num">10</span> });</code></pre>
                 </div>
 
                 <div class="next-steps">

@@ -73,7 +73,7 @@ await using (client)
     commands.Add(new TimingCommand());
     commands.Add(new ReadCommand());
 
-    using var repl = new Repl(client, localDatabase, displayTarget, Console.Out, commands);
+    using var repl = new Repl(client, localDatabase, displayTarget, Console.Out, commands, Console.In);
     await repl.RunAsync();
 }
 

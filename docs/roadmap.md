@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v2.9.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v3.0.0` state of the repo.
 
 ---
 
@@ -74,7 +74,7 @@ Advanced features and fundamental architecture enhancements.
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) via `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
 | **SQL batched row transport** | Internal row-batch transport serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates | Done |
-| **Source-generated collection fast path** | Add a no-reflection, trim-safe typed collection API backed by generated codecs, field descriptors, and index bindings while preserving current collection payload compatibility | Planned |
+| **Source-generated collection fast path** | In progress: `GetGeneratedCollectionAsync<T>(...)`, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, trim/NativeAOT smoke coverage, and a dedicated sample are now in place while broader package ergonomics and remaining generator coverage continue | In Progress |
 | **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
 | **Advanced cost-based query optimizer** | In progress: phase-2 stats-guided costing is now in place through internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, and bounded DP reordering for small inner-join chains; adaptive re-optimization and public histogram inspection remain future work | In Progress |
@@ -161,6 +161,7 @@ Major features already implemented:
 - Binary direct-payload collection storage with direct hydration and field/path extraction
 - Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text
 - Collection path query APIs: `FindByPathAsync` and `FindByPathRangeAsync`
+- Source-generated typed collection fast path foundations: generated collection models/codecs/field descriptors, trim-safe `GetGeneratedCollectionAsync<T>(...)`, generator diagnostics, NativeAOT trim-smoke validation, and a dedicated sample
 - Full-text search with tokenization, stemming, and relevance ranking
 - Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache
 - Client-wide `BackupAsync` / `RestoreAsync` across direct, HTTP, gRPC, CLI, and Admin

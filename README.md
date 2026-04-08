@@ -42,10 +42,29 @@ Default CSharpDB benchmarks run in fully durable mode. CSharpDB also supports a 
 
 | Mode | SQL Single INSERT | SQL Batch x100 | Collection Single PUT | Collection Batch x100 |
 |------|------------------:|---------------:|----------------------:|----------------------:|
-| Durable (default) | 265.9 ops/sec | 25.95K rows/sec | 273.9 ops/sec | 25.14K docs/sec |
-| Buffered | 22.25K ops/sec | 473.55K rows/sec | 20.26K ops/sec | 201.41K docs/sec |
+| Durable (default) | 277.9 ops/sec | 26.46K rows/sec | 272.5 ops/sec | 25.12K docs/sec |
+| Buffered | 21.17K ops/sec | 456.63K rows/sec | 19.30K ops/sec | 399.76K docs/sec |
 
 <sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+
+---
+
+## Concurrent Durable Writes
+
+CSharpDB also supports concurrent single-row auto-commit writes against one shared engine and WAL. The numbers below are total durable commits/sec across all writers combined, not per-writer throughput.
+
+| Writers | Commit Window | WAL Prealloc | Durable Commits/sec |
+|---------|--------------:|-------------:|--------------------:|
+| 4 | 0 | 0 | 569.5 |
+| 4 | 250us | 0 | 548.7 |
+| 4 | 500us | 0 | 563.4 |
+| 8 | 0 | 0 | 1,091.4 |
+| 8 | 250us | 0 | 1,126.9 |
+| 8 | 500us | 0 | 1,109.8 |
+| 8 | 0 | 1 MiB | 1,116.2 |
+| 8 | 250us | 1 MiB | 1,128.1 |
+
+<sub>Shared-engine April 7, 2026 benchmark snapshot. The full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md#concurrent-durable-writes-single-row-auto-commit-csharpdb-only">benchmark suite README</a>.</sub>
 
 ---
 
@@ -57,6 +76,10 @@ dotnet add package CSharpDB
 
 ```csharp
 using CSharpDB.Engine;
+
+// If the file exists, delete it to start fresh
+if (File.Exists("mydata.db"))
+    File.Delete("mydata.db");
 
 await using var db = await Database.OpenAsync("mydata.db");
 
@@ -72,11 +95,11 @@ await foreach (var row in result.GetRowsAsync())
 
 ## Why CSharpDB?
 
-- **No moving parts** -- single `.db` file, no server process, no native binaries, no external dependencies
-- **SQL + NoSQL in one engine** -- full SQL with JOINs, CTEs, subqueries, views, and triggers *plus* a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
-- **ACID by default** -- WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
-- **Ships with tooling** -- Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, and MCP server for AI agents
-- **Use from any language** -- NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
+- **No moving parts** — single `.db` file, no server process, no native binaries, no external dependencies
+- **SQL + NoSQL in one engine** — full SQL with JOINs, CTEs, subqueries, views, and triggers *plus* a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
+- **ACID by default** — WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
+- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, and MCP server for AI agents
+- **Use from any language** — NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
 
 ---
 
@@ -125,7 +148,7 @@ with Database("mydata.db") as db:
         print(row)
 ```
 
-The native library exports 20 C functions. See the [Native Library Reference](src/CSharpDB.Native/README.md) for Go, Rust, Swift, Kotlin, Dart, Android, and iOS examples.
+The native library exports 20 C functions. See the [Native Library Reference](https://csharpdb.com/docs/tutorials/native-ffi.html) for Go, Rust, Swift, Kotlin, Dart, Android, and iOS examples.
 
 ---
 
@@ -133,16 +156,16 @@ The native library exports 20 C functions. See the [Native Library Reference](sr
 
 | Feature | CSharpDB | SQLite | LiteDB | RocksDB |
 |---------|:--------:|:------:|:------:|:-------:|
-| Pure .NET / no native binaries | :white_check_mark: | -- | :white_check_mark: | -- |
-| Full SQL (JOINs, CTEs, subqueries) | :white_check_mark: | :white_check_mark: | -- | -- |
-| NoSQL Collection API | :white_check_mark: | -- | :white_check_mark: | -- |
-| ACID transactions | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| REST API / gRPC | :white_check_mark: | -- | -- | -- |
-| Admin UI | :white_check_mark: | -- | -- | -- |
-| MCP server (AI agents) | :white_check_mark: | -- | -- | -- |
-| VS Code extension | :white_check_mark: | -- | -- | -- |
-| Multi-language SDKs | :white_check_mark: | :white_check_mark: | -- | :white_check_mark: |
-| Mature ecosystem / battle-tested | -- | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Pure .NET / no native binaries | ✅ | ❌ | ✅ | ❌ |
+| Full SQL (JOINs, CTEs, subqueries) | ✅ | ✅ | ❌ | ❌ |
+| NoSQL Collection API | ✅ | ❌ | ✅ | ❌ |
+| ACID transactions | ✅ | ✅ | ✅ | ✅ |
+| REST API / gRPC | ✅ | ❌ | ❌ | ❌ |
+| Admin UI | ✅ | ❌ | ❌ | ❌ |
+| MCP server (AI agents) | ✅ | ❌ | ❌ | ❌ |
+| VS Code extension | ✅ | ❌ | ❌ | ❌ |
+| Multi-language SDKs | ✅ | ✅ | ❌ | ✅ |
+| Mature ecosystem / battle-tested | ❌ | ✅ | ✅ | ✅ |
 
 ---
 
@@ -161,9 +184,9 @@ The native library exports 20 C functions. See the [Native Library Reference](sr
       |                        |
   [B+Tree]  ---------------  [B+Tree]
       |
-  [Pager + WAL]        (page cache, write-ahead log)
+  [Pager + WAL]              (page cache, write-ahead log)
       |
-  [File I/O]           (4 KB pages, slotted layout)
+  [File I/O]                 (4 KB pages, slotted layout)
       |
   mydata.db + mydata.db.wal
 ```
@@ -174,19 +197,19 @@ The native library exports 20 C functions. See the [Native Library Reference](sr
 
 | | |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Step-by-step walkthrough |
-| [Architecture Guide](docs/architecture.md) | Engine design deep dive |
+| [Getting Started](https://csharpdb.com/getting-started.html) | Step-by-step walkthrough |
+| [Architecture Guide](https://csharpdb.com/docs/architecture.html) | Engine design deep dive |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
-| [Native FFI](src/CSharpDB.Native/README.md) | C library API and cross-language examples |
-| [REST API Reference](docs/rest-api.md) | All 33 endpoints |
-| [MCP Server](docs/mcp-server.md) | AI assistant integration |
-| [CLI Reference](docs/cli.md) | REPL commands |
+| [Native FFI](https://csharpdb.com/docs/tutorials/native-ffi.html) | C library API and cross-language examples |
+| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | All 33 endpoints |
+| [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
+| [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
-| [Internals & Contributing](docs/internals.md) | Project structure and concurrency model |
-| [FAQ](docs/faq.md) | Common questions |
-| [Roadmap](docs/roadmap.md) | Project goals |
+| [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
+| [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |
+| [Roadmap](https://csharpdb.com/roadmap.html) | Project goals |
 
 ---
 

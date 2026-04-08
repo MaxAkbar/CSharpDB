@@ -182,6 +182,51 @@ public sealed class User
 the collection does not exist yet, CSharpDB creates its backing storage
 automatically the first time you call it.
 
+### Generated Collection API
+
+For trim-safe typed collections, add the `CSharpDB.Generators` package and pair
+your document type with a `System.Text.Json` source-generated context:
+
+```csharp
+using System.Text.Json.Serialization;
+using CSharpDB.Engine;
+
+[CollectionModel(typeof(UserJsonContext))]
+public sealed partial record User(string Email, int Age);
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(User))]
+internal sealed partial class UserJsonContext : JsonSerializerContext;
+
+await using var db = await Database.OpenAsync("myapp.db");
+var users = await db.GetGeneratedCollectionAsync<User>("users");
+
+await users.PutAsync("alice", new User("alice@example.com", 30));
+await users.EnsureIndexAsync(User.Collection.Email);
+
+await foreach (var entry in users.FindByIndexAsync(User.Collection.Email, "alice@example.com"))
+{
+    Console.WriteLine(entry.Value.Email);
+}
+```
+
+Generated collection descriptors follow CLR member names, including flattened
+nested paths such as `User.Collection.Address_City` for `Address.City` and
+array-element paths such as `User.Collection.Tags` for `Tags[]` or
+`User.Collection.Orders_Sku` for `Orders[].Sku`. JSON payload names can differ
+through `JsonPropertyName` without changing the public descriptor names.
+
+`GetGeneratedCollectionAsync<T>(...)` requires a generated or manually
+registered collection model and exposes only the descriptor-based collection
+surface. That keeps the call path off the reflection-based collection APIs.
+
+Generated collections also require existing collection indexes on that
+collection to resolve through registered generated descriptors. If a collection
+already has a reflection-only path index such as `Next.Name` that your
+generated model does not expose, open it through `GetCollectionAsync<T>(...)`
+or add generated descriptor coverage before switching to
+`GetGeneratedCollectionAsync<T>(...)`.
+
 ### Concurrent Readers
 
 ```csharp
@@ -236,6 +281,12 @@ The supported threading model for `Database` is:
 
 ```
 dotnet add package CSharpDB.Engine
+```
+
+For generated collection models:
+
+```
+dotnet add package CSharpDB.Generators
 ```
 
 For the recommended all-in-one package:

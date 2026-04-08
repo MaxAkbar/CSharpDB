@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <GeneratorProjectPath>..\..\src\CSharpDB.Generators\CSharpDB.Generators.csproj</GeneratorProjectPath>
+    <GeneratorAssemblyPath>..\..\src\CSharpDB.Generators\bin\$(Configuration)\netstandard2.0\CSharpDB.Generators.dll</GeneratorAssemblyPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <Analyzer Include="$(GeneratorAssemblyPath)" />
+  </ItemGroup>
+
+  <Target Name="BuildGeneratedCollectionAnalyzer" BeforeTargets="CoreCompile">
+    <MSBuild
+      Projects="$(GeneratorProjectPath)"
+      Targets="Build"
+      Properties="Configuration=$(Configuration);TargetFramework=netstandard2.0;PublishAot=false;PublishTrimmed=false;RuntimeIdentifier=;SelfContained=false" />
+  </Target>
+
+</Project>

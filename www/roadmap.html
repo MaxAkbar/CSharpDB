@@ -131,7 +131,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Roadmap</h1>
-                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v2.8.0 state.</p>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v3.0.0 state.</p>
 
                 <!-- ════════ NEAR-TERM ════════ -->
                 <div class="roadmap-section">
@@ -142,6 +142,34 @@
                     <p>Recently completed improvements to query performance, storage behavior, provider/tooling compatibility, maintenance workflows, and developer ergonomics.</p>
 
                     <div class="roadmap-grid">
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Source-Generated Collections</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>No-reflection, trim-safe typed collection API via <code>CSharpDB.Generators</code> with <code>GetGeneratedCollectionAsync&lt;T&gt;()</code>, <code>GeneratedCollection&lt;T&gt;</code>, generated field metadata, and NativeAOT-friendly model registration.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Collection Write-Path Performance</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Separated collection write probes from the read-side B-tree routing-cache, reused traversal scratch during insert/replace, and buffered catalog mutation bookkeeping inside explicit transactions.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Covered Composite Index Fast-Path</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Recovered covered composite-index lookup optimization for queries that can be answered entirely from the index without touching the base table.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Durable-Write Batching</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Configurable durable commit batch window to coalesce WAL fsync calls across concurrent transactions for higher write throughput.</p>
+                        </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>DISTINCT &amp; Composite Indexes</h4>
@@ -358,9 +386,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Source-Generated Collections</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>No-reflection, trim-safe typed collection API backed by generated codecs and index bindings.</p>
+                            <p>No-reflection, trim-safe typed collection API via <code>CSharpDB.Generators</code> with generated field metadata and NativeAOT-friendly model registration.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -481,6 +509,10 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization and ranking</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Admin reports designer with banded layouts, grouping, expressions, and print preview</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Source-generated collection models with trim-safe and NativeAOT-friendly access</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Collection write-path performance recovery with separated read/write B-tree routing</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Covered composite-index fast-path optimization</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Durable-write commit batching for higher concurrent write throughput</div>
                     </div>
                 </div>
 

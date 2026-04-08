@@ -1,13 +1,32 @@
-# Admin And Daemon Startup Scripts
+# Scripts
 
-These PowerShell scripts are developer and operator helpers for local source
-runs.
+These scripts are developer and operator helpers for local source runs and
+repository maintenance tasks.
 
 They do not install Windows services, `systemd` units, or scheduled tasks. They
 launch `dotnet run` processes from the repo and update the admin app config so
 the web UI starts in the expected transport mode.
 
 ## Scripts
+
+### `Clear-GitHubWorkflowRuns.ps1`
+
+Use this when the GitHub Actions run history has become noisy and you want to
+delete older completed runs.
+
+What it does:
+
+- resolves the GitHub repository from the local `origin` remote by default
+- enumerates workflow runs through the GitHub CLI
+- deletes only completed runs older than the configured cutoff
+- supports `-WhatIf` and `-Confirm` for safe dry runs
+
+Example:
+
+```powershell
+& .\scripts\Clear-GitHubWorkflowRuns.ps1 -OlderThanDays 7
+& .\scripts\Clear-GitHubWorkflowRuns.ps1 -OlderThanDays 30 -WhatIf
+```
 
 ### `Start-CSharpDbAdminAndDaemon.ps1`
 

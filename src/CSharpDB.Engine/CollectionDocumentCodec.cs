@@ -10,6 +10,7 @@ internal sealed class CollectionDocumentCodec<T>
 {
     private const int StackallocKeyThreshold = 256;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly ICollectionDocumentCodec<T>? _generatedCodec;
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
@@ -21,16 +22,21 @@ internal sealed class CollectionDocumentCodec<T>
     {
         _recordSerializer = recordSerializer ?? throw new ArgumentNullException(nameof(recordSerializer));
         UsesDirectPayloadFormat = recordSerializer is DefaultRecordSerializer;
+        if (CollectionModelRegistry.TryGet<T>(out var model))
+            _generatedCodec = model.CreateCodec(recordSerializer);
     }
 
     internal bool UsesDirectPayloadFormat { get; }
 
     [RequiresUnreferencedCode("Collection<T> JSON serialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> JSON serialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    internal byte[] Encode(string key, T document)
+    public byte[] Encode(string key, T document)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(document);
+
+        if (_generatedCodec is not null)
+            return _generatedCodec.Encode(key, document);
 
         if (!UsesDirectPayloadFormat)
         {
@@ -67,15 +73,21 @@ internal sealed class CollectionDocumentCodec<T>
 
     [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    internal (string Key, T Document) Decode(ReadOnlySpan<byte> payload)
+    public (string Key, T Document) Decode(ReadOnlySpan<byte> payload)
     {
+        if (_generatedCodec is not null)
+            return _generatedCodec.Decode(payload);
+
         return (DecodeKey(payload), DecodeDocument(payload));
     }
 
     [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    internal T DecodeDocument(ReadOnlySpan<byte> payload)
+    public T DecodeDocument(ReadOnlySpan<byte> payload)
     {
+        if (_generatedCodec is not null)
+            return _generatedCodec.DecodeDocument(payload);
+
         if (UsesDirectPayloadFormat &&
             CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
@@ -118,8 +130,11 @@ internal sealed class CollectionDocumentCodec<T>
         return DecodeLegacy(payload).Document;
     }
 
-    internal string DecodeKey(ReadOnlySpan<byte> payload)
+    public string DecodeKey(ReadOnlySpan<byte> payload)
     {
+        if (_generatedCodec is not null)
+            return _generatedCodec.DecodeKey(payload);
+
         if (UsesDirectPayloadFormat &&
             CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
@@ -137,11 +152,14 @@ internal sealed class CollectionDocumentCodec<T>
 
     [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
-    internal bool TryDecodeDocumentForKey(
+    public bool TryDecodeDocumentForKey(
         ReadOnlySpan<byte> payload,
         string expectedKey,
         out T? document)
     {
+        if (_generatedCodec is not null)
+            return _generatedCodec.TryDecodeDocumentForKey(payload, expectedKey, out document);
+
         if (!PayloadMatchesKey(payload, expectedKey))
         {
             document = default;
@@ -152,11 +170,14 @@ internal sealed class CollectionDocumentCodec<T>
         return true;
     }
 
-    internal bool PayloadMatchesKey(
+    public bool PayloadMatchesKey(
         ReadOnlySpan<byte> payload,
         string expectedKey)
     {
         ArgumentNullException.ThrowIfNull(expectedKey);
+
+        if (_generatedCodec is not null)
+            return _generatedCodec.PayloadMatchesKey(payload, expectedKey);
 
         int byteCount = Encoding.UTF8.GetByteCount(expectedKey);
         byte[]? rented = null;

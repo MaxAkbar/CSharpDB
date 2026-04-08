@@ -154,7 +154,7 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
     .Build();
 
 <span class="kw">var</span> factory = <span class="kw">new</span> <span class="tp">DefaultStorageEngineFactory</span>();
-<span class="kw">await using var</span> ctx = <span class="kw">await</span> factory.OpenAsync(<span class="str">"myapp.db"</span>, storageOptions);
+<span class="kw">var</span> ctx = <span class="kw">await</span> factory.OpenAsync(<span class="str">"myapp.db"</span>, storageOptions);
 
 <span class="kw">await</span> ctx.Pager.BeginTransactionAsync();
 <span class="kw">try</span>

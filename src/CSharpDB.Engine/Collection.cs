@@ -36,11 +36,17 @@ public sealed class Collection<
     private readonly string _catalogTableName;
     private BTree _tree;
     private readonly Func<bool> _isInTransaction;
+    private readonly Action<string, BTree, long, bool, bool> _recordPendingTransactionMutation;
+    private readonly Func<string, BTree, CancellationToken, ValueTask<long?>> _getPendingTransactionRowCountAsync;
     private readonly Func<CancellationToken, ValueTask<IDisposable>> _enterWriteScopeAsync;
     private readonly Func<string, CancellationToken, ValueTask<PagerCommitResult>> _beginImplicitCommitAsync;
     private readonly Func<CancellationToken, ValueTask> _afterImplicitCommitAsync;
+    private readonly bool _requireRegisteredFields;
     private readonly CollectionDocumentCodec<T> _codec;
+    private readonly ICollectionModel<T>? _model;
     private readonly Dictionary<string, CollectionIndexBinding<T>> _indexes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<uint> _writeTraversalPath = new(capacity: 8);
+    private readonly HashSet<uint> _writeTraversalSet = new();
     private long _observedSchemaVersion;
 
     internal Collection(
@@ -50,16 +56,23 @@ public sealed class Collection<
         BTree tree,
         IRecordSerializer recordSerializer,
         Func<bool> isInTransaction,
+        Action<string, BTree, long, bool, bool> recordPendingTransactionMutation,
+        Func<string, BTree, CancellationToken, ValueTask<long?>> getPendingTransactionRowCountAsync,
         Func<CancellationToken, ValueTask<IDisposable>> enterWriteScopeAsync,
         Func<string, CancellationToken, ValueTask<PagerCommitResult>> beginImplicitCommitAsync,
-        Func<CancellationToken, ValueTask> afterImplicitCommitAsync)
+        Func<CancellationToken, ValueTask> afterImplicitCommitAsync,
+        bool requireRegisteredFields = false)
     {
         _pager = pager;
         _catalog = catalog;
         _catalogTableName = catalogTableName;
         _tree = tree;
+        _requireRegisteredFields = requireRegisteredFields;
+        _model = CollectionModelRegistry.TryGet<T>(out var model) ? model : null;
         _codec = new CollectionDocumentCodec<T>(recordSerializer);
         _isInTransaction = isInTransaction;
+        _recordPendingTransactionMutation = recordPendingTransactionMutation ?? throw new ArgumentNullException(nameof(recordPendingTransactionMutation));
+        _getPendingTransactionRowCountAsync = getPendingTransactionRowCountAsync ?? throw new ArgumentNullException(nameof(getPendingTransactionRowCountAsync));
         _enterWriteScopeAsync = enterWriteScopeAsync ?? throw new ArgumentNullException(nameof(enterWriteScopeAsync));
         _beginImplicitCommitAsync = beginImplicitCommitAsync ?? throw new ArgumentNullException(nameof(beginImplicitCommitAsync));
         _afterImplicitCommitAsync = afterImplicitCommitAsync ?? throw new ArgumentNullException(nameof(afterImplicitCommitAsync));
@@ -116,6 +129,9 @@ public sealed class Collection<
 
         RefreshIndexesIfSchemaChanged();
         bool mutated = false;
+        long rowCountDelta = 0;
+        bool requiresExactRowCountSync = false;
+        bool inTransaction = _isInTransaction();
 
         await AutoCommitAsync(async () =>
         {
@@ -125,16 +141,27 @@ public sealed class Collection<
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                var existing = await _tree.FindMemoryAsync(probeHash, ct);
+                var existing = await _tree.FindMemoryForWriteAsync(probeHash, ct);
 
                 if (existing is not { } existingPayload)
                 {
-                    await _tree.InsertAsync(probeHash, newPayload, ct);
+                    await _tree.InsertAsync(probeHash, newPayload, _writeTraversalPath, _writeTraversalSet, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
+                    rowCountDelta = 1;
                     if (HasZeroCachedRowCount())
-                        await SyncRowCountAsync(ct);
-                    else
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
+                    else if (!inTransaction)
+                    {
                         await _catalog.AdjustTableRowCountAsync(_catalogTableName, 1, ct);
+                    }
+                    else
+                    {
+                        requiresExactRowCountSync = false;
+                    }
                     mutated = true;
                     return;
                 }
@@ -144,10 +171,14 @@ public sealed class Collection<
                     if (_indexes.Count > 0)
                         await DeleteFromIndexesAsync(probeHash, existingPayload, ct);
 
-                    await _tree.ReplaceAsync(probeHash, newPayload, ct);
+                    await _tree.ReplaceAsync(probeHash, newPayload, _writeTraversalPath, _writeTraversalSet, ct);
                     await InsertIntoIndexesAsync(probeHash, document, ct);
                     if (ShouldReconcileRowCount(existingPayload.Span))
-                        await SyncRowCountAsync(ct);
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
                     mutated = true;
                     return;
                 }
@@ -159,7 +190,12 @@ public sealed class Collection<
         }, ct);
 
         if (mutated)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        {
+            if (inTransaction)
+                _recordPendingTransactionMutation(_catalogTableName, _tree, rowCountDelta, requiresExactRowCountSync, true);
+            else
+                await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        }
     }
 
     /// <summary>
@@ -195,6 +231,9 @@ public sealed class Collection<
         RefreshIndexesIfSchemaChanged();
 
         bool deleted = false;
+        long rowCountDelta = 0;
+        bool requiresExactRowCountSync = false;
+        bool inTransaction = _isInTransaction();
 
         await AutoCommitAsync(async () =>
         {
@@ -203,7 +242,7 @@ public sealed class Collection<
             for (int probe = 0; probe < MaxProbeDistance; probe++)
             {
                 long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
-                var payload = await _tree.FindMemoryAsync(probeHash, ct);
+                var payload = await _tree.FindMemoryForWriteAsync(probeHash, ct);
 
                 if (payload is not { } payloadMemory)
                     return;
@@ -215,9 +254,20 @@ public sealed class Collection<
 
                     await _tree.DeleteAsync(probeHash, ct);
                     if (ShouldReconcileRowCount(payloadMemory.Span))
-                        await SyncRowCountAsync(ct);
-                    else
+                    {
+                        requiresExactRowCountSync = true;
+                        if (!inTransaction)
+                            await SyncRowCountAsync(ct);
+                    }
+                    else if (!inTransaction)
+                    {
+                        rowCountDelta = -1;
                         await _catalog.AdjustTableRowCountAsync(_catalogTableName, -1, ct);
+                    }
+                    else
+                    {
+                        rowCountDelta = -1;
+                    }
                     deleted = true;
                     return;
                 }
@@ -225,7 +275,12 @@ public sealed class Collection<
         }, ct);
 
         if (deleted)
-            await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        {
+            if (inTransaction)
+                _recordPendingTransactionMutation(_catalogTableName, _tree, rowCountDelta, requiresExactRowCountSync, true);
+            else
+                await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        }
 
         return deleted;
     }
@@ -234,7 +289,13 @@ public sealed class Collection<
     /// Return the number of documents in the collection.
     /// </summary>
     public async ValueTask<long> CountAsync(CancellationToken ct = default)
-        => await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
+    {
+        long? pendingRowCount = await _getPendingTransactionRowCountAsync(_catalogTableName, _tree, ct);
+        if (pendingRowCount.HasValue)
+            return pendingRowCount.Value;
+
+        return await _catalog.GetExactTableRowCountAsync(_catalogTableName, ct);
+    }
 
     /// <summary>
     /// Iterate all documents in the collection.
@@ -376,6 +437,27 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Ensure a secondary index exists for a generated or manually supplied collection field descriptor.
+    /// </summary>
+    public ValueTask EnsureIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        CancellationToken ct = default)
+        => EnsureIndexAsync(field, collation: null, ct);
+
+    /// <summary>
+    /// Ensure a secondary index exists for a generated or manually supplied collection field descriptor.
+    /// Text fields may opt into a specific collation such as <c>NOCASE</c> or <c>NOCASE_AI</c>.
+    /// </summary>
+    public ValueTask EnsureIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        string? collation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        return EnsureIndexCoreAsync(field.FieldPath, collation, ct, field);
+    }
+
+    /// <summary>
     /// Ensure a secondary index exists for a path such as <c>Address.City</c> or <c>$.address.city</c>.
     /// </summary>
     public ValueTask EnsureIndexAsync(
@@ -412,6 +494,20 @@ public sealed class Collection<
     }
 
     /// <summary>
+    /// Find all documents matching a generated or manually supplied collection field descriptor.
+    /// Falls back to a full scan when the index does not exist.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByIndexAsync<TField>(
+        CollectionField<T, TField> field,
+        TField value,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        await foreach (var match in FindByFieldPathCoreAsync(field.FieldPath, value, ct, field))
+            yield return match;
+    }
+
+    /// <summary>
     /// Find all documents matching a path equality predicate, using a collection index when present.
     /// Supports paths such as <c>Address.City</c> or <c>$.address.city</c>.
     /// </summary>
@@ -427,6 +523,31 @@ public sealed class Collection<
             canonicalFieldPath,
             value,
             ct))
+        {
+            yield return match;
+        }
+    }
+
+    /// <summary>
+    /// Find all documents whose scalar generated field value falls within the supplied bounded range.
+    /// </summary>
+    public async IAsyncEnumerable<KeyValuePair<string, T>> FindByRangeAsync<TField>(
+        CollectionField<T, TField> field,
+        TField lowerBound,
+        TField upperBound,
+        bool lowerInclusive = true,
+        bool upperInclusive = true,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        await foreach (var match in FindByFieldPathRangeCoreAsync(
+            field.FieldPath,
+            lowerBound,
+            upperBound,
+            lowerInclusive,
+            upperInclusive,
+            ct,
+            field))
         {
             yield return match;
         }
@@ -465,7 +586,7 @@ public sealed class Collection<
             if (!IsCollectionIndexSchema(schema, out string? fieldPath))
                 continue;
 
-            _indexes[fieldPath] = CollectionIndexBinding<T>.Create(
+            _indexes[fieldPath] = CreateBinding(
                 fieldPath,
                 schema.IndexName,
                 _catalog.GetIndexStore(schema.IndexName),
@@ -498,7 +619,7 @@ public sealed class Collection<
                 $"Index '{schema.IndexName}' is not a collection index for '{_catalogTableName}'.");
         }
 
-        var binding = CollectionIndexBinding<T>.Create(
+        var binding = CreateBinding(
             fieldPath,
             schema.IndexName,
             _catalog.GetIndexStore(schema.IndexName),
@@ -507,6 +628,41 @@ public sealed class Collection<
         _observedSchemaVersion = _catalog.SchemaVersion;
         return binding;
     }
+
+    private CollectionIndexBinding<T> CreateBinding(
+        string fieldPath,
+        string indexName,
+        IIndexStore indexStore,
+        string? collation = null)
+        => TryGetRegisteredField(fieldPath, out var field)
+            ? CollectionIndexBinding<T>.Create(field, indexName, indexStore, collation)
+            : _requireRegisteredFields
+                ? throw CreateGeneratedCollectionFieldBindingException(fieldPath)
+                : CollectionIndexBinding<T>.Create(fieldPath, indexName, indexStore, collation);
+
+    private CollectionIndexBinding<T> CreateTransientBinding(string fieldPath)
+        => TryGetRegisteredField(fieldPath, out var field)
+            ? CollectionIndexBinding<T>.CreateTransient(field)
+            : _requireRegisteredFields
+                ? throw CreateGeneratedCollectionFieldBindingException(fieldPath)
+                : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+
+    private bool TryGetRegisteredField(string fieldPath, out CollectionField<T> field)
+    {
+        if (_model != null && _model.TryGetField(fieldPath, out var registeredField))
+        {
+            field = registeredField;
+            return true;
+        }
+
+        field = null!;
+        return false;
+    }
+
+    private InvalidOperationException CreateGeneratedCollectionFieldBindingException(string fieldPath)
+        => new(
+            $"Generated collection '{_catalogTableName}' cannot bind index field path '{fieldPath}' because no generated collection descriptor is registered for document type '{typeof(T).FullName ?? typeof(T).Name}'. " +
+            "Open the collection through GetCollectionAsync<T>(...) for reflection-based path binding, or add generated descriptor coverage for that field path before using GetGeneratedCollectionAsync<T>(...).");
 
     private string BuildCollectionIndexName(string fieldPath)
     {
@@ -805,7 +961,11 @@ public sealed class Collection<
         await indexStore.InsertAsync(indexKey, newPayload, ct);
     }
 
-    private async ValueTask EnsureIndexCoreAsync(string fieldPath, string? collation, CancellationToken ct)
+    private async ValueTask EnsureIndexCoreAsync(
+        string fieldPath,
+        string? collation,
+        CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
         string? normalizedCollation = CollationSupport.NormalizeMetadataName(collation);
@@ -848,7 +1008,8 @@ public sealed class Collection<
             return;
         }
 
-        CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
+        if (field is null && !TryGetRegisteredField(fieldPath, out field))
+            CollectionIndexBinding<T>.ValidateFieldPath(fieldPath);
 
         bool createdIndex = false;
         try
@@ -908,13 +1069,16 @@ public sealed class Collection<
     private async IAsyncEnumerable<KeyValuePair<string, T>> FindByFieldPathCoreAsync<TField>(
         string fieldPath,
         TField value,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
 
         CollectionIndexBinding<T> binding = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding)
             ? attachedBinding
-            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+            : field is not null
+                ? CollectionIndexBinding<T>.CreateTransient(field)
+                : CreateTransientBinding(fieldPath);
         var comparer = EqualityComparer<TField>.Default;
 
         if (!TryGetOrAttachIndexBinding(fieldPath, out attachedBinding) ||
@@ -1007,14 +1171,17 @@ public sealed class Collection<
         TField upperBound,
         bool lowerInclusive,
         bool upperInclusive,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        CollectionField<T>? field = null)
     {
         RefreshIndexesIfSchemaChanged();
 
         bool hasIndex = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding);
         CollectionIndexBinding<T> binding = hasIndex
             ? attachedBinding
-            : CollectionIndexBinding<T>.CreateTransient(fieldPath);
+            : field is not null
+                ? CollectionIndexBinding<T>.CreateTransient(field)
+                : CreateTransientBinding(fieldPath);
 
         if (binding.IsMultiValueArray)
         {

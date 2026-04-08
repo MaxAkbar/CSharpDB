@@ -1556,6 +1556,14 @@ internal static class CollectionBinaryDocumentCodec
         return MemberValueKind.Object;
     }
 
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2072",
+        Justification = "CollectionBinaryDocumentCodec is a reflection-based collection payload path used behind Collection<T>, which is already marked as not trim-safe. The element type is only inspected for supported collection members discovered from preserved public members.")]
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2062",
+        Justification = "CollectionBinaryDocumentCodec is a reflection-based collection payload path used behind Collection<T>, which is already marked as not trim-safe. The element type is only inspected for supported collection members discovered from preserved public members.")]
     private static bool TryGetCollectionElementType(
         [DynamicallyAccessedMembers(
             DynamicallyAccessedMemberTypes.PublicProperties |
@@ -1564,6 +1572,12 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
             DynamicallyAccessedMemberTypes.Interfaces)]
         Type type,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         [NotNullWhen(true)] out Type? elementType,
         out CollectionContainerKind containerKind)
     {
@@ -1599,6 +1613,10 @@ internal static class CollectionBinaryDocumentCodec
         return false;
     }
 
+    [UnconditionalSuppressMessage(
+        "TrimAnalysis",
+        "IL2062",
+        Justification = "CollectionBinaryDocumentCodec is a reflection-based collection payload path used behind Collection<T>, which is already marked as not trim-safe. The element type is only inspected for supported collection members discovered from preserved public members.")]
     private static bool TryGetEnumerableElementType(
         [DynamicallyAccessedMembers(
             DynamicallyAccessedMemberTypes.PublicProperties |
@@ -1607,6 +1625,12 @@ internal static class CollectionBinaryDocumentCodec
             DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
             DynamicallyAccessedMemberTypes.Interfaces)]
         Type type,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicParameterlessConstructor |
+            DynamicallyAccessedMemberTypes.Interfaces)]
         [NotNullWhen(true)] out Type? elementType)
     {
         if (type.IsGenericType)

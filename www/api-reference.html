@@ -210,15 +210,13 @@
                         </div>
                         <p>Defines the structure of a database table.</p>
                         <div class="api-members">
-                            <h4>Constructor</h4>
-                            <div class="api-member"><code>TableSchema(string name, ColumnDefinition[] columns)</code></div>
-                            <h4>Properties</h4>
-                            <div class="api-member"><code>Name</code> <span class="api-return">&rarr; string</span></div>
+                            <h4>Properties (required init)</h4>
+                            <div class="api-member"><code>TableName</code> <span class="api-return">&rarr; string</span></div>
                             <div class="api-member"><code>Columns</code> <span class="api-return">&rarr; IReadOnlyList&lt;ColumnDefinition&gt;</span></div>
                             <div class="api-member"><code>PrimaryKeyColumnIndex</code> <span class="api-return">&rarr; int</span></div>
                             <h4>Methods</h4>
                             <div class="api-member"><code>GetColumnIndex(string name)</code> <span class="api-return">&rarr; int</span></div>
-                            <div class="api-member"><code>CreateJoinSchema(TableSchema other)</code> <span class="api-return">&rarr; TableSchema</span></div>
+                            <div class="api-member"><code>static CreateJoinSchema(TableSchema leftSchema, TableSchema rightSchema)</code> <span class="api-return">&rarr; TableSchema</span></div>
                         </div>
                     </div>
 
@@ -229,9 +227,9 @@
                         </div>
                         <p>Defines a secondary index on table columns.</p>
                         <div class="api-members">
-                            <div class="api-member"><code>Name</code> <span class="api-return">&rarr; string</span></div>
+                            <div class="api-member"><code>IndexName</code> <span class="api-return">&rarr; string</span></div>
                             <div class="api-member"><code>TableName</code> <span class="api-return">&rarr; string</span></div>
-                            <div class="api-member"><code>Columns</code> <span class="api-return">&rarr; string[]</span></div>
+                            <div class="api-member"><code>Columns</code> <span class="api-return">&rarr; IReadOnlyList&lt;string&gt;</span></div>
                             <div class="api-member"><code>IsUnique</code> <span class="api-return">&rarr; bool</span></div>
                         </div>
                     </div>
@@ -275,7 +273,7 @@
 
                 <!-- BTree -->
                 <div class="api-section" id="api-btree">
-                    <h1>CSharpDB.Storage.BTree</h1>
+                    <h1>CSharpDB.Storage.BTrees</h1>
                     <p class="lead">Persistent B+tree keyed by long rowid.</p>
                     <div class="api-class">
                         <div class="api-class-header">

@@ -14,19 +14,29 @@ namespace CSharpDB.Cli;
 /// </summary>
 internal sealed class Repl : IDisposable
 {
+    private readonly TextReader _input;
     private readonly TextWriter _output;
     private readonly IAnsiConsole _console;
     private readonly TableFormatter _tableFormatter;
     private readonly Dictionary<string, IMetaCommand> _commands;
     private readonly IReadOnlyList<MetaCommandMenuItem> _menuItems;
     private readonly MetaCommandContext _context;
+    private readonly bool _interactiveInput;
 
-    public Repl(ICSharpDbClient client, Database? localDatabase, string databasePath, TextWriter output, IReadOnlyList<IMetaCommand> commands)
+    public Repl(
+        ICSharpDbClient client,
+        Database? localDatabase,
+        string databasePath,
+        TextWriter output,
+        IReadOnlyList<IMetaCommand> commands,
+        TextReader? input = null)
     {
+        _input = input ?? Console.In;
         _output = output;
         _console = CliConsole.Create(output, interactive: true);
         _tableFormatter = new TableFormatter(_console);
         _context = new MetaCommandContext(client, localDatabase, databasePath, ExecuteSqlAsync);
+        _interactiveInput = ReferenceEquals(_input, Console.In) && !Console.IsInputRedirected;
 
         _commands = new Dictionary<string, IMetaCommand>(StringComparer.OrdinalIgnoreCase);
         foreach (var cmd in commands)
@@ -100,8 +110,8 @@ internal sealed class Repl : IDisposable
 
     private ValueTask<string?> ReadInputLineAsync(bool hasPendingSql, CancellationToken ct)
     {
-        if (Console.IsInputRedirected || Console.In is StringReader)
-            return ValueTask.FromResult<string?>(Console.ReadLine());
+        if (!_interactiveInput)
+            return ValueTask.FromResult<string?>(_input.ReadLine());
 
         return ReadInteractiveInputLineAsync(hasPendingSql, ct);
     }
@@ -559,17 +569,23 @@ internal sealed class Repl : IDisposable
 
     private string? PromptForTextInput(string prompt)
     {
+        if (!_interactiveInput)
+        {
+            _output.Write(prompt);
+            return _input.ReadLine()?.Trim();
+        }
+
         int row = GetCursorTop();
         int width = GetMenuWidth();
         WriteMenuLine(row, width, prompt, isSelected: false, ConsoleColor.Gray, ConsoleColor.Black);
         SetCursorPosition(Math.Min(prompt.Length, Math.Max(0, width - 1)), row);
-        return Console.ReadLine()?.Trim();
+        return _input.ReadLine()?.Trim();
     }
 
     private T? TryShowMenu<T>(string title, string subtitle, IReadOnlyList<MenuChoice<T>> choices)
         where T : class
     {
-        if (choices.Count == 0)
+        if (!_interactiveInput || choices.Count == 0)
             return null;
 
         int width = GetMenuWidth();

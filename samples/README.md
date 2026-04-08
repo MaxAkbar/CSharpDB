@@ -14,6 +14,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
+| `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 
 ## Tutorials
 
@@ -73,6 +74,14 @@ Root-level helpers:
 - Docs: [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html)
 - Domain: typed user documents with nested address, tags, and orders
 - Good for: `GetCollectionAsync<T>()`, `EnsureIndexAsync(...)`, `FindByIndexAsync(...)`, `FindByPathAsync(...)`, and `FindByPathRangeAsync(...)`
+
+### Generated Collections Walkthrough
+
+- Project: [GeneratedCollectionsSample.csproj](generated-collections/GeneratedCollectionsSample.csproj)
+- Code: [Program.cs](generated-collections/Program.cs)
+- Docs: [README.md](generated-collections/README.md)
+- Domain: generated customer documents with nested address, tags, and orders
+- Good for: `GetGeneratedCollectionAsync<T>()`, generated `CollectionField<,>` descriptors, `JsonPropertyName` payload compatibility, and trim/AOT-friendly collection access
 
 ## Running a Sample
 
@@ -147,6 +156,14 @@ dotnet run --project samples/collection-indexing/CollectionIndexingSample.csproj
 ```
 
 This sample is the quickest way to see the collection indexing APIs with real seed data and console output.
+
+### Option 5: Run the Generated Collections Sample
+
+```bash
+dotnet run --project samples/generated-collections/GeneratedCollectionsSample.csproj
+```
+
+This sample is the quickest way to see the source-generated collection API, generated descriptors, and trim/AOT-friendly collection access with real seed data and console output.
 
 ## v2.2.0 API Examples
 
