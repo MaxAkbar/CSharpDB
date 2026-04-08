@@ -148,7 +148,7 @@ with Database("mydata.db") as db:
         print(row)
 ```
 
-The native library exports 20 C functions. See the [Native Library Reference](src/CSharpDB.Native/README.md) for Go, Rust, Swift, Kotlin, Dart, Android, and iOS examples.
+The native library exports 20 C functions. See the [Native Library Reference](https://csharpdb.com/docs/tutorials/native-ffi.html) for Go, Rust, Swift, Kotlin, Dart, Android, and iOS examples.
 
 ---
 
@@ -197,19 +197,19 @@ The native library exports 20 C functions. See the [Native Library Reference](sr
 
 | | |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Step-by-step walkthrough |
-| [Architecture Guide](docs/architecture.md) | Engine design deep dive |
+| [Getting Started](https://csharpdb.com/getting-started.html) | Step-by-step walkthrough |
+| [Architecture Guide](https://csharpdb.com/docs/architecture.html) | Engine design deep dive |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
-| [Native FFI](src/CSharpDB.Native/README.md) | C library API and cross-language examples |
-| [REST API Reference](docs/rest-api.md) | All 33 endpoints |
-| [MCP Server](docs/mcp-server.md) | AI assistant integration |
-| [CLI Reference](docs/cli.md) | REPL commands |
+| [Native FFI](https://csharpdb.com/docs/tutorials/native-ffi.html) | C library API and cross-language examples |
+| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | All 33 endpoints |
+| [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
+| [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
-| [Internals & Contributing](docs/internals.md) | Project structure and concurrency model |
-| [FAQ](docs/faq.md) | Common questions |
-| [Roadmap](docs/roadmap.md) | Project goals |
+| [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
+| [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |
+| [Roadmap](https://csharpdb.com/roadmap.html) | Project goals |
 
 ---
 
