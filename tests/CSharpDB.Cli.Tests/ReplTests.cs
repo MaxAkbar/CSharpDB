@@ -598,18 +598,8 @@ public sealed class ReplTests
 
         var commands = BuildCommands();
         var output = new StringWriter();
-        using var repl = new Repl(client, db, dbPath, output, commands);
-
-        var originalIn = Console.In;
-        try
-        {
-            Console.SetIn(new StringReader(input));
-            await repl.RunAsync(ct);
-        }
-        finally
-        {
-            Console.SetIn(originalIn);
-        }
+        using var repl = new Repl(client, db, dbPath, output, commands, new StringReader(input));
+        await repl.RunAsync(ct);
 
         return output.ToString();
     }
