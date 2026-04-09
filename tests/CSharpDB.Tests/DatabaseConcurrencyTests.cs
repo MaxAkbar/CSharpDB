@@ -130,6 +130,171 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ChildInsertConflictsWithCommittedParentDelete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id))", ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await childTx.ExecuteAsync("INSERT INTO children VALUES (1, 1)", ct);
+        await parentTx.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct);
+
+        await parentTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => childTx.CommitAsync(ct).AsTask());
+
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM parents", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM children", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ParentDeleteConflictsWithCommittedChildInsert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id))", ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await parentTx.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct);
+        await childTx.ExecuteAsync("INSERT INTO children VALUES (1, 1)", ct);
+
+        await childTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => parentTx.CommitAsync(ct).AsTask());
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM parents", ct));
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM children", ct));
+    }
+
+    [Fact]
+    public async Task ExplicitWriteTransaction_DdlWaitsForEarlierTransactionToComplete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE ddl_wait_base (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+
+        await using var blockingTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var ddlTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await using (var result = await blockingTx.ExecuteAsync("SELECT COUNT(*) FROM ddl_wait_base", ct))
+        {
+            await result.ToListAsync(ct);
+        }
+        Task ddlExecuteTask = ddlTx.ExecuteAsync("CREATE TABLE ddl_wait_created (id INTEGER PRIMARY KEY)", ct).AsTask();
+
+        await Task.Delay(200, ct);
+        Assert.False(ddlExecuteTask.IsCompleted);
+
+        await blockingTx.CommitAsync(ct);
+        await ddlExecuteTask.WaitAsync(ct);
+        await ddlTx.CommitAsync(ct);
+
+        Assert.Contains(
+            _db.GetTableNames(),
+            static name => string.Equals(name, "ddl_wait_created", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task WaitingDdlTransaction_BlocksNewExplicitTransactionStarts_UntilCommitCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE ddl_begin_block_base (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+
+        await using var blockingTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var ddlTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await using (var result = await blockingTx.ExecuteAsync("SELECT COUNT(*) FROM ddl_begin_block_base", ct))
+        {
+            await result.ToListAsync(ct);
+        }
+        Task ddlExecuteTask = ddlTx.ExecuteAsync("CREATE TABLE ddl_begin_block_created (id INTEGER PRIMARY KEY)", ct).AsTask();
+
+        await Task.Delay(200, ct);
+        Assert.False(ddlExecuteTask.IsCompleted);
+
+        Task<WriteTransaction> blockedBeginTask = _db.BeginWriteTransactionAsync(ct).AsTask();
+        await Task.Delay(200, ct);
+        Assert.False(blockedBeginTask.IsCompleted);
+
+        await blockingTx.CommitAsync(ct);
+        await ddlExecuteTask.WaitAsync(ct);
+
+        await Task.Delay(200, ct);
+        Assert.False(blockedBeginTask.IsCompleted);
+
+        await ddlTx.CommitAsync(ct);
+
+        await using WriteTransaction tx3 = await blockedBeginTask.WaitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_FullTableScanConflictsWithConcurrentInsert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE range_scan_items (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_scan_items VALUES (1, 5)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM range_scan_items WHERE value >= 10", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO range_scan_items VALUES (2, 20)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_IndexedRangeScanConflictsWithConcurrentInsertInRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE indexed_range_items (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_indexed_range_items_value ON indexed_range_items(value)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items VALUES (1, 5)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items VALUES (2, 15)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items VALUES (3, 25)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM indexed_range_items WHERE value >= 10 AND value <= 20", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items VALUES (4, 18)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_IndexedRangeScan_AllowsConcurrentInsertOutsideRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE indexed_range_items_ok (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_indexed_range_items_ok_value ON indexed_range_items_ok(value)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items_ok VALUES (1, 5)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items_ok VALUES (2, 15)", ct);
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items_ok VALUES (3, 25)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM indexed_range_items_ok WHERE value >= 10 AND value <= 20", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO indexed_range_items_ok VALUES (4, 50)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_WithBatchWindow_CanQueuePendingCommits()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -419,6 +584,13 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
             : 0;
         throw new Xunit.Sdk.XunitException(
             $"Timed out waiting for WAL length {expectedLength}, observed {finalLength}.");
+    }
+
+    private async Task<long> ScalarIntAsync(string sql, CancellationToken ct)
+    {
+        await using var result = await _db.ExecuteAsync(sql, ct);
+        DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+        return row[0].AsInteger;
     }
 
     private sealed record UserDocument(string Name, int Age);

@@ -37,6 +37,12 @@ internal sealed class PagerTransactionState
 
     internal HashSet<uint> DirtyPages { get; } = new();
 
+    internal HashSet<LogicalConflictKey> LogicalReadKeys { get; } = [];
+
+    internal HashSet<LogicalConflictRange> LogicalReadRanges { get; } = [];
+
+    internal HashSet<LogicalConflictKey> LogicalWriteKeys { get; } = [];
+
     internal uint PageCount { get; set; }
 
     internal uint SchemaRootPage { get; set; }
@@ -54,6 +60,8 @@ internal sealed class PagerTransactionState
     internal bool CommitStarted { get; set; }
 
     internal bool Completed { get; set; }
+
+    internal bool HasSchemaWriteLock { get; set; }
 
     internal void ReleaseSnapshot()
     {

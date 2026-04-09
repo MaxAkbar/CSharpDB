@@ -12,6 +12,7 @@ namespace CSharpDB.Storage.Paging;
 /// </summary>
 public sealed class Pager : IAsyncDisposable, IDisposable
 {
+    private static readonly LogicalConflictKey SchemaConflictKey = new("schema:global", 0);
     private readonly IStorageDevice _device;
     private readonly IPageReadProvider _pageReads;
     private readonly IPageReadProvider _speculativePageReads;
@@ -26,6 +27,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly CheckpointCoordinator? _checkpoints;
     private readonly Func<CancellationToken, ValueTask>? _checkpointAction;
     private readonly AsyncLocal<PagerTransactionState?> _ambientTransaction = new();
+    private readonly object _legacyLogicalWriteGate = new();
+    private readonly HashSet<LogicalConflictKey> _legacyLogicalWriteKeys = [];
 
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
@@ -115,6 +118,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
     public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
+
+    internal bool IsExplicitWriteTransactionActive => GetCurrentTransaction() is not null;
 
     internal WalFlushDiagnosticsSnapshot GetWalFlushDiagnosticsSnapshot()
     {
@@ -556,6 +561,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (!_wal.IsOpen)
             await _wal.OpenAsync(PageCount, ct);
         await _transactions!.BeginAsync(_wal, _options.WriterLockTimeout, ct);
+        ClearLegacyLogicalWriteTracking();
     }
 
     public async ValueTask CommitAsync(CancellationToken ct = default)
@@ -603,6 +609,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_transactions is null || !_transactions.TryBeginRollback())
             return;
 
+        ClearLegacyLogicalWriteTracking();
         await _wal.RollbackAsync(ct);
         _transactions.CompleteRollback();
         await ResetPagerStateFromCommittedStorageAsync(ct);
@@ -612,6 +619,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot begin transactions on a read-only snapshot pager.");
+
+        if (_transactions is not null)
+            await _transactions.WaitForSchemaBeginAsync(ct);
 
         await WaitForBackgroundCheckpointAsync(ct);
         if (!_wal.IsOpen)
@@ -623,16 +633,29 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         try
         {
+            long transactionId = _transactions?.CreateTransactionId() ?? 0;
             WalSnapshot snapshot = AcquireReaderSnapshot();
+            _transactions?.RegisterExplicitTransaction(transactionId);
             var state = new PagerTransactionState(
-                _transactions?.CreateTransactionId() ?? 0,
+                transactionId,
                 _transactions?.CurrentCommitVersion ?? 0,
                 snapshot,
                 _pageCount,
                 _schemaRootPage,
                 _freelistHead,
                 _changeCounter,
-                ReleaseReaderSnapshot);
+                () =>
+                {
+                    try
+                    {
+                        ReleaseReaderSnapshot();
+                    }
+                    finally
+                    {
+                        _transactions?.UnregisterExplicitTransaction(transactionId);
+                    }
+                });
+            state.LogicalReadKeys.Add(SchemaConflictKey);
             return new PagerWriteTransaction(this, state);
         }
         finally
@@ -650,7 +673,73 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return new AmbientTransactionBinding(_ambientTransaction, previous);
     }
 
+    internal void RecordLogicalIndexRead(string indexName, long key)
+        => RecordLogicalRead(BuildLogicalIndexResourceName(indexName), key);
+
+    internal void RecordLogicalIndexRangeRead(string indexName, IndexScanRange range)
+        => RecordLogicalRange(BuildLogicalIndexResourceName(indexName), range);
+
+    internal void RecordLogicalIndexWrite(string indexName, long key)
+        => RecordLogicalWrite(BuildLogicalIndexResourceName(indexName), key);
+
+    internal void RecordLogicalTableRowRead(string tableName, long rowId)
+        => RecordLogicalRead(BuildLogicalTableRowResourceName(tableName), rowId);
+
+    internal void RecordLogicalTableRowRangeRead(string tableName, IndexScanRange range)
+        => RecordLogicalRange(BuildLogicalTableRowResourceName(tableName), range);
+
+    internal void RecordLogicalTableRowWrite(string tableName, long rowId)
+        => RecordLogicalWrite(BuildLogicalTableRowResourceName(tableName), rowId);
+
+    internal async ValueTask AcquireSchemaWriteLockAsync(CancellationToken ct = default)
+    {
+        if (GetCurrentTransaction() is not { } tx || _transactions is null)
+            return;
+
+        if (!tx.HasSchemaWriteLock)
+        {
+            await _transactions.AcquireSchemaExclusiveAsync(tx.TransactionId, ct);
+            tx.HasSchemaWriteLock = true;
+        }
+
+        tx.LogicalWriteKeys.Add(SchemaConflictKey);
+    }
+
     private PagerTransactionState? GetCurrentTransaction() => _ambientTransaction.Value;
+
+    private void RecordLogicalRead(string resourceName, long key)
+    {
+        if (GetCurrentTransaction() is not { } tx)
+            return;
+
+        tx.LogicalReadKeys.Add(new LogicalConflictKey(resourceName, key));
+    }
+
+    private void RecordLogicalWrite(string resourceName, long key)
+    {
+        if (GetCurrentTransaction() is not { } tx)
+        {
+            if (_transactions?.InTransaction == true)
+            {
+                lock (_legacyLogicalWriteGate)
+                {
+                    _legacyLogicalWriteKeys.Add(new LogicalConflictKey(resourceName, key));
+                }
+            }
+
+            return;
+        }
+
+        tx.LogicalWriteKeys.Add(new LogicalConflictKey(resourceName, key));
+    }
+
+    private void RecordLogicalRange(string resourceName, IndexScanRange range)
+    {
+        if (GetCurrentTransaction() is not { } tx)
+            return;
+
+        tx.LogicalReadRanges.Add(new LogicalConflictRange(resourceName, range));
+    }
 
     private async ValueTask<byte[]> GetTransactionPageAsync(
         PagerTransactionState tx,
@@ -734,6 +823,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         uint[]? orderedDirtyPageIds = null;
         int orderedDirtyCount = 0;
+        TransactionCoordinator.PendingCommitReservation? pendingCommitReservation = null;
         try
         {
             EnforceReaderWalBackpressure(dirtyCount);
@@ -765,12 +855,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             WalCommitResult commitResult = await PrepareWalCommitAsync(ct);
             RecordWalAppendDiagnostics(walAppendStartTicks);
+            pendingCommitReservation = _transactions!.ReservePendingCommit(
+                EnumerateOrderedPageIds(orderedDirtyPageIds, orderedDirtyCount),
+                CaptureLegacyLogicalWriteKeys());
+            ClearLegacyLogicalWriteTracking();
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
-            return new PagerCommitResult(CompleteLegacyCommitWithInterceptorAsync(commitResult, transactionId, dirtyCount));
+            return new PagerCommitResult(CompleteLegacyCommitWithInterceptorAsync(
+                commitResult,
+                transactionId,
+                pendingCommitReservation,
+                dirtyCount));
         }
         catch
         {
+            if (pendingCommitReservation is not null)
+                _transactions!.RevertPendingCommit(pendingCommitReservation);
+
+            ClearLegacyLogicalWriteTracking();
             await _interceptor.OnCommitEndAsync(dirtyCount, succeeded: false, ct);
             throw;
         }
@@ -789,6 +891,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         int orderedDirtyCount = 0;
         WalFrameWrite[]? frameBatch = null;
         int frameCount = 0;
+        TransactionCoordinator.PendingCommitReservation? pendingCommitReservation = null;
         try
         {
             long walAppendStartTicks = Stopwatch.GetTimestamp();
@@ -812,9 +915,21 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 : await _wal.CommitAsync(PageCount, ct);
 
             RecordWalAppendDiagnostics(walAppendStartTicks);
+            pendingCommitReservation = _transactions!.ReservePendingCommit(
+                EnumerateOrderedPageIds(orderedDirtyPageIds, orderedDirtyCount),
+                CaptureLegacyLogicalWriteKeys());
+            ClearLegacyLogicalWriteTracking();
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
-            return new PagerCommitResult(CompleteLegacyCommitAsync(commitResult, transactionId));
+            return new PagerCommitResult(CompleteLegacyCommitAsync(commitResult, transactionId, pendingCommitReservation));
+        }
+        catch
+        {
+            if (pendingCommitReservation is not null)
+                _transactions!.RevertPendingCommit(pendingCommitReservation);
+
+            ClearLegacyLogicalWriteTracking();
+            throw;
         }
         finally
         {
@@ -829,15 +944,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task CompleteLegacyCommitAsync(WalCommitResult commitResult, long transactionId)
+    private async Task CompleteLegacyCommitAsync(
+        WalCommitResult commitResult,
+        long transactionId,
+        TransactionCoordinator.PendingCommitReservation pendingCommitReservation)
     {
         try
         {
             await commitResult.WaitAsync();
+            _transactions!.PublishPendingCommit(pendingCommitReservation);
             await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
         }
         catch
         {
+            _transactions!.RevertPendingCommit(pendingCommitReservation);
             await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
         }
@@ -846,17 +966,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private async Task CompleteLegacyCommitWithInterceptorAsync(
         WalCommitResult commitResult,
         long transactionId,
+        TransactionCoordinator.PendingCommitReservation pendingCommitReservation,
         int dirtyCount)
     {
         bool commitSucceeded = false;
         try
         {
             await commitResult.WaitAsync();
+            _transactions!.PublishPendingCommit(pendingCommitReservation);
             await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
             commitSucceeded = true;
         }
         catch
         {
+            _transactions!.RevertPendingCommit(pendingCommitReservation);
             await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
         }
@@ -936,6 +1059,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 !tx.HasSchemaRootPageOverride &&
                 !tx.HasFreelistHeadOverride)
             {
+                ValidateLogicalConflicts(tx);
                 tx.Completed = true;
                 tx.ReleaseSnapshot();
                 if (_hasInterceptor)
@@ -963,6 +1087,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     {
                         throw new CSharpDbConflictException(
                             $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                    }
+
+                    if (_transactions is not null &&
+                        _transactions.HasLogicalConflict(tx.LogicalReadKeys, tx.StartVersion, out LogicalConflictKey conflictKey))
+                    {
+                        throw new CSharpDbConflictException(
+                            $"Transaction conflict detected while validating logical key {conflictKey}. The transaction must be retried.");
+                    }
+
+                    if (_transactions is not null &&
+                        _transactions.HasLogicalRangeConflict(tx.LogicalReadRanges, tx.StartVersion, out conflictKey))
+                    {
+                        throw new CSharpDbConflictException(
+                            $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
                     }
 
                     pendingCommitWindow = _transactions is not null
@@ -1007,7 +1145,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     }
 
                     RecordWalAppendDiagnostics(walAppendStartTicks);
-                    pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds)
+                    pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds, tx.LogicalWriteKeys)
                         ?? throw new InvalidOperationException("Explicit write transactions require a transaction coordinator.");
                 }
                 finally
@@ -1721,6 +1859,48 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private bool HasCheckpointWorkPending()
         => _walIndex.FrameCount > 0 || _wal.HasPendingCheckpoint;
 
+    private void ValidateLogicalConflicts(PagerTransactionState tx)
+    {
+        if (_transactions is null)
+            return;
+
+        if (_transactions.HasLogicalConflict(tx.LogicalReadKeys, tx.StartVersion, out LogicalConflictKey conflictKey))
+        {
+            throw new CSharpDbConflictException(
+                $"Transaction conflict detected while validating logical key {conflictKey}. The transaction must be retried.");
+        }
+
+        if (_transactions.HasLogicalRangeConflict(tx.LogicalReadRanges, tx.StartVersion, out conflictKey))
+        {
+            throw new CSharpDbConflictException(
+                $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
+        }
+    }
+
+    private LogicalConflictKey[] CaptureLegacyLogicalWriteKeys()
+    {
+        lock (_legacyLogicalWriteGate)
+        {
+            return _legacyLogicalWriteKeys.Count == 0
+                ? Array.Empty<LogicalConflictKey>()
+                : _legacyLogicalWriteKeys.ToArray();
+        }
+    }
+
+    private void ClearLegacyLogicalWriteTracking()
+    {
+        lock (_legacyLogicalWriteGate)
+        {
+            _legacyLogicalWriteKeys.Clear();
+        }
+    }
+
+    private static IEnumerable<uint> EnumerateOrderedPageIds(uint[] pageIds, int count)
+    {
+        for (int i = 0; i < count; i++)
+            yield return pageIds[i];
+    }
+
     private void RecordWalAppendDiagnostics(long startTicks)
     {
         if (startTicks == 0)
@@ -1883,4 +2063,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             ErrorCode.Busy,
             $"WAL growth limit exceeded while snapshot readers are active (activeReaders={activeReaders}, projectedWalBytes={projectedBytes}, limitBytes={limitBytes.Value}).");
     }
+
+    private static string BuildLogicalIndexResourceName(string indexName)
+        => $"index:{indexName}";
+
+    private static string BuildLogicalTableRowResourceName(string tableName)
+        => $"table:{tableName}:rowid";
 }

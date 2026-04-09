@@ -1066,7 +1066,17 @@ internal sealed class CollectionIndexBinding<
     {
         internal static readonly NoopIndexStore Instance = new();
 
+        public string LogicalName => "noop";
+
         public uint RootPageId => 0;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
             => ValueTask.FromResult<byte[]?>(null);

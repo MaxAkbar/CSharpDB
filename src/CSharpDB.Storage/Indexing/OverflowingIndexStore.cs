@@ -22,6 +22,14 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
 
     public uint RootPageId => _inner.RootPageId;
 
+    public string LogicalName => _inner.LogicalName;
+
+    public void RecordPointRead(long key)
+        => _inner.RecordPointRead(key);
+
+    public void RecordRangeRead(IndexScanRange range)
+        => _inner.RecordRangeRead(range);
+
     public async ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
     {
         byte[]? storedPayload = await _inner.FindAsync(key, ct);
@@ -145,6 +153,7 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
         if (IndexOverflowReferenceCodec.IsEncoded(storedPayload))
             return false;
 
+        RecordPointRead(key);
         payload = storedPayload;
         return true;
     }

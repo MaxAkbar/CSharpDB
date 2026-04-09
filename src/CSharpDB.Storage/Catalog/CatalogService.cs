@@ -723,7 +723,7 @@ internal sealed class CatalogService
 
         _cache[storedSchema.TableName] = storedSchema;
         _tableRootPages[storedSchema.TableName] = tableRootPage;
-        _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage);
+        _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage, storedSchema.TableName);
         _tableTrees[storedSchema.TableName].SetCachedEntryCount(0);
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
         RebuildForeignKeyCaches();
@@ -809,7 +809,13 @@ internal sealed class CatalogService
         RebuildForeignKeyCaches();
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
-            _tableTrees[storedSchema.TableName] = existingTree;
+        {
+            var renamedTree = new BTree(_pager, rootPage, storedSchema.TableName);
+            if (existingTree.TryGetCachedEntryCount(out long cachedEntryCount))
+                renamedTree.SetCachedEntryCount(cachedEntryCount);
+
+            _tableTrees[storedSchema.TableName] = renamedTree;
+        }
 
         bool isPureTableRename =
             !string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase) &&
@@ -1114,7 +1120,7 @@ internal sealed class CatalogService
             return tree;
 
         uint rootPage = GetTableRootPage(tableName);
-        tree = new BTree(_pager, rootPage);
+        tree = new BTree(_pager, rootPage, tableName);
         if (_tableStatsCache.TryGetValue(tableName, out var stats))
             tree.SetCachedEntryCount(stats.RowCount);
         _tableTrees[tableName] = tree;
@@ -1131,7 +1137,7 @@ internal sealed class CatalogService
             return GetTableTree(tableName);
 
         uint rootPage = GetTableRootPage(tableName);
-        var tree = new BTree(pager, rootPage);
+        var tree = new BTree(pager, rootPage, tableName);
         if (_tableStatsCache.TryGetValue(tableName, out var stats))
             tree.SetCachedEntryCount(stats.RowCount);
         return tree;
@@ -1378,7 +1384,7 @@ internal sealed class CatalogService
 
     private IIndexStore CreateIndexStore(Pager pager, IndexSchema schema, uint rootPageId)
     {
-        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId);
+        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId, schema.IndexName);
         return ShouldUseOverflowingIndexStore(schema)
             ? new OverflowingIndexStore(store, pager)
             : store;

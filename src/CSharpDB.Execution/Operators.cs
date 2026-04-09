@@ -13676,7 +13676,7 @@ public sealed class TableKeyAggregateOperator : IOperator, IEstimatedRowCountPro
             return;
         }
 
-        var cursor = _tableTree.CreateCursor();
+        var cursor = _tableTree.CreateCursor(_scanRange);
         if (!await MoveToFirstInRangeAsync(cursor, ct))
         {
             Current = new[] { CreateEmptyAggregate() };

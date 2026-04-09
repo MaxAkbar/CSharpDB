@@ -6,22 +6,44 @@ namespace CSharpDB.Storage.Indexing;
 public sealed class BTreeIndexStore : IIndexStore, ICacheAwareIndexStore, IReclaimableIndexStore
 {
     private readonly BTree _tree;
+    private readonly string _logicalName;
 
-    public BTreeIndexStore(BTree tree)
+    public BTreeIndexStore(BTree tree, string logicalName)
     {
         _tree = tree;
+        _logicalName = logicalName;
     }
+
+    public string LogicalName => _logicalName;
 
     public uint RootPageId => _tree.RootPageId;
 
-    public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default) =>
-        _tree.FindAsync(key, ct);
+    public void RecordPointRead(long key)
+        => _tree.RecordLogicalIndexRead(_logicalName, key);
 
-    public bool TryFindCached(long key, out byte[]? payload) =>
-        _tree.TryFindCached(key, out payload);
+    public void RecordRangeRead(IndexScanRange range)
+        => _tree.RecordLogicalIndexRangeRead(_logicalName, range);
 
-    public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default) =>
-        _tree.FindMaxKeyAsync(range, ct);
+    public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
+    {
+        RecordPointRead(key);
+        return _tree.FindAsync(key, ct);
+    }
+
+    public bool TryFindCached(long key, out byte[]? payload)
+    {
+        bool found = _tree.TryFindCached(key, out payload);
+        if (found)
+            RecordPointRead(key);
+
+        return found;
+    }
+
+    public ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default)
+    {
+        RecordRangeRead(range);
+        return _tree.FindMaxKeyAsync(range, ct);
+    }
 
     public ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
         _tree.InsertAsync(key, payload, ct);
@@ -36,6 +58,8 @@ public sealed class BTreeIndexStore : IIndexStore, ICacheAwareIndexStore, IRecla
     {
         if (!TryNormalizeRange(range, out long? startKeyInclusive, out long? upperBoundInclusive))
             return EmptyIndexCursor.Instance;
+
+        RecordRangeRead(range);
 
         IIndexCursor cursor = new BTreeIndexCursor(_tree.CreateCursor(), startKeyInclusive);
         if (upperBoundInclusive.HasValue)

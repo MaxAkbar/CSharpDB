@@ -1,4 +1,5 @@
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Execution;
 
@@ -175,7 +176,9 @@ internal static class IndexMaintenanceHelper
                 else
                 {
                     await EnsureUniqueConstraintAsync(
+                        pager: null,
                         indexStore,
+                        indexSchema.IndexName,
                         tableTree,
                         tableSchema,
                         readSerializer,
@@ -184,21 +187,38 @@ internal static class IndexMaintenanceHelper
                         keyComponents!,
                         indexKey,
                         storageMode,
-                        indexSchema.IndexName,
                         ct);
 
-                    await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, storageMode, ct);
+                    await InsertRowIdAsync(
+                        pager: null,
+                        indexStore,
+                        indexSchema.IndexName,
+                        indexKey,
+                        scan.CurrentRowId,
+                        keyComponents,
+                        storageMode,
+                        ct);
                 }
             }
             else
             {
-                await InsertRowIdAsync(indexStore, indexKey, scan.CurrentRowId, keyComponents, storageMode, ct);
+                await InsertRowIdAsync(
+                    pager: null,
+                    indexStore,
+                    indexSchema.IndexName,
+                    indexKey,
+                    scan.CurrentRowId,
+                    keyComponents,
+                    storageMode,
+                    ct);
             }
         }
     }
 
     public static async ValueTask InsertRowIdAsync(
+        Pager? pager,
         IIndexStore indexStore,
+        string indexName,
         long indexKey,
         long rowId,
         DbValue[]? keyComponents = null,
@@ -218,6 +238,7 @@ internal static class IndexMaintenanceHelper
                     : RowIdPayloadCodec.CreateSingle(rowId),
             };
             await indexStore.InsertAsync(indexKey, initialPayload, ct);
+            pager?.RecordLogicalIndexWrite(indexName, indexKey);
             return;
         }
 
@@ -250,11 +271,14 @@ internal static class IndexMaintenanceHelper
                 return;
         }
 
-        await indexStore.ReplaceAsync(indexKey, newPayload, ct);
+        if (await indexStore.ReplaceAsync(indexKey, newPayload, ct))
+            pager?.RecordLogicalIndexWrite(indexName, indexKey);
     }
 
     public static async ValueTask DeleteRowIdAsync(
+        Pager? pager,
         IIndexStore indexStore,
+        string indexName,
         long indexKey,
         long rowId,
         DbValue[]? keyComponents = null,
@@ -295,9 +319,14 @@ internal static class IndexMaintenanceHelper
         }
 
         if (newPayload != null)
-            await indexStore.ReplaceAsync(indexKey, newPayload, ct);
-        else
-            await indexStore.DeleteAsync(indexKey, ct);
+        {
+            if (await indexStore.ReplaceAsync(indexKey, newPayload, ct))
+                pager?.RecordLogicalIndexWrite(indexName, indexKey);
+        }
+        else if (await indexStore.DeleteAsync(indexKey, ct))
+        {
+            pager?.RecordLogicalIndexWrite(indexName, indexKey);
+        }
     }
 
     public static bool TryResolveIndexColumnIndices(
@@ -423,7 +452,9 @@ internal static class IndexMaintenanceHelper
     }
 
     public static async ValueTask EnsureUniqueConstraintAsync(
+        Pager? pager,
         IIndexStore indexStore,
+        string indexName,
         BTree tableTree,
         TableSchema schema,
         IRecordSerializer readSerializer,
@@ -432,22 +463,24 @@ internal static class IndexMaintenanceHelper
         DbValue[] keyComponents,
         long indexKey,
         SqlIndexStorageMode storageMode,
-        string indexName,
         CancellationToken ct)
     {
         if (storageMode == SqlIndexStorageMode.OrderedText)
         {
             await EnsureOrderedTextUniqueConstraintAsync(
+                pager,
                 indexStore,
+                indexName,
                 keyComponents,
                 indexKey,
-                indexName,
                 ct);
             return;
         }
 
         await EnsureHashedUniqueConstraintAsync(
+            pager,
             indexStore,
+            indexName,
             tableTree,
             schema,
             readSerializer,
@@ -455,12 +488,13 @@ internal static class IndexMaintenanceHelper
             indexColumnCollations,
             keyComponents,
             indexKey,
-            indexName,
             ct);
     }
 
     private static async ValueTask EnsureHashedUniqueConstraintAsync(
+        Pager? pager,
         IIndexStore indexStore,
+        string indexName,
         BTree tableTree,
         TableSchema schema,
         IRecordSerializer readSerializer,
@@ -468,9 +502,9 @@ internal static class IndexMaintenanceHelper
         string?[] indexColumnCollations,
         DbValue[] keyComponents,
         long indexKey,
-        string indexName,
         CancellationToken ct)
     {
+        pager?.RecordLogicalIndexRead(indexName, indexKey);
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null || existing.Length < sizeof(long))
             return;
@@ -532,12 +566,14 @@ internal static class IndexMaintenanceHelper
     }
 
     private static async ValueTask EnsureOrderedTextUniqueConstraintAsync(
+        Pager? pager,
         IIndexStore indexStore,
+        string indexName,
         DbValue[] keyComponents,
         long indexKey,
-        string indexName,
         CancellationToken ct)
     {
+        pager?.RecordLogicalIndexRead(indexName, indexKey);
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null || existing.Length == 0)
             return;

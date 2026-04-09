@@ -784,7 +784,17 @@ public sealed class StorageEngineExtensibilityTests
 
         public int FindCallCount => Volatile.Read(ref _findCallCount);
 
+        public string LogicalName => "counting";
+
         public uint RootPageId => 1;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
         {
@@ -839,10 +849,10 @@ public sealed class StorageEngineExtensibilityTests
 
         public int CreateCursorCallCount => Volatile.Read(ref _createCursorCallCount);
 
-        public IIndexStore CreateIndexStore(Pager pager, uint rootPageId)
+        public IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName)
         {
             var data = _byRootPage.GetOrAdd(rootPageId, static _ => new InMemoryIndexData());
-            return new InMemoryIndexStore(rootPageId, data, () => Interlocked.Increment(ref _createCursorCallCount));
+            return new InMemoryIndexStore(rootPageId, logicalName, data, () => Interlocked.Increment(ref _createCursorCallCount));
         }
     }
 
@@ -855,17 +865,29 @@ public sealed class StorageEngineExtensibilityTests
     private sealed class InMemoryIndexStore : IIndexStore
     {
         private readonly uint _rootPageId;
+        private readonly string _logicalName;
         private readonly InMemoryIndexData _data;
         private readonly Action _onCreateCursor;
 
-        public InMemoryIndexStore(uint rootPageId, InMemoryIndexData data, Action onCreateCursor)
+        public InMemoryIndexStore(uint rootPageId, string logicalName, InMemoryIndexData data, Action onCreateCursor)
         {
             _rootPageId = rootPageId;
+            _logicalName = logicalName;
             _data = data;
             _onCreateCursor = onCreateCursor;
         }
 
+        public string LogicalName => _logicalName;
+
         public uint RootPageId => _rootPageId;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
         {

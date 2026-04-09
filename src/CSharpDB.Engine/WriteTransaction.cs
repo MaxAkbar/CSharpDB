@@ -40,7 +40,10 @@ public sealed class WriteTransaction : IAsyncDisposable
         Statement statement = Parser.TryParseSimpleSelect(sql, out var simpleSelect)
             ? simpleSelect
             : Parser.Parse(sql);
-        return await _planner.ExecuteAsync(statement, ct);
+        QueryResult result = await _planner.ExecuteAsync(statement, ct);
+        if (result.IsQuery)
+            result.SetExecutionScopeFactory(_storageTransaction.Bind);
+        return result;
     }
 
     /// <summary>
@@ -52,7 +55,10 @@ public sealed class WriteTransaction : IAsyncDisposable
         EnsureActive();
 
         using var binding = _storageTransaction.Bind();
-        return await _planner.ExecuteAsync(statement, ct);
+        QueryResult result = await _planner.ExecuteAsync(statement, ct);
+        if (result.IsQuery)
+            result.SetExecutionScopeFactory(_storageTransaction.Bind);
+        return result;
     }
 
     /// <summary>

@@ -27,6 +27,7 @@ public sealed class BTree
     private const int MinInteriorCells = 1;
 
     private readonly Pager _pager;
+    private readonly string? _logicalTableName;
     private uint _rootPageId;
     private long? _cachedEntryCount;
     private readonly Dictionary<uint, CachedInteriorRouting> _interiorRoutingCache = new();
@@ -46,10 +47,11 @@ public sealed class BTree
 
     public uint RootPageId => _rootPageId;
 
-    public BTree(Pager pager, uint rootPageId)
+    public BTree(Pager pager, uint rootPageId, string? logicalTableName = null)
     {
         _pager = pager;
         _rootPageId = rootPageId;
+        _logicalTableName = logicalTableName;
     }
 
     internal async ValueTask WarmOwnedPagesAsync(CancellationToken ct = default)
@@ -126,6 +128,8 @@ public sealed class BTree
         bool populateReadRoutingCache,
         CancellationToken ct = default)
     {
+        RecordLogicalPointRead(key);
+
         if (!_pager.UsesReadOnlyPageViews)
         {
             // Keep the pre-mmap fast path on plain copy-based pagers.
@@ -293,6 +297,7 @@ public sealed class BTree
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        RecordLogicalPointRead(key);
 
         uint pageId = _rootPageId;
         while (true)
@@ -352,6 +357,7 @@ public sealed class BTree
                     {
                         int idx = FindKeyInLeaf(hintSp, key);
                         payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
+                        RecordLogicalPointRead(key);
                         return true;
                     }
                 }
@@ -385,6 +391,7 @@ public sealed class BTree
 
                     int idx = FindKeyInLeaf(sp, key);
                     payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                    RecordLogicalPointRead(key);
                     return true;
                 }
 
@@ -408,6 +415,7 @@ public sealed class BTree
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
                     payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
+                    RecordLogicalPointRead(key);
                     return true; // cache hit, definitive answer
                 }
             }
@@ -442,6 +450,7 @@ public sealed class BTree
 
                 int idx = FindKeyInLeaf(sp, key);
                 payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                RecordLogicalPointRead(key);
                 return true; // cache hit, definitive answer
             }
 
@@ -602,7 +611,14 @@ public sealed class BTree
     /// Create a cursor positioned before the first entry.
     /// </summary>
     public BTreeCursor CreateCursor()
+        => CreateCursor(IndexScanRange.All);
+
+    /// <summary>
+    /// Create a cursor positioned before the first entry and record a logical read range.
+    /// </summary>
+    public BTreeCursor CreateCursor(IndexScanRange range)
     {
+        RecordLogicalRangeRead(range);
         return new BTreeCursor(this, _pager);
     }
 
@@ -641,6 +657,8 @@ public sealed class BTree
 
     private async ValueTask<long> CountEntriesCoreAsync(bool ignoreCachedCount, CancellationToken ct)
     {
+        RecordLogicalRangeRead(IndexScanRange.All);
+
         if (!ignoreCachedCount && _cachedEntryCount.HasValue)
             return _cachedEntryCount.Value;
 
@@ -677,6 +695,8 @@ public sealed class BTree
     {
         if (!IsRangeSatisfiable(range))
             return null;
+
+        RecordLogicalRangeRead(range);
 
         var ancestors = new List<InteriorFrame>(8);
         uint leafPageId = range.UpperBound.HasValue
@@ -2123,6 +2143,28 @@ public sealed class BTree
             return false;
 
         return range.LowerInclusive && range.UpperInclusive;
+    }
+
+    internal void RecordLogicalIndexRead(string indexName, long key)
+        => _pager.RecordLogicalIndexRead(indexName, key);
+
+    internal void RecordLogicalIndexRangeRead(string indexName, IndexScanRange range)
+        => _pager.RecordLogicalIndexRangeRead(indexName, range);
+
+    private void RecordLogicalPointRead(long key)
+    {
+        if (_logicalTableName is null)
+            return;
+
+        _pager.RecordLogicalTableRowRead(_logicalTableName, key);
+    }
+
+    private void RecordLogicalRangeRead(IndexScanRange range)
+    {
+        if (_logicalTableName is null)
+            return;
+
+        _pager.RecordLogicalTableRowRangeRead(_logicalTableName, range);
     }
 
     private async ValueTask ReclaimPageAsync(uint pageId, HashSet<uint> visited, CancellationToken ct)

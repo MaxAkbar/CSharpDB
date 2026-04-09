@@ -15,16 +15,21 @@ internal sealed class TransactionCoordinator : IDisposable
     private readonly SemaphoreSlim _writerLock = new(1, 1);
     private readonly SemaphoreSlim _commitLock = new(1, 1);
     private readonly Dictionary<uint, long> _pageLastWriteVersion = new();
+    private readonly Dictionary<LogicalConflictKey, long> _logicalLastWriteVersion = new();
+    private readonly HashSet<long> _activeExplicitTransactions = [];
     private long _currentTransactionId;
     private long _nextTransactionId;
     private long _commitVersion;
     private long _nextReservedCommitVersion;
     private long _nextReservedPageId;
+    private long _schemaExclusiveOwnerTransactionId;
+    private long _schemaExclusiveWaiterTransactionId;
     private int _inTransactionFlag;
     private bool _inTransaction;
     private bool _writerLockReleased;
     private int _pendingCommitWindowCount;
     private bool _pendingCommitBarrierHeld;
+    private TaskCompletionSource<bool> _schemaStateChanged = CreateSchemaStateChangedSource();
 
     public bool InTransaction => Volatile.Read(ref _inTransactionFlag) != 0;
 
@@ -44,6 +49,34 @@ internal sealed class TransactionCoordinator : IDisposable
     }
 
     public long CreateTransactionId() => Interlocked.Increment(ref _nextTransactionId);
+
+    public void RegisterExplicitTransaction(long transactionId)
+    {
+        if (transactionId == 0)
+            return;
+
+        lock (_stateGate)
+        {
+            _activeExplicitTransactions.Add(transactionId);
+            SignalSchemaStateChanged_NoLock();
+        }
+    }
+
+    public void UnregisterExplicitTransaction(long transactionId)
+    {
+        if (transactionId == 0)
+            return;
+
+        lock (_stateGate)
+        {
+            _activeExplicitTransactions.Remove(transactionId);
+            if (_schemaExclusiveOwnerTransactionId == transactionId)
+                _schemaExclusiveOwnerTransactionId = 0;
+            if (_schemaExclusiveWaiterTransactionId == transactionId)
+                _schemaExclusiveWaiterTransactionId = 0;
+            SignalSchemaStateChanged_NoLock();
+        }
+    }
 
     public uint ReserveNewPageId()
     {
@@ -176,6 +209,94 @@ internal sealed class TransactionCoordinator : IDisposable
         return new SemaphoreReservation(_beginBarrier);
     }
 
+    public async ValueTask WaitForSchemaBeginAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            Task waitTask;
+            lock (_stateGate)
+            {
+                if (_schemaExclusiveOwnerTransactionId == 0 && _schemaExclusiveWaiterTransactionId == 0)
+                    return;
+
+                waitTask = _schemaStateChanged.Task;
+            }
+
+            await waitTask.WaitAsync(ct);
+        }
+    }
+
+    public async ValueTask AcquireSchemaExclusiveAsync(long transactionId, CancellationToken ct = default)
+    {
+        if (transactionId == 0)
+            return;
+
+        Task waitTask;
+        lock (_stateGate)
+        {
+            if (_schemaExclusiveOwnerTransactionId == transactionId)
+                return;
+
+            if (_schemaExclusiveOwnerTransactionId != 0 &&
+                _schemaExclusiveOwnerTransactionId != transactionId)
+            {
+                throw new CSharpDbConflictException(
+                    "A concurrent schema change is already active. The transaction must be retried.");
+            }
+
+            if (_schemaExclusiveWaiterTransactionId != 0 &&
+                _schemaExclusiveWaiterTransactionId != transactionId)
+            {
+                throw new CSharpDbConflictException(
+                    "A concurrent schema change is already waiting for exclusive access. The transaction must be retried.");
+            }
+
+            _schemaExclusiveWaiterTransactionId = transactionId;
+            SignalSchemaStateChanged_NoLock();
+            waitTask = _schemaStateChanged.Task;
+        }
+
+        try
+        {
+            while (true)
+            {
+                lock (_stateGate)
+                {
+                    if (_schemaExclusiveOwnerTransactionId == transactionId)
+                        return;
+
+                    if (_schemaExclusiveOwnerTransactionId == 0 &&
+                        _schemaExclusiveWaiterTransactionId == transactionId &&
+                        _activeExplicitTransactions.Count == 1 &&
+                        _activeExplicitTransactions.Contains(transactionId))
+                    {
+                        _schemaExclusiveOwnerTransactionId = transactionId;
+                        _schemaExclusiveWaiterTransactionId = 0;
+                        SignalSchemaStateChanged_NoLock();
+                        return;
+                    }
+
+                    waitTask = _schemaStateChanged.Task;
+                }
+
+                await waitTask.WaitAsync(ct);
+            }
+        }
+        catch
+        {
+            lock (_stateGate)
+            {
+                if (_schemaExclusiveWaiterTransactionId == transactionId)
+                {
+                    _schemaExclusiveWaiterTransactionId = 0;
+                    SignalSchemaStateChanged_NoLock();
+                }
+            }
+
+            throw;
+        }
+    }
+
     public async ValueTask<IDisposable> AcquireCheckpointBarrierAsync(CancellationToken ct = default)
     {
         await _beginBarrier.WaitAsync(ct);
@@ -253,11 +374,70 @@ internal sealed class TransactionCoordinator : IDisposable
         return false;
     }
 
-    public PendingCommitReservation ReservePendingCommit(IEnumerable<uint> pageIds)
+    public bool HasLogicalConflict(
+        IEnumerable<LogicalConflictKey> logicalReadKeys,
+        long startVersion,
+        out LogicalConflictKey conflictKey)
+    {
+        ArgumentNullException.ThrowIfNull(logicalReadKeys);
+
+        lock (_pageVersionGate)
+        {
+            foreach (LogicalConflictKey logicalReadKey in logicalReadKeys)
+            {
+                if (!_logicalLastWriteVersion.TryGetValue(logicalReadKey, out long lastWriteVersion))
+                    continue;
+
+                if (lastWriteVersion > startVersion)
+                {
+                    conflictKey = logicalReadKey;
+                    return true;
+                }
+            }
+        }
+
+        conflictKey = default;
+        return false;
+    }
+
+    public bool HasLogicalRangeConflict(
+        IEnumerable<LogicalConflictRange> logicalReadRanges,
+        long startVersion,
+        out LogicalConflictKey conflictKey)
+    {
+        ArgumentNullException.ThrowIfNull(logicalReadRanges);
+
+        lock (_pageVersionGate)
+        {
+            foreach (LogicalConflictRange logicalReadRange in logicalReadRanges)
+            {
+                foreach ((LogicalConflictKey writtenKey, long lastWriteVersion) in _logicalLastWriteVersion)
+                {
+                    if (lastWriteVersion <= startVersion)
+                        continue;
+
+                    if (!logicalReadRange.Contains(writtenKey))
+                        continue;
+
+                    conflictKey = writtenKey;
+                    return true;
+                }
+            }
+        }
+
+        conflictKey = default;
+        return false;
+    }
+
+    public PendingCommitReservation ReservePendingCommit(
+        IEnumerable<uint> pageIds,
+        IEnumerable<LogicalConflictKey> logicalWriteKeys)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
+        ArgumentNullException.ThrowIfNull(logicalWriteKeys);
 
         Dictionary<uint, long?> previousVersions = new();
+        Dictionary<LogicalConflictKey, long?> previousLogicalVersions = new();
         long commitVersion;
         lock (_pageVersionGate)
         {
@@ -269,9 +449,18 @@ internal sealed class TransactionCoordinator : IDisposable
                     : null;
                 _pageLastWriteVersion[pageId] = commitVersion;
             }
+
+            foreach (LogicalConflictKey logicalWriteKey in logicalWriteKeys)
+            {
+                previousLogicalVersions[logicalWriteKey] =
+                    _logicalLastWriteVersion.TryGetValue(logicalWriteKey, out long previousVersion)
+                        ? previousVersion
+                        : null;
+                _logicalLastWriteVersion[logicalWriteKey] = commitVersion;
+            }
         }
 
-        return new PendingCommitReservation(commitVersion, previousVersions);
+        return new PendingCommitReservation(commitVersion, previousVersions, previousLogicalVersions);
     }
 
     public void PublishPendingCommit(PendingCommitReservation reservation)
@@ -308,6 +497,20 @@ internal sealed class TransactionCoordinator : IDisposable
                 else
                     _pageLastWriteVersion.Remove(pageId);
             }
+
+            foreach ((LogicalConflictKey logicalWriteKey, long? previousVersion) in reservation.PreviousLogicalVersions)
+            {
+                if (!_logicalLastWriteVersion.TryGetValue(logicalWriteKey, out long currentVersion) ||
+                    currentVersion != reservation.CommitVersion)
+                {
+                    continue;
+                }
+
+                if (previousVersion.HasValue)
+                    _logicalLastWriteVersion[logicalWriteKey] = previousVersion.Value;
+                else
+                    _logicalLastWriteVersion.Remove(logicalWriteKey);
+            }
         }
     }
 
@@ -337,6 +540,16 @@ internal sealed class TransactionCoordinator : IDisposable
         if (releaseBarrier)
             _beginBarrier.Release();
     }
+
+    private void SignalSchemaStateChanged_NoLock()
+    {
+        TaskCompletionSource<bool> completed = _schemaStateChanged;
+        _schemaStateChanged = CreateSchemaStateChangedSource();
+        completed.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> CreateSchemaStateChangedSource()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed class SemaphoreReservation : IDisposable
     {
@@ -399,14 +612,20 @@ internal sealed class TransactionCoordinator : IDisposable
 
     public sealed class PendingCommitReservation
     {
-        internal PendingCommitReservation(long commitVersion, IReadOnlyDictionary<uint, long?> previousPageVersions)
+        internal PendingCommitReservation(
+            long commitVersion,
+            IReadOnlyDictionary<uint, long?> previousPageVersions,
+            IReadOnlyDictionary<LogicalConflictKey, long?> previousLogicalVersions)
         {
             CommitVersion = commitVersion;
             PreviousPageVersions = previousPageVersions;
+            PreviousLogicalVersions = previousLogicalVersions;
         }
 
         public long CommitVersion { get; }
 
         internal IReadOnlyDictionary<uint, long?> PreviousPageVersions { get; }
+
+        internal IReadOnlyDictionary<LogicalConflictKey, long?> PreviousLogicalVersions { get; }
     }
 }
