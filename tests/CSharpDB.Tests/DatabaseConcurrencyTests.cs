@@ -251,6 +251,84 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_FilteredTableScan_AllowsConcurrentInsertOutsidePredicateRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE range_scan_items_ok (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_scan_items_ok VALUES (1, 5)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_scan_items_ok VALUES (2, 15)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT id FROM range_scan_items_ok WHERE value >= 10", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO range_scan_items_ok VALUES (3, 5)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_FullTableScanConflictsWithConcurrentUpdateIntoPredicateRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE range_scan_updates (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_scan_updates VALUES (1, 5)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM range_scan_updates WHERE value >= 10", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("UPDATE range_scan_updates SET value = 20 WHERE id = 1", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_ConjunctiveTableScanConflictsWithConcurrentUpdateIntoMatchingRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE conjunctive_range_items (id INTEGER PRIMARY KEY, score INTEGER, tag TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO conjunctive_range_items VALUES (1, 5, 'hot')", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM conjunctive_range_items WHERE score >= 10 AND tag = 'hot'", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("UPDATE conjunctive_range_items SET score = 20 WHERE id = 1", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_ConjunctiveTableScan_AllowsConcurrentInsertOutsideTrackedRanges()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE conjunctive_range_items_ok (id INTEGER PRIMARY KEY, score INTEGER, tag TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO conjunctive_range_items_ok VALUES (1, 5, 'cold')", ct);
+        await _db.ExecuteAsync("INSERT INTO conjunctive_range_items_ok VALUES (2, 15, 'hot')", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT id FROM conjunctive_range_items_ok WHERE score >= 10 AND tag = 'hot'", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO conjunctive_range_items_ok VALUES (3, 5, 'cold')", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
     public async Task ReadOnlyExplicitWriteTransaction_IndexedRangeScanConflictsWithConcurrentInsertInRange()
     {
         var ct = TestContext.Current.CancellationToken;

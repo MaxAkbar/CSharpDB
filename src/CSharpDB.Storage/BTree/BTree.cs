@@ -623,6 +623,13 @@ public sealed class BTree
     }
 
     /// <summary>
+    /// Create a cursor positioned before the first entry without recording a logical read range.
+    /// Callers are responsible for recording an equivalent or narrower logical read.
+    /// </summary>
+    public BTreeCursor CreateCursorWithoutLogicalRead()
+        => new BTreeCursor(this, _pager);
+
+    /// <summary>
     /// Reclaim all pages owned by this tree back to the pager freelist.
     /// Callers must not use the tree after reclamation.
     /// </summary>

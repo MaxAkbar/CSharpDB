@@ -691,6 +691,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     internal void RecordLogicalTableRowWrite(string tableName, long rowId)
         => RecordLogicalWrite(BuildLogicalTableRowResourceName(tableName), rowId);
 
+    internal void RecordLogicalTableColumnRangeRead(string tableName, string columnName, IndexScanRange range)
+        => RecordLogicalRange(BuildLogicalTableColumnResourceName(tableName, columnName), range);
+
+    internal void RecordLogicalTableColumnWrite(string tableName, string columnName, long key)
+        => RecordLogicalWrite(BuildLogicalTableColumnResourceName(tableName, columnName), key);
+
     internal async ValueTask AcquireSchemaWriteLockAsync(CancellationToken ct = default)
     {
         if (GetCurrentTransaction() is not { } tx || _transactions is null)
@@ -2069,4 +2075,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private static string BuildLogicalTableRowResourceName(string tableName)
         => $"table:{tableName}:rowid";
+
+    private static string BuildLogicalTableColumnResourceName(string tableName, string columnName)
+        => $"table:{tableName}:column:{columnName}";
 }

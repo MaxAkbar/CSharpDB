@@ -459,6 +459,7 @@ public sealed class TableScanOperator : IOperator, IBatchOperator, IRowBufferReu
     private PreDecodeFilterSpec _preDecodeFilter;
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+    private Action? _logicalReadScope;
     private RowBatch _currentBatch;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -556,9 +557,15 @@ public sealed class TableScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _hasPreDecodeFilter = true;
     }
 
+    public void SetLogicalReadScope(Action? logicalReadScope)
+        => _logicalReadScope = logicalReadScope;
+
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
-        _cursor = _tree.CreateCursor();
+        _logicalReadScope?.Invoke();
+        _cursor = _logicalReadScope is null
+            ? _tree.CreateCursor()
+            : _tree.CreateCursorWithoutLogicalRead();
         _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
         _currentBatch = CreateBatch(GetTargetColumnCount());
@@ -1921,6 +1928,7 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperat
     private PreDecodeFilterSpec _preDecodeFilter;
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
+    private Action? _logicalReadScope;
     private RowBatch _currentBatch;
     private RowBatch _decodedSourceBatch = new(0, DefaultBatchSize);
 
@@ -1985,9 +1993,15 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperat
         _hasPreDecodeFilter = true;
     }
 
+    public void SetLogicalReadScope(Action? logicalReadScope)
+        => _logicalReadScope = logicalReadScope;
+
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
-        _cursor = _tree.CreateCursor();
+        _logicalReadScope?.Invoke();
+        _cursor = _logicalReadScope is null
+            ? _tree.CreateCursor()
+            : _tree.CreateCursorWithoutLogicalRead();
         _decodedRowBuffer = null;
         _projectedRowBuffer = null;
         _batchIndex = 0;
@@ -14415,6 +14429,7 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
     private readonly int[] _decodedColumnIndices;
     private readonly IScalarAggregateBatchPlan? _batchPlan;
     private readonly PreDecodeFilterSpec[] _preDecodeFilters;
+    private Action? _logicalReadScope;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -14457,6 +14472,9 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
         _aggregateArgumentEvaluator = aggregateArgumentEvaluator;
     }
 
+    public void SetLogicalReadScope(Action? logicalReadScope)
+        => _logicalReadScope = logicalReadScope;
+
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         _emitted = false;
@@ -14482,7 +14500,10 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
 
     private async ValueTask<DbValue> ExecuteBatchedAsync(CancellationToken ct)
     {
-        var cursor = _tableTree.CreateCursor();
+        _logicalReadScope?.Invoke();
+        var cursor = _logicalReadScope is null
+            ? _tableTree.CreateCursor()
+            : _tableTree.CreateCursorWithoutLogicalRead();
         int columnCount = _decodedColumnIndices.Length;
         var batch = new RowBatch(columnCount, DefaultBatchSize);
 
@@ -14515,7 +14536,10 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
 
     private async ValueTask<DbValue> ExecuteRowByRowAsync(CancellationToken ct)
     {
-        var cursor = _tableTree.CreateCursor();
+        _logicalReadScope?.Invoke();
+        var cursor = _logicalReadScope is null
+            ? _tableTree.CreateCursor()
+            : _tableTree.CreateCursorWithoutLogicalRead();
         int columnCount = _decodedColumnIndices.Length;
         var decodeBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
