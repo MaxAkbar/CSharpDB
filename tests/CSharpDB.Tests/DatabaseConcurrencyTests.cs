@@ -329,6 +329,46 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_DisjunctiveTableScan_ConflictsWithConcurrentInsertInsideTrackedRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE disjunctive_range_items (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items VALUES (1, 5)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items VALUES (2, 20)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM disjunctive_range_items WHERE value = 5 OR value = 20", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items VALUES (3, 20)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_DisjunctiveTableScan_AllowsConcurrentInsertOutsideTrackedRanges()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE disjunctive_range_items_ok (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items_ok VALUES (1, 5)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items_ok VALUES (2, 20)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync("SELECT COUNT(*) FROM disjunctive_range_items_ok WHERE value = 5 OR value = 20", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO disjunctive_range_items_ok VALUES (3, 10)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
     public async Task ReadOnlyExplicitWriteTransaction_IndexedRangeScanConflictsWithConcurrentInsertInRange()
     {
         var ct = TestContext.Current.CancellationToken;

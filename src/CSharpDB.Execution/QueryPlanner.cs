@@ -8234,6 +8234,18 @@ public sealed class QueryPlanner
         output.Add(expression);
     }
 
+    private static void CollectOrDisjuncts(Expression expression, List<Expression> output)
+    {
+        if (expression is BinaryExpression { Op: BinaryOp.Or } orExpr)
+        {
+            CollectOrDisjuncts(orExpr.Left, output);
+            CollectOrDisjuncts(orExpr.Right, output);
+            return;
+        }
+
+        output.Add(expression);
+    }
+
     private static bool TryExtractHashJoinKeyPair(
         Expression expression,
         TableSchema compositeSchema,
@@ -10034,6 +10046,12 @@ public sealed class QueryPlanner
         if (where is null || !_pager.IsExplicitWriteTransactionActive)
             return null;
 
+        return TryCreateDisjunctiveLogicalPredicateReadScope(tableName, where, schema)
+            ?? TryCreateConjunctiveLogicalPredicateReadScope(tableName, where, schema);
+    }
+
+    private Action? TryCreateConjunctiveLogicalPredicateReadScope(string tableName, Expression where, TableSchema schema)
+    {
         Expression? remainingWhere = where;
         List<Action>? logicalReadScopes = null;
 
@@ -10058,6 +10076,106 @@ public sealed class QueryPlanner
             for (int i = 0; i < logicalReadScopes.Count; i++)
                 logicalReadScopes[i]();
         };
+    }
+
+    private Action? TryCreateDisjunctiveLogicalPredicateReadScope(string tableName, Expression where, TableSchema schema)
+    {
+        var disjuncts = new List<Expression>();
+        CollectOrDisjuncts(where, disjuncts);
+        if (disjuncts.Count <= 1)
+            return null;
+
+        Action? selectedScope = null;
+        int selectedScore = 0;
+
+        for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+        {
+            if (!TryCreateDisjunctiveLogicalPredicateReadScopeForColumn(
+                    tableName,
+                    schema,
+                    columnIndex,
+                    disjuncts,
+                    out Action? candidateScope,
+                    out int candidateScore))
+            {
+                continue;
+            }
+
+            if (candidateScore <= selectedScore)
+                continue;
+
+            selectedScope = candidateScope;
+            selectedScore = candidateScore;
+        }
+
+        return selectedScope;
+    }
+
+    private bool TryCreateDisjunctiveLogicalPredicateReadScopeForColumn(
+        string tableName,
+        TableSchema schema,
+        int columnIndex,
+        List<Expression> disjuncts,
+        out Action? logicalReadScope,
+        out int logicalReadScore)
+    {
+        logicalReadScope = null;
+        logicalReadScore = 0;
+
+        ColumnDefinition column = schema.Columns[columnIndex];
+        if (column.Type is not (DbType.Integer or DbType.Text))
+            return false;
+
+        var ranges = new List<IndexScanRange>(disjuncts.Count);
+        string? expectedCollation = column.Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(column.Collation)
+            : null;
+
+        for (int i = 0; i < disjuncts.Count; i++)
+        {
+            IndexScanRange range;
+            Expression? remainingWhere;
+            int consumedTermCount;
+
+            if (column.Type == DbType.Integer)
+            {
+                ExtractOrderedIndexRange(
+                    disjuncts[i],
+                    schema,
+                    columnIndex,
+                    out range,
+                    out remainingWhere,
+                    out consumedTermCount);
+            }
+            else
+            {
+                ExtractOrderedTextIndexRange(
+                    disjuncts[i],
+                    schema,
+                    columnIndex,
+                    expectedCollation,
+                    out range,
+                    out _,
+                    out _,
+                    out remainingWhere,
+                    out consumedTermCount);
+            }
+
+            if (consumedTermCount <= 0 || remainingWhere is not null)
+                return false;
+
+            logicalReadScore += ComputePredicateLogicalReadScore(range, consumedTermCount);
+            ranges.Add(range);
+        }
+
+        string columnName = column.Name;
+        logicalReadScope = () =>
+        {
+            for (int i = 0; i < ranges.Count; i++)
+                _pager.RecordLogicalTableColumnRangeRead(tableName, columnName, ranges[i]);
+        };
+
+        return true;
     }
 
     private (Action Scope, Expression? RemainingWhere)? TrySelectLogicalPredicateReadScope(
