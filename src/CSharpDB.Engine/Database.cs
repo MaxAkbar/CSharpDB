@@ -91,7 +91,12 @@ public sealed class Database : IAsyncDisposable
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
 
-            return new WriteTransaction(this, storageTransaction, transactionCatalog, transactionPlanner);
+            return new WriteTransaction(
+                this,
+                storageTransaction,
+                transactionCatalog,
+                transactionPlanner,
+                transactionCatalog.SchemaVersion);
         }
         catch
         {
@@ -154,22 +159,127 @@ public sealed class Database : IAsyncDisposable
         }
     }
 
-    internal async ValueTask OnExternalWriteTransactionCommittedAsync(CancellationToken ct)
+    internal async ValueTask OnExternalWriteTransactionCommittedAsync(
+        bool reloadSharedCatalog,
+        bool schemaChanged,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedTableRowCountDeltas,
+        IReadOnlyCollection<TableStatistics> committedTableStatistics,
+        IReadOnlyCollection<ColumnStatistics> committedColumnStatistics,
+        CancellationToken ct)
     {
-        await _sharedStateGate.WaitAsync(ct);
-        try
+        bool applyAdvisoryStats = committedTableStatistics.Count > 0 || committedColumnStatistics.Count > 0;
+        bool applyTableMetadata = committedNextRowIds.Count > 0;
+        bool applyTableRowCountDeltas = committedTableRowCountDeltas.Count > 0;
+
+        if (reloadSharedCatalog || applyTableMetadata || applyAdvisoryStats || applyTableRowCountDeltas)
         {
-            await _catalog.ReloadAsync(ct);
-            _collectionCache.Clear();
-            _statementCache.Clear();
-            _observedSchemaVersion = _catalog.SchemaVersion;
-        }
-        finally
-        {
-            _sharedStateGate.Release();
+            await _sharedStateGate.WaitAsync(ct);
+            try
+            {
+                TableStatistics[] preservedDirtyTableStatistics = [];
+                ColumnStatistics[] preservedDirtyColumnStatistics = [];
+                KeyValuePair<string, long>[] preservedTableRowCountDeltas = [];
+
+                if (reloadSharedCatalog)
+                {
+                    preservedDirtyTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
+                    preservedDirtyColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();
+                    preservedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
+
+                    await _catalog.ReloadAsync(ct);
+                    _collectionCache.Clear();
+                    if (schemaChanged)
+                        _statementCache.Clear();
+
+                    _observedSchemaVersion = _catalog.SchemaVersion;
+
+                    if (preservedDirtyTableStatistics.Length > 0 || preservedDirtyColumnStatistics.Length > 0)
+                    {
+                        _catalog.ApplyCommittedAdvisoryStatisticsSnapshot(
+                            preservedDirtyTableStatistics,
+                            preservedDirtyColumnStatistics,
+                            markDirty: true);
+                    }
+
+                    if (preservedTableRowCountDeltas.Length > 0)
+                        _catalog.ApplyCommittedTableRowCountDeltas(preservedTableRowCountDeltas);
+                }
+
+                if (applyTableMetadata)
+                    _catalog.ApplyCommittedTableMetadataSnapshot(committedNextRowIds);
+
+                if (applyAdvisoryStats)
+                {
+                    IReadOnlyCollection<TableStatistics> mergedTableStatistics =
+                        MergeCommittedTableStatistics(committedTableStatistics, committedTableRowCountDeltas);
+                    _catalog.ApplyCommittedAdvisoryStatisticsSnapshot(
+                        mergedTableStatistics,
+                        committedColumnStatistics,
+                        markDirty: true);
+                }
+
+                if (applyTableRowCountDeltas)
+                    _catalog.ApplyCommittedTableRowCountDeltas(committedTableRowCountDeltas);
+            }
+            finally
+            {
+                _sharedStateGate.Release();
+            }
         }
 
         await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+    }
+
+    private IReadOnlyCollection<TableStatistics> MergeCommittedTableStatistics(
+        IReadOnlyCollection<TableStatistics> committedTableStatistics,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedTableRowCountDeltas)
+    {
+        if (committedTableStatistics.Count == 0 || committedTableRowCountDeltas.Count == 0)
+            return committedTableStatistics;
+
+        var deltasByTable = committedTableRowCountDeltas.ToDictionary(
+            static entry => entry.Key,
+            static entry => entry.Value,
+            StringComparer.OrdinalIgnoreCase);
+        var merged = new List<TableStatistics>(committedTableStatistics.Count);
+
+        foreach (TableStatistics stats in committedTableStatistics)
+        {
+            if (!deltasByTable.TryGetValue(stats.TableName, out long rowCountDelta))
+            {
+                merged.Add(stats);
+                continue;
+            }
+
+            TableStatistics? existing = _catalog.GetTableStatistics(stats.TableName);
+            if (existing is null || !existing.RowCountIsExact)
+            {
+                merged.Add(
+                    new TableStatistics
+                    {
+                        TableName = stats.TableName,
+                        RowCount = stats.RowCount,
+                        RowCountIsExact = stats.RowCountIsExact,
+                        HasStaleColumns = stats.HasStaleColumns || (existing?.HasStaleColumns ?? false),
+                        LastPersistedChangeCounter = existing?.LastPersistedChangeCounter ?? stats.LastPersistedChangeCounter,
+                    });
+                continue;
+            }
+
+            long baseRowCount = existing?.RowCount ?? 0;
+            merged.Add(
+                new TableStatistics
+                {
+                    TableName = stats.TableName,
+                    RowCount = checked(baseRowCount + rowCountDelta),
+                    RowCountIsExact = stats.RowCountIsExact && (existing?.RowCountIsExact ?? true),
+                    HasStaleColumns = stats.HasStaleColumns || (existing?.HasStaleColumns ?? false),
+                    LastPersistedChangeCounter = existing?.LastPersistedChangeCounter ?? stats.LastPersistedChangeCounter,
+                });
+        }
+
+        return merged;
     }
 
     /// <summary>
@@ -722,6 +832,8 @@ public sealed class Database : IAsyncDisposable
     /// Returns the names of all tables in the database.
     /// </summary>
     public IReadOnlyCollection<string> GetTableNames() => _catalog.GetTableNames();
+
+    internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
     /// <summary>
     /// Returns the schema for a table, or null if not found.

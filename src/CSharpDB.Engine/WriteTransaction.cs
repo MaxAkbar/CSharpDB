@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Execution;
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Transactions;
 
@@ -14,18 +15,21 @@ public sealed class WriteTransaction : IAsyncDisposable
     private readonly PagerWriteTransaction _storageTransaction;
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
+    private readonly long _initialSchemaVersion;
     private bool _completed;
 
     internal WriteTransaction(
         Database database,
         PagerWriteTransaction storageTransaction,
         SchemaCatalog catalog,
-        QueryPlanner planner)
+        QueryPlanner planner,
+        long initialSchemaVersion)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _storageTransaction = storageTransaction ?? throw new ArgumentNullException(nameof(storageTransaction));
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
+        _initialSchemaVersion = initialSchemaVersion;
     }
 
     /// <summary>
@@ -69,11 +73,25 @@ public sealed class WriteTransaction : IAsyncDisposable
         EnsureActive();
 
         PagerCommitResult commit;
+        KeyValuePair<string, long>[] committedNextRowIds;
+        KeyValuePair<string, long>[] committedTableRowCountDeltas;
+        TableStatistics[] committedTableStatistics;
+        ColumnStatistics[] committedColumnStatistics;
+        bool schemaChanged;
+        bool rootPagesChanged;
         try
         {
             using var binding = _storageTransaction.Bind();
-            await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
-            await _catalog.PersistAllRootPageChangesAsync(ct);
+            rootPagesChanged = await _catalog.PersistAllRootPageChangesAndDetectChangesAsync(ct);
+            committedNextRowIds = _catalog.GetTableNames()
+                .Select(tableName => new KeyValuePair<string, long>(
+                    tableName,
+                    _catalog.GetTable(tableName)?.NextRowId ?? 0))
+                .ToArray();
+            committedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
+            committedTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
+            committedColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();
+            schemaChanged = _catalog.SchemaVersion != _initialSchemaVersion;
             commit = await _storageTransaction.BeginCommitAsync(ct);
         }
         catch
@@ -93,7 +111,14 @@ public sealed class WriteTransaction : IAsyncDisposable
             throw;
         }
 
-        await _database.OnExternalWriteTransactionCommittedAsync(ct);
+        await _database.OnExternalWriteTransactionCommittedAsync(
+            reloadSharedCatalog: rootPagesChanged || schemaChanged,
+            schemaChanged,
+            committedNextRowIds,
+            committedTableRowCountDeltas,
+            committedTableStatistics,
+            committedColumnStatistics,
+            ct);
     }
 
     /// <summary>

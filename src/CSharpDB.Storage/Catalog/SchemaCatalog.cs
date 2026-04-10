@@ -73,6 +73,11 @@ public sealed class SchemaCatalog
 
     public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
 
+    public IReadOnlyCollection<TableStatistics> GetDirtyTableStatistics() => _service.GetDirtyTableStatistics();
+
+    public IReadOnlyCollection<KeyValuePair<string, long>> GetPendingTableRowCountDeltas() =>
+        _service.GetPendingTableRowCountDeltas();
+
     public ColumnStatistics? GetColumnStatistics(string tableName, string columnName) =>
         _service.GetColumnStatistics(tableName, columnName);
 
@@ -81,6 +86,21 @@ public sealed class SchemaCatalog
 
     public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics() =>
         _service.GetColumnStatistics();
+
+    public IReadOnlyCollection<ColumnStatistics> GetDirtyColumnStatistics() =>
+        _service.GetDirtyColumnStatistics();
+
+    public void ApplyCommittedAdvisoryStatisticsSnapshot(
+        IReadOnlyCollection<TableStatistics> tableStatistics,
+        IReadOnlyCollection<ColumnStatistics> columnStatistics,
+        bool markDirty = false) =>
+        _service.ApplyCommittedAdvisoryStatisticsSnapshot(tableStatistics, columnStatistics, markDirty);
+
+    public void ApplyCommittedTableRowCountDeltas(IReadOnlyCollection<KeyValuePair<string, long>> rowCountDeltas) =>
+        _service.ApplyCommittedTableRowCountDeltas(rowCountDeltas);
+
+    public void ApplyCommittedTableMetadataSnapshot(IReadOnlyCollection<KeyValuePair<string, long>> nextRowIds) =>
+        _service.ApplyCommittedTableMetadataSnapshot(nextRowIds);
 
     public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats) =>
         _service.TryGetFreshColumnStatistics(tableName, columnName, out stats);
@@ -114,6 +134,9 @@ public sealed class SchemaCatalog
 
     public ValueTask PersistAllRootPageChangesAsync(CancellationToken ct = default) =>
         _service.PersistAllRootPageChangesAsync(ct);
+
+    public ValueTask<bool> PersistAllRootPageChangesAndDetectChangesAsync(CancellationToken ct = default) =>
+        _service.PersistAllRootPageChangesAndDetectChangesAsync(ct);
 
     public ValueTask ReloadAsync(CancellationToken ct = default) =>
         _service.ReloadAsync(ct);

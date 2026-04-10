@@ -110,6 +110,25 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExplicitWriteTransaction_IdentityMetadataRefreshesSharedCatalogState()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE split_bench (id INTEGER PRIMARY KEY IDENTITY, payload TEXT)", ct);
+
+        await using (var tx = await _db.BeginWriteTransactionAsync(ct))
+        {
+            await tx.ExecuteAsync("INSERT INTO split_bench (payload) VALUES ('first')", ct);
+            await tx.ExecuteAsync("INSERT INTO split_bench (payload) VALUES ('second')", ct);
+
+            await tx.CommitAsync(ct);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO split_bench (payload) VALUES ('third')", ct);
+        Assert.Equal(3L, await ScalarIntAsync("SELECT MAX(id) FROM split_bench", ct));
+        Assert.Equal(3L, await ScalarIntAsync("SELECT COUNT(*) FROM split_bench", ct));
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_WithoutRetry_SurfaceConflict()
     {
         var ct = TestContext.Current.CancellationToken;
