@@ -1021,12 +1021,17 @@ public sealed class BTree
             var newSp = new SlottedPage(newPage, newPageId);
             newSp.Initialize(PageConstants.PageTypeLeaf);
 
+            bool preferSparseRightPage = _pager.IsExplicitWriteTransactionActive &&
+                sp.RightChildOrNextLeaf == PageConstants.NullPageId &&
+                insertIdx == existingCellCount;
+
             int mid = SelectLeafSplitIndex(
                 cellOffsets,
                 totalCellCount,
                 totalCellBytes,
                 pageId,
-                newPageId);
+                newPageId,
+                preferSparseRightPage);
 
             // Link leaves
             newSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
@@ -1080,7 +1085,8 @@ public sealed class BTree
         int totalCellCount,
         int totalCellBytes,
         uint leftPageId,
-        uint rightPageId)
+        uint rightPageId,
+        bool preferSparseRightPage = false)
     {
         int leftCapacity = PageConstants.UsableSpace(leftPageId) - PageConstants.SlottedPageHeaderSize;
         int rightCapacity = PageConstants.UsableSpace(rightPageId) - PageConstants.SlottedPageHeaderSize;
@@ -1098,6 +1104,9 @@ public sealed class BTree
             if (leftUsedBytes > leftCapacity || rightUsedBytes > rightCapacity)
                 continue;
 
+            if (preferSparseRightPage)
+                bestIndex = splitIndex;
+
             long occupancySkew = Math.Abs((long)leftUsedBytes * rightCapacity - (long)rightUsedBytes * leftCapacity);
             if (occupancySkew < bestOccupancySkew)
             {
@@ -1105,6 +1114,9 @@ public sealed class BTree
                 bestIndex = splitIndex;
             }
         }
+
+        if (preferSparseRightPage && bestIndex > 0)
+            return bestIndex;
 
         if (bestIndex > 0)
             return bestIndex;
@@ -1179,12 +1191,15 @@ public sealed class BTree
                 writeOffset += interiorCellSize;
             }
 
-            int mid = totalCellCount / 2;
+            uint newPageId = await _pager.AllocatePageAsync(ct);
+            int mid = SelectInteriorSplitIndex(
+                totalCellCount,
+                pageId,
+                newPageId,
+                preferSparseRightPage: _pager.IsExplicitWriteTransactionActive && insertIdx == existingCellCount);
             ReadOnlySpan<byte> promotedCell = splitCellBuffer.AsSpan(mid * interiorCellSize, interiorCellSize);
             long promotedKey = ReadInteriorCellKey(promotedCell);
             uint rightChildOfLeft = ReadInteriorCellLeftChild(promotedCell);
-
-            uint newPageId = await _pager.AllocatePageAsync(ct);
             var newPage = await _pager.GetPageAsync(newPageId, ct);
             var newSp = new SlottedPage(newPage, newPageId);
             newSp.Initialize(PageConstants.PageTypeInterior);
@@ -1209,6 +1224,50 @@ public sealed class BTree
             if (splitCellBuffer != null)
                 ArrayPool<byte>.Shared.Return(splitCellBuffer, clearArray: false);
         }
+    }
+
+    private static int SelectInteriorSplitIndex(
+        int totalCellCount,
+        uint leftPageId,
+        uint rightPageId,
+        bool preferSparseRightPage)
+    {
+        const int interiorCellSize = 13;
+        int leftCapacity = PageConstants.UsableSpace(leftPageId) - PageConstants.SlottedPageHeaderSize;
+        int rightCapacity = PageConstants.UsableSpace(rightPageId) - PageConstants.SlottedPageHeaderSize;
+        int bestIndex = -1;
+        long bestOccupancySkew = long.MaxValue;
+
+        for (int splitIndex = 1; splitIndex < totalCellCount - 1; splitIndex++)
+        {
+            int leftCellCount = splitIndex;
+            int rightCellCount = totalCellCount - splitIndex - 1;
+            int leftUsedBytes = leftCellCount * (interiorCellSize + PageConstants.CellPointerSize);
+            int rightUsedBytes = rightCellCount * (interiorCellSize + PageConstants.CellPointerSize);
+
+            if (leftUsedBytes > leftCapacity || rightUsedBytes > rightCapacity)
+                continue;
+
+            if (preferSparseRightPage)
+                bestIndex = splitIndex;
+
+            long occupancySkew = Math.Abs((long)leftUsedBytes * rightCapacity - (long)rightUsedBytes * leftCapacity);
+            if (occupancySkew < bestOccupancySkew)
+            {
+                bestOccupancySkew = occupancySkew;
+                bestIndex = splitIndex;
+            }
+        }
+
+        if (preferSparseRightPage && bestIndex > 0)
+            return bestIndex;
+
+        if (bestIndex > 0)
+            return bestIndex;
+
+        throw new CSharpDbException(
+            ErrorCode.CorruptDatabase,
+            $"Unable to split interior page {leftPageId}: no redistribution fits within page capacity.");
     }
 
     #endregion
