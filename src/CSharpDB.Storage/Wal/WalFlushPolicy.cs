@@ -1,12 +1,13 @@
 using CSharpDB.Storage.StorageEngine;
+using Microsoft.Win32.SafeHandles;
 
 namespace CSharpDB.Storage.Wal;
 
 internal interface IWalFlushPolicy
 {
     bool AllowsWriteConcurrencyDuringCommitFlush { get; }
-    ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken);
-    ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken);
+    ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken);
+    ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken);
 }
 
 internal static class WalFlushPolicy
@@ -31,11 +32,14 @@ internal sealed class BufferedWalFlushPolicy : IWalFlushPolicy
     {
     }
 
-    public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+    public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         => ValueTask.CompletedTask;
 
-    public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
-        => new(stream.FlushAsync(cancellationToken));
+    public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.CompletedTask;
+    }
 }
 
 internal sealed class DurableWalFlushPolicy : IWalFlushPolicy
@@ -47,13 +51,13 @@ internal sealed class DurableWalFlushPolicy : IWalFlushPolicy
     {
     }
 
-    public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
-        => new(stream.FlushAsync(cancellationToken));
+    public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
 
-    public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
+    public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        RandomAccess.FlushToDisk(stream.SafeFileHandle);
+        RandomAccess.FlushToDisk(handle);
         return ValueTask.CompletedTask;
     }
 }

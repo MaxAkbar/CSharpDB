@@ -6,6 +6,7 @@ using CSharpDB.Storage.Device;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Wal;
+using Microsoft.Win32.SafeHandles;
 
 namespace CSharpDB.Tests;
 
@@ -951,16 +952,16 @@ public sealed class SystemCatalogTests : IAsyncLifetime
 
         public bool AllowsWriteConcurrencyDuringCommitFlush => true;
 
-        public ValueTask FlushBufferedWritesAsync(FileStream stream, CancellationToken cancellationToken)
+        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask FlushCommitAsync(FileStream stream, CancellationToken cancellationToken)
+        public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (stream.Position <= PageConstants.WalHeaderSize)
+            if (RandomAccess.GetLength(handle) <= PageConstants.WalHeaderSize)
                 return ValueTask.CompletedTask;
 
             if (Interlocked.Increment(ref _flushCount) == 1)
