@@ -815,6 +815,73 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IncrementalCheckpoint_WithPreallocatedTail_FinalizesUsingLogicalWalLength()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_incremental_prealloc_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        const long preallocationChunkBytes = 64 * 1024;
+        await using var device = new MemoryStorageDevice();
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            var walIndex = new WalIndex();
+            wal = new WriteAheadLog(
+                dbPath,
+                walIndex,
+                durableCommitBatchWindow: TimeSpan.Zero,
+                walPreallocationChunkBytes: preallocationChunkBytes);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFramesAsync(
+                new[]
+                {
+                    new WalFrameWrite(0, CreateFilledPage(0x21)),
+                    new WalFrameWrite(1, CreateFilledPage(0x22)),
+                },
+                ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
+
+            bool completed = await wal.CheckpointStepAsync(device, pageCount: 2, maxPages: 1, ct);
+            Assert.False(completed);
+            Assert.True(wal.HasPendingCheckpoint);
+
+            for (int i = 0; i < 14; i++)
+            {
+                wal.BeginTransaction();
+                await wal.AppendFrameAsync(1, CreateFilledPage((byte)(0x30 + i)), ct);
+                await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
+            }
+
+            completed = await wal.CheckpointStepAsync(device, pageCount: 2, maxPages: 8, ct);
+            Assert.True(completed);
+            Assert.False(wal.HasPendingCheckpoint);
+            Assert.Equal(PageConstants.WalHeaderSize + (14L * PageConstants.WalFrameSize), new FileInfo(walPath).Length);
+
+            await wal.DisposeAsync();
+            wal = null;
+
+            var reopenedIndex = new WalIndex();
+            wal = new WriteAheadLog(dbPath, reopenedIndex);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            Assert.Equal(14, reopenedIndex.FrameCount);
+            Assert.True(reopenedIndex.TryGetLatest(1, out long retainedWalOffset));
+            byte[] retainedPage = await wal.ReadPageAsync(retainedWalOffset, ct);
+            Assert.All(retainedPage, static b => Assert.Equal((byte)0x3D, b));
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
     public async Task MemoryWal_CheckpointAsync_CompletesPendingIncrementalCheckpoint()
     {
         var ct = TestContext.Current.CancellationToken;

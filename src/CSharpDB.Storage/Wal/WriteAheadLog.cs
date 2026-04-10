@@ -1679,7 +1679,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             if (_stream is null)
                 return null;
 
-            streamLength = _stream.Length;
+            streamLength = _writePosition;
             if (streamLength <= PageConstants.WalHeaderSize)
                 return null;
 
@@ -1931,7 +1931,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         if (checkpoint is null)
             return;
 
-        long retainedByteCount = _stream.Length - checkpoint.RetainedWalStartOffset;
+        long retainedByteCount = _writePosition - checkpoint.RetainedWalStartOffset;
         if (retainedByteCount <= 0)
         {
             await ResetWalAsync(pageCount, generateNewSalts: true, cancellationToken);
