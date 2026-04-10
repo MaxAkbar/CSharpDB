@@ -3050,6 +3050,15 @@ public sealed class QueryPlanner
         if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
             return null;
 
+        if (!sourceSchema.Columns[projectedColumnIndex].Nullable)
+        {
+            // When the projected subquery column cannot contain NULLs, NOT IN reduces to
+            // an equality anti-semi probe and we can avoid scanning the full inner source.
+            QueryStatement probeQuery = CreateSimpleInProbeQuery(select, projectedColumn, operandValue);
+            bool? exists = await TryExecuteSimpleExistsProbeAsync(probeQuery, ct);
+            return exists.HasValue ? !exists.Value : null;
+        }
+
         bool sawNullCandidate = false;
 
         await using (source)
