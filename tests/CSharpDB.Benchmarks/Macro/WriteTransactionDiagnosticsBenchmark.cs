@@ -14,6 +14,7 @@ namespace CSharpDB.Benchmarks.Macro;
 /// </summary>
 public static class WriteTransactionDiagnosticsBenchmark
 {
+    private const int SteadyStateHotInsertSeedRowCount = 16_384;
     private static int _nextId;
 
     private static readonly WriteTransactionScenario[] s_scenarios =
@@ -25,6 +26,8 @@ public static class WriteTransactionDiagnosticsBenchmark
         new("W4_Rows10_Batch0", 4, 10, TimeSpan.Zero),
         new("W8_Rows1_Batch0", 8, 1, TimeSpan.Zero),
         new("W8_Rows10_Batch0", 8, 10, TimeSpan.Zero),
+        new("W8_Rows1_Batch0_Seed16K", 8, 1, TimeSpan.Zero, SeedRowCount: SteadyStateHotInsertSeedRowCount),
+        new("W8_Rows10_Batch0_Seed16K", 8, 10, TimeSpan.Zero, SeedRowCount: SteadyStateHotInsertSeedRowCount),
         new("W8_Rows10_Batch250us_Prealloc1MiB", 8, 10, TimeSpan.FromMilliseconds(0.25), 1L * 1024 * 1024),
         new("UpdateDisjoint_W4_Rows1_Batch250us", 4, 1, TimeSpan.FromMilliseconds(0.25), Workload: WriteTransactionWorkload.DisjointUpdate, SeedRowCount: 4096),
         new("UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB", 8, 1, TimeSpan.FromMilliseconds(0.25), 1L * 1024 * 1024, Workload: WriteTransactionWorkload.DisjointUpdate, SeedRowCount: 4096),
@@ -48,7 +51,9 @@ public static class WriteTransactionDiagnosticsBenchmark
 
     private static async Task<BenchmarkResult> RunScenarioAsync(WriteTransactionScenario scenario)
     {
-        _nextId = 0;
+        _nextId = scenario.Workload == WriteTransactionWorkload.HotInsert && scenario.SeedRowCount > 0
+            ? scenario.SeedRowCount - 1
+            : 0;
         var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
         {
             builder.UsePagerOptions(new PagerOptions
