@@ -1941,12 +1941,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         PageReadBuffer basePage = await _buffers.GetSnapshotPageReadAsync(conflictPageId, tx.Snapshot, ct);
         PageReadBuffer committedPage = await _buffers.GetPageReadAsync(conflictPageId, ct);
+        if (transactionPage.AsSpan().SequenceEqual(committedPage.Memory.Span))
+        {
+            tx.ResolvedWriteConflictVersions[conflictPageId] = conflictVersion;
+            return true;
+        }
+
         if (!LeafInsertRebaseHelper.TryRebaseInsertOnlyLeafPage(
                 conflictPageId,
                 basePage.Memory,
                 committedPage.Memory,
                 transactionPage,
-                out byte[]? rebasedPage))
+                out byte[]? rebasedPage) &&
+            !InteriorInsertRebaseHelper.TryRebaseInsertOnlyInteriorPage(
+                conflictPageId,
+                basePage.Memory,
+                committedPage.Memory,
+                transactionPage,
+                out rebasedPage))
         {
             return false;
         }

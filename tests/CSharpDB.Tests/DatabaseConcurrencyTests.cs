@@ -155,6 +155,30 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_DisjointInsertOnlyLeafWritesCanCommitWithoutRetryOnFreshTable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE fresh_conflict_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO fresh_conflict_bench VALUES (1, 1)", ct);
+        await tx2.ExecuteAsync("INSERT INTO fresh_conflict_bench VALUES (2, 2)", ct);
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        await using var result = await _db.ExecuteAsync("SELECT id, writer FROM fresh_conflict_bench ORDER BY id, writer", ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(1L, rows[0][1].AsInteger);
+        Assert.Equal(2L, rows[1][0].AsInteger);
+        Assert.Equal(2L, rows[1][1].AsInteger);
+    }
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_NonMergeableSameLeafUpdatesStillConflictWithoutRetry()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -135,6 +135,69 @@ public sealed class BTreeCursorTests
             Assert.NotNull(await committedTree.FindAsync(key, ct));
     }
 
+    [Fact]
+    public async Task ConcurrentExplicitTransactions_IndependentLeafSplitsCanRebaseSharedRootPage()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint initialRootPageId = await BTree.CreateNewAsync(pager, ct);
+        var seedTree = new BTree(pager, initialRootPageId);
+        int seededCount = await SeedTreeUntilRootHasAtLeastInteriorCellsAsync(seedTree, pager, minimumRootCells: 2, ct);
+        uint rootPageId = seedTree.RootPageId;
+        await pager.CommitAsync(ct);
+
+        Assert.Equal(PageConstants.PageTypeInterior, await GetPageTypeAsync(pager, rootPageId, ct));
+        ushort baselineRootCellCount = await GetRootCellCountAsync(pager, rootPageId, ct);
+        Assert.True(baselineRootCellCount >= 2);
+
+        await using var tx1 = await pager.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await pager.BeginWriteTransactionAsync(ct);
+
+        List<long> leftInsertedKeys;
+        using (tx1.Bind())
+        {
+            leftInsertedKeys = await ForceLeafSplitThatUpdatesRootAsync(
+                pager,
+                rootPageId,
+                baselineRootCellCount,
+                startKey: -1,
+                step: -1,
+                payloadSize: 768,
+                ct);
+        }
+
+        List<long> rightInsertedKeys;
+        using (tx2.Bind())
+        {
+            rightInsertedKeys = await ForceLeafSplitThatUpdatesRootAsync(
+                pager,
+                rootPageId,
+                baselineRootCellCount,
+                startKey: 1_000_000,
+                step: 1,
+                payloadSize: 768,
+                ct);
+        }
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        var committedTree = new BTree(pager, rootPageId);
+        Assert.Equal((ushort)(baselineRootCellCount + 2), await GetRootCellCountAsync(pager, rootPageId, ct));
+        Assert.Equal(seededCount + leftInsertedKeys.Count + rightInsertedKeys.Count, await committedTree.CountEntriesAsync(ct));
+
+        foreach (long key in leftInsertedKeys)
+            Assert.NotNull(await committedTree.FindAsync(key, ct));
+
+        foreach (long key in rightInsertedKeys)
+            Assert.NotNull(await committedTree.FindAsync(key, ct));
+    }
+
     private static async ValueTask<Pager> CreatePagerAsync(CancellationToken ct)
     {
         var device = new MemoryStorageDevice();
@@ -150,5 +213,73 @@ public sealed class BTreeCursorTests
                 MaxCachedPages = 32,
             },
             ct);
+    }
+
+    private static async ValueTask<int> SeedTreeUntilRootHasAtLeastInteriorCellsAsync(
+        BTree tree,
+        Pager pager,
+        ushort minimumRootCells,
+        CancellationToken ct)
+    {
+        byte[] payload = new byte[256];
+        for (int key = 1; key <= 2048; key++)
+        {
+            payload[0] = (byte)key;
+            await tree.InsertAsync(key, payload, ct);
+
+            if (await GetPageTypeAsync(pager, tree.RootPageId, ct) == PageConstants.PageTypeInterior &&
+                await GetRootCellCountAsync(pager, tree.RootPageId, ct) >= minimumRootCells)
+            {
+                return key;
+            }
+        }
+
+        Assert.Fail("Failed to seed a tree with an interior root and multiple leaf children.");
+        return 0;
+    }
+
+    private static async ValueTask<List<long>> ForceLeafSplitThatUpdatesRootAsync(
+        Pager pager,
+        uint rootPageId,
+        ushort baselineRootCellCount,
+        long startKey,
+        long step,
+        int payloadSize,
+        CancellationToken ct)
+    {
+        var tree = new BTree(pager, rootPageId);
+        byte[] payload = new byte[payloadSize];
+        var insertedKeys = new List<long>();
+        long key = startKey;
+
+        for (int attempt = 0; attempt < 64; attempt++)
+        {
+            payload[0] = (byte)(attempt + 1);
+            await tree.InsertAsync(key, payload, ct);
+            insertedKeys.Add(key);
+
+            Assert.Equal(rootPageId, tree.RootPageId);
+            if (await GetRootCellCountAsync(pager, rootPageId, ct) == baselineRootCellCount + 1)
+                return insertedKeys;
+
+            key += step;
+        }
+
+        Assert.Fail("Failed to force a leaf split that propagated a separator into the shared root page.");
+        return insertedKeys;
+    }
+
+    private static async ValueTask<byte> GetPageTypeAsync(Pager pager, uint pageId, CancellationToken ct)
+    {
+        var page = await pager.GetPageAsync(pageId, ct);
+        var sp = new SlottedPage(page, pageId);
+        return sp.PageType;
+    }
+
+    private static async ValueTask<ushort> GetRootCellCountAsync(Pager pager, uint rootPageId, CancellationToken ct)
+    {
+        var page = await pager.GetPageAsync(rootPageId, ct);
+        var sp = new SlottedPage(page, rootPageId);
+        return sp.CellCount;
     }
 }
