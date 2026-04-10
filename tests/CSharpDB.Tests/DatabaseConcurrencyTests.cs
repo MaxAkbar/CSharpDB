@@ -129,10 +129,16 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ConcurrentExplicitWriteTransactions_WithoutRetry_SurfaceConflict()
+    public async Task ConcurrentExplicitWriteTransactions_DisjointInsertOnlyLeafWritesCanCommitWithoutRetry()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE conflict_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+        await using (var warmupTx = await _db.BeginWriteTransactionAsync(ct))
+        {
+            await warmupTx.ExecuteAsync("INSERT INTO conflict_bench VALUES (100, 0)", ct);
+            await warmupTx.CommitAsync(ct);
+        }
 
         await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
         await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
@@ -141,11 +147,32 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         await tx2.ExecuteAsync("INSERT INTO conflict_bench VALUES (2, 2)", ct);
 
         await tx1.CommitAsync(ct);
-        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx2.CommitAsync(ct).AsTask());
+        await tx2.CommitAsync(ct);
 
         await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM conflict_bench", ct);
         var rows = await result.ToListAsync(ct);
-        Assert.Equal(1, rows[0][0].AsInteger);
+        Assert.Equal(3, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_NonMergeableSameLeafUpdatesStillConflictWithoutRetry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE update_conflict_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO update_conflict_bench VALUES (1, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO update_conflict_bench VALUES (2, 20)", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("UPDATE update_conflict_bench SET writer = 11 WHERE id = 1", ct);
+        await tx2.ExecuteAsync("UPDATE update_conflict_bench SET writer = 22 WHERE id = 2", ct);
+
+        await tx1.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx2.CommitAsync(ct).AsTask());
+
+        Assert.Equal(11L, await ScalarIntAsync("SELECT writer FROM update_conflict_bench WHERE id = 1", ct));
+        Assert.Equal(20L, await ScalarIntAsync("SELECT writer FROM update_conflict_bench WHERE id = 2", ct));
     }
 
     [Fact]

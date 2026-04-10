@@ -83,11 +83,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         {
             using var binding = _storageTransaction.Bind();
             rootPagesChanged = await _catalog.PersistAllRootPageChangesAndDetectChangesAsync(ct);
-            committedNextRowIds = _catalog.GetTableNames()
-                .Select(tableName => new KeyValuePair<string, long>(
-                    tableName,
-                    _catalog.GetTable(tableName)?.NextRowId ?? 0))
-                .ToArray();
+            committedNextRowIds = _planner.GetCommittedNextRowIdHints().ToArray();
             committedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
             committedTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
             committedColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();

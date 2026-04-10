@@ -29,7 +29,8 @@ internal sealed class TransactionCoordinator : IDisposable
     private bool _writerLockReleased;
     private int _pendingCommitWindowCount;
     private bool _pendingCommitBarrierHeld;
-    private TaskCompletionSource<bool> _schemaStateChanged = CreateSchemaStateChangedSource();
+    private TaskCompletionSource<bool> _schemaStateChanged = CreateStateChangedSource();
+    private TaskCompletionSource<bool> _commitStateChanged = CreateStateChangedSource();
 
     public bool InTransaction => Volatile.Read(ref _inTransactionFlag) != 0;
 
@@ -374,6 +375,23 @@ internal sealed class TransactionCoordinator : IDisposable
         return false;
     }
 
+    public bool TryGetPageLastWriteVersion(uint pageId, out long lastWriteVersion)
+    {
+        lock (_pageVersionGate)
+            return _pageLastWriteVersion.TryGetValue(pageId, out lastWriteVersion);
+    }
+
+    public async ValueTask WaitForCommitStateChangeAsync(CancellationToken ct = default)
+    {
+        Task waitTask;
+        lock (_pageVersionGate)
+        {
+            waitTask = _commitStateChanged.Task;
+        }
+
+        await waitTask.WaitAsync(ct);
+    }
+
     public bool HasLogicalConflict(
         IEnumerable<LogicalConflictKey> logicalReadKeys,
         long startVersion,
@@ -467,15 +485,22 @@ internal sealed class TransactionCoordinator : IDisposable
     {
         ArgumentNullException.ThrowIfNull(reservation);
 
+        bool published = false;
         while (true)
         {
             long current = Volatile.Read(ref _commitVersion);
             if (current >= reservation.CommitVersion)
-                return;
+                break;
 
             if (Interlocked.CompareExchange(ref _commitVersion, reservation.CommitVersion, current) == current)
-                return;
+            {
+                published = true;
+                break;
+            }
         }
+
+        if (published)
+            SignalCommitStateChanged();
     }
 
     public void RevertPendingCommit(PendingCommitReservation reservation)
@@ -512,6 +537,8 @@ internal sealed class TransactionCoordinator : IDisposable
                     _logicalLastWriteVersion.Remove(logicalWriteKey);
             }
         }
+
+        SignalCommitStateChanged();
     }
 
     public void Dispose()
@@ -544,11 +571,23 @@ internal sealed class TransactionCoordinator : IDisposable
     private void SignalSchemaStateChanged_NoLock()
     {
         TaskCompletionSource<bool> completed = _schemaStateChanged;
-        _schemaStateChanged = CreateSchemaStateChangedSource();
+        _schemaStateChanged = CreateStateChangedSource();
         completed.TrySetResult(true);
     }
 
-    private static TaskCompletionSource<bool> CreateSchemaStateChangedSource()
+    private void SignalCommitStateChanged()
+    {
+        TaskCompletionSource<bool> completed;
+        lock (_pageVersionGate)
+        {
+            completed = _commitStateChanged;
+            _commitStateChanged = CreateStateChangedSource();
+        }
+
+        completed.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> CreateStateChangedSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed class SemaphoreReservation : IDisposable

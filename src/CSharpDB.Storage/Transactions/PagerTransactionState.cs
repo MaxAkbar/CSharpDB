@@ -35,6 +35,8 @@ internal sealed class PagerTransactionState
 
     internal Dictionary<uint, byte[]> ModifiedPages { get; } = new();
 
+    internal Dictionary<uint, long> ResolvedWriteConflictVersions { get; } = new();
+
     internal HashSet<uint> DirtyPages { get; } = new();
 
     internal HashSet<LogicalConflictKey> LogicalReadKeys { get; } = [];

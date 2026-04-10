@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Collections.Concurrent;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
@@ -28,6 +29,7 @@ public sealed class Database : IAsyncDisposable
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _observedSchemaVersion;
@@ -71,6 +73,7 @@ public sealed class Database : IAsyncDisposable
         _planner = new QueryPlanner(pager, catalog, _recordSerializer);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
+        RefreshSharedNextRowIdHintsFromCatalog();
     }
 
     /// <summary>
@@ -86,7 +89,12 @@ public sealed class Database : IAsyncDisposable
         {
             using var binding = storageTransaction.Bind();
             var transactionCatalog = await SchemaCatalog.CreateAsync(_pager, ct);
-            var transactionPlanner = new QueryPlanner(_pager, transactionCatalog, _recordSerializer)
+            var transactionPlanner = new QueryPlanner(
+                _pager,
+                transactionCatalog,
+                _recordSerializer,
+                nextRowIdHintProvider: TryGetSharedNextRowIdHint,
+                useTransientNextRowIdHints: true)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -102,6 +110,39 @@ public sealed class Database : IAsyncDisposable
         {
             await storageTransaction.DisposeAsync();
             throw;
+        }
+    }
+
+    private long? TryGetSharedNextRowIdHint(string tableName)
+    {
+        return _sharedNextRowIdHints.TryGetValue(tableName, out long nextRowId) && nextRowId > 0
+            ? nextRowId
+            : null;
+    }
+
+    private void RefreshSharedNextRowIdHintsFromCatalog()
+    {
+        _sharedNextRowIdHints.Clear();
+
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            long nextRowId = _catalog.GetTable(tableName)?.NextRowId ?? 0;
+            if (nextRowId > 0)
+                _sharedNextRowIdHints[tableName] = nextRowId;
+        }
+    }
+
+    private void ApplyCommittedNextRowIdHints(IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds)
+    {
+        foreach ((string tableName, long nextRowId) in committedNextRowIds)
+        {
+            if (nextRowId <= 0)
+                continue;
+
+            _sharedNextRowIdHints.AddOrUpdate(
+                tableName,
+                nextRowId,
+                (_, existing) => Math.Max(existing, nextRowId));
         }
     }
 
@@ -193,6 +234,7 @@ public sealed class Database : IAsyncDisposable
                         _statementCache.Clear();
 
                     _observedSchemaVersion = _catalog.SchemaVersion;
+                    RefreshSharedNextRowIdHintsFromCatalog();
 
                     if (preservedDirtyTableStatistics.Length > 0 || preservedDirtyColumnStatistics.Length > 0)
                     {
@@ -207,7 +249,10 @@ public sealed class Database : IAsyncDisposable
                 }
 
                 if (applyTableMetadata)
+                {
                     _catalog.ApplyCommittedTableMetadataSnapshot(committedNextRowIds);
+                    ApplyCommittedNextRowIdHints(committedNextRowIds);
+                }
 
                 if (applyAdvisoryStats)
                 {

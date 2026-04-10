@@ -1088,9 +1088,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     : null;
                 try
                 {
-                    if (_transactions is not null &&
-                        _transactions.HasWriteConflict(writePageIds, tx.StartVersion, out uint conflictPageId))
+                    while (_transactions is not null &&
+                           TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
                     {
+                        if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                            continue;
+
                         throw new CSharpDbConflictException(
                             $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
                     }
@@ -1881,6 +1884,76 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             throw new CSharpDbConflictException(
                 $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
         }
+    }
+
+    private bool TryFindExplicitWriteConflict(
+        PagerTransactionState tx,
+        uint[] writePageIds,
+        out uint conflictPageId,
+        out long conflictVersion)
+    {
+        if (_transactions is null)
+        {
+            conflictPageId = PageConstants.NullPageId;
+            conflictVersion = 0;
+            return false;
+        }
+
+        for (int i = 0; i < writePageIds.Length; i++)
+        {
+            uint pageId = writePageIds[i];
+            if (!_transactions.TryGetPageLastWriteVersion(pageId, out long lastWriteVersion))
+                continue;
+
+            long resolvedVersion = tx.ResolvedWriteConflictVersions.TryGetValue(pageId, out long priorResolvedVersion)
+                ? Math.Max(tx.StartVersion, priorResolvedVersion)
+                : tx.StartVersion;
+            if (lastWriteVersion <= resolvedVersion)
+                continue;
+
+            conflictPageId = pageId;
+            conflictVersion = lastWriteVersion;
+            return true;
+        }
+
+        conflictPageId = PageConstants.NullPageId;
+        conflictVersion = 0;
+        return false;
+    }
+
+    private async ValueTask<bool> TryResolveExplicitWriteConflictAsync(
+        PagerTransactionState tx,
+        uint conflictPageId,
+        long conflictVersion,
+        CancellationToken ct)
+    {
+        if (_transactions is null ||
+            !tx.ModifiedPages.TryGetValue(conflictPageId, out byte[]? transactionPage))
+        {
+            return false;
+        }
+
+        if (conflictVersion > _transactions.CurrentCommitVersion)
+        {
+            await _transactions.WaitForCommitStateChangeAsync(ct);
+            return true;
+        }
+
+        PageReadBuffer basePage = await _buffers.GetSnapshotPageReadAsync(conflictPageId, tx.Snapshot, ct);
+        PageReadBuffer committedPage = await _buffers.GetPageReadAsync(conflictPageId, ct);
+        if (!LeafInsertRebaseHelper.TryRebaseInsertOnlyLeafPage(
+                conflictPageId,
+                basePage.Memory,
+                committedPage.Memory,
+                transactionPage,
+                out byte[]? rebasedPage))
+        {
+            return false;
+        }
+
+        tx.ModifiedPages[conflictPageId] = rebasedPage!;
+        tx.ResolvedWriteConflictVersions[conflictPageId] = conflictVersion;
+        return true;
     }
 
     private LogicalConflictKey[] CaptureLegacyLogicalWriteKeys()

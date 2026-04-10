@@ -195,6 +195,7 @@ public sealed class QueryPlanner
     /// <summary>Cache of parsed trigger bodies to avoid re-parsing on every row.</summary>
     private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _dirtyNextRowIdTables = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
@@ -225,6 +226,8 @@ public sealed class QueryPlanner
 
     private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
+    private readonly Func<string, long?>? _nextRowIdHintProvider;
+    private readonly bool _useTransientNextRowIdHints;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
     private const int MaxSelectPlanCacheEntries = 1024;
@@ -298,7 +301,9 @@ public sealed class QueryPlanner
         Pager pager,
         SchemaCatalog catalog,
         IRecordSerializer? recordSerializer = null,
-        Func<string, long?>? tableRowCountProvider = null)
+        Func<string, long?>? tableRowCountProvider = null,
+        Func<string, long?>? nextRowIdHintProvider = null,
+        bool useTransientNextRowIdHints = false)
     {
         _pager = pager;
         _catalog = catalog;
@@ -307,7 +312,24 @@ public sealed class QueryPlanner
             ? new CollectionAwareRecordSerializer(_recordSerializer)
             : null;
         _tableRowCountProvider = tableRowCountProvider;
+        _nextRowIdHintProvider = nextRowIdHintProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
+        _useTransientNextRowIdHints = useTransientNextRowIdHints;
+    }
+
+    public IReadOnlyCollection<KeyValuePair<string, long>> GetCommittedNextRowIdHints()
+    {
+        if (_dirtyNextRowIdTables.Count == 0)
+            return Array.Empty<KeyValuePair<string, long>>();
+
+        var committed = new List<KeyValuePair<string, long>>(_dirtyNextRowIdTables.Count);
+        foreach (string tableName in _dirtyNextRowIdTables)
+        {
+            if (_nextRowIdCache.TryGetValue(tableName, out long nextRowId) && nextRowId > 0)
+                committed.Add(new KeyValuePair<string, long>(tableName, nextRowId));
+        }
+
+        return committed;
     }
 
     public ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
@@ -429,6 +451,7 @@ public sealed class QueryPlanner
 
         _triggerBodyCache.Clear();
         _nextRowIdCache.Clear();
+        _dirtyNextRowIdTables.Clear();
         _compiledExpressionCache.Clear();
         _compiledSpanExpressionCache.Clear();
         _qualifiedMappingFingerprintCache.Clear();
@@ -518,6 +541,7 @@ public sealed class QueryPlanner
         for (int i = 0; i < foreignKeys.Length; i++)
             await CreateForeignKeySupportIndexAsync(schema, foreignKeys[i], ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -539,6 +563,7 @@ public sealed class QueryPlanner
 
         await _catalog.DropTableAsync(stmt.TableName, ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -690,6 +715,8 @@ public sealed class QueryPlanner
                 await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
+                if (_dirtyNextRowIdTables.Remove(stmt.TableName))
+                    _dirtyNextRowIdTables.Add(rename.NewTableName);
                 break;
             }
 
@@ -14475,6 +14502,12 @@ public sealed class QueryPlanner
             return schema.NextRowId;
         }
 
+        if (_nextRowIdHintProvider?.Invoke(tableName) is long hintedNextRowId && hintedNextRowId > 0)
+        {
+            _nextRowIdCache[tableName] = hintedNextRowId;
+            return hintedNextRowId;
+        }
+
         long loadedNextRowId = await ScanNextRowIdAsync(tree, ct);
         UpdateNextRowIdState(tableName, schema, loadedNextRowId);
         return loadedNextRowId;
@@ -14502,6 +14535,15 @@ public sealed class QueryPlanner
         else
             _nextRowIdCache[tableName] = nextRowId;
 
+        _dirtyNextRowIdTables.Add(tableName);
+
+        if (_useTransientNextRowIdHints)
+        {
+            if (schema.NextRowId > 0 && nextRowId > schema.NextRowId)
+                schema.NextRowId = 0;
+            return;
+        }
+
         if (schema.NextRowId < nextRowId)
             schema.NextRowId = nextRowId;
     }
@@ -14517,6 +14559,8 @@ public sealed class QueryPlanner
             _nextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
         else
             _nextRowIdCache[tableName] = nextRowId;
+
+        _dirtyNextRowIdTables.Add(tableName);
 
         // Explicit rowid inserts can push the durable high-water mark forward, but persisting
         // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as
