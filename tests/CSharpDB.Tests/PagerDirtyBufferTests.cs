@@ -111,6 +111,167 @@ public sealed class PagerDirtyBufferTests
         }
     }
 
+    [Fact]
+    public async Task ExplicitWriteTransaction_ReusesPersistedFreelistPagesInLifoOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_explicit_freelist_test_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new PagerOptions
+        {
+            MaxCachedPages = 8,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+        };
+
+        try
+        {
+            uint firstPageId;
+            uint secondPageId;
+
+            await using (var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct))
+            {
+                await pager.BeginTransactionAsync(ct);
+                firstPageId = await pager.AllocatePageAsync(ct);
+                secondPageId = await pager.AllocatePageAsync(ct);
+                await pager.CommitAsync(ct);
+
+                await pager.BeginTransactionAsync(ct);
+                await pager.FreePageAsync(firstPageId, ct);
+                await pager.FreePageAsync(secondPageId, ct);
+                await pager.CommitAsync(ct);
+
+                await using var tx = await pager.BeginWriteTransactionAsync(ct);
+                uint reusedSecond;
+                uint reusedFirst;
+                using (tx.Bind())
+                {
+                    reusedSecond = await pager.AllocatePageAsync(ct);
+                    reusedFirst = await pager.AllocatePageAsync(ct);
+                }
+
+                await tx.CommitAsync(ct);
+
+                Assert.Equal(secondPageId, reusedSecond);
+                Assert.Equal(firstPageId, reusedFirst);
+            }
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitWriteTransaction_CanReusePageFreedEarlierInSameTransaction()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_explicit_same_tx_freelist_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new PagerOptions
+        {
+            MaxCachedPages = 8,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+        };
+
+        try
+        {
+            uint originalPageId;
+            uint reusedPageId;
+
+            await using (var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct))
+            {
+                await pager.BeginTransactionAsync(ct);
+                originalPageId = await pager.AllocatePageAsync(ct);
+                await pager.CommitAsync(ct);
+
+                await using var tx = await pager.BeginWriteTransactionAsync(ct);
+                using (tx.Bind())
+                {
+                    await pager.FreePageAsync(originalPageId, ct);
+                    reusedPageId = await pager.AllocatePageAsync(ct);
+                    byte[] page = await pager.GetPageAsync(reusedPageId, ct);
+                    page[64] = 0x5A;
+                    await pager.MarkDirtyAsync(reusedPageId, ct);
+                }
+
+                await tx.CommitAsync(ct);
+
+                Assert.Equal(originalPageId, reusedPageId);
+
+                byte[] persistedPage = await pager.GetPageAsync(reusedPageId, ct);
+                Assert.Equal((byte)0x5A, persistedPage[64]);
+            }
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(walPath);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_FreedPagesMergeIntoCommittedFreelist()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_explicit_concurrent_freelist_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new PagerOptions
+        {
+            MaxCachedPages = 8,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+        };
+
+        try
+        {
+            uint firstPageId;
+            uint secondPageId;
+
+            await using (var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct))
+            {
+                await pager.BeginTransactionAsync(ct);
+                firstPageId = await pager.AllocatePageAsync(ct);
+                secondPageId = await pager.AllocatePageAsync(ct);
+                await pager.CommitAsync(ct);
+
+                await using var tx1 = await pager.BeginWriteTransactionAsync(ct);
+                await using var tx2 = await pager.BeginWriteTransactionAsync(ct);
+
+                using (tx1.Bind())
+                {
+                    await pager.FreePageAsync(firstPageId, ct);
+                }
+
+                using (tx2.Bind())
+                {
+                    await pager.FreePageAsync(secondPageId, ct);
+                }
+
+                await tx1.CommitAsync(ct);
+                await tx2.CommitAsync(ct);
+
+                await using var tx3 = await pager.BeginWriteTransactionAsync(ct);
+                uint reusedSecond;
+                uint reusedFirst;
+                using (tx3.Bind())
+                {
+                    reusedSecond = await pager.AllocatePageAsync(ct);
+                    reusedFirst = await pager.AllocatePageAsync(ct);
+                }
+
+                await tx3.CommitAsync(ct);
+
+                Assert.Equal(secondPageId, reusedSecond);
+                Assert.Equal(firstPageId, reusedFirst);
+            }
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(walPath);
+        }
+    }
+
     private static async ValueTask<Pager> OpenPagerAsync(
         string dbPath,
         PagerOptions options,

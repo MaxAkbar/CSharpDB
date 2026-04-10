@@ -47,6 +47,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private uint _scheduledExplicitChangeCounter;
     private int _pendingExplicitCommitCount;
     private long _lastAppliedExplicitCommitVersion;
+    private TaskCompletionSource<bool> _explicitCommitStateChanged = CreateExplicitCommitStateChangedSource();
 
     // File header state (cached in memory)
     private uint _pageCount;
@@ -521,22 +522,47 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// Allocate a new page. Tries the freelist first, then extends the page count.
     /// In WAL mode, the DB file is NOT extended here — that happens during checkpoint.
     /// </summary>
-    public ValueTask<uint> AllocatePageAsync(CancellationToken ct = default)
+    public async ValueTask<uint> AllocatePageAsync(CancellationToken ct = default)
     {
         if (GetCurrentTransaction() is { } tx)
         {
             if (_isSnapshotReader)
                 throw new InvalidOperationException("Cannot allocate pages on a read-only snapshot pager.");
 
-            uint pageId = _transactions!.ReserveNewPageId();
-            tx.PageCount = Math.Max(tx.PageCount, pageId + 1);
+            if (tx.PendingFreelistPageIds.Count > 0)
+            {
+                int lastIndex = tx.PendingFreelistPageIds.Count - 1;
+                uint reusablePageId = tx.PendingFreelistPageIds[lastIndex];
+                tx.PendingFreelistPageIds.RemoveAt(lastIndex);
+
+                byte[] page = await GetTransactionPageAsync(tx, reusablePageId, ct);
+                Array.Clear(page);
+                tx.DirtyPages.Add(reusablePageId);
+                tx.HasFreelistHeadOverride = true;
+                return reusablePageId;
+            }
+
+            if (tx.FreelistHead != PageConstants.NullPageId)
+            {
+                uint freelistPageId = tx.FreelistHead;
+                byte[] freePage = await GetTransactionPageAsync(tx, freelistPageId, ct);
+                tx.FreelistHead = ReadFreelistNextPageId(freelistPageId, freePage);
+                tx.HasFreelistHeadOverride = true;
+                tx.ConsumedFreelistPageIds.Add(freelistPageId);
+                Array.Clear(freePage);
+                tx.DirtyPages.Add(freelistPageId);
+                return freelistPageId;
+            }
+
+            uint newPageId = _transactions!.ReserveNewPageId();
+            tx.PageCount = Math.Max(tx.PageCount, newPageId + 1);
             tx.HasPageCountOverride = true;
-            tx.ModifiedPages[pageId] = new byte[PageConstants.PageSize];
-            tx.DirtyPages.Add(pageId);
-            return ValueTask.FromResult(pageId);
+            tx.ModifiedPages[newPageId] = new byte[PageConstants.PageSize];
+            tx.DirtyPages.Add(newPageId);
+            return newPageId;
         }
 
-        return _allocator.AllocatePageAsync(ct);
+        return await _allocator.AllocatePageAsync(ct);
     }
 
     /// <summary>
@@ -794,10 +820,150 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         byte[] page = await GetTransactionPageAsync(tx, pageId, ct);
         Array.Clear(page);
-        int contentOffset = PageConstants.ContentOffset(pageId);
-        BitConverter.TryWriteBytes(page.AsSpan(contentOffset + PageConstants.FreelistNextOffset, sizeof(uint)), PageConstants.NullPageId);
-        page[contentOffset + PageConstants.PageTypeOffset] = PageConstants.PageTypeFreelist;
+        WriteFreelistLink(pageId, page, PageConstants.NullPageId);
+        tx.PendingFreelistPageIds.Add(pageId);
+        tx.HasFreelistHeadOverride = true;
         tx.DirtyPages.Add(pageId);
+    }
+
+    private async ValueTask WaitForPendingExplicitCommitReservationsAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task waitTask;
+            lock (_explicitCommitStateGate)
+            {
+                if (_pendingExplicitCommitCount == 0)
+                    return;
+
+                waitTask = _explicitCommitStateChanged.Task;
+            }
+
+            await waitTask.WaitAsync(ct);
+        }
+    }
+
+    private static uint ReadFreelistNextPageId(uint pageId, ReadOnlySpan<byte> page)
+    {
+        int contentOffset = PageConstants.ContentOffset(pageId);
+        if (page[contentOffset + PageConstants.PageTypeOffset] != PageConstants.PageTypeFreelist)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Freelist page {pageId} has unexpected page type 0x{page[contentOffset + PageConstants.PageTypeOffset]:X2}.");
+        }
+
+        return BitConverter.ToUInt32(page.Slice(contentOffset + PageConstants.FreelistNextOffset, sizeof(uint)));
+    }
+
+    private static void WriteFreelistLink(uint pageId, Span<byte> page, uint nextPageId)
+    {
+        int contentOffset = PageConstants.ContentOffset(pageId);
+        BitConverter.TryWriteBytes(page.Slice(contentOffset + PageConstants.FreelistNextOffset, sizeof(uint)), nextPageId);
+        page[contentOffset + PageConstants.PageTypeOffset] = PageConstants.PageTypeFreelist;
+    }
+
+    private async ValueTask<byte[]> GetCommittedWritablePageAsync(
+        PagerTransactionState tx,
+        uint pageId,
+        CancellationToken ct)
+    {
+        if (tx.ModifiedPages.TryGetValue(pageId, out byte[]? modified))
+            return modified;
+
+        PageReadBuffer committedPage = await _buffers.GetPageReadAsync(pageId, ct);
+        byte[] clone = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+        committedPage.Memory.Span.CopyTo(clone);
+        tx.ModifiedPages[pageId] = clone;
+        tx.DirtyPages.Add(pageId);
+        return clone;
+    }
+
+    private async ValueTask<uint> RebaseExplicitFreelistAsync(PagerTransactionState tx, CancellationToken ct)
+    {
+        if (_transactions is null)
+            return tx.FreelistHead;
+
+        if (tx.ConsumedFreelistPageIds.Count == 0 && tx.PendingFreelistPageIds.Count == 0)
+            return tx.FreelistHead;
+
+        await WaitForPendingExplicitCommitReservationsAsync(ct);
+
+        uint currentHead = _freelistHead;
+        uint rebasedHead = currentHead;
+
+        if (tx.ConsumedFreelistPageIds.Count > 0)
+        {
+            uint previousKeptPageId = PageConstants.NullPageId;
+            bool skippedSincePreviousKept = false;
+            uint currentPageId = currentHead;
+            var visited = new HashSet<uint>();
+
+            rebasedHead = PageConstants.NullPageId;
+            while (currentPageId != PageConstants.NullPageId)
+            {
+                if (!visited.Add(currentPageId))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Freelist chain contains a cycle at page {currentPageId}.");
+                }
+
+                PageReadBuffer currentPage = await _buffers.GetPageReadAsync(currentPageId, ct);
+                uint nextPageId = ReadFreelistNextPageId(currentPageId, currentPage.Memory.Span);
+                if (tx.ConsumedFreelistPageIds.Contains(currentPageId))
+                {
+                    skippedSincePreviousKept = true;
+                    currentPageId = nextPageId;
+                    continue;
+                }
+
+                if (rebasedHead == PageConstants.NullPageId)
+                {
+                    rebasedHead = currentPageId;
+                }
+                else if (skippedSincePreviousKept)
+                {
+                    byte[] previousPage = await GetCommittedWritablePageAsync(tx, previousKeptPageId, ct);
+                    WriteFreelistLink(previousKeptPageId, previousPage, currentPageId);
+                    tx.ResolvedWriteConflictVersions[previousKeptPageId] = _transactions.CurrentCommitVersion;
+                }
+
+                previousKeptPageId = currentPageId;
+                skippedSincePreviousKept = false;
+                currentPageId = nextPageId;
+            }
+
+            if (previousKeptPageId != PageConstants.NullPageId && skippedSincePreviousKept)
+            {
+                byte[] previousPage = await GetCommittedWritablePageAsync(tx, previousKeptPageId, ct);
+                WriteFreelistLink(previousKeptPageId, previousPage, PageConstants.NullPageId);
+                tx.ResolvedWriteConflictVersions[previousKeptPageId] = _transactions.CurrentCommitVersion;
+            }
+        }
+
+        for (int i = 0; i < tx.PendingFreelistPageIds.Count; i++)
+        {
+            uint freedPageId = tx.PendingFreelistPageIds[i];
+            byte[] freedPage = await GetTransactionPageAsync(tx, freedPageId, ct);
+            WriteFreelistLink(freedPageId, freedPage, rebasedHead);
+            rebasedHead = freedPageId;
+        }
+
+        tx.FreelistHead = rebasedHead;
+        tx.HasFreelistHeadOverride = true;
+        return rebasedHead;
+    }
+
+    private static uint[] GetExplicitWritePageIds(PagerTransactionState tx)
+    {
+        uint[] writePageIds = tx.DirtyPages
+            .Where(static pageId => pageId != 0)
+            .ToArray();
+        if (writePageIds.Length > 1)
+            Array.Sort(writePageIds);
+
+        return writePageIds;
     }
 
     private async ValueTask<PagerCommitResult> BeginLegacyCommitAsync(CancellationToken ct)
@@ -1047,16 +1213,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     private async ValueTask<PagerCommitResult> BeginExplicitCommitAsync(PagerTransactionState tx, CancellationToken ct)
     {
-        uint[] writePageIds = tx.DirtyPages
-            .Where(static pageId => pageId != 0)
-            .ToArray();
-        if (writePageIds.Length > 1)
-            Array.Sort(writePageIds);
-
+        uint[] writePageIds = GetExplicitWritePageIds(tx);
         int dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
-
-        if (_hasInterceptor)
-            await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+        bool commitStarted = false;
 
         try
         {
@@ -1065,6 +1224,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 !tx.HasSchemaRootPageOverride &&
                 !tx.HasFreelistHeadOverride)
             {
+                if (_hasInterceptor)
+                {
+                    await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+                    commitStarted = true;
+                }
+
                 ValidateLogicalConflicts(tx);
                 tx.Completed = true;
                 tx.ReleaseSnapshot();
@@ -1072,8 +1237,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     await _interceptor.OnCommitEndAsync(dirtyCount, succeeded: true, CancellationToken.None);
                 return PagerCommitResult.Completed;
             }
-
-            EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
 
             WalCommitResult walCommit;
             byte[] page0;
@@ -1088,29 +1251,39 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     : null;
                 try
                 {
-                    while (_transactions is not null &&
-                           TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
+                    bool needsFreelistRebase = tx.ConsumedFreelistPageIds.Count > 0 || tx.PendingFreelistPageIds.Count > 0;
+                    while (true)
                     {
-                        if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                        writePageIds = GetExplicitWritePageIds(tx);
+                        while (_transactions is not null &&
+                               TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
+                        {
+                            if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                                continue;
+
+                            throw new CSharpDbConflictException(
+                                $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                        }
+
+                        if (needsFreelistRebase)
+                        {
+                            await RebaseExplicitFreelistAsync(tx, ct);
+                            needsFreelistRebase = false;
                             continue;
+                        }
 
-                        throw new CSharpDbConflictException(
-                            $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                        break;
                     }
 
-                    if (_transactions is not null &&
-                        _transactions.HasLogicalConflict(tx.LogicalReadKeys, tx.StartVersion, out LogicalConflictKey conflictKey))
+                    ValidateLogicalConflicts(tx);
+                    dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
+                    if (_hasInterceptor)
                     {
-                        throw new CSharpDbConflictException(
-                            $"Transaction conflict detected while validating logical key {conflictKey}. The transaction must be retried.");
+                        await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+                        commitStarted = true;
                     }
 
-                    if (_transactions is not null &&
-                        _transactions.HasLogicalRangeConflict(tx.LogicalReadRanges, tx.StartVersion, out conflictKey))
-                    {
-                        throw new CSharpDbConflictException(
-                            $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
-                    }
+                    EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
 
                     pendingCommitWindow = _transactions is not null
                         ? await _transactions.EnterPendingCommitWindowAsync(ct)
@@ -1185,7 +1358,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             tx.Completed = true;
             tx.ReleaseSnapshot();
-            if (_hasInterceptor)
+            if (_hasInterceptor && commitStarted)
                 await _interceptor.OnCommitEndAsync(dirtyCount, succeeded: false, CancellationToken.None);
             throw;
         }
@@ -1269,6 +1442,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _scheduledExplicitFreelistHead = newFreelistHead;
             _scheduledExplicitChangeCounter = newChangeCounter;
             _pendingExplicitCommitCount++;
+            SignalExplicitCommitStateChanged_NoLock();
 
             return new ExplicitCommitHeaderReservation(
                 newPageCount,
@@ -1311,6 +1485,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 _scheduledExplicitFreelistHead = _freelistHead;
                 _scheduledExplicitChangeCounter = _changeCounter;
             }
+
+            SignalExplicitCommitStateChanged_NoLock();
         }
     }
 
@@ -1328,6 +1504,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 _scheduledExplicitFreelistHead = _freelistHead;
                 _scheduledExplicitChangeCounter = _changeCounter;
             }
+
+            SignalExplicitCommitStateChanged_NoLock();
         }
     }
 
@@ -1400,6 +1578,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _checkpoints.RequestDeferredCheckpoint();
         }
     }
+
+    private void SignalExplicitCommitStateChanged_NoLock()
+    {
+        TaskCompletionSource<bool> completed = _explicitCommitStateChanged;
+        _explicitCommitStateChanged = CreateExplicitCommitStateChangedSource();
+        completed.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> CreateExplicitCommitStateChangedSource()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed record ExplicitCommitHeaderReservation(
         uint PageCount,

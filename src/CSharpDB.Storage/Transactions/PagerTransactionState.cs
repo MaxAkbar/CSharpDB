@@ -45,6 +45,10 @@ internal sealed class PagerTransactionState
 
     internal HashSet<LogicalConflictKey> LogicalWriteKeys { get; } = [];
 
+    internal HashSet<uint> ConsumedFreelistPageIds { get; } = [];
+
+    internal List<uint> PendingFreelistPageIds { get; } = [];
+
     internal uint PageCount { get; set; }
 
     internal uint SchemaRootPage { get; set; }
