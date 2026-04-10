@@ -129,6 +129,9 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     public WalIndex Index => _index;
     public bool IsOpen => _stream != null;
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool IsCheckpointCopyComplete =>
+        _incrementalCheckpoint is not null &&
+        _incrementalCheckpoint.NextPageIndex >= _incrementalCheckpoint.CommittedPageCount;
     public bool HasPendingCommitWork
     {
         get
@@ -655,10 +658,16 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     /// Checkpoint: copy all committed WAL pages to the database file, then
     /// truncate (reset) the WAL.
     /// </summary>
-    public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default)
+    public async ValueTask CheckpointAsync(
+        IStorageDevice device,
+        uint pageCount,
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
-        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken))
+        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken, allowFinalize))
         {
+            if (!allowFinalize && IsCheckpointCopyComplete)
+                return;
         }
     }
 
@@ -666,7 +675,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         IStorageDevice device,
         uint pageCount,
         int maxPages,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
         if (_stream == null)
             return true;
@@ -699,6 +709,10 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 ProcessCrashInjector.TripIfRequested(
                     "checkpoint-after-device-flush",
                     "checkpoint-after-device-flush");
+
+                if (!allowFinalize)
+                    return false;
+
                 await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
                 return true;
             }

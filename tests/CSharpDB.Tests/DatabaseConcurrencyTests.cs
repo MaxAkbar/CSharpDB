@@ -178,6 +178,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         Assert.Equal(2L, rows[1][0].AsInteger);
         Assert.Equal(2L, rows[1][1].AsInteger);
     }
+
     [Fact]
     public async Task ConcurrentExplicitWriteTransactions_NonMergeableSameLeafUpdatesStillConflictWithoutRetry()
     {
@@ -1212,7 +1213,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ActiveExplicitWriteTransaction_BlocksBackgroundCheckpointUntilTransactionCompletes()
+    public async Task ActiveExplicitWriteTransaction_AllowsBackgroundCheckpointCopyButDefersWalFinalizeUntilTransactionCompletes()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_background_checkpoint_test_{Guid.NewGuid():N}.db");
@@ -1240,14 +1241,22 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
                 long walLengthWhileTransactionActive = new FileInfo(walPath).Length;
                 Assert.True(
                     walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
-                    $"Expected WAL frames to remain while an explicit write transaction blocks background checkpoint, observed walLength={walLengthWhileTransactionActive}.");
+                    $"Expected WAL frames to remain while an explicit write transaction keeps checkpoint finalization deferred, observed walLength={walLengthWhileTransactionActive}.");
 
-                await Task.Delay(200, ct);
+                await WaitForConditionAsync(
+                    () => db.GetCommitPathDiagnosticsSnapshot().BackgroundCheckpointStartCount > 0,
+                    TimeSpan.FromSeconds(5),
+                    ct);
 
                 walLengthWhileTransactionActive = new FileInfo(walPath).Length;
                 Assert.True(
                     walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
-                    $"Expected background checkpoint to remain deferred while the explicit write transaction is active, observed walLength={walLengthWhileTransactionActive}.");
+                    $"Expected background checkpoint finalization to remain deferred while the explicit write transaction is active, observed walLength={walLengthWhileTransactionActive}.");
+
+                var commitDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+                Assert.True(
+                    commitDiagnostics.BackgroundCheckpointStartCount > 0,
+                    $"Expected background checkpoint copying to start while the explicit write transaction was active, observed backgroundCheckpointStarts={commitDiagnostics.BackgroundCheckpointStartCount}.");
             }
 
             await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
@@ -1336,6 +1345,25 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
             : 0;
         throw new Xunit.Sdk.XunitException(
             $"Timed out waiting for WAL length {expectedLength}, observed {finalLength}.");
+    }
+
+    private static async Task WaitForConditionAsync(
+        Func<bool> condition,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            if (condition())
+                return;
+
+            await Task.Delay(25, ct);
+        }
+
+        throw new Xunit.Sdk.XunitException("Timed out waiting for the expected condition.");
     }
 
     private async Task<long> ScalarIntAsync(string sql, CancellationToken ct)

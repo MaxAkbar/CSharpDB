@@ -1597,6 +1597,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     return;
                 }
 
+                if (_checkpoints.ActiveReaderCount > 0 && _wal.IsCheckpointCopyComplete)
+                    return;
+
                 // Keep draining while the pager is idle. The checkpoint barrier is already held
                 // for this worker, so yielding here only makes completion depend on thread-pool
                 // scheduling rather than allowing additional writer interleaving.
@@ -1659,11 +1662,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
             return;
 
-        await _wal.CheckpointAsync(_device, PageCount, ct);
-        ProcessCrashInjector.TripIfRequested(
-            "checkpoint-after-wal-finalize",
-            "checkpoint-after-wal-finalize");
-        await RefreshStateAfterCheckpointCompletionAsync(ct);
+        bool allowFinalize = _checkpoints?.ActiveReaderCount == 0;
+        bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
+
+        await _wal.CheckpointAsync(_device, PageCount, ct, allowFinalize);
+
+        if (allowFinalize)
+        {
+            ProcessCrashInjector.TripIfRequested(
+                "checkpoint-after-wal-finalize",
+                "checkpoint-after-wal-finalize");
+        }
+
+        if (!_wal.HasPendingCheckpoint || (!wasCopyComplete && _wal.IsCheckpointCopyComplete))
+            await RefreshStateAfterCheckpointCompletionAsync(ct);
     }
 
     private async ValueTask RunCheckpointStepCoreAsync(CancellationToken ct)
@@ -1671,13 +1683,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
             return;
 
+        bool allowFinalize = _checkpoints?.ActiveReaderCount == 0;
+        bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
         bool completed = await _wal.CheckpointStepAsync(
             _device,
             PageCount,
             _options.AutoCheckpointMaxPagesPerStep,
-            ct);
+            ct,
+            allowFinalize);
 
-        if (completed)
+        if (completed || (!wasCopyComplete && _wal.IsCheckpointCopyComplete))
             await RefreshStateAfterCheckpointCompletionAsync(ct);
     }
 

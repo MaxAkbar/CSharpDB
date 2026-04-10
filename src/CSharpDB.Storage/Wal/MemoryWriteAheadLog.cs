@@ -73,6 +73,9 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
     }
 
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool IsCheckpointCopyComplete =>
+        _incrementalCheckpoint is not null &&
+        _incrementalCheckpoint.NextPageIndex >= _incrementalCheckpoint.CommittedPageCount;
     public bool HasPendingCommitWork => false;
     public bool IsOpen => _isOpen;
 
@@ -290,10 +293,16 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         }
     }
 
-    public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default)
+    public async ValueTask CheckpointAsync(
+        IStorageDevice device,
+        uint pageCount,
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
-        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken))
+        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken, allowFinalize))
         {
+            if (!allowFinalize && IsCheckpointCopyComplete)
+                return;
         }
     }
 
@@ -301,7 +310,8 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         IStorageDevice device,
         uint pageCount,
         int maxPages,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
         if (!_isOpen)
             return true;
@@ -332,6 +342,10 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
             }
 
             await device.FlushAsync(cancellationToken);
+
+            if (!allowFinalize)
+                return false;
+
             await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
             return true;
         }

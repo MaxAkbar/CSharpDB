@@ -494,7 +494,7 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DeferredCheckpoint_BlockedByReader_RunsOnNextCommitAfterReaderDrains()
+    public async Task DeferredCheckpoint_PartiallyCopiesWhileReaderIsActive_AndFinalizesAfterReaderDrains()
     {
         var ct = TestContext.Current.CancellationToken;
 
@@ -528,13 +528,13 @@ public class WalTests : IAsyncLifetime
             Assert.True(sizeWhileReaderActive > PageConstants.WalHeaderSize);
         }
 
-        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'triggers_deferred_checkpoint')", ct);
+        await _db.CheckpointAsync(ct);
 
         Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
 
         await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var rows = await result.ToListAsync(ct);
-        Assert.Equal(2L, rows[0][0].AsInteger);
+        Assert.Equal(1L, rows[0][0].AsInteger);
     }
 
     [Fact]
@@ -846,6 +846,58 @@ public class WalTests : IAsyncLifetime
         await AssertPageFilledAsync(device, 0, 0x41, ct);
         await AssertPageFilledAsync(device, 1, 0x42, ct);
         await AssertPageFilledAsync(device, 2, 0x43, ct);
+    }
+
+    [Fact]
+    public async Task FileWriteAheadLog_CheckpointAsync_CopiesPagesButDefersFinalizeWhenRequested()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_partial_checkpoint_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        FileStorageDevice? device = null;
+        var walIndex = new WalIndex();
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            device = new FileStorageDevice(dbPath, createNew: true);
+            wal = new WriteAheadLog(dbPath, walIndex);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+
+            wal.BeginTransaction();
+            await wal.AppendFramesAsync(
+                new[]
+                {
+                    new WalFrameWrite(0, CreateFilledPage(0x61)),
+                    new WalFrameWrite(1, CreateFilledPage(0x62)),
+                },
+                ct);
+            await (await wal.CommitAsync(newDbPageCount: 2, ct)).WaitAsync(ct);
+
+            await wal.CheckpointAsync(device, pageCount: 2, ct, allowFinalize: false);
+
+            Assert.True(wal.HasPendingCheckpoint);
+            Assert.True(wal.IsCheckpointCopyComplete);
+            Assert.Equal(2, walIndex.FrameCount);
+            Assert.Equal(PageConstants.WalHeaderSize + (2L * PageConstants.WalFrameSize), new FileInfo(walPath).Length);
+            await AssertPageFilledAsync(device, 0, 0x61, ct);
+            await AssertPageFilledAsync(device, 1, 0x62, ct);
+
+            await wal.CheckpointAsync(device, pageCount: 2, ct);
+
+            Assert.False(wal.HasPendingCheckpoint);
+            Assert.Equal(0, walIndex.FrameCount);
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (device is not null)
+                await device.DisposeAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
     }
 
     [Fact]

@@ -97,10 +97,7 @@ internal sealed class CheckpointCoordinator : IDisposable
         try
         {
             if (ActiveReaderCount > 0)
-            {
                 Volatile.Write(ref _deferredCheckpointRequested, 1);
-                return;
-            }
 
             await checkpointAction(ct);
         }
@@ -112,7 +109,7 @@ internal sealed class CheckpointCoordinator : IDisposable
 
     public bool TryStartBackgroundCheckpoint(Func<CancellationToken, ValueTask> checkpointAction)
     {
-        if (ActiveReaderCount > 0 || !HasPendingCheckpointRequest)
+        if (!HasPendingCheckpointRequest)
             return false;
 
         lock (_backgroundCheckpointGate)
