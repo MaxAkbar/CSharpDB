@@ -172,6 +172,113 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_DuplicateUniqueIndexInsertConflictsWithCommittedConcurrentInsert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE unique_users (id INTEGER PRIMARY KEY, email TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_unique_users_email ON unique_users(email)", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO unique_users VALUES (1, 'dup@example.com')", ct);
+        await tx2.ExecuteAsync("INSERT INTO unique_users VALUES (2, 'dup@example.com')", ct);
+
+        await tx1.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx2.CommitAsync(ct).AsTask());
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM unique_users", ct));
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM unique_users WHERE email = 'dup@example.com'", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_DuplicateUniqueIndexUpdateConflictsWithCommittedConcurrentUpdate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE unique_users_update (id INTEGER PRIMARY KEY, email TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_unique_users_update_email ON unique_users_update(email)", ct);
+        await _db.ExecuteAsync("INSERT INTO unique_users_update VALUES (1, 'alpha@example.com')", ct);
+        await _db.ExecuteAsync("INSERT INTO unique_users_update VALUES (2, 'beta@example.com')", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("UPDATE unique_users_update SET email = 'shared@example.com' WHERE id = 1", ct);
+        await tx2.ExecuteAsync("UPDATE unique_users_update SET email = 'shared@example.com' WHERE id = 2", ct);
+
+        await tx1.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx2.CommitAsync(ct).AsTask());
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM unique_users_update WHERE email = 'shared@example.com'", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ChildInsertReferencingUniqueParentKeyConflictsWithCommittedParentDelete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_parents (id INTEGER PRIMARY KEY, code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_fk_unique_parents_code ON fk_unique_parents(code)", ct);
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_children (id INTEGER PRIMARY KEY, parent_code TEXT REFERENCES fk_unique_parents(code))", ct);
+        await _db.ExecuteAsync("INSERT INTO fk_unique_parents VALUES (1, 'parent-1')", ct);
+
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await childTx.ExecuteAsync("INSERT INTO fk_unique_children VALUES (1, 'parent-1')", ct);
+        await parentTx.ExecuteAsync("DELETE FROM fk_unique_parents WHERE code = 'parent-1'", ct);
+
+        await parentTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => childTx.CommitAsync(ct).AsTask());
+
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_parents", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_children", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ParentDeleteReferencingUniqueParentKeyConflictsWithCommittedChildInsert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_parents (id INTEGER PRIMARY KEY, code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_fk_unique_parents_code ON fk_unique_parents(code)", ct);
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_children (id INTEGER PRIMARY KEY, parent_code TEXT REFERENCES fk_unique_parents(code))", ct);
+        await _db.ExecuteAsync("INSERT INTO fk_unique_parents VALUES (1, 'parent-1')", ct);
+
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await parentTx.ExecuteAsync("DELETE FROM fk_unique_parents WHERE code = 'parent-1'", ct);
+        await childTx.ExecuteAsync("INSERT INTO fk_unique_children VALUES (1, 'parent-1')", ct);
+
+        await childTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => parentTx.CommitAsync(ct).AsTask());
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_parents", ct));
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_children", ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ParentUniqueKeyUpdateConflictsWithCommittedChildInsert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_update_parents (id INTEGER PRIMARY KEY, code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_fk_unique_update_parents_code ON fk_unique_update_parents(code)", ct);
+        await _db.ExecuteAsync("CREATE TABLE fk_unique_update_children (id INTEGER PRIMARY KEY, parent_code TEXT REFERENCES fk_unique_update_parents(code))", ct);
+        await _db.ExecuteAsync("INSERT INTO fk_unique_update_parents VALUES (1, 'parent-1')", ct);
+
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await parentTx.ExecuteAsync("UPDATE fk_unique_update_parents SET code = 'parent-2' WHERE code = 'parent-1'", ct);
+        await childTx.ExecuteAsync("INSERT INTO fk_unique_update_children VALUES (1, 'parent-1')", ct);
+
+        await childTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => parentTx.CommitAsync(ct).AsTask());
+
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_update_parents WHERE code = 'parent-1'", ct));
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM fk_unique_update_children WHERE parent_code = 'parent-1'", ct));
+    }
+
+    [Fact]
     public async Task ExplicitWriteTransaction_DdlWaitsForEarlierTransactionToComplete()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -369,6 +476,194 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_DisjunctiveConjunctiveTableScan_ConflictsWithConcurrentInsertInTrackedDisjunct()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE disjunctive_conjunctive_items (id INTEGER PRIMARY KEY, score INTEGER, tag TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items VALUES (1, 5, 'hot')", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items VALUES (2, 20, 'cold')", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM disjunctive_conjunctive_items WHERE (score = 5 AND tag = 'hot') OR (score = 20 AND tag = 'cold')",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items VALUES (3, 20, 'cold')", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_DisjunctiveConjunctiveTableScan_AllowsConcurrentInsertOutsideTrackedDisjuncts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE disjunctive_conjunctive_items_ok (id INTEGER PRIMARY KEY, score INTEGER, tag TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items_ok VALUES (1, 5, 'hot')", ct);
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items_ok VALUES (2, 20, 'cold')", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM disjunctive_conjunctive_items_ok WHERE (score = 5 AND tag = 'hot') OR (score = 20 AND tag = 'cold')",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(2L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO disjunctive_conjunctive_items_ok VALUES (3, 99, 'warm')", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_CorrelatedExistsConflictsWithConcurrentInsertIntoMatchingSubquery()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE exists_customers (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE exists_orders (id INTEGER PRIMARY KEY, customer_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_exists_orders_customer_id ON exists_orders(customer_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO exists_customers VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO exists_customers VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM exists_customers c WHERE c.id = 1 AND EXISTS (SELECT 1 FROM exists_orders o WHERE o.customer_id = c.id)",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO exists_orders VALUES (1, 1)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_CorrelatedExistsAllowsConcurrentInsertOutsideSubqueryMatch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE exists_customers_ok (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE exists_orders_ok (id INTEGER PRIMARY KEY, customer_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_exists_orders_ok_customer_id ON exists_orders_ok(customer_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO exists_customers_ok VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO exists_customers_ok VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM exists_customers_ok c WHERE c.id = 1 AND EXISTS (SELECT 1 FROM exists_orders_ok o WHERE o.customer_id = c.id)",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO exists_orders_ok VALUES (1, 2)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_InSubqueryConflictsWithConcurrentInsertIntoMatchingSet()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE in_products (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE in_featured (id INTEGER PRIMARY KEY, product_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_in_featured_product_id ON in_featured(product_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO in_products VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO in_products VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM in_products p WHERE p.id = 1 AND p.id IN (SELECT f.product_id FROM in_featured f)",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO in_featured VALUES (1, 1)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_InSubqueryAllowsConcurrentInsertOutsideMatchingSet()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE in_products_ok (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE in_featured_ok (id INTEGER PRIMARY KEY, product_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_in_featured_ok_product_id ON in_featured_ok(product_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO in_products_ok VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO in_products_ok VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM in_products_ok p WHERE p.id = 1 AND p.id IN (SELECT f.product_id FROM in_featured_ok f)",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO in_featured_ok VALUES (1, 2)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_IndexJoinConflictsWithConcurrentInsertIntoMatchingJoinKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE join_customers (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE join_orders (id INTEGER PRIMARY KEY, customer_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_join_orders_customer_id ON join_orders(customer_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO join_customers VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO join_customers VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM join_customers c JOIN join_orders o ON c.id = o.customer_id WHERE c.id = 1",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO join_orders VALUES (1, 1)", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_IndexJoinAllowsConcurrentInsertOutsideJoinKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE join_customers_ok (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE join_orders_ok (id INTEGER PRIMARY KEY, customer_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_join_orders_ok_customer_id ON join_orders_ok(customer_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO join_customers_ok VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO join_customers_ok VALUES (2)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT COUNT(*) FROM join_customers_ok c JOIN join_orders_ok o ON c.id = o.customer_id WHERE c.id = 1",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO join_orders_ok VALUES (1, 2)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
     public async Task ReadOnlyExplicitWriteTransaction_IndexedRangeScanConflictsWithConcurrentInsertInRange()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -408,6 +703,64 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         }
 
         await _db.ExecuteAsync("INSERT INTO indexed_range_items_ok VALUES (4, 50)", ct);
+
+        await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_LargeIndexedAggregateConflictsWithConcurrentUpdateInRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE indexed_payload_range_items (id INTEGER PRIMARY KEY, value INTEGER, writer INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_indexed_payload_range_items_value ON indexed_payload_range_items(value)", ct);
+
+        await using (var seedTx = await _db.BeginWriteTransactionAsync(ct))
+        {
+            for (int id = 1; id <= 2048; id++)
+                await seedTx.ExecuteAsync($"INSERT INTO indexed_payload_range_items VALUES ({id}, {id}, 0)", ct);
+
+            await seedTx.CommitAsync(ct);
+        }
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT SUM(writer) FROM indexed_payload_range_items WHERE value >= 100 AND value <= 200",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("UPDATE indexed_payload_range_items SET writer = writer + 1 WHERE id = 150", ct);
+
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => tx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task ReadOnlyExplicitWriteTransaction_LargeIndexedAggregateAllowsConcurrentUpdateOutsideRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE indexed_payload_range_items_ok (id INTEGER PRIMARY KEY, value INTEGER, writer INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_indexed_payload_range_items_ok_value ON indexed_payload_range_items_ok(value)", ct);
+
+        await using (var seedTx = await _db.BeginWriteTransactionAsync(ct))
+        {
+            for (int id = 1; id <= 2048; id++)
+                await seedTx.ExecuteAsync($"INSERT INTO indexed_payload_range_items_ok VALUES ({id}, {id}, 0)", ct);
+
+            await seedTx.CommitAsync(ct);
+        }
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteAsync(
+            "SELECT SUM(writer) FROM indexed_payload_range_items_ok WHERE value >= 100 AND value <= 200",
+            ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("UPDATE indexed_payload_range_items_ok SET writer = writer + 1 WHERE id = 1800", ct);
 
         await tx.CommitAsync(ct);
     }

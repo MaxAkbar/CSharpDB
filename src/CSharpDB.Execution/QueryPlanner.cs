@@ -1256,6 +1256,18 @@ public sealed class QueryPlanner
             {
                 var operand = await RewriteSubqueriesInExpressionAsync(inSubquery.Operand, ct);
                 var query = await RewriteSubqueriesInQueryAsync(inSubquery.Query, ct);
+                if (_pager.IsExplicitWriteTransactionActive)
+                {
+                    // Preserve IN subqueries inside explicit write transactions so per-row evaluation
+                    // can use operand-aware probes and avoid recording full-set logical reads.
+                    return new InSubqueryExpression
+                    {
+                        Operand = operand,
+                        Query = query,
+                        Negated = inSubquery.Negated,
+                    };
+                }
+
                 if (!CanExecuteStandalone(query))
                 {
                     return new InSubqueryExpression
@@ -3010,40 +3022,8 @@ public sealed class QueryPlanner
             return null;
         }
 
-        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
-            return null;
-
-        int projectedColumnIndex = projectedColumn.TableAlias != null
-            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
-            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
-        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
-            return null;
-
-        await using (source)
-        {
-            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
-
-            await source.OpenAsync(ct);
-            while (await source.MoveNextAsync(ct))
-            {
-                if (residualPredicate != null &&
-                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
-                {
-                    continue;
-                }
-
-                var candidateValue = projectedColumnIndex < source.Current.Length
-                    ? source.Current[projectedColumnIndex]
-                    : DbValue.Null;
-                if (candidateValue.IsNull)
-                    continue;
-
-                if (DbValue.Compare(candidateValue, operandValue) == 0)
-                    return true;
-            }
-        }
-
-        return false;
+        QueryStatement probeQuery = CreateSimpleInProbeQuery(select, projectedColumn, operandValue);
+        return await TryExecuteSimpleExistsProbeAsync(probeQuery, ct);
     }
 
     private async ValueTask<bool?> TryExecuteSimpleNotInFilterProbeAsync(
@@ -3150,6 +3130,41 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private static QueryStatement CreateSimpleInProbeQuery(
+        SelectStatement select,
+        ColumnRefExpression projectedColumn,
+        DbValue operandValue)
+    {
+        var probePredicate = new BinaryExpression
+        {
+            Op = BinaryOp.Equals,
+            Left = projectedColumn,
+            Right = CreateLiteralExpression(operandValue),
+        };
+
+        var probeQuery = new SelectStatement
+        {
+            IsDistinct = select.IsDistinct,
+            Columns = select.Columns,
+            From = select.From,
+            Where = select.Where is null
+                ? probePredicate
+                : new BinaryExpression
+                {
+                    Op = BinaryOp.And,
+                    Left = select.Where,
+                    Right = probePredicate,
+                },
+            GroupBy = select.GroupBy,
+            Having = select.Having,
+            OrderBy = select.OrderBy,
+            Limit = select.Limit,
+            Offset = select.Offset,
+        };
+
+        return probeQuery;
     }
 
     private static void ApplySimpleSubqueryDecodeHints(
@@ -5108,7 +5123,7 @@ public sealed class QueryPlanner
                 func.IsDistinct,
                 compactIndexedSchema);
 
-            result = new QueryResult(new FilteredScalarAggregatePayloadOperator(
+            var filteredPayloadAggregate = new FilteredScalarAggregatePayloadOperator(
                 indexedSource,
                 GetReadSerializer(schema),
                 compactIndexedDecodeColumns,
@@ -5119,7 +5134,9 @@ public sealed class QueryPlanner
                 aggregateArgumentEvaluator: compactIndexedAggregateEvaluator,
                 isDistinct: func.IsDistinct,
                 isCountStar,
-                batchPlan: indexedScalarBatchPlan));
+                batchPlan: indexedScalarBatchPlan);
+            ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, filteredPayloadAggregate);
+            result = new QueryResult(filteredPayloadAggregate);
             return true;
         }
 
@@ -10041,6 +10058,17 @@ public sealed class QueryPlanner
             aggregate.SetLogicalReadScope(logicalReadScope);
     }
 
+    private void ApplyLogicalPredicateReadScope(
+        string tableName,
+        Expression? where,
+        TableSchema schema,
+        FilteredScalarAggregatePayloadOperator aggregate)
+    {
+        Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+        if (logicalReadScope is not null)
+            aggregate.SetLogicalReadScope(logicalReadScope);
+    }
+
     private Action? TryCreateLogicalPredicateReadScope(string tableName, Expression? where, TableSchema schema)
     {
         if (where is null || !_pager.IsExplicitWriteTransactionActive)
@@ -10108,7 +10136,7 @@ public sealed class QueryPlanner
             selectedScore = candidateScore;
         }
 
-        return selectedScope;
+        return selectedScope ?? TryCreateCompositeDisjunctiveLogicalPredicateReadScope(tableName, schema, disjuncts);
     }
 
     private bool TryCreateDisjunctiveLogicalPredicateReadScopeForColumn(
@@ -10176,6 +10204,35 @@ public sealed class QueryPlanner
         };
 
         return true;
+    }
+
+    private Action? TryCreateCompositeDisjunctiveLogicalPredicateReadScope(
+        string tableName,
+        TableSchema schema,
+        List<Expression> disjuncts)
+    {
+        List<Action>? logicalReadScopes = null;
+
+        for (int i = 0; i < disjuncts.Count; i++)
+        {
+            Action? disjunctScope = TryCreateConjunctiveLogicalPredicateReadScope(tableName, disjuncts[i], schema);
+            if (disjunctScope is null)
+                return null;
+
+            (logicalReadScopes ??= []).Add(disjunctScope);
+        }
+
+        if (logicalReadScopes is null || logicalReadScopes.Count == 0)
+            return null;
+
+        if (logicalReadScopes.Count == 1)
+            return logicalReadScopes[0];
+
+        return () =>
+        {
+            for (int i = 0; i < logicalReadScopes.Count; i++)
+                logicalReadScopes[i]();
+        };
     }
 
     private (Action Scope, Expression? RemainingWhere)? TrySelectLogicalPredicateReadScope(

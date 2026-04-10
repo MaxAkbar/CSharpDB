@@ -14717,6 +14717,7 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
     private readonly int[] _decodedColumnIndices;
     private readonly IScalarAggregateBatchPlan? _batchPlan;
     private readonly PreDecodeFilterSpec[] _preDecodeFilters;
+    private Action? _logicalReadScope;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -14761,10 +14762,14 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
         OutputSchema = outputSchema;
     }
 
+    public void SetLogicalReadScope(Action? logicalReadScope)
+        => _logicalReadScope = logicalReadScope;
+
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         _emitted = false;
         Current = Array.Empty<DbValue>();
+        _logicalReadScope?.Invoke();
         await _source.OpenAsync(ct);
 
         DbValue aggregate = _batchPlan != null

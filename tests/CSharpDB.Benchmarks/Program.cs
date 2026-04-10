@@ -537,6 +537,9 @@ public static class Program
         Console.WriteLine("--- Crash Recovery Benchmark ---");
         results.AddRange(await CrashRecoveryBenchmark.RunAsync());
 
+        Console.WriteLine("--- Logical Conflict Range Benchmark ---");
+        results.AddRange(await LogicalConflictRangeBenchmark.RunAsync());
+
         Console.WriteLine("--- WAL Growth Benchmark ---");
         results.AddRange(await WalGrowthBenchmark.RunAsync());
 
