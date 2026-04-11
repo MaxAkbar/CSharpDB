@@ -37,3 +37,35 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
   - 4-writer and 8-writer shared-`Database` contention runs
   - queue-depth, commits-per-flush, and latency percentile diagnostics
 - Async I/O batching still has room for more auditing outside the WAL hot path, but the main write-path batching pieces are already in place.
+
+## Phase 4 Outline
+
+The next performance phase should not keep tuning checkpoint behavior. The phase-3 work already moved checkpoint copy forward and left only a low-single-digit millisecond post-release checkpoint tail in the focused retention benchmark. The remaining fixed cost is still durable flush plus the shared auto-commit path above the WAL pending-commit queue.
+
+Recommended execution order:
+
+1. Measure shared auto-commit commit fan-in directly.
+   - Add focused diagnostics that distinguish:
+     - concurrent `Database.ExecuteAsync(...)` auto-commit on one shared `Database`
+     - overlapping explicit `WriteTransaction` commits on one shared `Database`
+   - Record `maxPendingCommits`, `commitsPerFlush`, `flushes/sec`, and tail latency in both modes.
+   - Exit criterion: prove exactly where the shared auto-commit path still serializes before the WAL queue.
+
+2. Reduce engine-side serialization above the WAL pending-commit queue.
+   - Audit the shared write gate and `PagerCommitResult` completion path for work that can move after logical commit publication.
+   - Treat this as a commit-fan-in project, not a checkpoint project.
+   - Preserve correctness invariants first:
+     - commit order remains stable
+     - durable flush acknowledgment still gates commit completion
+     - conflict visibility stays monotonic
+
+3. Re-run focused write diagnostics after each fan-in change.
+   - Keep the benchmark matrix small:
+     - single-writer no-regression
+     - shared auto-commit `W4` and `W8`
+     - explicit `WriteTransaction` disjoint-update scenario
+   - Exit criterion: `commitsPerFlush` rises above `1.00` in the shared auto-commit harness without a single-writer regression that erases the gain.
+
+4. Only then revisit defaults and presets.
+   - Do not change the default batch window or preset guidance until the shared auto-commit path actually coalesces commits on the measured runner.
+   - If the fan-in work does not materially improve `commitsPerFlush`, keep `UseDurableGroupCommit(...)` as an expert knob and leave the current defaults alone.

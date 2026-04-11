@@ -111,6 +111,8 @@ Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. T
 
 One important constraint on the current engine shape: shared-`Database` implicit auto-commit writes still hold the engine write gate until `PagerCommitResult` completion, so they do not build a meaningful pending WAL commit queue today. The durable group-commit knob is therefore most relevant to overlapping explicit `WriteTransaction` commit paths and other flows that can reach the WAL pending-commit queue concurrently, not to a single shared `Database.ExecuteAsync(...)` hot loop.
 
+That constraint is also the next performance target. Phase-3 checkpoint work is in a good place; the next meaningful write-path gain is to reduce engine-side serialization above the WAL pending-commit queue so shared auto-commit workloads can actually build commit fan-in before durable flush. Until that changes, treat `UseDurableGroupCommit(...)` as a measured explicit-transaction / overlapping-commit knob rather than a general shared-auto-commit throughput switch.
+
 For sustained file-backed ingest, the builder also exposes `UseWalPreallocationChunkBytes(...)`:
 
 ```csharp
