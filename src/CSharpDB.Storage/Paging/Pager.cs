@@ -35,6 +35,18 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly bool _isSnapshotReader;
     private long _walAppendCount;
     private long _walAppendTicks;
+    private long _explicitCommitLockWaitCount;
+    private long _explicitCommitLockWaitTicks;
+    private long _explicitCommitLockHoldCount;
+    private long _explicitCommitLockHoldTicks;
+    private long _explicitConflictResolutionCount;
+    private long _explicitConflictResolutionTicks;
+    private long _explicitPendingCommitWaitCount;
+    private long _explicitPendingCommitWaitTicks;
+    private long _explicitHeaderPreparationCount;
+    private long _explicitHeaderPreparationTicks;
+    private long _explicitPendingCommitReservationCount;
+    private long _explicitPendingCommitReservationTicks;
     private long _finalizeCommitCount;
     private long _finalizeCommitTicks;
     private long _checkpointDecisionCount;
@@ -144,6 +156,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return new CommitPathDiagnosticsSnapshot(
             WalAppendCount: Interlocked.Read(ref _walAppendCount),
             WalAppendTicks: Interlocked.Read(ref _walAppendTicks),
+            ExplicitCommitLockWaitCount: Interlocked.Read(ref _explicitCommitLockWaitCount),
+            ExplicitCommitLockWaitTicks: Interlocked.Read(ref _explicitCommitLockWaitTicks),
+            ExplicitCommitLockHoldCount: Interlocked.Read(ref _explicitCommitLockHoldCount),
+            ExplicitCommitLockHoldTicks: Interlocked.Read(ref _explicitCommitLockHoldTicks),
+            ExplicitConflictResolutionCount: Interlocked.Read(ref _explicitConflictResolutionCount),
+            ExplicitConflictResolutionTicks: Interlocked.Read(ref _explicitConflictResolutionTicks),
+            ExplicitPendingCommitWaitCount: Interlocked.Read(ref _explicitPendingCommitWaitCount),
+            ExplicitPendingCommitWaitTicks: Interlocked.Read(ref _explicitPendingCommitWaitTicks),
+            ExplicitHeaderPreparationCount: Interlocked.Read(ref _explicitHeaderPreparationCount),
+            ExplicitHeaderPreparationTicks: Interlocked.Read(ref _explicitHeaderPreparationTicks),
+            ExplicitPendingCommitReservationCount: Interlocked.Read(ref _explicitPendingCommitReservationCount),
+            ExplicitPendingCommitReservationTicks: Interlocked.Read(ref _explicitPendingCommitReservationTicks),
+            DurableBatchWindowWaitCount: walDiagnostics.DurableBatchWindowWaitCount,
+            DurableBatchWindowWaitTicks: walDiagnostics.DurableBatchWindowWaitTicks,
+            PendingCommitWriteCount: walDiagnostics.PendingCommitWriteCount,
+            PendingCommitWriteTicks: walDiagnostics.PendingCommitWriteTicks,
+            PendingCommitDrainCount: walDiagnostics.PendingCommitDrainCount,
+            PendingCommitDrainTicks: walDiagnostics.PendingCommitDrainTicks,
             BufferedFlushCount: walDiagnostics.BufferedFlushCount,
             BufferedFlushTicks: walDiagnostics.BufferedFlushTicks,
             DurableFlushCount: walDiagnostics.DurableFlushCount,
@@ -166,6 +196,18 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         Interlocked.Exchange(ref _walAppendCount, 0);
         Interlocked.Exchange(ref _walAppendTicks, 0);
+        Interlocked.Exchange(ref _explicitCommitLockWaitCount, 0);
+        Interlocked.Exchange(ref _explicitCommitLockWaitTicks, 0);
+        Interlocked.Exchange(ref _explicitCommitLockHoldCount, 0);
+        Interlocked.Exchange(ref _explicitCommitLockHoldTicks, 0);
+        Interlocked.Exchange(ref _explicitConflictResolutionCount, 0);
+        Interlocked.Exchange(ref _explicitConflictResolutionTicks, 0);
+        Interlocked.Exchange(ref _explicitPendingCommitWaitCount, 0);
+        Interlocked.Exchange(ref _explicitPendingCommitWaitTicks, 0);
+        Interlocked.Exchange(ref _explicitHeaderPreparationCount, 0);
+        Interlocked.Exchange(ref _explicitHeaderPreparationTicks, 0);
+        Interlocked.Exchange(ref _explicitPendingCommitReservationCount, 0);
+        Interlocked.Exchange(ref _explicitPendingCommitReservationTicks, 0);
         Interlocked.Exchange(ref _finalizeCommitCount, 0);
         Interlocked.Exchange(ref _finalizeCommitTicks, 0);
         Interlocked.Exchange(ref _checkpointDecisionCount, 0);
@@ -1243,14 +1285,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             IDisposable? pendingCommitWindow = null;
             ExplicitCommitHeaderReservation? headerReservation = null;
             TransactionCoordinator.PendingCommitReservation? pendingCommitReservation = null;
+            bool commitQueued = false;
 
             try
             {
+                long commitLockWaitStartTicks = Stopwatch.GetTimestamp();
                 IDisposable? commitLock = _transactions is not null
                     ? await _transactions.AcquireCommitLockAsync(ct)
                     : null;
+                RecordExplicitCommitLockWaitDiagnostics(commitLockWaitStartTicks);
+                long commitLockHoldStartTicks = commitLock is not null ? Stopwatch.GetTimestamp() : 0;
                 try
                 {
+                    long conflictResolutionStartTicks = Stopwatch.GetTimestamp();
                     bool needsFreelistRebase = tx.ConsumedFreelistPageIds.Count > 0 || tx.PendingFreelistPageIds.Count > 0;
                     while (true)
                     {
@@ -1276,6 +1323,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     }
 
                     ValidateLogicalConflicts(tx);
+                    RecordExplicitConflictResolutionDiagnostics(conflictResolutionStartTicks);
                     dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
                     if (_hasInterceptor)
                     {
@@ -1285,9 +1333,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
                     EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
 
+                    long pendingCommitWaitStartTicks = Stopwatch.GetTimestamp();
                     pendingCommitWindow = _transactions is not null
                         ? await _transactions.EnterPendingCommitWindowAsync(ct)
                         : null;
+                    RecordExplicitPendingCommitWaitDiagnostics(pendingCommitWaitStartTicks);
+
+                    long headerPreparationStartTicks = Stopwatch.GetTimestamp();
                     headerReservation = ReserveExplicitCommitHeaderState(tx);
                     page0 = await BuildCommittedHeaderPageAsync(
                         tx,
@@ -1296,6 +1348,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         headerReservation.FreelistHead,
                         headerReservation.ChangeCounter,
                         ct);
+                    RecordExplicitHeaderPreparationDiagnostics(headerPreparationStartTicks);
 
                     long walAppendStartTicks = Stopwatch.GetTimestamp();
 
@@ -1327,20 +1380,28 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     }
 
                     RecordWalAppendDiagnostics(walAppendStartTicks);
+                    long pendingCommitReservationStartTicks = Stopwatch.GetTimestamp();
                     pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds, tx.LogicalWriteKeys)
                         ?? throw new InvalidOperationException("Explicit write transactions require a transaction coordinator.");
+                    RecordExplicitPendingCommitReservationDiagnostics(pendingCommitReservationStartTicks);
+                    commitQueued = true;
                 }
                 finally
                 {
+                    RecordExplicitCommitLockHoldDiagnostics(commitLockHoldStartTicks);
                     commitLock?.Dispose();
                 }
             }
-            finally
+            catch
             {
-                if (headerReservation is null)
+                if (!commitQueued)
                 {
                     pendingCommitWindow?.Dispose();
+                    if (headerReservation is not null)
+                        RevertExplicitCommitState(headerReservation);
                 }
+
+                throw;
             }
 
             return new PagerCommitResult(
@@ -2202,6 +2263,60 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         Interlocked.Increment(ref _walAppendCount);
         Interlocked.Add(ref _walAppendTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitCommitLockWaitDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitCommitLockWaitCount);
+        Interlocked.Add(ref _explicitCommitLockWaitTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitConflictResolutionDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitConflictResolutionCount);
+        Interlocked.Add(ref _explicitConflictResolutionTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitCommitLockHoldDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitCommitLockHoldCount);
+        Interlocked.Add(ref _explicitCommitLockHoldTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitPendingCommitWaitDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitPendingCommitWaitCount);
+        Interlocked.Add(ref _explicitPendingCommitWaitTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitHeaderPreparationDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitHeaderPreparationCount);
+        Interlocked.Add(ref _explicitHeaderPreparationTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordExplicitPendingCommitReservationDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _explicitPendingCommitReservationCount);
+        Interlocked.Add(ref _explicitPendingCommitReservationTicks, Stopwatch.GetTimestamp() - startTicks);
     }
 
     private void RecordFinalizeCommitDiagnostics(long startTicks)

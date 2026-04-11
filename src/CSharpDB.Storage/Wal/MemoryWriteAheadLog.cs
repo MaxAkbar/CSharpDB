@@ -86,8 +86,40 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
     {
     }
 
-    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() =>
-        CommitPathDiagnosticsSnapshot.Empty;
+    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() => new(
+        WalAppendCount: 0,
+        WalAppendTicks: 0,
+        ExplicitCommitLockWaitCount: 0,
+        ExplicitCommitLockWaitTicks: 0,
+        ExplicitCommitLockHoldCount: 0,
+        ExplicitCommitLockHoldTicks: 0,
+        ExplicitConflictResolutionCount: 0,
+        ExplicitConflictResolutionTicks: 0,
+        ExplicitPendingCommitWaitCount: 0,
+        ExplicitPendingCommitWaitTicks: 0,
+        ExplicitHeaderPreparationCount: 0,
+        ExplicitHeaderPreparationTicks: 0,
+        ExplicitPendingCommitReservationCount: 0,
+        ExplicitPendingCommitReservationTicks: 0,
+        DurableBatchWindowWaitCount: 0,
+        DurableBatchWindowWaitTicks: 0,
+        PendingCommitWriteCount: 0,
+        PendingCommitWriteTicks: 0,
+        PendingCommitDrainCount: 0,
+        PendingCommitDrainTicks: 0,
+        BufferedFlushCount: 0,
+        BufferedFlushTicks: 0,
+        DurableFlushCount: 0,
+        DurableFlushTicks: 0,
+        PublishBatchCount: 0,
+        PublishBatchTicks: 0,
+        FinalizeCommitCount: 0,
+        FinalizeCommitTicks: 0,
+        CheckpointDecisionCount: 0,
+        CheckpointDecisionTicks: 0,
+        BackgroundCheckpointStartCount: 0,
+        MaxPendingCommitCount: 0,
+        MaxPendingCommitBytes: 0);
 
     void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()
     {

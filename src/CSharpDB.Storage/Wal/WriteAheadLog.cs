@@ -90,6 +90,12 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     private long _durableFlushTicks;
     private long _publishBatchCount;
     private long _publishBatchTicks;
+    private long _durableBatchWindowWaitCount;
+    private long _durableBatchWindowWaitTicks;
+    private long _pendingCommitWriteCount;
+    private long _pendingCommitWriteTicks;
+    private long _pendingCommitDrainCount;
+    private long _pendingCommitDrainTicks;
     private long _maxPendingCommitCount;
     private long _maxPendingCommitBytes;
 
@@ -175,6 +181,24 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         return new CommitPathDiagnosticsSnapshot(
             WalAppendCount: 0,
             WalAppendTicks: 0,
+            ExplicitCommitLockWaitCount: 0,
+            ExplicitCommitLockWaitTicks: 0,
+            ExplicitCommitLockHoldCount: 0,
+            ExplicitCommitLockHoldTicks: 0,
+            ExplicitConflictResolutionCount: 0,
+            ExplicitConflictResolutionTicks: 0,
+            ExplicitPendingCommitWaitCount: 0,
+            ExplicitPendingCommitWaitTicks: 0,
+            ExplicitHeaderPreparationCount: 0,
+            ExplicitHeaderPreparationTicks: 0,
+            ExplicitPendingCommitReservationCount: 0,
+            ExplicitPendingCommitReservationTicks: 0,
+            DurableBatchWindowWaitCount: Interlocked.Read(ref _durableBatchWindowWaitCount),
+            DurableBatchWindowWaitTicks: Interlocked.Read(ref _durableBatchWindowWaitTicks),
+            PendingCommitWriteCount: Interlocked.Read(ref _pendingCommitWriteCount),
+            PendingCommitWriteTicks: Interlocked.Read(ref _pendingCommitWriteTicks),
+            PendingCommitDrainCount: Interlocked.Read(ref _pendingCommitDrainCount),
+            PendingCommitDrainTicks: Interlocked.Read(ref _pendingCommitDrainTicks),
             BufferedFlushCount: Interlocked.Read(ref _bufferedFlushCount),
             BufferedFlushTicks: Interlocked.Read(ref _bufferedFlushTicks),
             DurableFlushCount: Interlocked.Read(ref _durableFlushCount),
@@ -198,6 +222,12 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         Interlocked.Exchange(ref _durableFlushTicks, 0);
         Interlocked.Exchange(ref _publishBatchCount, 0);
         Interlocked.Exchange(ref _publishBatchTicks, 0);
+        Interlocked.Exchange(ref _durableBatchWindowWaitCount, 0);
+        Interlocked.Exchange(ref _durableBatchWindowWaitTicks, 0);
+        Interlocked.Exchange(ref _pendingCommitWriteCount, 0);
+        Interlocked.Exchange(ref _pendingCommitWriteTicks, 0);
+        Interlocked.Exchange(ref _pendingCommitDrainCount, 0);
+        Interlocked.Exchange(ref _pendingCommitDrainTicks, 0);
         Interlocked.Exchange(ref _maxPendingCommitCount, 0);
         Interlocked.Exchange(ref _maxPendingCommitBytes, 0);
     }
@@ -1241,7 +1271,10 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
             try
             {
-                await WaitForDurableCommitBatchWindowAsync().ConfigureAwait(false);
+                long batchWindowWaitStartTicks = Stopwatch.GetTimestamp();
+                bool waitedForBatchWindow = await WaitForDurableCommitBatchWindowAsync().ConfigureAwait(false);
+                if (waitedForBatchWindow)
+                    RecordDurableBatchWindowWaitDiagnostics(batchWindowWaitStartTicks);
 
                 lock (_pendingCommitSync)
                 {
@@ -1259,7 +1292,9 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                     if (_writeHandle is null)
                         throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
 
+                    long pendingCommitWriteStartTicks = Stopwatch.GetTimestamp();
                     await WriteStagedPendingCommitBytesAsync(flushThroughSequence).ConfigureAwait(false);
+                    RecordPendingCommitWriteDiagnostics(pendingCommitWriteStartTicks);
                     long durableFlushStartTicks = Stopwatch.GetTimestamp();
                     await _flushPolicy.FlushCommitAsync(
                         _writeHandle,
@@ -1289,10 +1324,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             }
 
             List<PendingCommitBatch> committedBatches;
+            long pendingCommitDrainStartTicks = Stopwatch.GetTimestamp();
             lock (_pendingCommitSync)
             {
                 committedBatches = DrainCommittedBatches(flushThroughSequence);
             }
+            if (committedBatches.Count > 0)
+                RecordPendingCommitDrainDiagnostics(pendingCommitDrainStartTicks);
 
             long flushedByteCount = 0;
             long publishStartTicks = committedBatches.Count > 0 ? Stopwatch.GetTimestamp() : 0;
@@ -1328,24 +1366,24 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         }
     }
 
-    private async Task WaitForDurableCommitBatchWindowAsync()
+    private async Task<bool> WaitForDurableCommitBatchWindowAsync()
     {
         if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush ||
             _durableCommitBatchWindow <= TimeSpan.Zero)
         {
-            return;
+            return false;
         }
 
         Task? pendingSignalTask = null;
         lock (_pendingCommitSync)
         {
             if (_pendingCommitBatches.Count == 0)
-                return;
+                return false;
 
             if (ShouldBypassBatchWindow_NoLock())
             {
                 Interlocked.Increment(ref _batchWindowThresholdBypassCount);
-                return;
+                return false;
             }
 
             _pendingCommitBatchWindowSignal ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1355,7 +1393,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         Task delayTask = Task.Delay(_durableCommitBatchWindow);
         Task completedTask = await Task.WhenAny(delayTask, pendingSignalTask!).ConfigureAwait(false);
-        if (ReferenceEquals(completedTask, pendingSignalTask))
+        bool signaledByPendingCommit = ReferenceEquals(completedTask, pendingSignalTask);
+        if (signaledByPendingCommit)
             Interlocked.Increment(ref _batchWindowThresholdBypassCount);
 
         lock (_pendingCommitSync)
@@ -1366,6 +1405,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 _pendingCommitBatchWindowSignal = null;
             }
         }
+
+        return true;
     }
 
     private bool ShouldBypassBatchWindow_NoLock()
@@ -1409,6 +1450,33 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         Interlocked.Increment(ref _durableFlushCount);
         Interlocked.Add(ref _durableFlushTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordDurableBatchWindowWaitDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _durableBatchWindowWaitCount);
+        Interlocked.Add(ref _durableBatchWindowWaitTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordPendingCommitWriteDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _pendingCommitWriteCount);
+        Interlocked.Add(ref _pendingCommitWriteTicks, Stopwatch.GetTimestamp() - startTicks);
+    }
+
+    private void RecordPendingCommitDrainDiagnostics(long startTicks)
+    {
+        if (startTicks == 0)
+            return;
+
+        Interlocked.Increment(ref _pendingCommitDrainCount);
+        Interlocked.Add(ref _pendingCommitDrainTicks, Stopwatch.GetTimestamp() - startTicks);
     }
 
     private void RecordPublishBatchDiagnostics(long startTicks)
@@ -1752,6 +1820,46 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         await _streamMutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (TryPrepareCombinedPendingCommitWrite_NoLock(
+                batchesToWrite,
+                out long combinedFirstWalOffset,
+                out int combinedStagedByteCount,
+                out long combinedWritePosition))
+            {
+                byte[] combinedBuffer = ArrayPool<byte>.Shared.Rent(combinedStagedByteCount);
+                try
+                {
+                    int combinedOffset = 0;
+                    foreach (var batch in batchesToWrite)
+                    {
+                        if (!batch.HasStagedBytes)
+                            continue;
+
+                        ReadOnlyMemory<byte> stagedBytes = batch.GetStagedBytes();
+                        stagedBytes.Span.CopyTo(combinedBuffer.AsSpan(combinedOffset, batch.StagedByteCount));
+                        combinedOffset += batch.StagedByteCount;
+                    }
+
+                    await WriteWalRangeDirectAsync(
+                        combinedFirstWalOffset,
+                        combinedBuffer.AsMemory(0, combinedStagedByteCount),
+                        CancellationToken.None).ConfigureAwait(false);
+                    _writePosition = combinedWritePosition;
+
+                    foreach (var batch in batchesToWrite)
+                    {
+                        if (batch.HasStagedBytes)
+                            batch.MarkWritten();
+                    }
+
+                    return;
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(combinedBuffer, clearArray: false);
+                }
+            }
+
             foreach (var batch in batchesToWrite)
             {
                 if (!batch.HasStagedBytes)
@@ -1778,6 +1886,55 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         {
             _streamMutex.Release();
         }
+    }
+
+    private bool TryPrepareCombinedPendingCommitWrite_NoLock(
+        PendingCommitBatch[] batchesToWrite,
+        out long firstWalOffset,
+        out int stagedByteCount,
+        out long finalWritePosition)
+    {
+        firstWalOffset = 0;
+        stagedByteCount = 0;
+        finalWritePosition = _writePosition;
+
+        bool initialized = false;
+        int stagedBatchCount = 0;
+        long expectedWalOffset = 0;
+        foreach (var batch in batchesToWrite)
+        {
+            if (!batch.HasStagedBytes)
+                continue;
+
+            long batchFirstWalOffset = batch.HasAssignedEntries
+                ? batch.FirstWalOffset
+                : finalWritePosition;
+            if (!batch.HasAssignedEntries)
+            {
+                EnsureAppendCapacity_NoLock(batch.ByteCount);
+                batch.AssignWalOffsets(batchFirstWalOffset);
+            }
+
+            if (!initialized)
+            {
+                firstWalOffset = batchFirstWalOffset;
+                expectedWalOffset = batchFirstWalOffset;
+                initialized = true;
+            }
+
+            if (batchFirstWalOffset != expectedWalOffset)
+                return false;
+
+            if (stagedByteCount > Array.MaxLength - batch.StagedByteCount)
+                return false;
+
+            stagedByteCount += batch.StagedByteCount;
+            expectedWalOffset = batchFirstWalOffset + batch.ByteCount;
+            finalWritePosition = expectedWalOffset;
+            stagedBatchCount++;
+        }
+
+        return stagedBatchCount > 1 && stagedByteCount > 0;
     }
 
     private uint WriteWalFrame(Span<byte> frameDestination, uint pageId, ReadOnlySpan<byte> pageData, uint dbPageCount)
