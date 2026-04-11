@@ -57,6 +57,21 @@ public sealed class WriteTransaction : IAsyncDisposable
         return await ExecuteAsyncCore(statement, _storageTransaction.Bind, ct);
     }
 
+    internal async ValueTask<QueryResult> ExecuteImplicitAutoCommitAsync(Statement statement, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(statement);
+        EnsureActive();
+
+        return await ExecuteWriteAsyncCore(statement, _storageTransaction.Bind, ct);
+    }
+
+    internal async ValueTask<QueryResult> ExecuteImplicitAutoCommitAsync(SimpleInsertSql insert, CancellationToken ct = default)
+    {
+        EnsureActive();
+
+        return await ExecuteSimpleInsertAsyncCore(insert, _storageTransaction.Bind, ct);
+    }
+
     /// <summary>
     /// Execute a read-only query within this transaction without contributing logical read conflict ranges.
     /// This weakens serializable conflict tracking for the specific query only.
@@ -177,5 +192,25 @@ public sealed class WriteTransaction : IAsyncDisposable
         if (result.IsQuery)
             result.SetExecutionScopeFactory(executionScopeFactory);
         return result;
+    }
+
+    private async ValueTask<QueryResult> ExecuteWriteAsyncCore(
+        Statement statement,
+        Func<IDisposable> executionScopeFactory,
+        CancellationToken ct)
+    {
+        using var scope = executionScopeFactory();
+        return statement is InsertStatement insert
+            ? await _planner.ExecuteInsertAsync(insert, persistRootChanges: false, ct)
+            : await _planner.ExecuteAsync(statement, ct);
+    }
+
+    private async ValueTask<QueryResult> ExecuteSimpleInsertAsyncCore(
+        SimpleInsertSql insert,
+        Func<IDisposable> executionScopeFactory,
+        CancellationToken ct)
+    {
+        using var scope = executionScopeFactory();
+        return await _planner.ExecuteSimpleInsertAsync(insert, persistRootChanges: false, ct);
     }
 }

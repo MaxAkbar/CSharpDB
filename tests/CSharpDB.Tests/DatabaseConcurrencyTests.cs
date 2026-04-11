@@ -1174,6 +1174,77 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentSharedAutoCommitSqlWrites_WithBatchWindow_CanQueuePendingCommits()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_autocommit_batch_test_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(1)));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+
+            const int writerCount = 8;
+            const int updatesPerWriter = 32;
+            await db.ExecuteAsync("CREATE TABLE auto_batch (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+            await db.BeginTransactionAsync(ct);
+            for (int id = 1; id <= 2048; id++)
+                await db.ExecuteAsync($"INSERT INTO auto_batch VALUES ({id}, 0)", ct);
+            await db.CommitAsync(ct);
+
+            db.ResetWalFlushDiagnostics();
+            db.ResetCommitPathDiagnostics();
+
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int[] rowIds = [64, 320, 576, 832, 1088, 1344, 1600, 1856];
+            Task[] writers = Enumerable.Range(0, writerCount)
+                .Select(writerId => Task.Run(
+                    async () =>
+                    {
+                        await start.Task.WaitAsync(ct);
+                        for (int iteration = 0; iteration < updatesPerWriter; iteration++)
+                        {
+                            await db.ExecuteAsync(
+                                $"UPDATE auto_batch SET writer = writer + 1 WHERE id = {rowIds[writerId]}",
+                                ct);
+                        }
+                    },
+                    ct))
+                .ToArray();
+
+            start.SetResult();
+            await Task.WhenAll(writers);
+
+            for (int writerId = 0; writerId < writerCount; writerId++)
+            {
+                await using var result = await db.ExecuteAsync($"SELECT writer FROM auto_batch WHERE id = {rowIds[writerId]}", ct);
+                var rows = await result.ToListAsync(ct);
+                Assert.Equal(updatesPerWriter, rows[0][0].AsInteger);
+            }
+
+            var walDiagnostics = db.GetWalFlushDiagnosticsSnapshot();
+            var commitDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+            Assert.True(
+                walDiagnostics.FlushedCommitCount > walDiagnostics.FlushCount,
+                $"Expected multiple implicit commits per durable flush, observed flushedCommits={walDiagnostics.FlushedCommitCount}, flushes={walDiagnostics.FlushCount}.");
+            Assert.True(
+                commitDiagnostics.MaxPendingCommitCount > 1,
+                $"Expected shared auto-commit writes to queue pending commits, observed maxPendingCommits={commitDiagnostics.MaxPendingCommitCount}.");
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_DisjointUpdates_DoNotCorruptSharedSnapshotCache()
     {
         var ct = TestContext.Current.CancellationToken;

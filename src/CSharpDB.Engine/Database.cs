@@ -20,6 +20,12 @@ public sealed class Database : IAsyncDisposable
 {
     private const int DefaultStatementCacheCapacity = 512;
     private const int DefaultImplicitConflictRetries = 10;
+    private static readonly WriteTransactionOptions ImplicitAutoCommitWriteTransactionOptions = new()
+    {
+        MaxRetries = DefaultImplicitConflictRetries,
+        InitialBackoff = TimeSpan.FromMilliseconds(0.25),
+        MaxBackoff = TimeSpan.FromMilliseconds(20),
+    };
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
@@ -616,46 +622,44 @@ public sealed class Database : IAsyncDisposable
             return await _planner.ExecuteAsync(stmt, ct);
         }
 
-        for (int attempt = 0; ; attempt++)
+        if (stmt is InsertStatement insert)
         {
-            try
+            for (int attempt = 0; ; attempt++)
             {
-                return await ExecuteImplicitWriteStatementCoreAsync(stmt, ct);
-            }
-            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
-            {
-                await DelayImplicitConflictRetryAsync(attempt, ct);
+                try
+                {
+                    return await ExecuteImplicitInsertCoreAsync(insert, ct);
+                }
+                catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+                {
+                    await DelayImplicitConflictRetryAsync(attempt, ct);
+                }
             }
         }
+
+        return await ExecuteImplicitWriteStatementCoreAsync(stmt, ct);
     }
 
-    private async ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct)
+    private ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(stmt, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
+
+    private async ValueTask<QueryResult> ExecuteImplicitInsertCoreAsync(InsertStatement insert, CancellationToken ct)
     {
         QueryResult result;
-        string? insertedTableName = null;
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
         {
             writeScope = await AcquireWriteOperationScopeAsync(ct);
             await _pager.BeginTransactionAsync(ct);
-
-            if (stmt is InsertStatement insert)
-            {
-                insertedTableName = insert.TableName;
-                result = await _planner.ExecuteInsertAsync(
-                    insert,
-                    persistRootChanges: false,
-                    ct);
-            }
-            else
-            {
-                result = await _planner.ExecuteAsync(stmt, ct);
-            }
-
-            commit = insertedTableName != null
-                ? await BeginCommitForTableWithCatalogSyncAsync(insertedTableName, ct)
-                : await BeginCommitWithCatalogSyncAsync(ct);
+            result = await _planner.ExecuteInsertAsync(
+                insert,
+                persistRootChanges: false,
+                ct);
+            commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
         }
         catch
         {
