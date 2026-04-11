@@ -49,6 +49,20 @@ public static class WriteTransactionDiagnosticsBenchmark
         return results;
     }
 
+    public static Task<BenchmarkResult> RunNamedScenarioAsync(string scenarioName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+
+        WriteTransactionScenario? scenario = s_scenarios.FirstOrDefault(
+            scenario => scenario.Name.Equals(scenarioName, StringComparison.OrdinalIgnoreCase));
+        if (scenario is null)
+            throw new ArgumentException(
+                $"Unknown WriteTransaction diagnostics scenario '{scenarioName}'.",
+                nameof(scenarioName));
+
+        return RunScenarioAsync(scenario);
+    }
+
     private static async Task<BenchmarkResult> RunScenarioAsync(WriteTransactionScenario scenario)
     {
         _nextId = scenario.Workload == WriteTransactionWorkload.HotInsert && scenario.SeedRowCount > 0
@@ -62,7 +76,7 @@ public static class WriteTransactionDiagnosticsBenchmark
                 AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
                 AutoCheckpointMaxPagesPerStep = 256,
             });
-            builder.UseDurableCommitBatchWindow(scenario.BatchWindow);
+            builder.UseDurableGroupCommit(scenario.BatchWindow);
             builder.UseWalPreallocationChunkBytes(scenario.WalPreallocationChunkBytes);
         });
 

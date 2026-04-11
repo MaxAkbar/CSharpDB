@@ -789,7 +789,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
                     walIndex,
                     options.ChecksumProvider,
                     _flushPolicy,
-                    options.DurableCommitBatchWindow,
+                    options.DurableGroupCommit.BatchWindow,
                     options.WalPreallocationChunkBytes);
                 pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
 
@@ -857,7 +857,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
                     walIndex,
                     options.ChecksumProvider,
                     options.DurabilityMode,
-                    options.DurableCommitBatchWindow,
+                    options.DurableGroupCommit.BatchWindow,
                     options.WalPreallocationChunkBytes);
                 pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
 

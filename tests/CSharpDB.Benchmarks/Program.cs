@@ -72,9 +72,25 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
                 return;
 
+            case "--write-transaction-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"write-transaction-scenario-{GetRequiredOptionValue(args, "--write-transaction-scenario")}",
+                    () => RunWriteTransactionScenarioOnceAsync(GetRequiredOptionValue(args, "--write-transaction-scenario")),
+                    repeatCount);
+                return;
+
             case "--concurrent-write-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--concurrent-write-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"concurrent-write-scenario-{GetRequiredOptionValue(args, "--concurrent-write-scenario")}",
+                    () => RunConcurrentWriteScenarioOnceAsync(GetRequiredOptionValue(args, "--concurrent-write-scenario")),
+                    repeatCount);
                 return;
 
             case "--direct-file-cache-transport":
@@ -470,10 +486,22 @@ public static class Program
         return await WriteTransactionDiagnosticsBenchmark.RunAsync();
     }
 
+    private static async Task<List<BenchmarkResult>> RunWriteTransactionScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Explicit WriteTransaction Scenario: {scenarioName} ---");
+        return [await WriteTransactionDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
     private static async Task<List<BenchmarkResult>> RunConcurrentWriteDiagnosticsOnceAsync()
     {
         Console.WriteLine("--- Concurrent Durable Write Benchmark ---");
         return await ConcurrentDurableWriteBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentWriteScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Concurrent Durable Write Scenario: {scenarioName} ---");
+        return [await ConcurrentDurableWriteBenchmark.RunNamedScenarioAsync(scenarioName)];
     }
 
     private static async Task<List<BenchmarkResult>> RunDirectFileCacheTransportOnceAsync()
@@ -784,6 +812,22 @@ public static class Program
         return args.Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static string GetRequiredOptionValue(string[] args, string option)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(option, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
+                throw new ArgumentException($"Missing value for {option}.");
+
+            return args[i + 1];
+        }
+
+        throw new ArgumentException($"Missing required option {option}.");
+    }
+
     private static bool ContainsExplicitFilter(string[] args)
     {
         return args.Any(static arg => arg.Equals("--filter", StringComparison.OrdinalIgnoreCase));
@@ -839,7 +883,9 @@ public static class Program
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
         Console.WriteLine("  dotnet run -- --durable-sql-batching  Run focused durable SQL batching benchmark");
         Console.WriteLine("  dotnet run -- --write-transaction-diagnostics  Run focused explicit WriteTransaction diagnostics");
+        Console.WriteLine("  dotnet run -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB  Run one explicit WriteTransaction scenario");
         Console.WriteLine("  dotnet run -- --concurrent-write-diagnostics  Run focused multi-writer durable commit diagnostics");
+        Console.WriteLine("  dotnet run -- --concurrent-write-scenario W8_Batch250us_Prealloc1MiB  Run one concurrent durable-write scenario");
         Console.WriteLine("  dotnet run -- --direct-file-cache-transport  Run focused direct default-vs-tuned file-cache benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused file-backed vs in-memory vs persistent-memory hybrid benchmark");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");

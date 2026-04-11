@@ -46,7 +46,8 @@ await using var db = await Database.OpenHybridAsync("mydata.db",
 DatabaseOptions
 ├── StorageEngineOptions
 │   ├── DurabilityMode
-│   ├── DurableCommitBatchWindow
+│   ├── DurableGroupCommit
+│   ├── DurableCommitBatchWindow (compatibility alias)
 │   ├── AdvisoryStatisticsPersistenceMode
 │   ├── WalPreallocationChunkBytes
 │   └── PagerOptions
@@ -84,7 +85,8 @@ Top-level storage engine configuration.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `DurabilityMode` | `DurabilityMode` | `Durable` | WAL commit flushing strategy |
-| `DurableCommitBatchWindow` | `TimeSpan` | `TimeSpan.Zero` | Delay for group commit batching before OS flush |
+| `DurableGroupCommit` | `DurableGroupCommitOptions` | `Disabled` | Opt-in durable group-commit settings |
+| `DurableCommitBatchWindow` | `TimeSpan` | `TimeSpan.Zero` | Compatibility alias for `DurableGroupCommit.BatchWindow` |
 | `AdvisoryStatisticsPersistenceMode` | `AdvisoryStatisticsPersistenceMode` | `Immediate` | When to persist query planner statistics |
 | `WalPreallocationChunkBytes` | `long` | `0` (disabled) | Pre-reserve WAL file space in chunks of this size |
 | `PagerOptions` | `PagerOptions` | `new()` | Page cache, locking, and checkpoint settings |
@@ -98,9 +100,11 @@ Controls how WAL commits are flushed to disk.
 | `Durable` | Forces an OS-level flush on every commit. Maximum safety, analogous to SQLite `synchronous=FULL`. This is the default. |
 | `Buffered` | Flushes managed buffers to the OS but does not force an OS flush per commit. Higher throughput at the cost of potential data loss of recent commits on power failure. Analogous to SQLite `synchronous=NORMAL`. |
 
-### DurableCommitBatchWindow
+### DurableGroupCommit
 
-When using `Durable` mode, setting this to a non-zero `TimeSpan` (e.g., `TimeSpan.FromMilliseconds(5)`) causes the engine to batch concurrent commits into a single OS flush. This amortizes the cost of `fsync` across multiple writers without reducing durability guarantees for any individual commit.
+When using `Durable` mode, setting `DurableGroupCommit.BatchWindow` to a non-zero `TimeSpan` (for example, `TimeSpan.FromMilliseconds(0.25)`) allows the engine to batch concurrent commits into a single OS flush. This amortizes the cost of `fsync` across multiple writers without reducing durability guarantees for any individual commit.
+
+`DurableCommitBatchWindow` remains available as a compatibility alias for the same `BatchWindow` value.
 
 ### AdvisoryStatisticsPersistenceMode
 

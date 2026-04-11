@@ -1053,7 +1053,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_batch_test_{Guid.NewGuid():N}.db");
         var options = new DatabaseOptions()
-            .ConfigureStorageEngine(builder => builder.UseDurableCommitBatchWindow(TimeSpan.FromMilliseconds(1)));
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(1)));
 
         Database? db = null;
         try
@@ -1120,7 +1120,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_snapshot_cache_test_{Guid.NewGuid():N}.db");
         var options = new DatabaseOptions()
-            .ConfigureStorageEngine(builder => builder.UseDurableCommitBatchWindow(TimeSpan.FromMilliseconds(1)));
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(1)));
 
         Database? db = null;
         try

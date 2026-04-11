@@ -92,7 +92,7 @@ await using var db = await Database.OpenAsync("ingest.cdb", options);
 
 Treat this as a measure-first preset rather than a new baseline. The preset now deliberately separates exact committed-row durability from advisory planner-stat persistence: committed user rows remain WAL-durable per commit, while `sys.table_stats.row_count_is_exact` and stale column-stat tracking make any deferred planner metadata explicit after reopen/recovery. In the latest `durable-sql-batching` median-of-3 run, analyzed single-row durable SQL measured about `267.8 ops/sec` on `UseWriteOptimizedPreset()` and about `261.4 ops/sec` on `UseLowLatencyDurableWritePreset()`. The current biggest durable ingest win is still explicit transaction batching, not the low-latency preset by itself.
 
-If you want to experiment with durable group commit, the storage builder now exposes `UseDurableCommitBatchWindow(...)`:
+If you want to experiment with durable group commit, the storage builder now exposes `UseDurableGroupCommit(...)`:
 
 ```csharp
 using CSharpDB.Engine;
@@ -101,13 +101,15 @@ var options = new DatabaseOptions()
     .ConfigureStorageEngine(builder =>
     {
         builder.UseWriteOptimizedPreset();
-        builder.UseDurableCommitBatchWindow(TimeSpan.FromMilliseconds(0.25));
+        builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25));
     });
 
 await using var db = await Database.OpenAsync("ingest.cdb", options);
 ```
 
-Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the stable March 28 concurrent median-of-3 rerun, `250us` was the best `4`-writer row at about `553.4 commits/sec` and the narrow best pure batch-window `8`-writer row at about `1070.4 commits/sec`, while the single-writer harness still regressed to about `267.2 ops/sec`. This should remain an opt-in knob for measured in-process contention rather than a new default. When you test it, look at queue depth, commits per flush, and latency percentiles in addition to raw throughput.
+Keep this at `TimeSpan.Zero` unless you have benchmark data for your workload. The delay only affects file-backed `Durable` commits and trades commit latency for more opportunity to share one OS flush across multiple writers. The flush leader now skips or short-circuits that wait once the pending commit queue is already large enough, so the option behaves more like "batch briefly when lightly contended" than "always sleep before every durable flush." In the stable March 28 concurrent median-of-3 rerun, `250us` was the best `4`-writer row at about `553.4 commits/sec` and the narrow best pure batch-window `8`-writer row at about `1070.4 commits/sec`, while the single-writer harness still regressed to about `267.2 ops/sec`. This should remain an opt-in knob for measured in-process contention rather than a new default. When you test it, look at queue depth, commits per flush, and latency percentiles in addition to raw throughput. `UseDurableCommitBatchWindow(...)` remains available as a compatibility alias for the same setting.
+
+One important constraint on the current engine shape: shared-`Database` implicit auto-commit writes still hold the engine write gate until `PagerCommitResult` completion, so they do not build a meaningful pending WAL commit queue today. The durable group-commit knob is therefore most relevant to overlapping explicit `WriteTransaction` commit paths and other flows that can reach the WAL pending-commit queue concurrently, not to a single shared `Database.ExecuteAsync(...)` hot loop.
 
 For sustained file-backed ingest, the builder also exposes `UseWalPreallocationChunkBytes(...)`:
 

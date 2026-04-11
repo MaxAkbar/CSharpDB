@@ -2,7 +2,7 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current top-level snapshot in this README centers on the April 7, 2026 validation refresh: a fresh full-surface `--all` sweep, an April 7 guardrail compare against the checked-in March 30 focused baseline, same-day durable and buffered `master-table` median-of-3 reruns, and same-day focused collection reruns after the collection write-path recovery work. Older archived spot-check notes are still called out inline where they remain useful, but the top-level tables below now publish the April 7 numbers.
+The current top-level snapshot in this README still centers on the April 7, 2026 validation refresh for the broad API and storage-mode tables: a fresh full-surface `--all` sweep, an April 7 guardrail compare against the checked-in March 30 focused baseline, same-day durable and buffered `master-table` median-of-3 reruns, and same-day focused collection reruns after the collection write-path recovery work. The dedicated multi-writer sections in this README now also include the April 10, 2026 Phase 3 closeout reruns for explicit `WriteTransaction`, concurrent durable auto-commit, and `--stress`.
 
 ## Latest Validation Snapshot
 
@@ -21,6 +21,23 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
 | Baseline used by release rerun | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
 | Release rerun note | `BenchmarkDotNet class refreshes were run sequentially before compare to avoid shared job-directory collisions between concurrent filtered runs.` |
 
+A separate multi-writer closeout rerun was completed on April 10, 2026 after the retained-WAL compaction fix used by incremental checkpoint finalization:
+
+```powershell
+dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -nologo -m:1 --filter "FullyQualifiedName!~SampleSmokeTests"
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-transaction-diagnostics --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-write-diagnostics --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --stress --repeat 3 --repro
+```
+
+| Item | Result |
+|------|--------|
+| Non-sample validation result | `1081/1081 passing` |
+| Explicit `WriteTransaction` artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260410-134444-median-of-3.csv` |
+| Concurrent durable write artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260410-135529-median-of-3.csv` |
+| Stress artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260410-140205-median-of-3.csv` |
+| Closeout note | `The repeated April 10 rerun surfaced and then revalidated the retained-WAL compaction fix under preallocation/background checkpointing.` |
+
 A focused composite-index rerun was also completed on April 6, 2026 after the covered composite lookup fix:
 
 ```powershell
@@ -34,13 +51,15 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Unique covered composite 100K row | `2.392 us, 3.04 KB allocated` |
 | March 30 baseline reference | `3.108 us / 3.159 us, both at 10.63 KB allocated` |
 
-The active published snapshot combines the checked-in March 30, 2026 focused baseline with the latest April 7, 2026 broad and focused reruns:
+The active published snapshot combines the checked-in March 30, 2026 focused baseline with the latest April 7, 2026 broad and focused reruns plus the April 10, 2026 multi-writer closeout reruns:
 
 ```powershell
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --all
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-diagnostics --repeat 3 --repro
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --durable-sql-batching --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-transaction-diagnostics --repeat 3 --repro
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-write-diagnostics --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --stress --repeat 3 --repro
 ```
 
 | Item | Result |
@@ -55,7 +74,9 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Hybrid post-checkpoint sweep | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260407-071502.csv` |
 | Durable batching artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260407-071043.csv` |
 | Durable write artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260330-121058-median-of-3.csv` |
-| Concurrent durable write artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260407-070906.csv` |
+| Explicit `WriteTransaction` artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260410-134444-median-of-3.csv` |
+| Concurrent durable write artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260410-135529-median-of-3.csv` |
+| Stress artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260410-140205-median-of-3.csv` |
 | Focused collection steady-state rerun | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260407-162051.csv` |
 | Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260407-202549-median-of-3.csv` |
 | Buffered master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260407-204058-median-of-3.csv` |
@@ -66,8 +87,10 @@ High-level takeaways from the current refresh:
 - The focused validation baseline still points to the checked-in March 30 snapshot built on `main`.
 - The top-level SQL and collection API tables below now use the April 7 broad durable sweep.
 - The storage-mode tables below use the April 7 focused hybrid artifacts, with the hot steady-state collection rows refreshed again from the later April 7 rerun after collection write-path fixes.
+- The explicit multi-writer, concurrent durable write, and stress summaries below now use the April 10 `median-of-3` closeout artifacts.
 - The durable and buffered master comparison tables now use fresh April 7 `median-of-3` snapshots.
 - The current in-memory, cold-lookup, payload, schema-breadth, and collection-index micro spot checks now use April 7 BenchmarkDotNet artifacts.
+- The April 10 closeout also revalidated the runnable non-sample test suite at `1081/1081` after the retained-WAL compaction fix.
 
 - `Focused validation baseline refresh on March 30, 2026: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507`
 - `Broad main sweep on April 7, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260407-070125.csv`
@@ -81,7 +104,9 @@ High-level takeaways from the current refresh:
 - `Hybrid post-checkpoint sweep on April 7, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260407-071502.csv`
 - `Durable SQL batching capture on April 7, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260407-071043.csv`
 - `Durable write median-of-3 capture on March 30, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-diagnostics-20260330-121058-median-of-3.csv`
-- `Concurrent durable write capture on April 7, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260407-070906.csv`
+- `Explicit WriteTransaction median-of-3 capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260410-134444-median-of-3.csv`
+- `Concurrent durable write capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260410-135529-median-of-3.csv`
+- `Stress median-of-3 capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260410-140205-median-of-3.csv`
 - `Broad micro sweep on April 7, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.*-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv`
 - `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv`
@@ -119,7 +144,7 @@ High-level takeaways from the current refresh:
 | WAL Mode | Enabled (redo-log with auto-checkpoint at 1,000 frames) |
 | Page Cache | LRU page cache (in-memory) |
 | WAL Index | Hash map (O(1) page lookup) |
-| Benchmark Mode | April 7 top-level snapshot uses a broad `--all` sweep plus same-day guardrail, storage-mode, and master-table reruns against the checked-in March 30 baseline |
+| Benchmark Mode | Broad API/storage tables use the April 7 `--all` and focused reruns against the checked-in March 30 baseline; explicit multi-writer, concurrent durable write, and stress tables use the April 10 median-of-3 closeout artifacts |
 
 ## Running Benchmarks
 
@@ -176,9 +201,14 @@ dotnet run -c Release -- --durable-sql-batching --repeat 3 --repro
 
 # Explicit WriteTransaction diagnostics
 dotnet run -c Release -- --write-transaction-diagnostics --repeat 3 --repro
+dotnet run -c Release -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB --repro
 
 # Concurrent durable write diagnostics
 dotnet run -c Release -- --concurrent-write-diagnostics --repeat 3 --repro
+dotnet run -c Release -- --concurrent-write-scenario W8_Batch250us_Prealloc1MiB --repro
+
+# Multi-writer stress closeout
+dotnet run -c Release -- --stress --repeat 3 --repro
 
 # Focused direct hybrid transport comparison (no gRPC)
 dotnet run -c Release -- --direct-file-cache-transport --repeat 3 --repro
@@ -248,6 +278,38 @@ Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table h
 - `HotInsert`: concurrent explicit inserts into one table, which intentionally exposes leaf-page conflict pressure and retry behavior.
 - `DisjointUpdate`: concurrent explicit updates against far-apart preseeded rows, which minimizes page conflicts so commit-window coalescing and WAL batching can be observed directly.
 - The tuned rows keep the same batch-window and WAL-preallocation knobs as the existing concurrent auto-commit suite so phase-1 transaction behavior can be compared against the older shared-engine write benchmark.
+
+### Explicit WriteTransaction Snapshot (April 10, 2026 median-of-3)
+
+The current explicit multi-writer snapshot uses `write-transaction-diagnostics-20260410-134444-median-of-3.csv`.
+
+| Scenario | Durable Tx/sec | Rows/sec | P99 | Notes |
+|----------|----------------|----------|-----|-------|
+| `W1 Rows1 Batch0` | `275.4` | `275.4` | `5.54 ms` | Single-writer durable baseline on the phase-1 API |
+| `W8 Rows1 Batch0` | `278.7` | `278.7` | `53.64 ms` | Hot unseeded right-edge inserts, `0.19` retries/commit |
+| `W8 Rows1 Batch0 Seed16K` | `341.8` | `341.8` | `49.34 ms` | Same workload after pre-seeding the tree to steady state |
+| `W8 Rows10 Batch0 Seed16K` | `377.7` | `3778.0` | `72.80 ms` | Best hot steady-state insert row in the closeout artifact |
+| `W8 Rows10 Batch250us Prealloc1MiB` | `342.9` | `3458.6` | `74.66 ms` | Tuned hot-insert row after the late Phase 2 / Phase 3 storage work |
+| `UpdateDisjoint W4 Rows1 Batch250us` | `449.8` | `449.8` | `21.78 ms` | Commit coalescing becomes visible once page conflicts are low |
+| `UpdateDisjoint W8 Rows1 Batch250us Prealloc1MiB` | `590.4` | `590.4` | `30.65 ms` | Best disjoint update row, `3.37` commits/flush |
+
+Targeted rerun: `write-transaction-scenario-UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB-20260411-052431-median-of-3.csv`
+
+| Scenario | Durable Tx/sec | Rows/sec | P99 | Notes |
+|----------|----------------|----------|-----|-------|
+| `UpdateDisjoint W8 Rows1 Batch250us Prealloc1MiB` | `727.0` | `727.0` | `27.52 ms` | WAL pending-commit writes coalesced into one combined write per contiguous flush batch; median rerun also dropped `avgPendingCommitWriteMs` to about `0.09-0.10 ms` while `avgDurableFlushMs` stayed around `2.00 ms`, so the remaining ceiling is still the durable flush itself rather than pager-side serialization |
+
+### Multi-Writer Stress Snapshot (April 10, 2026 median-of-3)
+
+The current stress closeout uses `stress-20260410-140205-median-of-3.csv`.
+
+| Scenario | Ops/sec | P99 | Notes |
+|----------|---------|-----|-------|
+| `CrashRecovery_50cycles` | `58.6` | `22.77 ms` | Closeout rerun after the retained-WAL compaction fix |
+| `LogicalConflictRange_Overlap_ReadTx_5s` | `96.5` | `16.88 ms` | `63.1%` read conflict rate under overlapping ranges |
+| `LogicalConflictRange_Overlap_WriteTx_5s` | `154.3` | `34.28 ms` | Writers stay mostly successful; reader side absorbs the conflict load |
+| `LogicalConflictRange_Disjoint_ReadTx_5s` | `261.5` | `18.89 ms` | `0.0%` read conflict rate for disjoint ranges |
+| `LogicalConflictRange_Disjoint_WriteTx_5s` | `156.0` | `34.14 ms` | `1.5%` writer conflict rate while disjoint readers stay clean |
 
 ### New In-Memory Suites
 
@@ -685,12 +747,14 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - The April 7, 2026 `durable-sql-batching-20260407-071043.csv` run again showed that application-level batching is the largest lever. Auto-commit single-row SQL stayed around `281.6 ops/sec`, but explicit transactions scaled to about `2906 rows/sec` at `10` rows/commit, `27911 rows/sec` at `100` rows/commit, and `220172 rows/sec` at `1000` rows/commit.
 - The same batching run showed that analyzed `UseLowLatencyDurableWritePreset()` was clearly ahead of the analyzed `UseWriteOptimizedPreset()` row on this runner: `295.3 ops/sec` vs `281.2 ops/sec`. Treat the low-latency preset as measure-first rather than a blanket default change.
 - Commit-path diagnostics from the batching run still pointed at the durable flush as the dominant fixed cost for single-row durable SQL. WAL append, publish-batch, finalize, and checkpoint-decision stages remained comparatively small.
-- The latest dedicated single-writer `write-diagnostics-20260330-121058-median-of-3.csv` rerun stayed in a tight `270-280 ops/sec` band. `FrameCount(2048)` and `FrameCount(4096)` both landed at `280 ops/sec`, `WalSize(8 MiB)` and `FrameCount(1000)` both reached `279`, and the background / preallocation / `BatchWindow(250us)` variants clustered just behind them.
-- Background auto-checkpointing still matters because it keeps checkpoint work off the triggering commit. In the March 30 rerun, the background rows again recorded `0` commits that paid checkpoint cost while staying close to the top single-writer rows.
-- `BatchWindow(250us)` remained a non-win on the single-writer path at `272 ops/sec`, and `BatchWindow(1ms)` remained clearly bad at `67 ops/sec`. Single-writer durable commits still do not have enough contention to amortize an intentional wait.
-- The latest April 7 shared-engine contention sweep in `concurrent-write-diagnostics-20260407-070906.csv` kept the expected `8`-writer range. `W8_Batch250us_Prealloc1MiB` led at `1128.1 commits/sec`, followed closely by `W8_Batch250us` at `1126.9`, `W8_Batch0_Prealloc1MiB` at `1116.2`, `W8_Batch500us` at `1109.8`, and `W8_Batch0` at `1091.4`.
-- In that same April 7 sweep, the `4`-writer rows stayed in a tight band: `W4_Batch0` led at `569.5 commits/sec`, `W4_Batch500us` reached `563.4`, and `W4_Batch250us` landed at `548.7`.
-- Recommended interpretation after the latest reruns: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, and benchmark explicit transaction batching before batch-window or preallocation tuning. For shared-instance `8`-writer contention on this runner, benchmark `UseWalPreallocationChunkBytes(1 * 1024 * 1024)` with `BatchWindow(250us)` first and `BatchWindow(0)` second. For `4` writers, benchmark `BatchWindow(0)` first.
+- The latest dedicated single-writer `write-diagnostics` reference point is still the March 30, 2026 `write-diagnostics-20260330-121058-median-of-3.csv` rerun, which stayed in a tight `270-280 ops/sec` band. The April 10 closeout targeted the newer explicit `WriteTransaction`, concurrent durable auto-commit, and stress suites instead of rerunning that older single-writer matrix.
+- The April 10 explicit `WriteTransaction` closeout in `write-transaction-diagnostics-20260410-134444-median-of-3.csv` shows the current shape clearly: hot unseeded `W8 Rows1 Batch0` landed at `278.7 tx/sec`, the same workload improved to `341.8 tx/sec` after seeding `16K` rows, the best hot steady-state insert row reached `377.7 tx/sec` / `3778.0 rows/sec`, and low-conflict disjoint updates reached `590.4 tx/sec` at `W8`.
+- The April 10 concurrent durable auto-commit closeout in `concurrent-write-diagnostics-20260410-135529-median-of-3.csv` is now tightly clustered around `463-468 commits/sec` without preallocation. `W8_Batch250us` was the best `8`-writer no-preallocation row at `467.3`, but it was effectively tied with `W8_Batch0` at `466.7`. `W4_Batch500us` led the `4`-writer rows at `468.3`, also effectively tied with `W4_Batch0` at `468.1`.
+- The same April 10 concurrent closeout showed no win from `1 MiB` WAL preallocation on this runner: `W8_Batch0_Prealloc1MiB` dropped to `420.0 commits/sec` and `W8_Batch250us_Prealloc1MiB` landed at `420.9`.
+- A fresh April 11, 2026 verification run through the new `UseDurableGroupCommit(...)` API (`concurrent-write-diagnostics-20260411-024530.csv`) kept `maxPendingCommits = 1` and `commitsPerFlush = 1.00` on every shared-engine auto-commit row. That confirms the API cleanup did not change runtime behavior and that the current shared-`Database` auto-commit path is still serialized above the WAL pending-commit queue.
+- The April 10 stress closeout in `stress-20260410-140205-median-of-3.csv` still shows the intended logical-conflict separation: overlapping read transactions fell to `96.5 ops/sec` with a `63.1%` conflict rate, while disjoint read transactions reached `261.5 ops/sec` with `0.0%` conflicts. Disjoint write transactions held `156.0 ops/sec` with only `1.5%` conflicts.
+- Commit-path diagnostics across the April 10 multi-writer closeout still point at the durable flush as the dominant fixed cost. `maxPendingCommits` stayed at `1` in the auto-commit contention suite, so the closeout data did not justify optional parallel validation work on this runner.
+- Recommended interpretation after the latest reruns: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, benchmark application-level batching first, then benchmark the explicit `WriteTransaction` API on your actual conflict shape. If you intentionally test engine-side flush coalescing, use `builder.UseDurableGroupCommit(...)` rather than treating the raw batch window as an implicit default, but do not expect a shared-`Database` auto-commit loop to coalesce meaningfully on the current engine shape. On this runner, steady-state seeded/disjoint workloads benefited materially from the Phase 2/3 structural work, while hot unseeded inserts remained bounded by structural contention plus durable flush cost.
 - Recommended file-backed write-heavy preset: `builder.UseWriteOptimizedPreset()`. This is opt-in and does not change the engine default checkpoint policy.
 
 ## CSharpDB Storage Mode Comparison
@@ -841,20 +905,20 @@ This section stays write-focused because durability mode mostly changes commit c
 
 ### Concurrent Durable Writes (Single-Row Auto-Commit, CSharpDB Only)
 
-The table below uses the April 7, 2026 shared-engine artifact `concurrent-write-diagnostics-20260407-070906.csv`.
+The table below uses the April 10, 2026 shared-engine artifact `concurrent-write-diagnostics-20260410-135529-median-of-3.csv`.
 
 Each logical writer issues single-row `INSERT` statements with auto-commit against one shared `Database` instance. This is not an application-level batch-insert benchmark. `Durable Commits/sec` is the total successful commit rate across all writers combined. `Commit Coalescing Window` is the engine-side durable commit window; it may group overlapping commits at flush time, but it does not turn each writer into a multi-row transaction benchmark.
 
 | Scenario | Writers | Commit Coalescing Window | WAL Prealloc | Durable Commits/sec | Notes |
 |----------|---------|--------------------------|--------------|---------------------|-------|
-| CSharpDB SQL shared engine | 4 | `0` | `0` | `569.5` | Best 4-writer row in the April 7 sweep |
-| CSharpDB SQL shared engine | 4 | `250us` | `0` | `548.7` | Slightly below the 4-writer baseline |
-| CSharpDB SQL shared engine | 4 | `500us` | `0` | `563.4` | Nearly tied with the 4-writer baseline |
-| CSharpDB SQL shared engine | 8 | `0` | `0` | `1,091.4` | Baseline 8-writer shared-engine throughput |
-| CSharpDB SQL shared engine | 8 | `250us` | `0` | `1,126.9` | Best no-preallocation row in the current sweep |
-| CSharpDB SQL shared engine | 8 | `500us` | `0` | `1,109.8` | Close to the baseline and `250us` rows |
-| CSharpDB SQL shared engine | 8 | `0` | `1 MiB` | `1,116.2` | Preallocation helps without changing the batch window |
-| CSharpDB SQL shared engine | 8 | `250us` | `1 MiB` | `1,128.1` | Best preallocation row in the current sweep |
+| CSharpDB SQL shared engine | 4 | `0` | `0` | `468.1` | Essentially tied for the best 4-writer row |
+| CSharpDB SQL shared engine | 4 | `250us` | `0` | `461.0` | Slightly below the `0` / `500us` rows |
+| CSharpDB SQL shared engine | 4 | `500us` | `0` | `468.3` | Best 4-writer row, but only by noise-level margin |
+| CSharpDB SQL shared engine | 8 | `0` | `0` | `466.7` | Baseline 8-writer shared-engine throughput in the closeout sweep |
+| CSharpDB SQL shared engine | 8 | `250us` | `0` | `467.3` | Best 8-writer no-preallocation row, effectively tied with `0` |
+| CSharpDB SQL shared engine | 8 | `500us` | `0` | `463.5` | Slightly behind the other no-preallocation rows |
+| CSharpDB SQL shared engine | 8 | `0` | `1 MiB` | `420.0` | Preallocation regressed throughput on this runner |
+| CSharpDB SQL shared engine | 8 | `250us` | `1 MiB` | `420.9` | Slightly above `Batch0`, still below the no-preallocation rows |
 
 Hot-cache point-lookup reference for CSharpDB:
 

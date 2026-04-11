@@ -267,11 +267,25 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public void StorageEngineOptions_DefaultsToZeroDurableCommitBatchWindow()
+    public void StorageEngineOptions_DefaultsToDisabledDurableGroupCommit()
     {
         var options = new StorageEngineOptions();
 
+        Assert.Equal(DurableGroupCommitOptions.Disabled, options.DurableGroupCommit);
         Assert.Equal(TimeSpan.Zero, options.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void StorageEngineOptions_ObjectInitializer_DurableCommitBatchWindowAlias_RemainsSupported()
+    {
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
+        var options = new StorageEngineOptions
+        {
+            DurableCommitBatchWindow = batchWindow,
+        };
+
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.DurableGroupCommit);
+        Assert.Equal(batchWindow, options.DurableCommitBatchWindow);
     }
 
     [Fact]
@@ -292,13 +306,37 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public void DatabaseOptions_ConfigureStorageEngine_SetsDurableCommitBatchWindow()
+    public void DatabaseOptions_ConfigureStorageEngine_SetsDurableGroupCommit()
+    {
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
+
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(batchWindow));
+
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.StorageEngineOptions.DurableGroupCommit);
+        Assert.Equal(batchWindow, options.StorageEngineOptions.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_DisablesDurableGroupCommit()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25)))
+            .ConfigureStorageEngine(builder => builder.DisableDurableGroupCommit());
+
+        Assert.Equal(DurableGroupCommitOptions.Disabled, options.StorageEngineOptions.DurableGroupCommit);
+        Assert.Equal(TimeSpan.Zero, options.StorageEngineOptions.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_DurableCommitBatchWindowAlias_SetsDurableGroupCommit()
     {
         TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
 
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder => builder.UseDurableCommitBatchWindow(batchWindow));
 
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.StorageEngineOptions.DurableGroupCommit);
         Assert.Equal(batchWindow, options.StorageEngineOptions.DurableCommitBatchWindow);
     }
 

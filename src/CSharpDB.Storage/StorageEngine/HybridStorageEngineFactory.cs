@@ -34,7 +34,7 @@ internal static class HybridStorageEngineFactory
                 walIndex,
                 options.ChecksumProvider,
                 options.DurabilityMode,
-                options.DurableCommitBatchWindow,
+                options.DurableGroupCommit.BatchWindow,
                 options.WalPreallocationChunkBytes);
             pager = await Pager.CreateAsync(device, wal, walIndex, hybridPagerOptions, ct);
 

@@ -7,7 +7,7 @@ public sealed class StorageEngineOptionsBuilder
 {
     private PagerOptions _pagerOptions;
     private DurabilityMode _durabilityMode;
-    private TimeSpan _durableCommitBatchWindow;
+    private DurableGroupCommitOptions _durableGroupCommit;
     private AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private long _walPreallocationChunkBytes;
     private ISerializerProvider _serializerProvider;
@@ -26,7 +26,7 @@ public sealed class StorageEngineOptionsBuilder
 
         _pagerOptions = options.PagerOptions;
         _durabilityMode = options.DurabilityMode;
-        _durableCommitBatchWindow = options.DurableCommitBatchWindow;
+        _durableGroupCommit = options.DurableGroupCommit;
         _advisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode;
         _walPreallocationChunkBytes = options.WalPreallocationChunkBytes;
         _serializerProvider = options.SerializerProvider;
@@ -55,14 +55,29 @@ public sealed class StorageEngineOptionsBuilder
         return this;
     }
 
-    public StorageEngineOptionsBuilder UseDurableCommitBatchWindow(TimeSpan batchWindow)
+    public StorageEngineOptionsBuilder UseDurableGroupCommit(TimeSpan batchWindow)
     {
-        if (batchWindow < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(batchWindow), "Value must be non-negative.");
-
-        _durableCommitBatchWindow = batchWindow;
+        _durableGroupCommit = new DurableGroupCommitOptions(batchWindow);
         return this;
     }
+
+    public StorageEngineOptionsBuilder UseDurableGroupCommit(DurableGroupCommitOptions options)
+    {
+        _durableGroupCommit = options;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder DisableDurableGroupCommit()
+    {
+        _durableGroupCommit = DurableGroupCommitOptions.Disabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Compatibility alias for <see cref="UseDurableGroupCommit(TimeSpan)"/>.
+    /// </summary>
+    public StorageEngineOptionsBuilder UseDurableCommitBatchWindow(TimeSpan batchWindow)
+        => UseDurableGroupCommit(batchWindow);
 
     public StorageEngineOptionsBuilder UseWalPreallocationChunkBytes(long chunkBytes)
     {
@@ -322,7 +337,7 @@ public sealed class StorageEngineOptionsBuilder
         return new StorageEngineOptions
         {
             DurabilityMode = _durabilityMode,
-            DurableCommitBatchWindow = _durableCommitBatchWindow,
+            DurableGroupCommit = _durableGroupCommit,
             AdvisoryStatisticsPersistenceMode = _advisoryStatisticsPersistenceMode,
             WalPreallocationChunkBytes = _walPreallocationChunkBytes,
             PagerOptions = _pagerOptions,
