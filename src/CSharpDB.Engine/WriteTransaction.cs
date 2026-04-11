@@ -40,14 +40,10 @@ public sealed class WriteTransaction : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
         EnsureActive();
 
-        using var binding = _storageTransaction.Bind();
         Statement statement = Parser.TryParseSimpleSelect(sql, out var simpleSelect)
             ? simpleSelect
             : Parser.Parse(sql);
-        QueryResult result = await _planner.ExecuteAsync(statement, ct);
-        if (result.IsQuery)
-            result.SetExecutionScopeFactory(_storageTransaction.Bind);
-        return result;
+        return await ExecuteAsyncCore(statement, _storageTransaction.Bind, ct);
     }
 
     /// <summary>
@@ -58,11 +54,38 @@ public sealed class WriteTransaction : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(statement);
         EnsureActive();
 
-        using var binding = _storageTransaction.Bind();
-        QueryResult result = await _planner.ExecuteAsync(statement, ct);
-        if (result.IsQuery)
-            result.SetExecutionScopeFactory(_storageTransaction.Bind);
-        return result;
+        return await ExecuteAsyncCore(statement, _storageTransaction.Bind, ct);
+    }
+
+    /// <summary>
+    /// Execute a read-only query within this transaction without contributing logical read conflict ranges.
+    /// This weakens serializable conflict tracking for the specific query only.
+    /// </summary>
+    public async ValueTask<QueryResult> ExecuteSnapshotReadAsync(string sql, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        EnsureActive();
+
+        SqlStatementClassification classification = SqlStatementClassifier.Classify(sql);
+        if (!classification.IsReadOnly)
+            throw new InvalidOperationException("Snapshot-read execution only supports read-only statements.");
+
+        return await ExecuteAsyncCore(classification.Statement, _storageTransaction.BindSnapshotRead, ct);
+    }
+
+    /// <summary>
+    /// Execute a read-only query within this transaction without contributing logical read conflict ranges.
+    /// This weakens serializable conflict tracking for the specific query only.
+    /// </summary>
+    public async ValueTask<QueryResult> ExecuteSnapshotReadAsync(Statement statement, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(statement);
+        EnsureActive();
+
+        if (!SqlStatementClassifier.IsReadOnly(statement))
+            throw new InvalidOperationException("Snapshot-read execution only supports read-only statements.");
+
+        return await ExecuteAsyncCore(statement, _storageTransaction.BindSnapshotRead, ct);
     }
 
     /// <summary>
@@ -142,5 +165,17 @@ public sealed class WriteTransaction : IAsyncDisposable
     {
         if (_completed)
             throw new InvalidOperationException("The transaction has already completed.");
+    }
+
+    private async ValueTask<QueryResult> ExecuteAsyncCore(
+        Statement statement,
+        Func<IDisposable> executionScopeFactory,
+        CancellationToken ct)
+    {
+        using var scope = executionScopeFactory();
+        QueryResult result = await _planner.ExecuteAsync(statement, ct);
+        if (result.IsQuery)
+            result.SetExecutionScopeFactory(executionScopeFactory);
+        return result;
     }
 }

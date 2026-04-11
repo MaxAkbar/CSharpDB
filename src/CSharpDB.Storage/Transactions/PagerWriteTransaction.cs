@@ -16,6 +16,9 @@ internal sealed class PagerWriteTransaction : IAsyncDisposable
 
     internal IDisposable Bind() => _pager.BindTransaction(_state);
 
+    internal IDisposable BindSnapshotRead()
+        => new CombinedBinding(Bind(), _pager.SuppressLogicalReadTracking());
+
     internal async ValueTask<PagerCommitResult> BeginCommitAsync(CancellationToken ct = default)
     {
         using var binding = Bind();
@@ -43,5 +46,33 @@ internal sealed class PagerWriteTransaction : IAsyncDisposable
             return;
 
         await RollbackAsync();
+    }
+
+    private sealed class CombinedBinding : IDisposable
+    {
+        private readonly IDisposable _binding;
+        private readonly IDisposable _suppression;
+        private int _disposed;
+
+        public CombinedBinding(IDisposable binding, IDisposable suppression)
+        {
+            _binding = binding ?? throw new ArgumentNullException(nameof(binding));
+            _suppression = suppression ?? throw new ArgumentNullException(nameof(suppression));
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            try
+            {
+                _suppression.Dispose();
+            }
+            finally
+            {
+                _binding.Dispose();
+            }
+        }
     }
 }

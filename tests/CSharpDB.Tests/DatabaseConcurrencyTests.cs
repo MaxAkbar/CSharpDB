@@ -496,6 +496,27 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SnapshotReadOnlyExplicitWriteTransaction_FullTableScanCanCommitAfterConcurrentInsertIntoMatchingRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE range_scan_items_snapshot (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO range_scan_items_snapshot VALUES (1, 5)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+        await using (var result = await tx.ExecuteSnapshotReadAsync("SELECT COUNT(*) FROM range_scan_items_snapshot WHERE value >= 10", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(0L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO range_scan_items_snapshot VALUES (2, 20)", ct);
+
+        await tx.CommitAsync(ct);
+
+        Assert.Equal(2L, await ScalarIntAsync("SELECT COUNT(*) FROM range_scan_items_snapshot", ct));
+    }
+
+    [Fact]
     public async Task ReadOnlyExplicitWriteTransaction_FilteredTableScan_AllowsConcurrentInsertOutsidePredicateRange()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -513,6 +534,44 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         await _db.ExecuteAsync("INSERT INTO range_scan_items_ok VALUES (3, 5)", ct);
 
         await tx.CommitAsync(ct);
+    }
+
+    [Fact]
+    public async Task SnapshotReadScope_DoesNotDisableForeignKeyValidationForLaterWrites()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE snapshot_fk_parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE snapshot_fk_children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES snapshot_fk_parents(id))", ct);
+        await _db.ExecuteAsync("INSERT INTO snapshot_fk_parents VALUES (1)", ct);
+
+        await using var childTx = await _db.BeginWriteTransactionAsync(ct);
+        await using var parentTx = await _db.BeginWriteTransactionAsync(ct);
+
+        await using (var result = await childTx.ExecuteSnapshotReadAsync("SELECT COUNT(*) FROM snapshot_fk_parents WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+        }
+
+        await childTx.ExecuteAsync("INSERT INTO snapshot_fk_children VALUES (1, 1)", ct);
+        await parentTx.ExecuteAsync("DELETE FROM snapshot_fk_parents WHERE id = 1", ct);
+
+        await parentTx.CommitAsync(ct);
+        await Assert.ThrowsAsync<CSharpDbConflictException>(() => childTx.CommitAsync(ct).AsTask());
+    }
+
+    [Fact]
+    public async Task SnapshotReadScope_RejectsMutatingStatements()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE snapshot_read_rejects_writes (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+
+        await using var tx = await _db.BeginWriteTransactionAsync(ct);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            tx.ExecuteSnapshotReadAsync("INSERT INTO snapshot_read_rejects_writes VALUES (1, 10)", ct).AsTask());
+
+        Assert.Equal("Snapshot-read execution only supports read-only statements.", ex.Message);
     }
 
     [Fact]

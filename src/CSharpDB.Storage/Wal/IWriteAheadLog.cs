@@ -9,6 +9,7 @@ public interface IWriteAheadLog : IAsyncDisposable
     bool IsCheckpointCopyComplete { get; }
     bool HasPendingCommitWork { get; }
     bool IsOpen { get; }
+    bool TryGetCheckpointRetainedWalStartOffset(out long walOffset);
     ValueTask OpenAsync(uint currentDbPageCount, CancellationToken cancellationToken = default);
     void BeginTransaction();
     ValueTask AppendFrameAsync(uint pageId, ReadOnlyMemory<byte> pageData, CancellationToken cancellationToken = default);

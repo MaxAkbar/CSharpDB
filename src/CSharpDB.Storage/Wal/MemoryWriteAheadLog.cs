@@ -76,6 +76,17 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
     public bool IsCheckpointCopyComplete =>
         _incrementalCheckpoint is not null &&
         _incrementalCheckpoint.NextPageIndex >= _incrementalCheckpoint.CommittedPageCount;
+    public bool TryGetCheckpointRetainedWalStartOffset(out long walOffset)
+    {
+        if (_incrementalCheckpoint is { } checkpoint)
+        {
+            walOffset = checkpoint.RetainedWalStartOffset;
+            return true;
+        }
+
+        walOffset = 0;
+        return false;
+    }
     public bool HasPendingCommitWork => false;
     public bool IsOpen => _isOpen;
 

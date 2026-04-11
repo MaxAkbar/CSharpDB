@@ -27,6 +27,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly CheckpointCoordinator? _checkpoints;
     private readonly Func<CancellationToken, ValueTask>? _checkpointAction;
     private readonly AsyncLocal<PagerTransactionState?> _ambientTransaction = new();
+    private readonly AsyncLocal<int> _suppressedLogicalReadTrackingDepth = new();
     private readonly object _legacyLogicalWriteGate = new();
     private readonly HashSet<LogicalConflictKey> _legacyLogicalWriteKeys = [];
 
@@ -716,7 +717,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 {
                     try
                     {
-                        ReleaseReaderSnapshot();
+                        ReleaseReaderSnapshot(snapshot);
                     }
                     finally
                     {
@@ -739,6 +740,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         PagerTransactionState? previous = _ambientTransaction.Value;
         _ambientTransaction.Value = state;
         return new AmbientTransactionBinding(_ambientTransaction, previous);
+    }
+
+    internal IDisposable SuppressLogicalReadTracking()
+    {
+        int previousDepth = _suppressedLogicalReadTrackingDepth.Value;
+        _suppressedLogicalReadTrackingDepth.Value = previousDepth + 1;
+        return new LogicalReadTrackingSuppression(_suppressedLogicalReadTrackingDepth, previousDepth);
     }
 
     internal void RecordLogicalIndexRead(string indexName, long key)
@@ -785,6 +793,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (GetCurrentTransaction() is not { } tx)
             return;
+        if (_suppressedLogicalReadTrackingDepth.Value > 0)
+            return;
 
         tx.LogicalReadKeys.Add(new LogicalConflictKey(resourceName, key));
     }
@@ -810,6 +820,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private void RecordLogicalRange(string resourceName, IndexScanRange range)
     {
         if (GetCurrentTransaction() is not { } tx)
+            return;
+        if (_suppressedLogicalReadTrackingDepth.Value > 0)
             return;
 
         tx.LogicalReadRanges.Add(new LogicalConflictRange(resourceName, range));
@@ -1679,6 +1691,29 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
+    private sealed class LogicalReadTrackingSuppression : IDisposable
+    {
+        private readonly AsyncLocal<int> _suppressedLogicalReadTrackingDepth;
+        private readonly int _previousDepth;
+        private int _disposed;
+
+        public LogicalReadTrackingSuppression(
+            AsyncLocal<int> suppressedLogicalReadTrackingDepth,
+            int previousDepth)
+        {
+            _suppressedLogicalReadTrackingDepth = suppressedLogicalReadTrackingDepth;
+            _previousDepth = previousDepth;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            _suppressedLogicalReadTrackingDepth.Value = _previousDepth;
+        }
+    }
+
     private void ReadFileHeaderFrom(byte[] page0)
     {
         PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
@@ -1767,37 +1802,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_checkpoints is null || _checkpointAction is null)
             return false;
 
-        IDisposable? checkpointBarrier = _transactions is not null
-            ? await _transactions.AcquireCheckpointBarrierAsync(ct)
-            : null;
+        int frameCount = _walIndex.FrameCount;
+        bool checkpointRan = false;
 
-        try
+        if (_hasInterceptor)
         {
-            int frameCount = _walIndex.FrameCount;
-            bool checkpointRan = false;
-
-            if (_hasInterceptor)
-            {
-                bool checkpointSucceeded = false;
-                await _interceptor.OnCheckpointStartAsync(frameCount, ct);
-                try
-                {
-                    await _checkpoints.RunCheckpointAsync(
-                        frameCount,
-                        async innerCt =>
-                        {
-                            checkpointRan = true;
-                            await _checkpointAction(innerCt);
-                        },
-                        ct);
-                    checkpointSucceeded = checkpointRan;
-                }
-                finally
-                {
-                    await _interceptor.OnCheckpointEndAsync(frameCount, checkpointSucceeded, ct);
-                }
-            }
-            else
+            bool checkpointSucceeded = false;
+            await _interceptor.OnCheckpointStartAsync(frameCount, ct);
+            try
             {
                 await _checkpoints.RunCheckpointAsync(
                     frameCount,
@@ -1807,14 +1819,30 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         await _checkpointAction(innerCt);
                     },
                     ct);
+                if (await TryFinalizeCheckpointAsync(ct))
+                    checkpointRan = true;
+                checkpointSucceeded = checkpointRan;
             }
-
-            return checkpointRan;
+            finally
+            {
+                await _interceptor.OnCheckpointEndAsync(frameCount, checkpointSucceeded, ct);
+            }
         }
-        finally
+        else
         {
-            checkpointBarrier?.Dispose();
+            await _checkpoints.RunCheckpointAsync(
+                frameCount,
+                async innerCt =>
+                {
+                    checkpointRan = true;
+                    await _checkpointAction(innerCt);
+                },
+                ct);
+            if (await TryFinalizeCheckpointAsync(ct))
+                checkpointRan = true;
         }
+
+        return checkpointRan;
     }
 
     private async ValueTask RunBackgroundCheckpointStepWithInterceptorsAsync(CancellationToken ct)
@@ -1822,41 +1850,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_checkpoints is null)
             return;
 
-        IDisposable? checkpointBarrier = _transactions is not null
-            ? await _transactions.AcquireCheckpointBarrierAsync(ct)
-            : null;
-
-        try
+        while (true)
         {
-            while (true)
+            if (!HasCheckpointWorkPending())
             {
-                if (!HasCheckpointWorkPending())
-                {
-                    _checkpoints.ClearDeferredCheckpointRequest();
-                    return;
-                }
-
-                bool checkpointRan = await RunBackgroundCheckpointStepAsync(ct);
-                if (!checkpointRan)
-                    return;
-
-                if (!HasCheckpointWorkPending())
-                {
-                    _checkpoints.ClearDeferredCheckpointRequest();
-                    return;
-                }
-
-                if (_checkpoints.ActiveReaderCount > 0 && _wal.IsCheckpointCopyComplete)
-                    return;
-
-                // Keep draining while the pager is idle. The checkpoint barrier is already held
-                // for this worker, so yielding here only makes completion depend on thread-pool
-                // scheduling rather than allowing additional writer interleaving.
+                _checkpoints.ClearDeferredCheckpointRequest();
+                return;
             }
-        }
-        finally
-        {
-            checkpointBarrier?.Dispose();
+
+            bool checkpointRan = await RunBackgroundCheckpointStepAsync(ct);
+            if (!checkpointRan)
+                return;
+
+            if (!HasCheckpointWorkPending())
+            {
+                _checkpoints.ClearDeferredCheckpointRequest();
+                return;
+            }
+
+            if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) && _wal.IsCheckpointCopyComplete)
+                return;
         }
     }
 
@@ -1884,6 +1897,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         await RunCheckpointStepCoreAsync(innerCt);
                     },
                     ct);
+                if (await TryFinalizeCheckpointAsync(ct))
+                    checkpointRan = true;
                 checkpointSucceeded = checkpointRan;
             }
             finally
@@ -1901,6 +1916,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     await RunCheckpointStepCoreAsync(innerCt);
                 },
                 ct);
+            if (await TryFinalizeCheckpointAsync(ct))
+                checkpointRan = true;
         }
 
         return checkpointRan;
@@ -1911,20 +1928,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
             return;
 
-        bool allowFinalize = _checkpoints?.ActiveReaderCount == 0;
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
-
-        await _wal.CheckpointAsync(_device, PageCount, ct, allowFinalize);
-
-        if (allowFinalize)
+        if (!wasCopyComplete)
         {
-            ProcessCrashInjector.TripIfRequested(
-                "checkpoint-after-wal-finalize",
-                "checkpoint-after-wal-finalize");
+            await _wal.CheckpointAsync(_device, PageCount, ct, allowFinalize: false);
+            if (_wal.IsCheckpointCopyComplete)
+                await RefreshStateAfterCheckpointCompletionAsync(ct);
         }
-
-        if (!_wal.HasPendingCheckpoint || (!wasCopyComplete && _wal.IsCheckpointCopyComplete))
-            await RefreshStateAfterCheckpointCompletionAsync(ct);
     }
 
     private async ValueTask RunCheckpointStepCoreAsync(CancellationToken ct)
@@ -1932,17 +1942,75 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
             return;
 
-        bool allowFinalize = _checkpoints?.ActiveReaderCount == 0;
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
-        bool completed = await _wal.CheckpointStepAsync(
-            _device,
-            PageCount,
-            _options.AutoCheckpointMaxPagesPerStep,
-            ct,
-            allowFinalize);
+        if (!wasCopyComplete)
+        {
+            bool completed = await _wal.CheckpointStepAsync(
+                _device,
+                PageCount,
+                _options.AutoCheckpointMaxPagesPerStep,
+                ct,
+                allowFinalize: false);
 
-        if (completed || (!wasCopyComplete && _wal.IsCheckpointCopyComplete))
-            await RefreshStateAfterCheckpointCompletionAsync(ct);
+            if (completed || _wal.IsCheckpointCopyComplete)
+                await RefreshStateAfterCheckpointCompletionAsync(ct);
+        }
+    }
+
+    private async ValueTask<bool> TryFinalizeCheckpointAsync(CancellationToken ct)
+    {
+        if (_checkpoints is null ||
+            _checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
+            !_wal.HasPendingCheckpoint ||
+            !_wal.IsCheckpointCopyComplete)
+        {
+            return false;
+        }
+
+        IDisposable? checkpointBarrier = _transactions is not null
+            ? await _transactions.AcquireCheckpointBarrierAsync(ct)
+            : null;
+
+        try
+        {
+            bool finalized = false;
+            int frameCount = _walIndex.FrameCount;
+            await _checkpoints.RunCheckpointAsync(
+                frameCount,
+                async innerCt =>
+                {
+                    if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
+                        !_wal.HasPendingCheckpoint ||
+                        !_wal.IsCheckpointCopyComplete)
+                    {
+                        return;
+                    }
+
+                    await _wal.CheckpointAsync(_device, PageCount, innerCt, allowFinalize: true);
+                    ProcessCrashInjector.TripIfRequested(
+                        "checkpoint-after-wal-finalize",
+                        "checkpoint-after-wal-finalize");
+
+                    if (!_wal.HasPendingCheckpoint)
+                        await RefreshStateAfterCheckpointCompletionAsync(innerCt);
+
+                    finalized = true;
+                },
+                ct);
+
+            if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
+                !_wal.HasPendingCheckpoint ||
+                !_wal.IsCheckpointCopyComplete)
+            {
+                return finalized;
+            }
+
+            return finalized;
+        }
+        finally
+        {
+            checkpointBarrier?.Dispose();
+        }
     }
 
     private async ValueTask RefreshStateAfterCheckpointCompletionAsync(CancellationToken ct)
@@ -1959,21 +2027,35 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public WalSnapshot AcquireReaderSnapshot()
     {
+        long? minimumWalOffset = GetMinimumWalOffsetForNewSnapshot();
         if (_checkpoints == null)
-            return _walIndex.TakeSnapshot();
+            return _walIndex.TakeSnapshot(minimumWalOffset);
 
-        return _checkpoints.AcquireReaderSnapshot(_walIndex);
+        return _checkpoints.AcquireReaderSnapshot(_walIndex, minimumWalOffset);
     }
 
     /// <summary>
     /// Release a reader snapshot.
     /// Decrements active reader count, allowing checkpoint to proceed.
     /// </summary>
-    public void ReleaseReaderSnapshot()
+    public void ReleaseReaderSnapshot(WalSnapshot snapshot)
     {
-        bool drained = _checkpoints?.ReleaseReaderSnapshot() == true;
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        bool drained = _checkpoints?.ReleaseReaderSnapshot(snapshot) == true;
         if (drained)
             ScheduleBackgroundCheckpointIfNeeded();
+    }
+
+    private long? GetMinimumWalOffsetForNewSnapshot()
+    {
+        if (!_wal.IsCheckpointCopyComplete ||
+            !_wal.TryGetCheckpointRetainedWalStartOffset(out long retainedWalStartOffset))
+        {
+            return null;
+        }
+
+        return retainedWalStartOffset;
     }
 
     public async ValueTask DisposeAsync()

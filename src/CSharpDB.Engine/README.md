@@ -267,6 +267,29 @@ Reuse the same `ReaderSession` for a burst of related reads when possible. The
 current file-backed tuning benchmarks show that reusing a snapshot is
 materially cheaper than creating a new reader session for every single query.
 
+### Snapshot Reads Inside Write Transactions
+
+When you need a long-lived explicit `WriteTransaction` but some analytical
+reads inside it should not participate in logical read-conflict tracking, use
+`ExecuteSnapshotReadAsync(...)` for those specific queries:
+
+```csharp
+await using var tx = await db.BeginWriteTransactionAsync();
+
+await using (var snapshotRead = await tx.ExecuteSnapshotReadAsync(
+    "SELECT COUNT(*) FROM orders WHERE status = 'Open'"))
+{
+    await snapshotRead.ToListAsync();
+}
+
+await tx.ExecuteAsync("UPDATE orders SET status = 'Processing' WHERE id = 42");
+await tx.CommitAsync();
+```
+
+This is an opt-in weaker isolation path for the selected query only. It does
+not disable normal conflict tracking for later writes, foreign-key checks, or
+uniqueness validation inside the same transaction.
+
 ## Thread Safety
 
 The supported threading model for `Database` is:

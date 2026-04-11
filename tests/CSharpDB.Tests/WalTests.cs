@@ -539,6 +539,156 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Checkpoint_WithReaderHoldingNoWalFrames_CanFinalizeImmediately()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.DisposeAsync();
+
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+                }
+            }
+        };
+
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.CheckpointAsync(ct);
+
+        string walPath = _dbPath + ".wal";
+
+        using (_db.CreateReaderSession())
+        {
+            await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'reader-holds-no-wal')", ct);
+            await _db.CheckpointAsync(ct);
+
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+        }
+
+        await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Checkpoint_WithActiveReaderHoldingWalFrames_DefersFinalize_AndPreservesSnapshotView()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.DisposeAsync();
+
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+                }
+            }
+        };
+
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+        await _db.CheckpointAsync(ct);
+
+        await _db.ExecuteAsync("UPDATE t SET val = 11 WHERE id = 1", ct);
+        await _db.ExecuteAsync("UPDATE t SET val = 12 WHERE id = 1", ct);
+
+        string walPath = _dbPath + ".wal";
+        using var reader = _db.CreateReaderSession();
+        await using (var snapshotBefore = await reader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await snapshotBefore.ToListAsync(ct));
+            Assert.Equal(12L, row[0].AsInteger);
+        }
+
+        await _db.ExecuteAsync("UPDATE t SET val = 13 WHERE id = 1", ct);
+
+        await _db.CheckpointAsync(ct);
+        long walSizeAfterCheckpoint = new FileInfo(walPath).Length;
+
+        Assert.True(walSizeAfterCheckpoint > PageConstants.WalHeaderSize);
+
+        await using (var snapshotAfter = await reader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await snapshotAfter.ToListAsync(ct));
+            Assert.Equal(12L, row[0].AsInteger);
+        }
+
+        await using var live = await _db.ExecuteAsync("SELECT val FROM t WHERE id = 1", ct);
+        var liveRows = await live.ToListAsync(ct);
+        Assert.Equal(13L, liveRows[0][0].AsInteger);
+
+        reader.Dispose();
+        await _db.CheckpointAsync(ct);
+
+        Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+    }
+
+    [Fact]
+    public async Task Checkpoint_NewReaderAfterCopyCompletion_DoesNotExtendRetentionOfCopiedWalFrames()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.DisposeAsync();
+
+        var options = new DatabaseOptions
+        {
+            StorageEngineOptions = new StorageEngineOptions
+            {
+                PagerOptions = new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(10_000),
+                }
+            }
+        };
+
+        _db = await Database.OpenAsync(_dbPath, options, ct);
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 10)", ct);
+        await _db.CheckpointAsync(ct);
+
+        await _db.ExecuteAsync("UPDATE t SET val = 11 WHERE id = 1", ct);
+        await _db.ExecuteAsync("UPDATE t SET val = 12 WHERE id = 1", ct);
+
+        string walPath = _dbPath + ".wal";
+        using var oldReader = _db.CreateReaderSession();
+        await using (var oldSnapshot = await oldReader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await oldSnapshot.ToListAsync(ct));
+            Assert.Equal(12L, row[0].AsInteger);
+        }
+
+        await _db.CheckpointAsync(ct);
+        Assert.True(new FileInfo(walPath).Length > PageConstants.WalHeaderSize);
+
+        using var newReader = _db.CreateReaderSession();
+        await using (var newSnapshot = await newReader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await newSnapshot.ToListAsync(ct));
+            Assert.Equal(12L, row[0].AsInteger);
+        }
+
+        oldReader.Dispose();
+        await _db.CheckpointAsync(ct);
+
+        Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+
+        await using (var stillReadable = await newReader.ExecuteReadAsync("SELECT val FROM t WHERE id = 1", ct))
+        {
+            DbValue[] row = Assert.Single(await stillReadable.ToListAsync(ct));
+            Assert.Equal(12L, row[0].AsInteger);
+        }
+    }
+
+    [Fact]
     public async Task BackgroundAutoCheckpoint_DoesNotBlockCommit_But_NextWriterWaits()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -151,12 +151,17 @@ Controls the page cache, writer locking, and automatic checkpointing.
 | `AutoCheckpointMaxPagesPerStep` | `int` | `64` | Max pages per background checkpoint step (ignored for foreground). |
 | `MaxWalBytesWhenReadersActive` | `long?` | `null` | Optional WAL growth cap while snapshot readers are active. Commits fail with `ErrorCode.Busy` if exceeded. |
 
+Snapshot readers now block checkpoint finalization only when they still reference
+retained WAL frames. Readers whose snapshot was taken after the WAL had already
+been drained can coexist with auto-checkpoint finalization without forcing WAL
+growth.
+
 #### Built-in Checkpoint Policies
 
 **FrameCountCheckpointPolicy(int threshold)**
 
-Triggers when committed frame count reaches the threshold and no snapshot readers are
-active. Default threshold is 1000 frames.
+Triggers when committed frame count reaches the threshold and no active snapshot
+currently requires retained WAL frames. Default threshold is 1000 frames.
 
 ```csharp
 new FrameCountCheckpointPolicy(2000)

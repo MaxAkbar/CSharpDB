@@ -1774,7 +1774,7 @@ public sealed class Database : IAsyncDisposable
             if (!_disposed)
             {
                 _snapshotPager?.Dispose();
-                _pager.ReleaseReaderSnapshot();
+                _pager.ReleaseReaderSnapshot(_snapshot);
                 _disposed = true;
             }
         }
