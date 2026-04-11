@@ -85,6 +85,19 @@ public static class Program
                     repeatCount);
                 return;
 
+            case "--insert-fan-in-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--insert-fan-in-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"insert-fan-in-scenario-{GetRequiredOptionValue(args, "--insert-fan-in-scenario")}",
+                    () => RunInsertFanInScenarioOnceAsync(GetRequiredOptionValue(args, "--insert-fan-in-scenario")),
+                    repeatCount);
+                return;
+
             case "--checkpoint-retention-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount);
@@ -200,6 +213,9 @@ public static class Program
                 Console.WriteLine();
                 Console.WriteLine("=== Commit Fan-In Benchmark ===");
                 await RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount);
+                Console.WriteLine();
+                Console.WriteLine("=== Insert Fan-In Benchmark ===");
+                await RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount);
                 Console.WriteLine();
                 Console.WriteLine("=== Checkpoint Retention Benchmark ===");
                 await RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount);
@@ -546,6 +562,18 @@ public static class Program
         return [await CommitFanInDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
     }
 
+    private static async Task<List<BenchmarkResult>> RunInsertFanInDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Insert Fan-In Benchmark ---");
+        return await InsertFanInDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunInsertFanInScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Insert Fan-In Scenario: {scenarioName} ---");
+        return [await InsertFanInDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
     private static async Task<List<BenchmarkResult>> RunCheckpointRetentionDiagnosticsOnceAsync()
     {
         Console.WriteLine("--- Checkpoint Retention Benchmark ---");
@@ -669,6 +697,7 @@ public static class Program
             "durable-sql-batching" => RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount),
             "write-transaction-diagnostics" => RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount),
             "commit-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount),
+            "insert-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount),
             "checkpoint-retention-diagnostics" => RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount),
             "concurrent-write-diagnostics" => RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount),
             "direct-file-cache-transport" => RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount),
@@ -959,6 +988,8 @@ public static class Program
         Console.WriteLine("  dotnet run -- --write-transaction-diagnostics  Run focused explicit WriteTransaction diagnostics");
         Console.WriteLine("  dotnet run -- --commit-fan-in-diagnostics  Compare shared auto-commit vs explicit WriteTransaction fan-in");
         Console.WriteLine("  dotnet run -- --commit-fan-in-scenario ExplicitTx_DisjointUpdate_W8_Batch250us  Run one commit fan-in scenario");
+        Console.WriteLine("  dotnet run -- --insert-fan-in-diagnostics  Compare insert-side fan-in across auto-commit and explicit WriteTransaction");
+        Console.WriteLine("  dotnet run -- --insert-fan-in-scenario AutoCommit_ExplicitId_W8_Batch250us  Run one insert fan-in scenario");
         Console.WriteLine("  dotnet run -- --checkpoint-retention-diagnostics  Run focused background-checkpoint retention diagnostics");
         Console.WriteLine("  dotnet run -- --checkpoint-retention-scenario W8_Blocker3s_Batch250us  Run one checkpoint-retention scenario");
         Console.WriteLine("  dotnet run -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB  Run one explicit WriteTransaction scenario");
@@ -977,7 +1008,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");

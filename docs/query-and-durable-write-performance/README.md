@@ -57,7 +57,9 @@ Current measured status:
 
 2. The gain is intentionally scoped.
    - Hot auto-commit inserts still use the legacy serialized path.
-   - The targeted `ConcurrentDurableWrite_W8_Batch250us` insert rerun in `concurrent-write-scenario-W8_Batch250us-20260411-142023.csv` still measured about `428 commits/sec` with `commitsPerFlush = 1.00`.
+   - The focused `insert-fan-in-diagnostics-20260411-151542.csv` rerun kept every insert scenario at `commitsPerFlush = 1.00`.
+   - Shared auto-commit explicit-id inserts were about `452 commits/sec` at `W8`, auto-generated-id inserts were about `444 commits/sec`, and explicit `WriteTransaction` inserts were still only about `437 commits/sec` with explicit ids and about `418 commits/sec` with auto-generated ids.
+   - The explicit auto-generated-id path also surfaced a duplicate-key collision under concurrent retries, so the current insert-side limitation is not just "missing WAL fan-in"; it is still a structural insert-shape problem.
    - The current phase-4 result should therefore be read as "shared non-insert auto-commit fan-in works" rather than "every auto-commit workload now coalesces."
 
 3. Defaults and presets should still stay where they are for now.
@@ -67,10 +69,11 @@ Current measured status:
 
 Next clean steps:
 
-1. Decide whether hot auto-commit inserts should stay explicitly transaction-first or gain their own isolated implicit path.
+1. Keep hot inserts on the current path until there is a deliberate row-id reservation / uniqueness design for concurrent implicit inserts.
 2. Keep the compact validation matrix small:
    - single-writer no-regression
    - shared non-insert auto-commit `W4` / `W8`
    - explicit `WriteTransaction` disjoint updates
    - hot insert auto-commit contention
-3. Do not change default batch windows or preset recommendations until the insert-side behavior is intentionally resolved.
+3. If insert-side fan-in is revisited later, start with durable row-id reservation or another monotonic uniqueness mechanism before touching defaults.
+4. Do not change default batch windows or preset recommendations until the insert-side behavior is intentionally resolved.
