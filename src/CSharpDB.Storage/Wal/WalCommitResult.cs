@@ -14,6 +14,8 @@ public readonly struct WalCommitResult
 
     public static WalCommitResult Completed { get; } = new(Task.CompletedTask);
 
+    public bool IsCompletedSuccessfully => _completion.IsCompletedSuccessfully;
+
     public ValueTask WaitAsync(CancellationToken cancellationToken = default)
     {
         if (_completion.IsCompletedSuccessfully)

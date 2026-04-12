@@ -37,6 +37,15 @@ internal sealed class TransactionCoordinator : IDisposable
 
     public long CurrentCommitVersion => Volatile.Read(ref _commitVersion);
 
+    public bool HasActiveExplicitTransactions
+    {
+        get
+        {
+            lock (_stateGate)
+                return _activeExplicitTransactions.Count != 0;
+        }
+    }
+
     public void EnsureNextReservedPageIdAtLeast(uint pageCount)
     {
         while (true)

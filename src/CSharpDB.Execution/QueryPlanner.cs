@@ -14552,7 +14552,7 @@ public sealed class QueryPlanner
 
             long rowId = row[pkIdx].AsInteger;
             if (rowId >= 0 && rowId < long.MaxValue)
-                UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
+                ObserveExplicitRowId(tableName, schema, checked(rowId + 1));
             return (rowId, false);
         }
 

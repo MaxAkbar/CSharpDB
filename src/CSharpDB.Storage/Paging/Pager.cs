@@ -1357,9 +1357,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             WalCommitResult commitResult = await PrepareWalCommitAsync(ct);
             RecordWalAppendDiagnostics(walAppendStartTicks);
-            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
+            if (CanBypassLegacyPendingCommitReservation(commitResult))
+            {
+                ClearLegacyLogicalWriteTracking();
+                return new PagerCommitResult(CompleteLegacyCommitWithoutPendingReservationWithInterceptorAsync(
+                    transactionId,
+                    dirtyCount));
+            }
+
+            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             return new PagerCommitResult(CompleteLegacyCommitWithInterceptorAsync(
                 commitResult,
                 transactionId,
@@ -1414,9 +1422,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 : await _wal.CommitAsync(PageCount, ct);
 
             RecordWalAppendDiagnostics(walAppendStartTicks);
-            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
+            if (CanBypassLegacyPendingCommitReservation(commitResult))
+            {
+                ClearLegacyLogicalWriteTracking();
+                return new PagerCommitResult(CompleteLegacyCommitWithoutPendingReservationAsync(transactionId));
+            }
+
+            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             return new PagerCommitResult(CompleteLegacyCommitAsync(commitResult, transactionId, pendingCommitReservation));
         }
         catch
@@ -1459,6 +1473,22 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
+    private Task CompleteLegacyCommitWithoutPendingReservationAsync(long transactionId)
+        => CompleteLegacyCommitWithoutPendingReservationCoreAsync(transactionId);
+
+    private async Task CompleteLegacyCommitWithoutPendingReservationCoreAsync(long transactionId)
+    {
+        try
+        {
+            await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+        }
+        catch
+        {
+            await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
     private async Task CompleteLegacyCommitWithInterceptorAsync(
         WalCommitResult commitResult,
         long transactionId,
@@ -1476,6 +1506,32 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         catch
         {
             _transactions!.RevertPendingCommit(pendingCommitReservation);
+            await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
+            throw;
+        }
+        finally
+        {
+            await _interceptor.OnCommitEndAsync(dirtyCount, commitSucceeded, CancellationToken.None);
+        }
+    }
+
+    private Task CompleteLegacyCommitWithoutPendingReservationWithInterceptorAsync(
+        long transactionId,
+        int dirtyCount)
+        => CompleteLegacyCommitWithoutPendingReservationWithInterceptorCoreAsync(transactionId, dirtyCount);
+
+    private async Task CompleteLegacyCommitWithoutPendingReservationWithInterceptorCoreAsync(
+        long transactionId,
+        int dirtyCount)
+    {
+        bool commitSucceeded = false;
+        try
+        {
+            await FinalizeLegacyCommitAndCheckpointAsync(transactionId, CancellationToken.None);
+            commitSucceeded = true;
+        }
+        catch
+        {
             await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
         }
@@ -3123,6 +3179,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return reservation;
         }
     }
+
+    private bool CanBypassLegacyPendingCommitReservation(WalCommitResult commitResult)
+        => commitResult.IsCompletedSuccessfully &&
+           _transactions is not null &&
+           !_transactions.HasActiveExplicitTransactions;
 
     private void ClearLegacyLogicalWriteTracking()
     {

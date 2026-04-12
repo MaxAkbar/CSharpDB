@@ -164,6 +164,30 @@ public sealed class IdentityIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExplicitIntegerPrimaryKeyInserts_PersistUnknownNextRowIdHint()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t (id, name) VALUES (1000, 'seed')", ct);
+
+        await _db.DisposeAsync();
+
+        var factory = new DefaultStorageEngineFactory();
+        var context = await factory.OpenAsync(_dbPath, new StorageEngineOptions(), ct);
+        try
+        {
+            var schema = context.Catalog.GetTable("t");
+            Assert.NotNull(schema);
+            Assert.Equal(0L, schema!.NextRowId);
+        }
+        finally
+        {
+            await context.Pager.DisposeAsync();
+            _db = await Database.OpenAsync(_dbPath, ct);
+        }
+    }
+
+    [Fact]
     public async Task ExplicitWriteTransactionIntegerPrimaryKeyInserts_Reopen_StillAutoGenerateFromMaxKey()
     {
         var ct = TestContext.Current.CancellationToken;

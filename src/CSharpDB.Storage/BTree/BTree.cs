@@ -31,12 +31,20 @@ public sealed class BTree
     private uint _rootPageId;
     private long? _cachedEntryCount;
     private readonly Dictionary<uint, CachedInteriorRouting> _interiorRoutingCache = new();
+    private readonly List<uint> _ownedTraversalPath = new(capacity: 8);
+    private readonly HashSet<uint> _ownedTraversalSet = new();
 
     // Leaf page hint cache: skip interior traversal when the target key falls within the cached leaf's key range
     private uint _hintLeafPageId;
     private long _hintLeafMinKey;
     private long _hintLeafMaxKey;
     private bool _hintValid;
+
+    // Append-heavy workloads often keep targeting the current rightmost leaf.
+    // Cache that page separately so monotonic inserts can avoid a root-to-leaf walk.
+    private uint _rightEdgeLeafPageId;
+    private long _rightEdgeLeafMaxKey;
+    private bool _rightEdgeLeafHintValid;
 
     private sealed class CachedInteriorRouting
     {
@@ -495,9 +503,7 @@ public sealed class BTree
     /// </summary>
     public async ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        var traversalPath = new List<uint>(capacity: 8);
-        var traversalSet = new HashSet<uint>();
-        await InsertAsync(key, payload, traversalPath, traversalSet, ct);
+        await InsertAsync(key, payload, _ownedTraversalPath, _ownedTraversalSet, ct);
     }
 
     /// <summary>
@@ -517,6 +523,12 @@ public sealed class BTree
         InvalidateReadRoutingCaches();
         traversalPath.Clear();
         traversalSet.Clear();
+
+        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, ct))
+        {
+            _cachedEntryCount = null;
+            return;
+        }
 
         var result = await InsertRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
 
@@ -548,9 +560,7 @@ public sealed class BTree
     /// </summary>
     public async ValueTask<bool> ReplaceAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        var traversalPath = new List<uint>(capacity: 8);
-        var traversalSet = new HashSet<uint>();
-        return await ReplaceAsync(key, payload, traversalPath, traversalSet, ct);
+        return await ReplaceAsync(key, payload, _ownedTraversalPath, _ownedTraversalSet, ct);
     }
 
     /// <summary>
@@ -599,6 +609,7 @@ public sealed class BTree
     public async ValueTask<bool> DeleteAsync(long key, CancellationToken ct = default)
     {
         InvalidateReadRoutingCaches();
+        InvalidateRightEdgeLeafHint();
         var result = await DeleteRecursiveAsync(_rootPageId, key, isRoot: true, ct);
         bool deleted = result.Deleted;
         if (deleted)
@@ -641,6 +652,7 @@ public sealed class BTree
             return;
 
         InvalidateReadRoutingCaches();
+        InvalidateRightEdgeLeafHint();
         var visited = new HashSet<uint>();
         await ReclaimPageAsync(_rootPageId, visited, ct);
         _rootPageId = PageConstants.NullPageId;
@@ -776,6 +788,96 @@ public sealed class BTree
     {
         _hintValid = false;
         _interiorRoutingCache.Clear();
+    }
+
+    private void InvalidateRightEdgeLeafHint()
+    {
+        _rightEdgeLeafHintValid = false;
+    }
+
+    private void UpdateRightEdgeLeafHint(uint pageId, SlottedPage sp)
+    {
+        if (sp.PageType != PageConstants.PageTypeLeaf ||
+            sp.RightChildOrNextLeaf != PageConstants.NullPageId ||
+            sp.CellCount == 0)
+        {
+            _rightEdgeLeafHintValid = false;
+            return;
+        }
+
+        _rightEdgeLeafPageId = pageId;
+        _rightEdgeLeafMaxKey = ReadLeafKey(sp, sp.CellCount - 1);
+        _rightEdgeLeafHintValid = true;
+    }
+
+    private async ValueTask<bool> TryInsertIntoRightEdgeLeafAsync(
+        long key,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct)
+    {
+        if (!_rightEdgeLeafHintValid || key <= _rightEdgeLeafMaxKey)
+            return false;
+
+        var page = await _pager.GetPageAsync(_rightEdgeLeafPageId, ct);
+        var sp = new SlottedPage(page, _rightEdgeLeafPageId);
+        if (sp.PageType != PageConstants.PageTypeLeaf ||
+            sp.RightChildOrNextLeaf != PageConstants.NullPageId)
+        {
+            _rightEdgeLeafHintValid = false;
+            return false;
+        }
+
+        if (sp.CellCount > 0)
+        {
+            long actualMaxKey = ReadLeafKey(sp, sp.CellCount - 1);
+            _rightEdgeLeafMaxKey = actualMaxKey;
+            if (key <= actualMaxKey)
+                return false;
+        }
+
+        if (!await TryInsertIntoLeafWithoutSplitAsync(_rightEdgeLeafPageId, sp, sp.CellCount, key, payload, ct))
+            return false;
+
+        UpdateRightEdgeLeafHint(_rightEdgeLeafPageId, sp);
+        return true;
+    }
+
+    private async ValueTask<bool> TryInsertIntoLeafWithoutSplitAsync(
+        uint pageId,
+        SlottedPage sp,
+        int insertIdx,
+        long key,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct)
+    {
+        int leafCellLength = GetLeafCellLength(payload.Length);
+        if (leafCellLength <= MaxStackLeafCellBytes)
+        {
+            Span<byte> stackCell = stackalloc byte[leafCellLength];
+            WriteLeafCell(stackCell, key, payload.Span);
+
+            if (!sp.InsertCell(insertIdx, stackCell))
+                return false;
+
+            await _pager.MarkDirtyAsync(pageId, ct);
+            return true;
+        }
+
+        byte[] pooledCell = ArrayPool<byte>.Shared.Rent(leafCellLength);
+        try
+        {
+            var pooledCellSpan = pooledCell.AsSpan(0, leafCellLength);
+            WriteLeafCell(pooledCellSpan, key, payload.Span);
+            if (!sp.InsertCell(insertIdx, pooledCellSpan))
+                return false;
+
+            await _pager.MarkDirtyAsync(pageId, ct);
+            return true;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pooledCell, clearArray: false);
+        }
     }
 
     private bool TryGetCachedInteriorChildPage(uint pageId, long key, out uint childPageId)
@@ -954,17 +1056,19 @@ public sealed class BTree
                 throw new CSharpDbException(ErrorCode.DuplicateKey, $"Duplicate key: {key}");
         }
 
+        if (await TryInsertIntoLeafWithoutSplitAsync(pageId, sp, insertIdx, key, payload, ct))
+        {
+            if (sp.RightChildOrNextLeaf == PageConstants.NullPageId && insertIdx == sp.CellCount - 1)
+                UpdateRightEdgeLeafHint(pageId, sp);
+
+            return new InsertResult { Split = false };
+        }
+
         int leafCellLength = GetLeafCellLength(payload.Length);
         if (leafCellLength <= MaxStackLeafCellBytes)
         {
             Span<byte> stackCell = stackalloc byte[leafCellLength];
             WriteLeafCell(stackCell, key, payload.Span);
-
-            if (sp.InsertCell(insertIdx, stackCell))
-            {
-                await _pager.MarkDirtyAsync(pageId, ct);
-                return new InsertResult { Split = false };
-            }
 
             // Preserve the stack-built cell for split handling.
             byte[] splitCell = GC.AllocateUninitializedArray<byte>(leafCellLength);
@@ -978,12 +1082,6 @@ public sealed class BTree
         {
             var pooledCellSpan = pooledCell.AsSpan(0, leafCellLength);
             WriteLeafCell(pooledCellSpan, key, payload.Span);
-
-            if (sp.InsertCell(insertIdx, pooledCellSpan))
-            {
-                await _pager.MarkDirtyAsync(pageId, ct);
-                return new InsertResult { Split = false };
-            }
 
             // Page is full — split
             return await SplitLeafAsync(pageId, page, sp, insertIdx, pooledCell, leafCellLength, ct);
@@ -1069,6 +1167,9 @@ public sealed class BTree
             await _pager.MarkDirtyAsync(pageId, ct);
             await _pager.MarkDirtyAsync(newPageId, ct);
             _pager.RecordBTreeLeafSplit(rightEdgeSplit);
+
+            if (rightEdgeSplit)
+                UpdateRightEdgeLeafHint(newPageId, newSp);
 
             // The split key is the first key of the right page.
             int splitOffset = cellOffsets[mid];
