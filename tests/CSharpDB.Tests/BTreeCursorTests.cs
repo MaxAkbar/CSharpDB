@@ -136,6 +136,53 @@ public sealed class BTreeCursorTests
     }
 
     [Fact]
+    public async Task AppendDrivenRootSplit_BiasesRightmostLeafToStaySparse_InLegacyTransactions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+        var tree = new BTree(pager, rootPageId);
+        byte[] payload = new byte[160];
+        int nextKey = 1;
+
+        while (tree.RootPageId == rootPageId)
+        {
+            payload[0] = (byte)nextKey;
+            await tree.InsertAsync(nextKey, payload, ct);
+            nextKey++;
+        }
+
+        rootPageId = tree.RootPageId;
+        await pager.CommitAsync(ct);
+
+        var committedTree = new BTree(pager, rootPageId);
+        var rootPage = await pager.GetPageAsync(rootPageId, ct);
+        var root = new SlottedPage(rootPage, rootPageId);
+        Assert.Equal(PageConstants.PageTypeInterior, root.PageType);
+        Assert.Equal((ushort)1, root.CellCount);
+
+        uint leftLeafPageId = BinaryPrimitives.ReadUInt32LittleEndian(root.GetCell(0).Slice(1, 4));
+        uint rightLeafPageId = root.RightChildOrNextLeaf;
+
+        var leftLeafPage = await pager.GetPageAsync(leftLeafPageId, ct);
+        var leftLeaf = new SlottedPage(leftLeafPage, leftLeafPageId);
+        var rightLeafPage = await pager.GetPageAsync(rightLeafPageId, ct);
+        var rightLeaf = new SlottedPage(rightLeafPage, rightLeafPageId);
+
+        Assert.Equal(PageConstants.PageTypeLeaf, leftLeaf.PageType);
+        Assert.Equal(PageConstants.PageTypeLeaf, rightLeaf.PageType);
+        Assert.True(leftLeaf.CellCount > rightLeaf.CellCount);
+
+        for (int key = 1; key < nextKey; key++)
+            Assert.NotNull(await committedTree.FindAsync(key, ct));
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitTransactions_IndependentLeafSplitsCanRebaseSharedRootPage()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -196,6 +243,115 @@ public sealed class BTreeCursorTests
 
         foreach (long key in rightInsertedKeys)
             Assert.NotNull(await committedTree.FindAsync(key, ct));
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitTransactions_LeafCapacityRejectCanSplitCommittedLeafAndUpdateRootPage()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint leftLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rightLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rootPageId = await pager.AllocatePageAsync(ct);
+
+        var leftLeaf = new SlottedPage(await pager.GetPageAsync(leftLeafPageId, ct), leftLeafPageId);
+        leftLeaf.Initialize(PageConstants.PageTypeLeaf);
+        leftLeaf.RightChildOrNextLeaf = rightLeafPageId;
+        InsertLeafCell(ref leftLeaf, key: 10, payloadLength: 32, fillByte: 0x11);
+        await pager.MarkDirtyAsync(leftLeafPageId, ct);
+
+        var rightLeaf = new SlottedPage(await pager.GetPageAsync(rightLeafPageId, ct), rightLeafPageId);
+        rightLeaf.Initialize(PageConstants.PageTypeLeaf);
+        InsertLeafCell(ref rightLeaf, key: 100, payloadLength: 2052, fillByte: 0x22);
+        await pager.MarkDirtyAsync(rightLeafPageId, ct);
+
+        var root = new SlottedPage(await pager.GetPageAsync(rootPageId, ct), rootPageId);
+        root.Initialize(PageConstants.PageTypeInterior);
+        root.RightChildOrNextLeaf = rightLeafPageId;
+        Assert.True(root.InsertCell(0, BuildInteriorCell(leftLeafPageId, 100)));
+        await pager.MarkDirtyAsync(rootPageId, ct);
+        await pager.CommitAsync(ct);
+
+        await using var tx1 = await pager.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await pager.BeginWriteTransactionAsync(ct);
+
+        using (tx1.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(200, new byte[1000], ct);
+        }
+
+        using (tx2.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(300, new byte[1000], ct);
+        }
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        var committedTree = new BTree(pager, rootPageId);
+        Assert.Equal((ushort)2, await GetRootCellCountAsync(pager, rootPageId, ct));
+        Assert.Equal(4L, await committedTree.CountEntriesAsync(ct));
+        Assert.NotNull(await committedTree.FindAsync(10, ct));
+        Assert.NotNull(await committedTree.FindAsync(100, ct));
+        Assert.NotNull(await committedTree.FindAsync(200, ct));
+        Assert.NotNull(await committedTree.FindAsync(300, ct));
+    }
+
+    [Fact]
+    public async Task CommitPathDiagnostics_TrackAndResetRightEdgeInsertStructureEvents()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+        var tree = new BTree(pager, rootPageId);
+        int seededCount = await SeedTreeUntilRootHasAtLeastInteriorCellsAsync(tree, pager, minimumRootCells: 2, ct);
+        Assert.True(seededCount > 0);
+
+        rootPageId = tree.RootPageId;
+        ushort baselineRootCellCount = await GetRootCellCountAsync(pager, rootPageId, ct);
+        pager.ResetCommitPathDiagnostics();
+
+        List<long> insertedKeys = await ForceLeafSplitThatUpdatesRootAsync(
+            pager,
+            rootPageId,
+            baselineRootCellCount,
+            startKey: 1_000_000,
+            step: 1,
+            payloadSize: 768,
+            ct);
+
+        Assert.NotEmpty(insertedKeys);
+
+        CommitPathDiagnosticsSnapshot diagnostics = pager.GetCommitPathDiagnosticsSnapshot();
+        Assert.True(diagnostics.BTreeLeafSplitCount > 0);
+        Assert.Equal(diagnostics.BTreeLeafSplitCount, diagnostics.BTreeRightEdgeLeafSplitCount);
+        Assert.True(diagnostics.BTreeInteriorInsertCount > 0);
+        Assert.Equal(diagnostics.BTreeInteriorInsertCount, diagnostics.BTreeRightEdgeInteriorInsertCount);
+        Assert.Equal(0, diagnostics.BTreeInteriorSplitCount);
+        Assert.Equal(0, diagnostics.BTreeRightEdgeInteriorSplitCount);
+        Assert.Equal(0, diagnostics.BTreeRootSplitCount);
+
+        pager.ResetCommitPathDiagnostics();
+        CommitPathDiagnosticsSnapshot resetDiagnostics = pager.GetCommitPathDiagnosticsSnapshot();
+        Assert.Equal(0, resetDiagnostics.BTreeLeafSplitCount);
+        Assert.Equal(0, resetDiagnostics.BTreeRightEdgeLeafSplitCount);
+        Assert.Equal(0, resetDiagnostics.BTreeInteriorInsertCount);
+        Assert.Equal(0, resetDiagnostics.BTreeRightEdgeInteriorInsertCount);
+        Assert.Equal(0, resetDiagnostics.BTreeInteriorSplitCount);
+        Assert.Equal(0, resetDiagnostics.BTreeRightEdgeInteriorSplitCount);
+        Assert.Equal(0, resetDiagnostics.BTreeRootSplitCount);
     }
 
     private static async ValueTask<Pager> CreatePagerAsync(CancellationToken ct)
@@ -281,5 +437,23 @@ public sealed class BTreeCursorTests
         var page = await pager.GetPageAsync(rootPageId, ct);
         var sp = new SlottedPage(page, rootPageId);
         return sp.CellCount;
+    }
+
+    private static void InsertLeafCell(ref SlottedPage leaf, long key, int payloadLength, byte fillByte)
+    {
+        byte[] payload = GC.AllocateUninitializedArray<byte>(payloadLength);
+        payload.AsSpan().Fill(fillByte);
+
+        byte[] cell = BTree.BuildLeafCell(key, payload);
+        Assert.True(leaf.InsertCell(leaf.CellCount, cell));
+    }
+
+    private static byte[] BuildInteriorCell(uint leftChildPageId, long key)
+    {
+        byte[] cell = new byte[13];
+        cell[0] = 12;
+        BinaryPrimitives.WriteUInt32LittleEndian(cell.AsSpan(1, sizeof(uint)), leftChildPageId);
+        BinaryPrimitives.WriteInt64LittleEndian(cell.AsSpan(5, sizeof(long)), key);
+        return cell;
     }
 }

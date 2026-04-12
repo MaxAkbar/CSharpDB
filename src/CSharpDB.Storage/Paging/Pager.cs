@@ -42,6 +42,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _explicitCommitLockHoldTicks;
     private long _explicitConflictResolutionCount;
     private long _explicitConflictResolutionTicks;
+    private long _explicitLeafRebaseAttemptCount;
+    private long _explicitLeafRebaseSuccessCount;
+    private long _explicitLeafRebaseStructuralRejectCount;
+    private long _explicitLeafRebaseCapacityRejectCount;
+    private long _explicitInteriorRebaseAttemptCount;
+    private long _explicitInteriorRebaseSuccessCount;
+    private long _explicitInteriorRebaseStructuralRejectCount;
+    private long _explicitInteriorRebaseCapacityRejectCount;
     private long _explicitPendingCommitWaitCount;
     private long _explicitPendingCommitWaitTicks;
     private long _explicitHeaderPreparationCount;
@@ -53,6 +61,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _checkpointDecisionCount;
     private long _checkpointDecisionTicks;
     private long _backgroundCheckpointStartCount;
+    private long _btreeLeafSplitCount;
+    private long _btreeRightEdgeLeafSplitCount;
+    private long _btreeInteriorInsertCount;
+    private long _btreeRightEdgeInteriorInsertCount;
+    private long _btreeInteriorSplitCount;
+    private long _btreeRightEdgeInteriorSplitCount;
+    private long _btreeRootSplitCount;
     private readonly object _explicitCommitStateGate = new();
     private uint _scheduledExplicitPageCount;
     private uint _scheduledExplicitSchemaRootPage;
@@ -163,6 +178,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             ExplicitCommitLockHoldTicks: Interlocked.Read(ref _explicitCommitLockHoldTicks),
             ExplicitConflictResolutionCount: Interlocked.Read(ref _explicitConflictResolutionCount),
             ExplicitConflictResolutionTicks: Interlocked.Read(ref _explicitConflictResolutionTicks),
+            ExplicitLeafRebaseAttemptCount: Interlocked.Read(ref _explicitLeafRebaseAttemptCount),
+            ExplicitLeafRebaseSuccessCount: Interlocked.Read(ref _explicitLeafRebaseSuccessCount),
+            ExplicitLeafRebaseStructuralRejectCount: Interlocked.Read(ref _explicitLeafRebaseStructuralRejectCount),
+            ExplicitLeafRebaseCapacityRejectCount: Interlocked.Read(ref _explicitLeafRebaseCapacityRejectCount),
+            ExplicitInteriorRebaseAttemptCount: Interlocked.Read(ref _explicitInteriorRebaseAttemptCount),
+            ExplicitInteriorRebaseSuccessCount: Interlocked.Read(ref _explicitInteriorRebaseSuccessCount),
+            ExplicitInteriorRebaseStructuralRejectCount: Interlocked.Read(ref _explicitInteriorRebaseStructuralRejectCount),
+            ExplicitInteriorRebaseCapacityRejectCount: Interlocked.Read(ref _explicitInteriorRebaseCapacityRejectCount),
             ExplicitPendingCommitWaitCount: Interlocked.Read(ref _explicitPendingCommitWaitCount),
             ExplicitPendingCommitWaitTicks: Interlocked.Read(ref _explicitPendingCommitWaitTicks),
             ExplicitHeaderPreparationCount: Interlocked.Read(ref _explicitHeaderPreparationCount),
@@ -186,6 +209,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             CheckpointDecisionCount: Interlocked.Read(ref _checkpointDecisionCount),
             CheckpointDecisionTicks: Interlocked.Read(ref _checkpointDecisionTicks),
             BackgroundCheckpointStartCount: Interlocked.Read(ref _backgroundCheckpointStartCount),
+            BTreeLeafSplitCount: Interlocked.Read(ref _btreeLeafSplitCount),
+            BTreeRightEdgeLeafSplitCount: Interlocked.Read(ref _btreeRightEdgeLeafSplitCount),
+            BTreeInteriorInsertCount: Interlocked.Read(ref _btreeInteriorInsertCount),
+            BTreeRightEdgeInteriorInsertCount: Interlocked.Read(ref _btreeRightEdgeInteriorInsertCount),
+            BTreeInteriorSplitCount: Interlocked.Read(ref _btreeInteriorSplitCount),
+            BTreeRightEdgeInteriorSplitCount: Interlocked.Read(ref _btreeRightEdgeInteriorSplitCount),
+            BTreeRootSplitCount: Interlocked.Read(ref _btreeRootSplitCount),
             MaxPendingCommitCount: walDiagnostics.MaxPendingCommitCount,
             MaxPendingCommitBytes: walDiagnostics.MaxPendingCommitBytes);
     }
@@ -203,6 +233,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _explicitCommitLockHoldTicks, 0);
         Interlocked.Exchange(ref _explicitConflictResolutionCount, 0);
         Interlocked.Exchange(ref _explicitConflictResolutionTicks, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseAttemptCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseSuccessCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseStructuralRejectCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseCapacityRejectCount, 0);
+        Interlocked.Exchange(ref _explicitInteriorRebaseAttemptCount, 0);
+        Interlocked.Exchange(ref _explicitInteriorRebaseSuccessCount, 0);
+        Interlocked.Exchange(ref _explicitInteriorRebaseStructuralRejectCount, 0);
+        Interlocked.Exchange(ref _explicitInteriorRebaseCapacityRejectCount, 0);
         Interlocked.Exchange(ref _explicitPendingCommitWaitCount, 0);
         Interlocked.Exchange(ref _explicitPendingCommitWaitTicks, 0);
         Interlocked.Exchange(ref _explicitHeaderPreparationCount, 0);
@@ -214,6 +252,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _checkpointDecisionCount, 0);
         Interlocked.Exchange(ref _checkpointDecisionTicks, 0);
         Interlocked.Exchange(ref _backgroundCheckpointStartCount, 0);
+        Interlocked.Exchange(ref _btreeLeafSplitCount, 0);
+        Interlocked.Exchange(ref _btreeRightEdgeLeafSplitCount, 0);
+        Interlocked.Exchange(ref _btreeInteriorInsertCount, 0);
+        Interlocked.Exchange(ref _btreeRightEdgeInteriorInsertCount, 0);
+        Interlocked.Exchange(ref _btreeInteriorSplitCount, 0);
+        Interlocked.Exchange(ref _btreeRightEdgeInteriorSplitCount, 0);
+        Interlocked.Exchange(ref _btreeRootSplitCount, 0);
     }
 
     // Configurable behavior
@@ -569,40 +614,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (GetCurrentTransaction() is { } tx)
         {
-            if (_isSnapshotReader)
-                throw new InvalidOperationException("Cannot allocate pages on a read-only snapshot pager.");
-
-            if (tx.PendingFreelistPageIds.Count > 0)
-            {
-                int lastIndex = tx.PendingFreelistPageIds.Count - 1;
-                uint reusablePageId = tx.PendingFreelistPageIds[lastIndex];
-                tx.PendingFreelistPageIds.RemoveAt(lastIndex);
-
-                byte[] page = await GetTransactionPageAsync(tx, reusablePageId, ct);
-                Array.Clear(page);
-                tx.DirtyPages.Add(reusablePageId);
-                tx.HasFreelistHeadOverride = true;
-                return reusablePageId;
-            }
-
-            if (tx.FreelistHead != PageConstants.NullPageId)
-            {
-                uint freelistPageId = tx.FreelistHead;
-                byte[] freePage = await GetTransactionPageAsync(tx, freelistPageId, ct);
-                tx.FreelistHead = ReadFreelistNextPageId(freelistPageId, freePage);
-                tx.HasFreelistHeadOverride = true;
-                tx.ConsumedFreelistPageIds.Add(freelistPageId);
-                Array.Clear(freePage);
-                tx.DirtyPages.Add(freelistPageId);
-                return freelistPageId;
-            }
-
-            uint newPageId = _transactions!.ReserveNewPageId();
-            tx.PageCount = Math.Max(tx.PageCount, newPageId + 1);
-            tx.HasPageCountOverride = true;
-            tx.ModifiedPages[newPageId] = new byte[PageConstants.PageSize];
-            tx.DirtyPages.Add(newPageId);
-            return newPageId;
+            return await AllocateTransactionPageAsync(tx, ct);
         }
 
         return await _allocator.AllocatePageAsync(ct);
@@ -773,6 +785,80 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     internal void RecordLogicalTableColumnWrite(string tableName, string columnName, long key)
         => RecordLogicalWrite(BuildLogicalTableColumnResourceName(tableName, columnName), key);
 
+    internal void RecordBTreeLeafSplit(bool rightEdge)
+    {
+        Interlocked.Increment(ref _btreeLeafSplitCount);
+        if (rightEdge)
+            Interlocked.Increment(ref _btreeRightEdgeLeafSplitCount);
+    }
+
+    internal void RecordBTreeInteriorInsert(bool rightEdge)
+    {
+        Interlocked.Increment(ref _btreeInteriorInsertCount);
+        if (rightEdge)
+            Interlocked.Increment(ref _btreeRightEdgeInteriorInsertCount);
+    }
+
+    internal void RecordBTreeInteriorSplit(bool rightEdge)
+    {
+        Interlocked.Increment(ref _btreeInteriorSplitCount);
+        if (rightEdge)
+            Interlocked.Increment(ref _btreeRightEdgeInteriorSplitCount);
+    }
+
+    internal void RecordBTreeRootSplit()
+        => Interlocked.Increment(ref _btreeRootSplitCount);
+
+    internal void RecordExplicitLeafInsertTraversal(uint rootPageId, List<uint> traversalPath)
+    {
+        PagerTransactionState? tx = GetCurrentTransaction();
+        if (tx is null || traversalPath.Count == 0)
+            return;
+
+        uint leafPageId = traversalPath[^1];
+        tx.ExplicitLeafInsertPaths[leafPageId] = new ExplicitLeafInsertPath(rootPageId, traversalPath.ToArray());
+    }
+
+    private void RecordExplicitLeafRebaseDiagnostics(InsertOnlyRebaseResult result)
+    {
+        if (result == InsertOnlyRebaseResult.NotApplicable)
+            return;
+
+        Interlocked.Increment(ref _explicitLeafRebaseAttemptCount);
+        switch (result)
+        {
+            case InsertOnlyRebaseResult.Success:
+                Interlocked.Increment(ref _explicitLeafRebaseSuccessCount);
+                break;
+            case InsertOnlyRebaseResult.StructuralReject:
+                Interlocked.Increment(ref _explicitLeafRebaseStructuralRejectCount);
+                break;
+            case InsertOnlyRebaseResult.CapacityReject:
+                Interlocked.Increment(ref _explicitLeafRebaseCapacityRejectCount);
+                break;
+        }
+    }
+
+    private void RecordExplicitInteriorRebaseDiagnostics(InsertOnlyRebaseResult result)
+    {
+        if (result == InsertOnlyRebaseResult.NotApplicable)
+            return;
+
+        Interlocked.Increment(ref _explicitInteriorRebaseAttemptCount);
+        switch (result)
+        {
+            case InsertOnlyRebaseResult.Success:
+                Interlocked.Increment(ref _explicitInteriorRebaseSuccessCount);
+                break;
+            case InsertOnlyRebaseResult.StructuralReject:
+                Interlocked.Increment(ref _explicitInteriorRebaseStructuralRejectCount);
+                break;
+            case InsertOnlyRebaseResult.CapacityReject:
+                Interlocked.Increment(ref _explicitInteriorRebaseCapacityRejectCount);
+                break;
+        }
+    }
+
     internal async ValueTask AcquireSchemaWriteLockAsync(CancellationToken ct = default)
     {
         if (GetCurrentTransaction() is not { } tx || _transactions is null)
@@ -860,6 +946,44 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         byte[] clone = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
         sourcePage.Memory.Span.CopyTo(clone);
         return clone;
+    }
+
+    private async ValueTask<uint> AllocateTransactionPageAsync(PagerTransactionState tx, CancellationToken ct)
+    {
+        if (_isSnapshotReader)
+            throw new InvalidOperationException("Cannot allocate pages on a read-only snapshot pager.");
+
+        if (tx.PendingFreelistPageIds.Count > 0)
+        {
+            int lastIndex = tx.PendingFreelistPageIds.Count - 1;
+            uint reusablePageId = tx.PendingFreelistPageIds[lastIndex];
+            tx.PendingFreelistPageIds.RemoveAt(lastIndex);
+
+            byte[] page = await GetTransactionPageAsync(tx, reusablePageId, ct);
+            Array.Clear(page);
+            tx.DirtyPages.Add(reusablePageId);
+            tx.HasFreelistHeadOverride = true;
+            return reusablePageId;
+        }
+
+        if (tx.FreelistHead != PageConstants.NullPageId)
+        {
+            uint freelistPageId = tx.FreelistHead;
+            byte[] freePage = await GetTransactionPageAsync(tx, freelistPageId, ct);
+            tx.FreelistHead = ReadFreelistNextPageId(freelistPageId, freePage);
+            tx.HasFreelistHeadOverride = true;
+            tx.ConsumedFreelistPageIds.Add(freelistPageId);
+            Array.Clear(freePage);
+            tx.DirtyPages.Add(freelistPageId);
+            return freelistPageId;
+        }
+
+        uint newPageId = _transactions!.ReserveNewPageId();
+        tx.PageCount = Math.Max(tx.PageCount, newPageId + 1);
+        tx.HasPageCountOverride = true;
+        tx.ModifiedPages[newPageId] = new byte[PageConstants.PageSize];
+        tx.DirtyPages.Add(newPageId);
+        return newPageId;
     }
 
     private async ValueTask FreeTransactionPageAsync(
@@ -1314,15 +1438,28 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     while (true)
                     {
                         writePageIds = GetExplicitWritePageIds(tx);
+                        bool refreshWritePageIds = false;
                         while (_transactions is not null &&
                                TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
                         {
+                            int dirtyPageCountBefore = tx.DirtyPages.Count;
                             if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                            {
+                                if (tx.DirtyPages.Count != dirtyPageCountBefore)
+                                {
+                                    refreshWritePageIds = true;
+                                    break;
+                                }
+
                                 continue;
+                            }
 
                             throw new CSharpDbConflictException(
                                 $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
                         }
+
+                        if (refreshWritePageIds)
+                            continue;
 
                         if (needsFreelistRebase)
                         {
@@ -2293,26 +2430,185 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return true;
         }
 
-        if (!LeafInsertRebaseHelper.TryRebaseInsertOnlyLeafPage(
+        InsertOnlyRebaseResult leafRebaseResult = LeafInsertRebaseHelper.TryRebaseInsertOnlyLeafPage(
+            conflictPageId,
+            basePage.Memory,
+            committedPage.Memory,
+            transactionPage,
+            out byte[]? rebasedPage);
+        RecordExplicitLeafRebaseDiagnostics(leafRebaseResult);
+        if (leafRebaseResult == InsertOnlyRebaseResult.CapacityReject &&
+            await TryResolveExplicitLeafCapacityConflictAsync(
+                tx,
                 conflictPageId,
+                conflictVersion,
                 basePage.Memory,
                 committedPage.Memory,
                 transactionPage,
-                out byte[]? rebasedPage) &&
-            !InteriorInsertRebaseHelper.TryRebaseInsertOnlyInteriorPage(
-                conflictPageId,
-                basePage.Memory,
-                committedPage.Memory,
-                transactionPage,
-                out rebasedPage))
+                ct))
         {
-            return false;
+            return true;
+        }
+
+        if (leafRebaseResult != InsertOnlyRebaseResult.Success)
+        {
+            InsertOnlyRebaseResult interiorRebaseResult = InteriorInsertRebaseHelper.TryRebaseInsertOnlyInteriorPage(
+                conflictPageId,
+                basePage.Memory,
+                committedPage.Memory,
+                transactionPage,
+                out rebasedPage);
+            RecordExplicitInteriorRebaseDiagnostics(interiorRebaseResult);
+            if (interiorRebaseResult != InsertOnlyRebaseResult.Success)
+                return false;
         }
 
         tx.ModifiedPages[conflictPageId] = rebasedPage!;
         tx.ResolvedWriteConflictVersions[conflictPageId] = conflictVersion;
         return true;
     }
+
+    private async ValueTask<bool> TryResolveExplicitLeafCapacityConflictAsync(
+        PagerTransactionState tx,
+        uint conflictPageId,
+        long conflictVersion,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedPage,
+        byte[] transactionPage,
+        CancellationToken ct)
+    {
+        if (_transactions is null ||
+            !tx.ExplicitLeafInsertPaths.TryGetValue(conflictPageId, out ExplicitLeafInsertPath traversal) ||
+            traversal.PageIds.Length < 2 ||
+            traversal.PageIds[^1] != conflictPageId)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < traversal.PageIds.Length - 1; i++)
+        {
+            if (tx.DirtyPages.Contains(traversal.PageIds[i]))
+                return false;
+        }
+
+        InsertOnlyRebaseResult splitPlanResult = LeafInsertRebaseHelper.TryPlanSplitInsertOnlyLeafPage(
+            conflictPageId,
+            basePage,
+            committedPage,
+            transactionPage,
+            out LeafInsertSplitPlan? splitPlan);
+        if (splitPlanResult != InsertOnlyRebaseResult.Success)
+            return false;
+
+        uint parentPageId = traversal.PageIds[^2];
+        PageReadBuffer parentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        var committedParent = new ReadOnlySlottedPage(parentPage.Memory, parentPageId);
+        if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint rightBoundaryChild))
+            return false;
+
+        uint placeholderChildId = FindUnusedPlaceholderPageId(committedParent);
+        InsertOnlyRebaseResult parentPlanResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorInsertion(
+            parentPageId,
+            parentPage.Memory,
+            conflictPageId,
+            rightBoundaryChild,
+            splitPlan!.SplitKey,
+            placeholderChildId,
+            out _);
+        if (parentPlanResult != InsertOnlyRebaseResult.Success)
+            return false;
+
+        uint newPageId = await AllocateTransactionPageAsync(tx, ct);
+        byte[] rebasedLeftPage = LeafInsertRebaseHelper.BuildLeafPage(
+            conflictPageId,
+            splitPlan.LeftCells,
+            newPageId);
+        byte[] rebasedRightPage = LeafInsertRebaseHelper.BuildLeafPage(
+            newPageId,
+            splitPlan.RightCells,
+            splitPlan.OriginalNextLeafPageId);
+        InsertOnlyRebaseResult parentApplyResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorInsertion(
+            parentPageId,
+            parentPage.Memory,
+            conflictPageId,
+            rightBoundaryChild,
+            splitPlan.SplitKey,
+            newPageId,
+            out byte[]? rebasedParentPage);
+        if (parentApplyResult != InsertOnlyRebaseResult.Success)
+            return false;
+
+        tx.ModifiedPages[conflictPageId] = rebasedLeftPage;
+        tx.ModifiedPages[newPageId] = rebasedRightPage;
+        tx.ModifiedPages[parentPageId] = rebasedParentPage!;
+        tx.DirtyPages.Add(conflictPageId);
+        tx.DirtyPages.Add(parentPageId);
+        tx.DirtyPages.Add(newPageId);
+
+        long resolvedVersion = Math.Max(conflictVersion, _transactions.CurrentCommitVersion);
+        tx.ResolvedWriteConflictVersions[conflictPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[parentPageId] = resolvedVersion;
+
+        RecordBTreeLeafSplit(splitPlan.RightEdgeSplit);
+        RecordBTreeInteriorInsert(rightBoundaryChild == PageConstants.NullPageId);
+        return true;
+    }
+
+    private static bool TryFindInteriorChildBoundary(
+        ReadOnlySlottedPage interior,
+        uint leftChild,
+        out uint rightBoundaryChild)
+    {
+        int cellCount = interior.CellCount;
+        for (int i = 0; i < cellCount; i++)
+        {
+            uint currentChild = ReadInteriorLeftChild(interior.GetCellMemory(i).Span);
+            if (currentChild != leftChild)
+                continue;
+
+            rightBoundaryChild = i + 1 < cellCount
+                ? ReadInteriorLeftChild(interior.GetCellMemory(i + 1).Span)
+                : interior.RightChildOrNextLeaf;
+            return true;
+        }
+
+        if (interior.RightChildOrNextLeaf == leftChild)
+        {
+            rightBoundaryChild = PageConstants.NullPageId;
+            return true;
+        }
+
+        rightBoundaryChild = PageConstants.NullPageId;
+        return false;
+    }
+
+    private static uint FindUnusedPlaceholderPageId(ReadOnlySlottedPage interior)
+    {
+        uint candidate = uint.MaxValue;
+        while (candidate != PageConstants.NullPageId)
+        {
+            if (!ContainsChildPageId(interior, candidate))
+                return candidate;
+
+            candidate--;
+        }
+
+        throw new CSharpDbException(ErrorCode.CorruptDatabase, "Could not reserve a placeholder child page id for commit-time interior planning.");
+    }
+
+    private static bool ContainsChildPageId(ReadOnlySlottedPage interior, uint pageId)
+    {
+        for (int i = 0; i < interior.CellCount; i++)
+        {
+            if (ReadInteriorLeftChild(interior.GetCellMemory(i).Span) == pageId)
+                return true;
+        }
+
+        return interior.RightChildOrNextLeaf == pageId;
+    }
+
+    private static uint ReadInteriorLeftChild(ReadOnlySpan<byte> cell)
+        => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(cell.Slice(1, sizeof(uint)));
 
     private LogicalConflictKey[] CaptureLegacyLogicalWriteKeys()
     {

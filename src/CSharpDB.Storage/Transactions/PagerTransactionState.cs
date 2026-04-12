@@ -37,6 +37,8 @@ internal sealed class PagerTransactionState
 
     internal Dictionary<uint, long> ResolvedWriteConflictVersions { get; } = new();
 
+    internal Dictionary<uint, ExplicitLeafInsertPath> ExplicitLeafInsertPaths { get; } = new();
+
     internal HashSet<uint> DirtyPages { get; } = new();
 
     internal HashSet<LogicalConflictKey> LogicalReadKeys { get; } = [];

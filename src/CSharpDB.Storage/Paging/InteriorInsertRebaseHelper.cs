@@ -5,7 +5,7 @@ namespace CSharpDB.Storage.Paging;
 
 internal static class InteriorInsertRebaseHelper
 {
-    public static bool TryRebaseInsertOnlyInteriorPage(
+    public static InsertOnlyRebaseResult TryRebaseInsertOnlyInteriorPage(
         uint pageId,
         ReadOnlyMemory<byte> basePage,
         ReadOnlyMemory<byte> committedPage,
@@ -21,14 +21,14 @@ internal static class InteriorInsertRebaseHelper
             committedInterior.PageType != PageConstants.PageTypeInterior ||
             transactionInterior.PageType != PageConstants.PageTypeInterior)
         {
-            return false;
+            return InsertOnlyRebaseResult.NotApplicable;
         }
 
         if (!TryCollectInsertedInteriorEntries(baseInterior, committedInterior, out _) ||
             !TryCollectInsertedInteriorEntries(baseInterior, transactionInterior, out List<InteriorInsertion>? transactionInsertions) ||
             transactionInsertions.Count == 0)
         {
-            return false;
+            return InsertOnlyRebaseResult.StructuralReject;
         }
 
         byte[] merged = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
@@ -37,12 +37,40 @@ internal static class InteriorInsertRebaseHelper
 
         for (int i = 0; i < transactionInsertions.Count; i++)
         {
-            if (!TryApplyInsertion(ref mergedInterior, transactionInsertions[i]))
-                return false;
+            InsertOnlyRebaseResult applyResult = TryApplyInsertion(ref mergedInterior, transactionInsertions[i]);
+            if (applyResult != InsertOnlyRebaseResult.Success)
+                return applyResult;
         }
 
         rebasedPage = merged;
-        return true;
+        return InsertOnlyRebaseResult.Success;
+    }
+
+    public static InsertOnlyRebaseResult TryApplyCommittedInteriorInsertion(
+        uint pageId,
+        ReadOnlyMemory<byte> committedPage,
+        uint leftChild,
+        uint rightBoundaryChild,
+        long key,
+        uint newChild,
+        out byte[]? rebasedPage)
+    {
+        var committedInterior = new ReadOnlySlottedPage(committedPage, pageId);
+
+        rebasedPage = null;
+        if (committedInterior.PageType != PageConstants.PageTypeInterior)
+            return InsertOnlyRebaseResult.NotApplicable;
+
+        byte[] merged = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+        committedPage.Span.CopyTo(merged);
+        var mergedInterior = new SlottedPage(merged, pageId);
+        InsertOnlyRebaseResult result = TryApplyInsertion(
+            ref mergedInterior,
+            new InteriorInsertion(leftChild, rightBoundaryChild, key, newChild));
+        if (result == InsertOnlyRebaseResult.Success)
+            rebasedPage = merged;
+
+        return result;
     }
 
     private static bool TryCollectInsertedInteriorEntries(
@@ -119,7 +147,7 @@ internal static class InteriorInsertRebaseHelper
         return candidateChildIndex == candidateChildren.Count - 1;
     }
 
-    private static bool TryApplyInsertion(ref SlottedPage mergedInterior, InteriorInsertion insertion)
+    private static InsertOnlyRebaseResult TryApplyInsertion(ref SlottedPage mergedInterior, InteriorInsertion insertion)
     {
         var keys = new List<long>(mergedInterior.CellCount);
         var children = new List<uint>(mergedInterior.CellCount + 1);
@@ -127,7 +155,7 @@ internal static class InteriorInsertRebaseHelper
 
         int leftChildIndex = children.IndexOf(insertion.LeftChild);
         if (leftChildIndex < 0 || children.Contains(insertion.NewChild))
-            return false;
+            return InsertOnlyRebaseResult.StructuralReject;
 
         int maxInsertIndexExclusive;
         if (insertion.RightBoundaryChild == PageConstants.NullPageId)
@@ -138,7 +166,7 @@ internal static class InteriorInsertRebaseHelper
         {
             int rightChildIndex = children.IndexOf(insertion.RightBoundaryChild, leftChildIndex + 1);
             if (rightChildIndex < 0)
-                return false;
+                return InsertOnlyRebaseResult.StructuralReject;
 
             maxInsertIndexExclusive = rightChildIndex;
         }
@@ -148,12 +176,14 @@ internal static class InteriorInsertRebaseHelper
             insertKeyIndex >= maxInsertIndexExclusive ||
             (insertKeyIndex < keys.Count && keys[insertKeyIndex] == insertion.Key))
         {
-            return false;
+            return InsertOnlyRebaseResult.StructuralReject;
         }
 
         keys.Insert(insertKeyIndex, insertion.Key);
         children.Insert(insertKeyIndex + 1, insertion.NewChild);
-        return TryWriteInteriorNode(ref mergedInterior, keys, children);
+        return TryWriteInteriorNode(ref mergedInterior, keys, children)
+            ? InsertOnlyRebaseResult.Success
+            : InsertOnlyRebaseResult.CapacityReject;
     }
 
     private static void ReadInteriorNode(ReadOnlySlottedPage interior, List<long> keys, List<uint> children)

@@ -155,6 +155,36 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_DisjointInsertOnlyLeafWrites_RecordLeafRebaseSuccessDiagnostics()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE conflict_bench_diag (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+        await using (var warmupTx = await _db.BeginWriteTransactionAsync(ct))
+        {
+            await warmupTx.ExecuteAsync("INSERT INTO conflict_bench_diag VALUES (100, 0)", ct);
+            await warmupTx.CommitAsync(ct);
+        }
+
+        _db.ResetCommitPathDiagnostics();
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO conflict_bench_diag VALUES (1, 1)", ct);
+        await tx2.ExecuteAsync("INSERT INTO conflict_bench_diag VALUES (2, 2)", ct);
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        var diagnostics = _db.GetCommitPathDiagnosticsSnapshot();
+        Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        Assert.True(diagnostics.ExplicitLeafRebaseSuccessCount > 0);
+        Assert.Equal(0, diagnostics.ExplicitLeafRebaseCapacityRejectCount);
+        Assert.Equal(0, diagnostics.ExplicitInteriorRebaseAttemptCount);
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_DisjointInsertOnlyLeafWritesCanCommitWithoutRetryOnFreshTable()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -180,12 +210,113 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ImplicitIdentityInsertsReserveDistinctRowIds()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE identity_conflict_bench (id INTEGER PRIMARY KEY IDENTITY, writer INTEGER)", ct);
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO identity_conflict_bench (writer) VALUES (1)", ct);
+        await tx2.ExecuteAsync("INSERT INTO identity_conflict_bench (writer) VALUES (2)", ct);
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, writer FROM identity_conflict_bench ORDER BY id, writer",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(1L, rows[0][1].AsInteger);
+        Assert.Equal(2L, rows[1][0].AsInteger);
+        Assert.Equal(2L, rows[1][1].AsInteger);
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ImplicitIdentityInsertBurst_CompletesUnderDurableGroupCommit()
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(30));
+        CancellationToken ct = linkedCts.Token;
+
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_identity_burst_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25)));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE identity_burst (id INTEGER PRIMARY KEY IDENTITY, writer INTEGER)", ct);
+            db.ResetCommitPathDiagnostics();
+
+            const int writerCount = 8;
+            const int insertsPerWriter = 32;
+            int bodyInvocationCount = 0;
+            int completedOperationCount = 0;
+            await RunConcurrentWritersAsync(
+                writerCount,
+                async writerId =>
+                {
+                    for (int i = 0; i < insertsPerWriter; i++)
+                    {
+                        await db.RunWriteTransactionAsync(
+                            async (tx, innerCt) =>
+                            {
+                                Interlocked.Increment(ref bodyInvocationCount);
+                                await tx.ExecuteAsync(
+                                    $"INSERT INTO identity_burst (writer) VALUES ({writerId})",
+                                    innerCt);
+                            },
+                            ct: ct);
+                        Interlocked.Increment(ref completedOperationCount);
+                    }
+                },
+                ct).WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            await using var result = await db.ExecuteAsync(
+                "SELECT COUNT(*), MIN(id), MAX(id) FROM identity_burst",
+                ct);
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            long actualRowCount = row[0].AsInteger;
+            Assert.True(
+                actualRowCount == writerCount * insertsPerWriter,
+                $"Expected {writerCount * insertsPerWriter} committed rows but observed {actualRowCount}. bodyInvocations={bodyInvocationCount}, completedOperations={completedOperationCount}.");
+            Assert.Equal(1L, row[1].AsInteger);
+            Assert.True(
+                row[2].AsInteger >= writerCount * insertsPerWriter,
+                $"Expected retries to preserve committed row count even if identity reservations introduce gaps. maxId={row[2].AsInteger}, bodyInvocations={bodyInvocationCount}, completedOperations={completedOperationCount}.");
+            Assert.Equal(writerCount * insertsPerWriter, completedOperationCount);
+            Assert.True(bodyInvocationCount >= completedOperationCount);
+
+            var diagnostics = db.GetCommitPathDiagnosticsSnapshot();
+            Assert.True(diagnostics.ExplicitConflictResolutionCount > 0);
+            Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_NonMergeableSameLeafUpdatesStillConflictWithoutRetry()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE update_conflict_bench (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
         await _db.ExecuteAsync("INSERT INTO update_conflict_bench VALUES (1, 10)", ct);
         await _db.ExecuteAsync("INSERT INTO update_conflict_bench VALUES (2, 20)", ct);
+
+        _db.ResetCommitPathDiagnostics();
 
         await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
         await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
@@ -198,6 +329,11 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
 
         Assert.Equal(11L, await ScalarIntAsync("SELECT writer FROM update_conflict_bench WHERE id = 1", ct));
         Assert.Equal(20L, await ScalarIntAsync("SELECT writer FROM update_conflict_bench WHERE id = 2", ct));
+
+        var diagnostics = _db.GetCommitPathDiagnosticsSnapshot();
+        Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        Assert.True(diagnostics.ExplicitLeafRebaseStructuralRejectCount > 0);
+        Assert.Equal(0, diagnostics.ExplicitLeafRebaseSuccessCount);
     }
 
     [Fact]

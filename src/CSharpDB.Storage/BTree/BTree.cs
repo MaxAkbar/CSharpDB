@@ -537,6 +537,7 @@ public sealed class BTree
             await _pager.MarkDirtyAsync(newRootId, ct);
 
             _rootPageId = newRootId;
+            _pager.RecordBTreeRootSplit();
         }
 
         _cachedEntryCount = null;
@@ -586,6 +587,7 @@ public sealed class BTree
             await _pager.MarkDirtyAsync(newRootId, ct);
 
             _rootPageId = newRootId;
+            _pager.RecordBTreeRootSplit();
         }
 
         return true;
@@ -868,6 +870,7 @@ public sealed class BTree
         {
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
+                _pager.RecordExplicitLeafInsertTraversal(_rootPageId, traversalPath);
                 return await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
             }
             else
@@ -1004,6 +1007,8 @@ public sealed class BTree
         int totalCellCount = existingCellCount + 1;
         int[] cellOffsets = ArrayPool<int>.Shared.Rent(totalCellCount + 1);
         byte[]? splitCellBuffer = null;
+        bool rightEdgeSplit = sp.RightChildOrNextLeaf == PageConstants.NullPageId &&
+            insertIdx == existingCellCount;
         try
         {
             splitCellBuffer = BuildSplitCellBuffer(
@@ -1021,9 +1026,7 @@ public sealed class BTree
             var newSp = new SlottedPage(newPage, newPageId);
             newSp.Initialize(PageConstants.PageTypeLeaf);
 
-            bool preferSparseRightPage = _pager.IsExplicitWriteTransactionActive &&
-                sp.RightChildOrNextLeaf == PageConstants.NullPageId &&
-                insertIdx == existingCellCount;
+            bool preferSparseRightPage = rightEdgeSplit;
 
             int mid = SelectLeafSplitIndex(
                 cellOffsets,
@@ -1065,6 +1068,7 @@ public sealed class BTree
 
             await _pager.MarkDirtyAsync(pageId, ct);
             await _pager.MarkDirtyAsync(newPageId, ct);
+            _pager.RecordBTreeLeafSplit(rightEdgeSplit);
 
             // The split key is the first key of the right page.
             int splitOffset = cellOffsets[mid];
@@ -1128,6 +1132,9 @@ public sealed class BTree
 
     private async ValueTask<InsertResult> InsertIntoInteriorAsync(uint pageId, byte[] page, SlottedPage sp, long key, uint newChildPageId, int afterChildIdx, CancellationToken ct)
     {
+        bool rightEdgeInsert = afterChildIdx >= sp.CellCount;
+        _pager.RecordBTreeInteriorInsert(rightEdgeInsert);
+
         // Get the original child pointer that was at afterChildIdx
         uint originalChild = FindChildAtIndex(sp, afterChildIdx);
 
@@ -1168,6 +1175,7 @@ public sealed class BTree
     {
         int existingCellCount = sp.CellCount;
         int totalCellCount = existingCellCount + 1;
+        bool rightEdgeSplit = insertIdx == existingCellCount;
         const int interiorCellSize = 13;
         int totalBytes = checked(totalCellCount * interiorCellSize);
         byte[]? splitCellBuffer = null;
@@ -1196,7 +1204,7 @@ public sealed class BTree
                 totalCellCount,
                 pageId,
                 newPageId,
-                preferSparseRightPage: _pager.IsExplicitWriteTransactionActive && insertIdx == existingCellCount);
+                preferSparseRightPage: rightEdgeSplit);
             ReadOnlySpan<byte> promotedCell = splitCellBuffer.AsSpan(mid * interiorCellSize, interiorCellSize);
             long promotedKey = ReadInteriorCellKey(promotedCell);
             uint rightChildOfLeft = ReadInteriorCellLeftChild(promotedCell);
@@ -1216,6 +1224,7 @@ public sealed class BTree
 
             await _pager.MarkDirtyAsync(pageId, ct);
             await _pager.MarkDirtyAsync(newPageId, ct);
+            _pager.RecordBTreeInteriorSplit(rightEdgeSplit);
 
             return new InsertResult { Split = true, SplitKey = promotedKey, NewPageId = newPageId };
         }
