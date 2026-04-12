@@ -45,6 +45,7 @@ public sealed class Database : IAsyncDisposable
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _observedSchemaVersion;
+    private ImplicitInsertExecutionMode _implicitInsertExecutionMode;
     private bool _inTransaction;
 
     /// <summary>
@@ -55,6 +56,15 @@ public sealed class Database : IAsyncDisposable
     {
         get => _planner.PreferSyncPointLookups;
         set => _planner.PreferSyncPointLookups = value;
+    }
+
+    /// <summary>
+    /// Controls how shared auto-commit INSERT statements execute on this database handle.
+    /// </summary>
+    public ImplicitInsertExecutionMode ImplicitInsertExecutionMode
+    {
+        get => _implicitInsertExecutionMode;
+        set => _implicitInsertExecutionMode = value;
     }
 
     public int ActiveReaderCount => _pager.ActiveReaderCount;
@@ -79,6 +89,7 @@ public sealed class Database : IAsyncDisposable
         IIndexProvider indexProvider,
         ICatalogStore catalogStore,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
+        ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
@@ -88,6 +99,7 @@ public sealed class Database : IAsyncDisposable
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
+        _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(
             pager,
@@ -449,7 +461,8 @@ public sealed class Database : IAsyncDisposable
             context.SchemaSerializer,
             context.IndexProvider,
             context.CatalogStore,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -511,6 +524,7 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.IndexProvider,
                 snapshotContext.CatalogStore,
                 snapshotContext.AdvisoryStatisticsPersistenceMode,
+                options.ImplicitInsertExecutionMode,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
         }
@@ -523,7 +537,8 @@ public sealed class Database : IAsyncDisposable
             context.SchemaSerializer,
             context.IndexProvider,
             context.CatalogStore,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -580,7 +595,8 @@ public sealed class Database : IAsyncDisposable
             context.SchemaSerializer,
             context.IndexProvider,
             context.CatalogStore,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -601,7 +617,8 @@ public sealed class Database : IAsyncDisposable
             context.SchemaSerializer,
             context.IndexProvider,
             context.CatalogStore,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -722,6 +739,9 @@ public sealed class Database : IAsyncDisposable
 
         if (stmt is InsertStatement insert)
         {
+            if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
+                return await ExecuteConcurrentImplicitInsertAsync(insert, ct);
+
             for (int attempt = 0; ; attempt++)
             {
                 try
@@ -741,6 +761,12 @@ public sealed class Database : IAsyncDisposable
     private ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct) =>
         RunWriteTransactionAsync(
             (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(stmt, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
+
+    private ValueTask<QueryResult> ExecuteConcurrentImplicitInsertAsync(InsertStatement insert, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(insert, token),
             ImplicitAutoCommitWriteTransactionOptions,
             ct);
 
@@ -791,6 +817,9 @@ public sealed class Database : IAsyncDisposable
                 persistRootChanges: false,
                 ct);
         }
+
+        if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
+            return await ExecuteConcurrentImplicitSimpleInsertAsync(insert, ct);
 
         for (int attempt = 0; ; attempt++)
         {
@@ -844,6 +873,12 @@ public sealed class Database : IAsyncDisposable
 
         return result;
     }
+
+    private ValueTask<QueryResult> ExecuteConcurrentImplicitSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(insert, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
 
     /// <summary>
     /// Begin an explicit transaction.

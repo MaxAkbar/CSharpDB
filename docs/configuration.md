@@ -44,6 +44,7 @@ await using var db = await Database.OpenHybridAsync("mydata.db",
 
 ```
 DatabaseOptions
+├── ImplicitInsertExecutionMode
 ├── StorageEngineOptions
 │   ├── DurabilityMode
 │   ├── DurableGroupCommit
@@ -75,6 +76,18 @@ FullTextIndexOptions (per-index, for EnsureFullTextIndexAsync)
 ├── LowercaseInvariant
 └── StorePositions
 ```
+
+---
+
+## DatabaseOptions
+
+Top-level database composition and execution-shape configuration.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Controls whether shared auto-commit `INSERT` statements stay behind the legacy database write gate or run as isolated `WriteTransaction` commits. |
+| `StorageEngineOptions` | `StorageEngineOptions` | default instance | Storage engine durability, pager, WAL, and checkpoint settings |
+| `StorageEngineFactory` | `IStorageEngineFactory` | `DefaultStorageEngineFactory` | Factory used to compose the backing storage engine |
 
 ---
 
@@ -254,6 +267,7 @@ These properties can be changed on an open `Database` instance:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Shared auto-commit `INSERT` statements use the legacy serialized path by default; set `ConcurrentWriteTransactions` to route them through isolated write transactions for better low-conflict insert fan-in. |
 | `PreferSyncPointLookups` | `bool` | `true` | Simple primary-key equality lookups use a synchronous cache-only fast path instead of the async pipeline. |
 
 ---

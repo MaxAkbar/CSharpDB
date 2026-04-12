@@ -294,7 +294,8 @@ uniqueness validation inside the same transaction.
 
 The supported threading model for `Database` is:
 
-- Auto-commit writes can be issued concurrently against the same `Database` or `Collection<T>`, but they are serialized internally behind a single writer gate.
+- Auto-commit updates, deletes, DDL, and the default auto-commit insert path can be issued concurrently against the same `Database` or `Collection<T>`, but they are serialized internally behind a single writer gate.
+- If `ImplicitInsertExecutionMode` is set to `ConcurrentWriteTransactions`, shared auto-commit `INSERT` statements are routed through isolated `WriteTransaction` commits instead. That improves disjoint-key insert fan-in, but hot right-edge insert workloads can regress.
 - Only one explicit transaction can be active per `Database`. Do not share one explicit transaction concurrently across multiple tasks.
 - Use one `ReaderSession` per concurrent SQL reader when you want snapshot-isolated reads alongside writes.
 - A single `ReaderSession` is not re-entrant and supports only one active query at a time.

@@ -1521,6 +1521,64 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentSharedAutoCommitSqlInserts_WithConcurrentImplicitInsertMode_CanQueuePendingCommits()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_autocommit_insert_batch_test_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions
+        {
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(1)));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE auto_insert_batch (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+
+            const int writerCount = 8;
+            const int insertsPerWriter = 24;
+
+            db.ResetWalFlushDiagnostics();
+            db.ResetCommitPathDiagnostics();
+
+            await RunConcurrentWritersAsync(
+                writerCount,
+                async writerId =>
+                {
+                    int baseId = (writerId + 1) * 100_000;
+                    for (int iteration = 0; iteration < insertsPerWriter; iteration++)
+                    {
+                        int id = baseId + iteration + 1;
+                        await db.ExecuteAsync(
+                            $"INSERT INTO auto_insert_batch VALUES ({id}, {writerId})",
+                            ct);
+                    }
+                },
+                ct);
+
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM auto_insert_batch", ct);
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(writerCount * insertsPerWriter, row[0].AsInteger);
+
+            var walDiagnostics = db.GetWalFlushDiagnosticsSnapshot();
+            var commitDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+            Assert.True(
+                walDiagnostics.FlushedCommitCount > walDiagnostics.FlushCount,
+                $"Expected concurrent implicit inserts to batch durable flushes, observed flushedCommits={walDiagnostics.FlushedCommitCount}, flushes={walDiagnostics.FlushCount}.");
+            Assert.True(
+                commitDiagnostics.MaxPendingCommitCount > 1,
+                $"Expected concurrent implicit inserts to queue pending commits, observed maxPendingCommits={commitDiagnostics.MaxPendingCommitCount}.");
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_DisjointUpdates_DoNotCorruptSharedSnapshotCache()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -259,6 +259,17 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_PreservesImplicitInsertExecutionMode()
+    {
+        var options = new DatabaseOptions
+        {
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25)));
+
+        Assert.Equal(ImplicitInsertExecutionMode.ConcurrentWriteTransactions, options.ImplicitInsertExecutionMode);
+    }
+
+    [Fact]
     public void StorageEngineOptions_DefaultsToDurableWalCommits()
     {
         var options = new StorageEngineOptions();
