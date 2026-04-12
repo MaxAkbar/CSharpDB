@@ -64,6 +64,30 @@ public sealed class QueryPlanner
         public HashSet<string> StaleTables { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
+    private sealed class LogicalMutationConflictMetadata
+    {
+        public required string RowResourceName { get; init; }
+        public required LogicalColumnConflictMetadata[] Columns { get; init; }
+    }
+
+    private enum LogicalColumnConflictKind
+    {
+        None = 0,
+        Integer = 1,
+        Text = 2,
+    }
+
+    private readonly record struct LogicalColumnConflictMetadata(
+        LogicalColumnConflictKind Kind,
+        string? ResourceName,
+        string? NormalizedCollation)
+    {
+        public bool RequiresTextNormalization =>
+            Kind == LogicalColumnConflictKind.Text &&
+            !string.IsNullOrEmpty(NormalizedCollation) &&
+            !string.Equals(NormalizedCollation, CollationSupport.BinaryCollation, StringComparison.Ordinal);
+    }
+
     private readonly record struct ForeignKeyDeleteKey(string TableName, long RowId)
     {
         public bool Equals(ForeignKeyDeleteKey other) =>
@@ -199,6 +223,7 @@ public sealed class QueryPlanner
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>> _logicalMutationConflictMetadataCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
@@ -14354,46 +14379,95 @@ public sealed class QueryPlanner
         long? oldRowId = null,
         long? newRowId = null)
     {
+        LogicalMutationConflictMetadata metadata = GetLogicalMutationConflictMetadata(tableName, schema);
         if (oldRowId.HasValue)
-            _pager.RecordLogicalTableRowWrite(tableName, oldRowId.Value);
-        if (newRowId.HasValue)
-            _pager.RecordLogicalTableRowWrite(tableName, newRowId.Value);
+            _pager.RecordLogicalResourceWrite(metadata.RowResourceName, oldRowId.Value);
+        if (newRowId.HasValue && newRowId != oldRowId)
+            _pager.RecordLogicalResourceWrite(metadata.RowResourceName, newRowId.Value);
 
-        RecordLogicalColumnWrites(tableName, schema, oldRow);
-        RecordLogicalColumnWrites(tableName, schema, newRow);
+        RecordLogicalColumnWrites(metadata, oldRow);
+        RecordLogicalColumnWrites(metadata, newRow);
     }
 
-    private void RecordLogicalColumnWrites(string tableName, TableSchema schema, DbValue[]? row)
+    private void RecordLogicalColumnWrites(LogicalMutationConflictMetadata metadata, DbValue[]? row)
     {
         if (row is null)
             return;
 
-        int columnCount = Math.Min(schema.Columns.Count, row.Length);
+        int columnCount = Math.Min(metadata.Columns.Length, row.Length);
         for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
         {
-            if (!TryGetLogicalColumnConflictKey(schema.Columns[columnIndex], row[columnIndex], out long key))
+            LogicalColumnConflictMetadata columnMetadata = metadata.Columns[columnIndex];
+            if (!TryGetLogicalColumnConflictKey(columnMetadata, row[columnIndex], out long key))
                 continue;
 
-            _pager.RecordLogicalTableColumnWrite(tableName, schema.Columns[columnIndex].Name, key);
+            _pager.RecordLogicalResourceWrite(columnMetadata.ResourceName!, key);
         }
     }
 
-    private static bool TryGetLogicalColumnConflictKey(ColumnDefinition column, DbValue value, out long key)
+    private LogicalMutationConflictMetadata GetLogicalMutationConflictMetadata(string tableName, TableSchema schema)
+    {
+        if (!_logicalMutationConflictMetadataCache.TryGetValue(schema, out Dictionary<string, LogicalMutationConflictMetadata>? schemaCache))
+        {
+            schemaCache = new Dictionary<string, LogicalMutationConflictMetadata>(StringComparer.OrdinalIgnoreCase);
+            _logicalMutationConflictMetadataCache.Add(schema, schemaCache);
+        }
+
+        if (!schemaCache.TryGetValue(tableName, out LogicalMutationConflictMetadata? metadata))
+        {
+            metadata = BuildLogicalMutationConflictMetadata(tableName, schema);
+            schemaCache.Add(tableName, metadata);
+        }
+
+        return metadata;
+    }
+
+    private static LogicalMutationConflictMetadata BuildLogicalMutationConflictMetadata(string tableName, TableSchema schema)
+    {
+        var columnMetadata = new LogicalColumnConflictMetadata[schema.Columns.Count];
+        for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+            columnMetadata[columnIndex] = BuildLogicalColumnConflictMetadata(tableName, schema.Columns[columnIndex]);
+
+        return new LogicalMutationConflictMetadata
+        {
+            RowResourceName = Pager.BuildLogicalTableRowResourceName(tableName),
+            Columns = columnMetadata,
+        };
+    }
+
+    private static LogicalColumnConflictMetadata BuildLogicalColumnConflictMetadata(string tableName, ColumnDefinition column)
+    {
+        return column.Type switch
+        {
+            DbType.Integer => new LogicalColumnConflictMetadata(
+                LogicalColumnConflictKind.Integer,
+                Pager.BuildLogicalTableColumnResourceName(tableName, column.Name),
+                NormalizedCollation: null),
+            DbType.Text => new LogicalColumnConflictMetadata(
+                LogicalColumnConflictKind.Text,
+                Pager.BuildLogicalTableColumnResourceName(tableName, column.Name),
+                CollationSupport.NormalizeMetadataName(column.Collation)),
+            _ => default,
+        };
+    }
+
+    private static bool TryGetLogicalColumnConflictKey(LogicalColumnConflictMetadata column, DbValue value, out long key)
     {
         key = 0;
         if (value.IsNull)
             return false;
 
-        switch (column.Type)
+        switch (column.Kind)
         {
-            case DbType.Integer when value.Type == DbType.Integer:
+            case LogicalColumnConflictKind.Integer when value.Type == DbType.Integer:
                 key = value.AsInteger;
                 return true;
-            case DbType.Text when value.Type == DbType.Text:
-                key = OrderedTextIndexKeyCodec.ComputeKey(
-                    CollationSupport.NormalizeText(
-                        value.AsText,
-                        CollationSupport.NormalizeMetadataName(column.Collation)));
+            case LogicalColumnConflictKind.Text when value.Type == DbType.Text:
+                string text = value.AsText;
+                if (column.RequiresTextNormalization)
+                    text = CollationSupport.NormalizeText(text, column.NormalizedCollation);
+
+                key = OrderedTextIndexKeyCodec.ComputeKey(text);
                 return true;
             default:
                 return false;

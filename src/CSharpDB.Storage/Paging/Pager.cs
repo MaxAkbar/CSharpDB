@@ -770,11 +770,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         try
         {
             long transactionId = _transactions?.CreateTransactionId() ?? 0;
+            long startVersion = _transactions?.CurrentCommitVersion ?? 0;
             WalSnapshot snapshot = AcquireReaderSnapshot();
-            _transactions?.RegisterExplicitTransaction(transactionId);
+            _transactions?.RegisterExplicitTransaction(transactionId, startVersion);
             var state = new PagerTransactionState(
                 transactionId,
-                _transactions?.CurrentCommitVersion ?? 0,
+                startVersion,
                 snapshot,
                 _pageCount,
                 _schemaRootPage,
@@ -839,6 +840,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     internal void RecordLogicalTableColumnWrite(string tableName, string columnName, long key)
         => RecordLogicalWrite(BuildLogicalTableColumnResourceName(tableName, columnName), key);
+
+    internal void RecordLogicalResourceWrite(string resourceName, long key)
+        => RecordLogicalWrite(resourceName, key);
 
     internal void RecordBTreeLeafSplit(bool rightEdge)
     {
@@ -3353,9 +3357,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private static string BuildLogicalIndexResourceName(string indexName)
         => $"index:{indexName}";
 
-    private static string BuildLogicalTableRowResourceName(string tableName)
+    internal static string BuildLogicalTableRowResourceName(string tableName)
         => $"table:{tableName}:rowid";
 
-    private static string BuildLogicalTableColumnResourceName(string tableName, string columnName)
+    internal static string BuildLogicalTableColumnResourceName(string tableName, string columnName)
         => $"table:{tableName}:column:{columnName}";
 }
