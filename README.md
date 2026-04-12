@@ -98,7 +98,7 @@ await foreach (var row in result.GetRowsAsync())
 - **No moving parts** — single `.db` file, no server process, no native binaries, no external dependencies
 - **SQL + NoSQL in one engine** — full SQL with JOINs, CTEs, subqueries, views, and triggers *plus* a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
 - **ACID by default** — WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
-- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, and MCP server for AI agents
+- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, pipeline tooling, integrated forms and reports designers, and MCP server for AI agents
 - **Use from any language** — NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
 
 ---
@@ -109,20 +109,30 @@ await foreach (var row in result.GetRowsAsync())
 |:-:|:-:|:-:|
 | ![Query tab](docs/images/QuerySytemTable.png) | ![Data browser](docs/images/TableDetails.png) | ![Schema view](docs/images/TableSchema.png) |
 
-Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, integrated forms and reports designers, stored procedures, and storage diagnostics.
+Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, stored procedures, visual pipeline design, integrated forms and reports designers, backup and maintenance flows, and storage diagnostics.
 
 ---
 
 ## Ecosystem
 
-| | | | |
-|:-:|:-:|:-:|:-:|
-| **Engine API** | **Collection API** | **ADO.NET Provider** | **Client SDK** |
-| Direct async SQL | Typed NoSQL key-value | Standard DbConnection | Unified API with pluggable transports |
-| **REST API** | **gRPC Daemon** | **CLI REPL** | **MCP Server** |
-| 33 HTTP endpoints | Remote binary protocol | Interactive shell | AI assistant integration |
-| **VS Code Extension** | **Native FFI** | **Admin UI** | **Node.js Package** |
-| Schema + query + CRUD | NativeAOT C library | Blazor dashboard | TypeScript/JavaScript |
+CSharpDB is more than an embedded SQL engine. The same database can be used through in-process APIs, remote service hosts, AI tooling, visual designers, and cross-language bindings.
+
+| Surface | Primary use | Highlights |
+|---|---|---|
+| **Engine API** | Embedded in-process access | Direct async SQL, transactions, views, triggers, procedures, and query stats |
+| **Collection API** | Typed document and key-value access | `Collection<T>`, nested path indexes, point reads, scans, and path/range queries |
+| **ADO.NET Provider** | Standard .NET data access | `DbConnection`, `DbCommand`, `DbDataReader`, and `DbTransaction` support |
+| **Client SDK** | One C# API across transports | Direct, HTTP, and gRPC transports plus maintenance and diagnostics |
+| **REST API** | HTTP integration and automation | 30+ endpoints with OpenAPI and Scalar for SQL, schema, data, collections, and maintenance |
+| **gRPC Daemon** | Long-running remote host | Strongly typed RPC surface for SQL, schema, procedures, collections, and maintenance |
+| **CLI REPL** | Terminal-first workflows | Interactive SQL shell, schema inspection, backup/restore, and migration commands |
+| **MCP Server** | AI assistant integration | Tool-based schema inspection, query execution, and row operations for MCP-compatible clients |
+| **Admin UI** | Browser-based database studio | Query editor, visual query designer, CRUD, schema editing, procedures, and storage diagnostics |
+| **Forms + Reports** | Internal app workflows and printable output | Database-backed forms designer/runtime plus banded reports with grouping, expressions, preview, and print |
+| **Pipelines** | ETL and automation | Package-based runtime, visual pipeline designer, transforms, dry-run, checkpoints, and run history |
+| **VS Code Extension** | IDE integration | Schema explorer, `.csql` support, query results, CRUD, and storage diagnostics |
+| **Native FFI** | Polyglot embedding | NativeAOT C library for Python, Go, Rust, Swift, Kotlin, Dart, Android, and iOS |
+| **Node.js Package** | JavaScript and TypeScript access | Local embedded wrapper over the native library for Node.js apps and tooling |
 
 ---
 
@@ -199,9 +209,13 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 |---|---|
 | [Getting Started](https://csharpdb.com/getting-started.html) | Step-by-step walkthrough |
 | [Architecture Guide](https://csharpdb.com/docs/architecture.html) | Engine design deep dive |
+| [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
+| [Admin UI Guide](https://csharpdb.com/docs/admin-ui.html) | Querying, schema, pipelines, forms, reports, and storage |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
+| [Pipelines](https://csharpdb.com/docs/pipelines.html) | ETL package model and visual designer |
+| [Reports](https://csharpdb.com/docs/reports.html) | Visual banded report designer and preview |
 | [Native FFI](https://csharpdb.com/docs/tutorials/native-ffi.html) | C library API and cross-language examples |
-| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | All 33 endpoints |
+| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | HTTP API, schema/data CRUD, and maintenance |
 | [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
