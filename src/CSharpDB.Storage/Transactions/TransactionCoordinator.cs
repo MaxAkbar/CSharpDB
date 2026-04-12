@@ -1,3 +1,4 @@
+using System.Buffers;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Wal;
 
@@ -458,13 +459,38 @@ internal sealed class TransactionCoordinator : IDisposable
         ArgumentNullException.ThrowIfNull(pageIds);
         ArgumentNullException.ThrowIfNull(logicalWriteKeys);
 
-        PendingPageVersion[] previousVersions = BuildPendingPageVersionArray(pageIds);
-        PendingLogicalVersion[] previousLogicalVersions = BuildPendingLogicalVersionArray(logicalWriteKeys);
+        (PendingPageVersion[] previousVersions, int previousVersionCount) = BuildPendingPageVersionBuffer(pageIds);
+        (PendingLogicalVersion[] previousLogicalVersions, int previousLogicalVersionCount) = BuildPendingLogicalVersionBuffer(logicalWriteKeys);
+        return ReservePendingCommitCore(previousVersions, previousVersionCount, previousLogicalVersions, previousLogicalVersionCount);
+    }
+
+    internal PendingCommitReservation ReservePendingCommit(
+        uint[] pageIds,
+        int pageCount,
+        HashSet<LogicalConflictKey> logicalWriteKeys)
+    {
+        ArgumentNullException.ThrowIfNull(pageIds);
+        ArgumentNullException.ThrowIfNull(logicalWriteKeys);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageCount);
+        if (pageCount > pageIds.Length)
+            throw new ArgumentOutOfRangeException(nameof(pageCount));
+
+        (PendingPageVersion[] previousVersions, int previousVersionCount) = BuildPendingPageVersionBuffer(pageIds, pageCount);
+        (PendingLogicalVersion[] previousLogicalVersions, int previousLogicalVersionCount) = BuildPendingLogicalVersionBuffer(logicalWriteKeys);
+        return ReservePendingCommitCore(previousVersions, previousVersionCount, previousLogicalVersions, previousLogicalVersionCount);
+    }
+
+    private PendingCommitReservation ReservePendingCommitCore(
+        PendingPageVersion[] previousVersions,
+        int previousVersionCount,
+        PendingLogicalVersion[] previousLogicalVersions,
+        int previousLogicalVersionCount)
+    {
         long commitVersion;
         lock (_pageVersionGate)
         {
             commitVersion = Interlocked.Increment(ref _nextReservedCommitVersion);
-            for (int i = 0; i < previousVersions.Length; i++)
+            for (int i = 0; i < previousVersionCount; i++)
             {
                 uint pageId = previousVersions[i].PageId;
                 previousVersions[i] = new PendingPageVersion(
@@ -475,7 +501,7 @@ internal sealed class TransactionCoordinator : IDisposable
                 _pageLastWriteVersion[pageId] = commitVersion;
             }
 
-            for (int i = 0; i < previousLogicalVersions.Length; i++)
+            for (int i = 0; i < previousLogicalVersionCount; i++)
             {
                 LogicalConflictKey logicalWriteKey = previousLogicalVersions[i].LogicalWriteKey;
                 previousLogicalVersions[i] = new PendingLogicalVersion(
@@ -487,70 +513,93 @@ internal sealed class TransactionCoordinator : IDisposable
             }
         }
 
-        return new PendingCommitReservation(commitVersion, previousVersions, previousLogicalVersions);
+        return new PendingCommitReservation(
+            commitVersion,
+            previousVersions,
+            previousVersionCount,
+            previousLogicalVersions,
+            previousLogicalVersionCount);
     }
 
     public void PublishPendingCommit(PendingCommitReservation reservation)
     {
         ArgumentNullException.ThrowIfNull(reservation);
 
-        bool published = false;
-        while (true)
+        try
         {
-            long current = Volatile.Read(ref _commitVersion);
-            if (current >= reservation.CommitVersion)
-                break;
-
-            if (Interlocked.CompareExchange(ref _commitVersion, reservation.CommitVersion, current) == current)
+            bool published = false;
+            while (true)
             {
-                published = true;
-                break;
+                long current = Volatile.Read(ref _commitVersion);
+                if (current >= reservation.CommitVersion)
+                    break;
+
+                if (Interlocked.CompareExchange(ref _commitVersion, reservation.CommitVersion, current) == current)
+                {
+                    published = true;
+                    break;
+                }
             }
+
+            if (published)
+                SignalCommitStateChanged();
+
+            PruneConflictVersionsUpTo(GetConflictRetentionFloor());
         }
-
-        if (published)
-            SignalCommitStateChanged();
-
-        PruneConflictVersionsUpTo(GetConflictRetentionFloor());
+        finally
+        {
+            reservation.ReleaseBuffers();
+        }
     }
 
     public void RevertPendingCommit(PendingCommitReservation reservation)
     {
         ArgumentNullException.ThrowIfNull(reservation);
 
-        lock (_pageVersionGate)
+        try
         {
-            foreach (PendingPageVersion previous in reservation.PreviousPageVersions)
+            lock (_pageVersionGate)
             {
-                uint pageId = previous.PageId;
-                if (!_pageLastWriteVersion.TryGetValue(pageId, out long currentVersion) ||
-                    currentVersion != reservation.CommitVersion)
+                PendingPageVersion[] previousPageVersions = reservation.PreviousPageVersions;
+                for (int i = 0; i < reservation.PreviousPageVersionCount; i++)
                 {
-                    continue;
+                    PendingPageVersion previous = previousPageVersions[i];
+                    uint pageId = previous.PageId;
+                    if (!_pageLastWriteVersion.TryGetValue(pageId, out long currentVersion) ||
+                        currentVersion != reservation.CommitVersion)
+                    {
+                        continue;
+                    }
+
+                    long? previousVersion = previous.PreviousVersion;
+                    if (previousVersion.HasValue)
+                        _pageLastWriteVersion[pageId] = previousVersion.Value;
+                    else
+                        _pageLastWriteVersion.Remove(pageId);
                 }
 
-                long? previousVersion = previous.PreviousVersion;
-                if (previousVersion.HasValue)
-                    _pageLastWriteVersion[pageId] = previousVersion.Value;
-                else
-                    _pageLastWriteVersion.Remove(pageId);
-            }
-
-            foreach (PendingLogicalVersion previous in reservation.PreviousLogicalVersions)
-            {
-                LogicalConflictKey logicalWriteKey = previous.LogicalWriteKey;
-                if (!_logicalLastWriteVersion.TryGetValue(logicalWriteKey, out long currentVersion) ||
-                    currentVersion != reservation.CommitVersion)
+                PendingLogicalVersion[] previousLogicalVersions = reservation.PreviousLogicalVersions;
+                for (int i = 0; i < reservation.PreviousLogicalVersionCount; i++)
                 {
-                    continue;
-                }
+                    PendingLogicalVersion previous = previousLogicalVersions[i];
+                    LogicalConflictKey logicalWriteKey = previous.LogicalWriteKey;
+                    if (!_logicalLastWriteVersion.TryGetValue(logicalWriteKey, out long currentVersion) ||
+                        currentVersion != reservation.CommitVersion)
+                    {
+                        continue;
+                    }
 
-                long? previousVersion = previous.PreviousVersion;
-                if (previousVersion.HasValue)
-                    _logicalLastWriteVersion[logicalWriteKey] = previousVersion.Value;
-                else
-                    _logicalLastWriteVersion.Remove(logicalWriteKey);
+                    long? previousVersion = previous.PreviousVersion;
+                    if (previousVersion.HasValue)
+                        _logicalLastWriteVersion[logicalWriteKey] = previousVersion.Value;
+                    else
+                        _logicalLastWriteVersion.Remove(logicalWriteKey);
+                }
             }
+        }
+        finally
+        {
+            reservation.ReleaseBuffers();
         }
 
         SignalCommitStateChanged();
@@ -590,42 +639,83 @@ internal sealed class TransactionCoordinator : IDisposable
             _beginBarrier.Release();
     }
 
-    private static PendingPageVersion[] BuildPendingPageVersionArray(IEnumerable<uint> pageIds)
+    private static (PendingPageVersion[] Buffer, int Count) BuildPendingPageVersionBuffer(IEnumerable<uint> pageIds)
     {
         if (pageIds.TryGetNonEnumeratedCount(out int count))
         {
-            var previousVersions = new PendingPageVersion[count];
+            if (count == 0)
+                return (Array.Empty<PendingPageVersion>(), 0);
+
+            PendingPageVersion[] previousVersions = ArrayPool<PendingPageVersion>.Shared.Rent(count);
             int index = 0;
             foreach (uint pageId in pageIds)
                 previousVersions[index++] = new PendingPageVersion(pageId, PreviousVersion: null);
 
-            return previousVersions;
+            return (previousVersions, index);
         }
 
         var previousVersionsList = new List<PendingPageVersion>();
         foreach (uint pageId in pageIds)
             previousVersionsList.Add(new PendingPageVersion(pageId, PreviousVersion: null));
 
-        return previousVersionsList.ToArray();
+        if (previousVersionsList.Count == 0)
+            return (Array.Empty<PendingPageVersion>(), 0);
+
+        PendingPageVersion[] previousVersionsBuffer = ArrayPool<PendingPageVersion>.Shared.Rent(previousVersionsList.Count);
+        previousVersionsList.CopyTo(previousVersionsBuffer, 0);
+        return (previousVersionsBuffer, previousVersionsList.Count);
     }
 
-    private static PendingLogicalVersion[] BuildPendingLogicalVersionArray(IEnumerable<LogicalConflictKey> logicalWriteKeys)
+    private static (PendingPageVersion[] Buffer, int Count) BuildPendingPageVersionBuffer(uint[] pageIds, int count)
+    {
+        if (count == 0)
+            return (Array.Empty<PendingPageVersion>(), 0);
+
+        PendingPageVersion[] previousVersions = ArrayPool<PendingPageVersion>.Shared.Rent(count);
+        for (int i = 0; i < count; i++)
+            previousVersions[i] = new PendingPageVersion(pageIds[i], PreviousVersion: null);
+
+        return (previousVersions, count);
+    }
+
+    private static (PendingLogicalVersion[] Buffer, int Count) BuildPendingLogicalVersionBuffer(IEnumerable<LogicalConflictKey> logicalWriteKeys)
     {
         if (logicalWriteKeys.TryGetNonEnumeratedCount(out int count))
         {
-            var previousVersions = new PendingLogicalVersion[count];
+            if (count == 0)
+                return (Array.Empty<PendingLogicalVersion>(), 0);
+
+            PendingLogicalVersion[] previousVersions = ArrayPool<PendingLogicalVersion>.Shared.Rent(count);
             int index = 0;
             foreach (LogicalConflictKey logicalWriteKey in logicalWriteKeys)
                 previousVersions[index++] = new PendingLogicalVersion(logicalWriteKey, PreviousVersion: null);
 
-            return previousVersions;
+            return (previousVersions, index);
         }
 
         var previousVersionsList = new List<PendingLogicalVersion>();
         foreach (LogicalConflictKey logicalWriteKey in logicalWriteKeys)
             previousVersionsList.Add(new PendingLogicalVersion(logicalWriteKey, PreviousVersion: null));
 
-        return previousVersionsList.ToArray();
+        if (previousVersionsList.Count == 0)
+            return (Array.Empty<PendingLogicalVersion>(), 0);
+
+        PendingLogicalVersion[] previousVersionsBuffer = ArrayPool<PendingLogicalVersion>.Shared.Rent(previousVersionsList.Count);
+        previousVersionsList.CopyTo(previousVersionsBuffer, 0);
+        return (previousVersionsBuffer, previousVersionsList.Count);
+    }
+
+    private static (PendingLogicalVersion[] Buffer, int Count) BuildPendingLogicalVersionBuffer(HashSet<LogicalConflictKey> logicalWriteKeys)
+    {
+        if (logicalWriteKeys.Count == 0)
+            return (Array.Empty<PendingLogicalVersion>(), 0);
+
+        PendingLogicalVersion[] previousVersions = ArrayPool<PendingLogicalVersion>.Shared.Rent(logicalWriteKeys.Count);
+        int index = 0;
+        foreach (LogicalConflictKey logicalWriteKey in logicalWriteKeys)
+            previousVersions[index++] = new PendingLogicalVersion(logicalWriteKey, PreviousVersion: null);
+
+        return (previousVersions, index);
     }
 
     private long GetConflictRetentionFloor()
@@ -650,8 +740,10 @@ internal sealed class TransactionCoordinator : IDisposable
 
     private void PruneConflictVersionsUpTo(long retentionFloor)
     {
-        List<uint>? stalePageIds = null;
-        List<LogicalConflictKey>? staleLogicalKeys = null;
+        uint[]? stalePageIds = null;
+        int stalePageCount = 0;
+        LogicalConflictKey[]? staleLogicalKeys = null;
+        int staleLogicalCount = 0;
         lock (_pageVersionGate)
         {
             foreach ((uint pageId, long version) in _pageLastWriteVersion)
@@ -659,8 +751,8 @@ internal sealed class TransactionCoordinator : IDisposable
                 if (version > retentionFloor)
                     continue;
 
-                stalePageIds ??= new List<uint>();
-                stalePageIds.Add(pageId);
+                stalePageIds ??= ArrayPool<uint>.Shared.Rent(_pageLastWriteVersion.Count);
+                stalePageIds[stalePageCount++] = pageId;
             }
 
             foreach ((LogicalConflictKey logicalWriteKey, long version) in _logicalLastWriteVersion)
@@ -668,22 +760,28 @@ internal sealed class TransactionCoordinator : IDisposable
                 if (version > retentionFloor)
                     continue;
 
-                staleLogicalKeys ??= new List<LogicalConflictKey>();
-                staleLogicalKeys.Add(logicalWriteKey);
+                staleLogicalKeys ??= ArrayPool<LogicalConflictKey>.Shared.Rent(_logicalLastWriteVersion.Count);
+                staleLogicalKeys[staleLogicalCount++] = logicalWriteKey;
             }
 
             if (stalePageIds is not null)
             {
-                foreach (uint pageId in stalePageIds)
-                    _pageLastWriteVersion.Remove(pageId);
+                for (int i = 0; i < stalePageCount; i++)
+                    _pageLastWriteVersion.Remove(stalePageIds[i]);
             }
 
             if (staleLogicalKeys is not null)
             {
-                foreach (LogicalConflictKey logicalWriteKey in staleLogicalKeys)
-                    _logicalLastWriteVersion.Remove(logicalWriteKey);
+                for (int i = 0; i < staleLogicalCount; i++)
+                    _logicalLastWriteVersion.Remove(staleLogicalKeys[i]);
             }
         }
+
+        if (stalePageIds is not null)
+            ArrayPool<uint>.Shared.Return(stalePageIds, clearArray: false);
+
+        if (staleLogicalKeys is not null)
+            ArrayPool<LogicalConflictKey>.Shared.Return(staleLogicalKeys, clearArray: true);
     }
 
     private void SignalSchemaStateChanged_NoLock()
@@ -769,21 +867,43 @@ internal sealed class TransactionCoordinator : IDisposable
 
     public sealed class PendingCommitReservation
     {
+        private PendingPageVersion[]? _previousPageVersions;
+        private PendingLogicalVersion[]? _previousLogicalVersions;
+
         internal PendingCommitReservation(
             long commitVersion,
             PendingPageVersion[] previousPageVersions,
-            PendingLogicalVersion[] previousLogicalVersions)
+            int previousPageVersionCount,
+            PendingLogicalVersion[] previousLogicalVersions,
+            int previousLogicalVersionCount)
         {
             CommitVersion = commitVersion;
-            PreviousPageVersions = previousPageVersions;
-            PreviousLogicalVersions = previousLogicalVersions;
+            _previousPageVersions = previousPageVersions;
+            _previousLogicalVersions = previousLogicalVersions;
+            PreviousPageVersionCount = previousPageVersionCount;
+            PreviousLogicalVersionCount = previousLogicalVersionCount;
         }
 
         public long CommitVersion { get; }
 
-        internal PendingPageVersion[] PreviousPageVersions { get; }
+        internal int PreviousPageVersionCount { get; }
 
-        internal PendingLogicalVersion[] PreviousLogicalVersions { get; }
+        internal int PreviousLogicalVersionCount { get; }
+
+        internal PendingPageVersion[] PreviousPageVersions => _previousPageVersions ?? Array.Empty<PendingPageVersion>();
+
+        internal PendingLogicalVersion[] PreviousLogicalVersions => _previousLogicalVersions ?? Array.Empty<PendingLogicalVersion>();
+
+        internal void ReleaseBuffers()
+        {
+            PendingPageVersion[]? previousPageVersions = Interlocked.Exchange(ref _previousPageVersions, null);
+            if (previousPageVersions is not null && previousPageVersions.Length > 0)
+                ArrayPool<PendingPageVersion>.Shared.Return(previousPageVersions, clearArray: true);
+
+            PendingLogicalVersion[]? previousLogicalVersions = Interlocked.Exchange(ref _previousLogicalVersions, null);
+            if (previousLogicalVersions is not null && previousLogicalVersions.Length > 0)
+                ArrayPool<PendingLogicalVersion>.Shared.Return(previousLogicalVersions, clearArray: true);
+        }
     }
 
     internal readonly record struct PendingPageVersion(uint PageId, long? PreviousVersion);

@@ -2,6 +2,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Storage.Caching;
 using CSharpDB.Storage.Internal;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace CSharpDB.Storage.Paging;
@@ -13,6 +14,9 @@ namespace CSharpDB.Storage.Paging;
 public sealed class Pager : IAsyncDisposable, IDisposable
 {
     private static readonly LogicalConflictKey SchemaConflictKey = new("schema:global", 0);
+    private static readonly ConcurrentDictionary<string, string> LogicalIndexResourceNames = new();
+    private static readonly ConcurrentDictionary<string, string> LogicalTableRowResourceNames = new();
+    private static readonly ConcurrentDictionary<(string TableName, string ColumnName), string> LogicalTableColumnResourceNames = new();
     private readonly IStorageDevice _device;
     private readonly IPageReadProvider _pageReads;
     private readonly IPageReadProvider _speculativePageReads;
@@ -1353,10 +1357,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             WalCommitResult commitResult = await PrepareWalCommitAsync(ct);
             RecordWalAppendDiagnostics(walAppendStartTicks);
-            pendingCommitReservation = _transactions!.ReservePendingCommit(
-                EnumerateOrderedPageIds(orderedDirtyPageIds, orderedDirtyCount),
-                CaptureLegacyLogicalWriteKeys());
-            ClearLegacyLogicalWriteTracking();
+            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             return new PagerCommitResult(CompleteLegacyCommitWithInterceptorAsync(
@@ -1413,10 +1414,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 : await _wal.CommitAsync(PageCount, ct);
 
             RecordWalAppendDiagnostics(walAppendStartTicks);
-            pendingCommitReservation = _transactions!.ReservePendingCommit(
-                EnumerateOrderedPageIds(orderedDirtyPageIds, orderedDirtyCount),
-                CaptureLegacyLogicalWriteKeys());
-            ClearLegacyLogicalWriteTracking();
+            pendingCommitReservation = ReserveLegacyPendingCommit(orderedDirtyPageIds, orderedDirtyCount);
             _buffers.ClearDirty();
             long transactionId = _transactions!.ReleaseWriterAfterCommitAppend();
             return new PagerCommitResult(CompleteLegacyCommitAsync(commitResult, transactionId, pendingCommitReservation));
@@ -3113,13 +3111,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private static uint ReadInteriorLeftChild(ReadOnlySpan<byte> cell)
         => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(cell.Slice(1, sizeof(uint)));
 
-    private LogicalConflictKey[] CaptureLegacyLogicalWriteKeys()
+    private TransactionCoordinator.PendingCommitReservation ReserveLegacyPendingCommit(uint[] orderedDirtyPageIds, int orderedDirtyCount)
     {
         lock (_legacyLogicalWriteGate)
         {
-            return _legacyLogicalWriteKeys.Count == 0
-                ? Array.Empty<LogicalConflictKey>()
-                : _legacyLogicalWriteKeys.ToArray();
+            TransactionCoordinator.PendingCommitReservation reservation = _transactions!.ReservePendingCommit(
+                orderedDirtyPageIds,
+                orderedDirtyCount,
+                _legacyLogicalWriteKeys);
+            _legacyLogicalWriteKeys.Clear();
+            return reservation;
         }
     }
 
@@ -3129,12 +3130,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         {
             _legacyLogicalWriteKeys.Clear();
         }
-    }
-
-    private static IEnumerable<uint> EnumerateOrderedPageIds(uint[] pageIds, int count)
-    {
-        for (int i = 0; i < count; i++)
-            yield return pageIds[i];
     }
 
     private void RecordWalAppendDiagnostics(long startTicks)
@@ -3355,11 +3350,13 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     }
 
     private static string BuildLogicalIndexResourceName(string indexName)
-        => $"index:{indexName}";
+        => LogicalIndexResourceNames.GetOrAdd(indexName, static name => $"index:{name}");
 
     internal static string BuildLogicalTableRowResourceName(string tableName)
-        => $"table:{tableName}:rowid";
+        => LogicalTableRowResourceNames.GetOrAdd(tableName, static name => $"table:{name}:rowid");
 
     internal static string BuildLogicalTableColumnResourceName(string tableName, string columnName)
-        => $"table:{tableName}:column:{columnName}";
+        => LogicalTableColumnResourceNames.GetOrAdd(
+            (tableName, columnName),
+            static names => $"table:{names.TableName}:column:{names.ColumnName}");
 }

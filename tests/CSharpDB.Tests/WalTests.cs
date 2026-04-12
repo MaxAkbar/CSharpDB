@@ -1409,6 +1409,55 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FileWriteAheadLog_ZeroBatchWindow_AppendsAndCommitsInline()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_inline_append_commit_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var policy = new CountingWalFlushPolicy(allowsWriteConcurrencyDuringCommitFlush: true);
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: TimeSpan.Zero);
+            await wal.OpenAsync(currentDbPageCount: 2, ct);
+            policy.Reset();
+
+            WalCommitResult commit = await wal.AppendFramesAndCommitAsync(
+                new[] { new WalFrameWrite(0, CreateFilledPage(0x95)) },
+                newDbPageCount: 2,
+                ct);
+
+            ValueTask wait = commit.WaitAsync(ct);
+            Assert.True(wait.IsCompletedSuccessfully);
+            await wait;
+
+            WalFlushDiagnosticsSnapshot diagnostics =
+                ((IWalRuntimeDiagnosticsProvider)wal).GetWalFlushDiagnosticsSnapshot();
+
+            Assert.False(wal.HasPendingCommitWork);
+            Assert.Equal(1, wal.Index.FrameCount);
+            Assert.Equal(1, policy.CommitFlushCount);
+            Assert.Equal(1, diagnostics.FlushCount);
+            Assert.Equal(1, diagnostics.FlushedCommitCount);
+            Assert.Equal(0, diagnostics.BatchWindowWaitCount);
+            Assert.True(wal.Index.TryGetLatest(0, out _));
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
     public async Task FileWriteAheadLog_DurableCommitBatchWindow_BypassesDelayWhenQueueIsHeavy()
     {
         var ct = TestContext.Current.CancellationToken;
