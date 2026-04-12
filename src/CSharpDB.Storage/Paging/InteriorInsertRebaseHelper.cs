@@ -73,6 +73,32 @@ internal static class InteriorInsertRebaseHelper
         return result;
     }
 
+    public static InsertOnlyRebaseResult TryDescribeSingleInsertedInteriorEntry(
+        uint pageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> candidatePage,
+        out InteriorInsertion insertion)
+    {
+        var baseInterior = new ReadOnlySlottedPage(basePage, pageId);
+        var candidateInterior = new ReadOnlySlottedPage(candidatePage, pageId);
+
+        insertion = default;
+        if (baseInterior.PageType != PageConstants.PageTypeInterior ||
+            candidateInterior.PageType != PageConstants.PageTypeInterior)
+        {
+            return InsertOnlyRebaseResult.NotApplicable;
+        }
+
+        if (!TryCollectInsertedInteriorEntries(baseInterior, candidateInterior, out List<InteriorInsertion> insertedEntries) ||
+            insertedEntries.Count != 1)
+        {
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        insertion = insertedEntries[0];
+        return InsertOnlyRebaseResult.Success;
+    }
+
     private static bool TryCollectInsertedInteriorEntries(
         ReadOnlySlottedPage baseInterior,
         ReadOnlySlottedPage candidateInterior,
@@ -286,7 +312,7 @@ internal static class InteriorInsertRebaseHelper
         BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(5, 8), key);
     }
 
-    private readonly record struct InteriorInsertion(
+    internal readonly record struct InteriorInsertion(
         uint LeftChild,
         uint RightBoundaryChild,
         long Key,

@@ -10,12 +10,28 @@ internal static class LeafInsertRebaseHelper
         ReadOnlyMemory<byte> committedPage,
         ReadOnlyMemory<byte> transactionPage,
         out byte[]? rebasedPage)
+        => TryRebaseInsertOnlyLeafPage(
+            pageId,
+            basePage,
+            committedPage,
+            transactionPage,
+            out rebasedPage,
+            out _);
+
+    public static InsertOnlyRebaseResult TryRebaseInsertOnlyLeafPage(
+        uint pageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedPage,
+        ReadOnlyMemory<byte> transactionPage,
+        out byte[]? rebasedPage,
+        out LeafInsertRebaseRejectReason rejectReason)
     {
         var baseLeaf = new ReadOnlySlottedPage(basePage, pageId);
         var committedLeaf = new ReadOnlySlottedPage(committedPage, pageId);
         var transactionLeaf = new ReadOnlySlottedPage(transactionPage, pageId);
 
         rebasedPage = null;
+        rejectReason = LeafInsertRebaseRejectReason.None;
         if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
             committedLeaf.PageType != PageConstants.PageTypeLeaf ||
             transactionLeaf.PageType != PageConstants.PageTypeLeaf)
@@ -27,6 +43,7 @@ internal static class LeafInsertRebaseHelper
         if (committedLeaf.RightChildOrNextLeaf != nextLeaf ||
             transactionLeaf.RightChildOrNextLeaf != nextLeaf)
         {
+            rejectReason = LeafInsertRebaseRejectReason.NextLeafChanged;
             return InsertOnlyRebaseResult.StructuralReject;
         }
 
@@ -34,6 +51,7 @@ internal static class LeafInsertRebaseHelper
             !TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
             transactionInsertedCells.Count == 0)
         {
+            rejectReason = LeafInsertRebaseRejectReason.NonInsertOnlyDelta;
             return InsertOnlyRebaseResult.StructuralReject;
         }
 
@@ -47,7 +65,10 @@ internal static class LeafInsertRebaseHelper
             long insertedKey = ReadLeafCellKey(insertedCell);
             int insertIndex = FindInsertPosition(mergedLeaf, insertedKey);
             if (insertIndex < mergedLeaf.CellCount && ReadLeafKey(mergedLeaf, insertIndex) == insertedKey)
+            {
+                rejectReason = LeafInsertRebaseRejectReason.DuplicateKey;
                 return InsertOnlyRebaseResult.StructuralReject;
+            }
 
             if (!TryInsertLeafCell(ref mergedLeaf, insertIndex, insertedCell))
                 return InsertOnlyRebaseResult.CapacityReject;
@@ -117,6 +138,27 @@ internal static class LeafInsertRebaseHelper
         ReadOnlyMemory<byte> transactionPage,
         out byte[]? rebasedLeftPage,
         out byte[]? rebasedRightPage)
+        => TryRebaseCommittedSplitLeafPages(
+            leftPageId,
+            rightPageId,
+            basePage,
+            committedLeftPage,
+            committedRightPage,
+            transactionPage,
+            out rebasedLeftPage,
+            out rebasedRightPage,
+            out _);
+
+    public static InsertOnlyRebaseResult TryRebaseCommittedSplitLeafPages(
+        uint leftPageId,
+        uint rightPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedLeftPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        ReadOnlyMemory<byte> transactionPage,
+        out byte[]? rebasedLeftPage,
+        out byte[]? rebasedRightPage,
+        out LeafInsertRebaseRejectReason rejectReason)
     {
         var baseLeaf = new ReadOnlySlottedPage(basePage, leftPageId);
         var committedLeftLeaf = new ReadOnlySlottedPage(committedLeftPage, leftPageId);
@@ -125,6 +167,7 @@ internal static class LeafInsertRebaseHelper
 
         rebasedLeftPage = null;
         rebasedRightPage = null;
+        rejectReason = LeafInsertRebaseRejectReason.None;
         if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
             committedLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
             committedRightLeaf.PageType != PageConstants.PageTypeLeaf ||
@@ -134,18 +177,122 @@ internal static class LeafInsertRebaseHelper
         }
 
         uint originalNextLeaf = baseLeaf.RightChildOrNextLeaf;
-        if (transactionLeaf.RightChildOrNextLeaf != originalNextLeaf ||
-            committedLeftLeaf.RightChildOrNextLeaf != rightPageId ||
-            committedRightLeaf.RightChildOrNextLeaf != originalNextLeaf ||
-            !TryReadOrderedSplitLeafCells(committedLeftLeaf, committedRightLeaf, out byte[][] committedCells) ||
-            !TryReadOrderedLeafCells(baseLeaf, out byte[][] baseCells) ||
-            !TryCollectInsertedLeafCells(baseCells, committedCells, out _) ||
-            !TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
-            transactionInsertedCells.Count == 0)
+        if (transactionLeaf.RightChildOrNextLeaf != originalNextLeaf)
         {
+            rejectReason = LeafInsertRebaseRejectReason.NonInsertOnlyDelta;
             return InsertOnlyRebaseResult.StructuralReject;
         }
 
+        if (committedLeftLeaf.RightChildOrNextLeaf != rightPageId ||
+            committedRightLeaf.RightChildOrNextLeaf != originalNextLeaf ||
+            !TryReadOrderedSplitLeafCells(committedLeftLeaf, committedRightLeaf, out byte[][] committedCells) ||
+            !TryReadOrderedLeafCells(baseLeaf, out byte[][] baseCells) ||
+            !TryCollectInsertedLeafCells(baseCells, committedCells, out _))
+        {
+            rejectReason = LeafInsertRebaseRejectReason.InvalidCommittedSplitShape;
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        if (!TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
+            transactionInsertedCells.Count == 0)
+        {
+            rejectReason = LeafInsertRebaseRejectReason.NonInsertOnlyDelta;
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        return TryRebaseCommittedSplitLeafPages(
+            leftPageId,
+            rightPageId,
+            basePage,
+            committedLeftPage,
+            committedRightPage,
+            transactionInsertedCells,
+            out rebasedLeftPage,
+            out rebasedRightPage,
+            out rejectReason);
+    }
+
+    public static InsertOnlyRebaseResult TryCollectInsertedLeafCellsFromSplitPages(
+        uint leftPageId,
+        uint rightPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> splitLeftPage,
+        ReadOnlyMemory<byte> splitRightPage,
+        out List<byte[]>? insertedCells,
+        out LeafInsertRebaseRejectReason rejectReason)
+    {
+        var baseLeaf = new ReadOnlySlottedPage(basePage, leftPageId);
+        var splitLeftLeaf = new ReadOnlySlottedPage(splitLeftPage, leftPageId);
+        var splitRightLeaf = new ReadOnlySlottedPage(splitRightPage, rightPageId);
+
+        insertedCells = null;
+        rejectReason = LeafInsertRebaseRejectReason.None;
+        if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
+            splitLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
+            splitRightLeaf.PageType != PageConstants.PageTypeLeaf)
+        {
+            return InsertOnlyRebaseResult.NotApplicable;
+        }
+
+        uint originalNextLeaf = baseLeaf.RightChildOrNextLeaf;
+        if (splitLeftLeaf.RightChildOrNextLeaf != rightPageId ||
+            splitRightLeaf.RightChildOrNextLeaf != originalNextLeaf)
+        {
+            rejectReason = LeafInsertRebaseRejectReason.InvalidCommittedSplitShape;
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        if (!TryReadOrderedSplitLeafCells(splitLeftLeaf, splitRightLeaf, out byte[][] splitCells) ||
+            !TryReadOrderedLeafCells(baseLeaf, out byte[][] baseCells) ||
+            !TryCollectInsertedLeafCells(baseCells, splitCells, out List<byte[]>? transactionInsertedCells) ||
+            transactionInsertedCells.Count == 0)
+        {
+            rejectReason = LeafInsertRebaseRejectReason.NonInsertOnlyDelta;
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        insertedCells = transactionInsertedCells;
+        return InsertOnlyRebaseResult.Success;
+    }
+
+    public static InsertOnlyRebaseResult TryRebaseCommittedSplitLeafPagesWithInsertedCells(
+        uint leftPageId,
+        uint rightPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedLeftPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        IReadOnlyList<byte[]> transactionInsertedCells,
+        out byte[]? rebasedLeftPage,
+        out byte[]? rebasedRightPage,
+        out LeafInsertRebaseRejectReason rejectReason)
+        => TryRebaseCommittedSplitLeafPages(
+            leftPageId,
+            rightPageId,
+            basePage,
+            committedLeftPage,
+            committedRightPage,
+            transactionInsertedCells,
+            out rebasedLeftPage,
+            out rebasedRightPage,
+            out rejectReason);
+
+    private static InsertOnlyRebaseResult TryRebaseCommittedSplitLeafPages(
+        uint leftPageId,
+        uint rightPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedLeftPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        IReadOnlyList<byte[]> transactionInsertedCells,
+        out byte[]? rebasedLeftPage,
+        out byte[]? rebasedRightPage,
+        out LeafInsertRebaseRejectReason rejectReason)
+    {
+        var committedLeftLeaf = new ReadOnlySlottedPage(committedLeftPage, leftPageId);
+        var committedRightLeaf = new ReadOnlySlottedPage(committedRightPage, rightPageId);
+
+        rebasedLeftPage = null;
+        rebasedRightPage = null;
+        rejectReason = LeafInsertRebaseRejectReason.None;
         byte[] leftPage = committedLeftPage.ToArray();
         byte[] rightPage = committedRightPage.ToArray();
         var mergedLeftLeaf = new SlottedPage(leftPage, leftPageId);
@@ -162,6 +309,7 @@ internal static class LeafInsertRebaseHelper
                 if (insertIndex < mergedLeftLeaf.CellCount &&
                     ReadLeafKey(mergedLeftLeaf, insertIndex) == insertedKey)
                 {
+                    rejectReason = LeafInsertRebaseRejectReason.DuplicateKey;
                     return InsertOnlyRebaseResult.StructuralReject;
                 }
 
@@ -175,6 +323,7 @@ internal static class LeafInsertRebaseHelper
             if (rightInsertIndex < mergedRightLeaf.CellCount &&
                 ReadLeafKey(mergedRightLeaf, rightInsertIndex) == insertedKey)
             {
+                rejectReason = LeafInsertRebaseRejectReason.DuplicateKey;
                 return InsertOnlyRebaseResult.StructuralReject;
             }
 
@@ -205,6 +354,22 @@ internal static class LeafInsertRebaseHelper
         }
 
         return page;
+    }
+
+    public static bool TryReadFirstLeafKey(
+        uint pageId,
+        ReadOnlyMemory<byte> page,
+        out long key)
+    {
+        var leaf = new ReadOnlySlottedPage(page, pageId);
+        if (leaf.PageType != PageConstants.PageTypeLeaf || leaf.CellCount == 0)
+        {
+            key = default;
+            return false;
+        }
+
+        key = ReadLeafKey(leaf, 0);
+        return true;
     }
 
     private static bool TryCollectInsertedLeafCells(

@@ -7,6 +7,7 @@ using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Tests;
 
+ [Collection("StorageConcurrency")]
 public sealed class BTreeCursorTests
 {
     [Fact]
@@ -371,6 +372,76 @@ public sealed class BTreeCursorTests
         CommitPathDiagnosticsSnapshot diagnostics = pager.GetCommitPathDiagnosticsSnapshot();
         Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
         Assert.True(diagnostics.ExplicitLeafRebaseSuccessCount > 0);
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitTransactions_CommittedLeafSplitCanDiscardLosingLocalSplitParentUpdate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint leftLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rightLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rootPageId = await pager.AllocatePageAsync(ct);
+
+        var leftLeaf = new SlottedPage(await pager.GetPageAsync(leftLeafPageId, ct), leftLeafPageId);
+        leftLeaf.Initialize(PageConstants.PageTypeLeaf);
+        leftLeaf.RightChildOrNextLeaf = rightLeafPageId;
+        InsertLeafCell(ref leftLeaf, key: 10, payloadLength: 32, fillByte: 0x11);
+        await pager.MarkDirtyAsync(leftLeafPageId, ct);
+
+        var rightLeaf = new SlottedPage(await pager.GetPageAsync(rightLeafPageId, ct), rightLeafPageId);
+        rightLeaf.Initialize(PageConstants.PageTypeLeaf);
+        InsertLeafCell(ref rightLeaf, key: 100, payloadLength: 2052, fillByte: 0x22);
+        InsertLeafCell(ref rightLeaf, key: 150, payloadLength: 1000, fillByte: 0x33);
+        await pager.MarkDirtyAsync(rightLeafPageId, ct);
+
+        var root = new SlottedPage(await pager.GetPageAsync(rootPageId, ct), rootPageId);
+        root.Initialize(PageConstants.PageTypeInterior);
+        root.RightChildOrNextLeaf = rightLeafPageId;
+        Assert.True(root.InsertCell(0, BuildInteriorCell(leftLeafPageId, 100)));
+        await pager.MarkDirtyAsync(rootPageId, ct);
+        await pager.CommitAsync(ct);
+
+        pager.ResetCommitPathDiagnostics();
+
+        await using var tx1 = await pager.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await pager.BeginWriteTransactionAsync(ct);
+
+        using (tx1.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(200, new byte[1000], ct);
+        }
+
+        using (tx2.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(300, new byte[1000], ct);
+        }
+
+        await tx1.CommitAsync(ct);
+        Assert.Equal((ushort)2, await GetRootCellCountAsync(pager, rootPageId, ct));
+
+        await tx2.CommitAsync(ct);
+
+        var committedTree = new BTree(pager, rootPageId);
+        Assert.Equal((ushort)2, await GetRootCellCountAsync(pager, rootPageId, ct));
+        Assert.Equal(5L, await committedTree.CountEntriesAsync(ct));
+        Assert.NotNull(await committedTree.FindAsync(10, ct));
+        Assert.NotNull(await committedTree.FindAsync(100, ct));
+        Assert.NotNull(await committedTree.FindAsync(150, ct));
+        Assert.NotNull(await committedTree.FindAsync(200, ct));
+        Assert.NotNull(await committedTree.FindAsync(300, ct));
+
+        CommitPathDiagnosticsSnapshot diagnostics = pager.GetCommitPathDiagnosticsSnapshot();
+        Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        Assert.True(diagnostics.ExplicitLeafRebaseSuccessCount > 0);
+        Assert.Equal(0, diagnostics.ExplicitLeafRebaseRejectSplitFallbackDirtyAncestorCount);
     }
 
     [Fact]

@@ -46,6 +46,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _explicitLeafRebaseSuccessCount;
     private long _explicitLeafRebaseStructuralRejectCount;
     private long _explicitLeafRebaseCapacityRejectCount;
+    private long _explicitLeafRebaseRejectNonInsertOnlyCount;
+    private long _explicitLeafRebaseRejectDuplicateKeyCount;
+    private long _explicitLeafRebaseRejectSplitFallbackPreconditionCount;
+    private long _explicitLeafRebaseRejectSplitFallbackMissingTraversalCount;
+    private long _explicitLeafRebaseRejectSplitFallbackDirtyAncestorCount;
+    private long _explicitLeafRebaseRejectSplitFallbackParentBoundaryCount;
+    private long _explicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount;
+    private long _explicitLeafRebaseRejectDirtyParentMissingParentPageCount;
+    private long _explicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount;
+    private long _explicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount;
+    private long _explicitLeafRebaseRejectDirtyParentInsertionShapeCount;
+    private long _explicitLeafRebaseRejectDirtyParentInsertionMismatchCount;
+    private long _explicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount;
+    private long _explicitLeafRebaseRejectDirtyParentLocalSplitShapeCount;
+    private long _explicitLeafRebaseRejectDirtyParentRebaseFailureCount;
+    private long _explicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount;
+    private long _explicitLeafRebaseRejectSplitFallbackShapeCount;
+    private long _explicitLeafRebaseRejectOtherCount;
     private long _explicitInteriorRebaseAttemptCount;
     private long _explicitInteriorRebaseSuccessCount;
     private long _explicitInteriorRebaseStructuralRejectCount;
@@ -182,6 +200,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             ExplicitLeafRebaseSuccessCount: Interlocked.Read(ref _explicitLeafRebaseSuccessCount),
             ExplicitLeafRebaseStructuralRejectCount: Interlocked.Read(ref _explicitLeafRebaseStructuralRejectCount),
             ExplicitLeafRebaseCapacityRejectCount: Interlocked.Read(ref _explicitLeafRebaseCapacityRejectCount),
+            ExplicitLeafRebaseRejectNonInsertOnlyCount: Interlocked.Read(ref _explicitLeafRebaseRejectNonInsertOnlyCount),
+            ExplicitLeafRebaseRejectDuplicateKeyCount: Interlocked.Read(ref _explicitLeafRebaseRejectDuplicateKeyCount),
+            ExplicitLeafRebaseRejectSplitFallbackPreconditionCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackPreconditionCount),
+            ExplicitLeafRebaseRejectSplitFallbackMissingTraversalCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackMissingTraversalCount),
+            ExplicitLeafRebaseRejectSplitFallbackDirtyAncestorCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackDirtyAncestorCount),
+            ExplicitLeafRebaseRejectSplitFallbackParentBoundaryCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackParentBoundaryCount),
+            ExplicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount),
+            ExplicitLeafRebaseRejectDirtyParentMissingParentPageCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentMissingParentPageCount),
+            ExplicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount),
+            ExplicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount),
+            ExplicitLeafRebaseRejectDirtyParentInsertionShapeCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentInsertionShapeCount),
+            ExplicitLeafRebaseRejectDirtyParentInsertionMismatchCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentInsertionMismatchCount),
+            ExplicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount),
+            ExplicitLeafRebaseRejectDirtyParentLocalSplitShapeCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentLocalSplitShapeCount),
+            ExplicitLeafRebaseRejectDirtyParentRebaseFailureCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentRebaseFailureCount),
+            ExplicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount: Interlocked.Read(ref _explicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount),
+            ExplicitLeafRebaseRejectSplitFallbackShapeCount: Interlocked.Read(ref _explicitLeafRebaseRejectSplitFallbackShapeCount),
+            ExplicitLeafRebaseRejectOtherCount: Interlocked.Read(ref _explicitLeafRebaseRejectOtherCount),
             ExplicitInteriorRebaseAttemptCount: Interlocked.Read(ref _explicitInteriorRebaseAttemptCount),
             ExplicitInteriorRebaseSuccessCount: Interlocked.Read(ref _explicitInteriorRebaseSuccessCount),
             ExplicitInteriorRebaseStructuralRejectCount: Interlocked.Read(ref _explicitInteriorRebaseStructuralRejectCount),
@@ -237,6 +273,24 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _explicitLeafRebaseSuccessCount, 0);
         Interlocked.Exchange(ref _explicitLeafRebaseStructuralRejectCount, 0);
         Interlocked.Exchange(ref _explicitLeafRebaseCapacityRejectCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectNonInsertOnlyCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDuplicateKeyCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackPreconditionCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackMissingTraversalCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackDirtyAncestorCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackParentBoundaryCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentMissingParentPageCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentInsertionShapeCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentInsertionMismatchCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentLocalSplitShapeCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentRebaseFailureCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectSplitFallbackShapeCount, 0);
+        Interlocked.Exchange(ref _explicitLeafRebaseRejectOtherCount, 0);
         Interlocked.Exchange(ref _explicitInteriorRebaseAttemptCount, 0);
         Interlocked.Exchange(ref _explicitInteriorRebaseSuccessCount, 0);
         Interlocked.Exchange(ref _explicitInteriorRebaseStructuralRejectCount, 0);
@@ -835,6 +889,78 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 break;
             case InsertOnlyRebaseResult.CapacityReject:
                 Interlocked.Increment(ref _explicitLeafRebaseCapacityRejectCount);
+                break;
+        }
+    }
+
+    private void RecordExplicitLeafStructuralRejectReason(ExplicitLeafStructuralRejectReason reason)
+    {
+        switch (reason)
+        {
+            case ExplicitLeafStructuralRejectReason.NonInsertOnlyDelta:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectNonInsertOnlyCount);
+                break;
+            case ExplicitLeafStructuralRejectReason.DuplicateKey:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDuplicateKeyCount);
+                break;
+            case ExplicitLeafStructuralRejectReason.SplitFallbackPrecondition:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackPreconditionCount);
+                break;
+            case ExplicitLeafStructuralRejectReason.SplitFallbackShape:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackShapeCount);
+                break;
+            case ExplicitLeafStructuralRejectReason.Other:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectOtherCount);
+                break;
+        }
+    }
+
+    private void RecordExplicitLeafSplitFallbackRejectReason(ExplicitLeafSplitFallbackRejectReason reason)
+    {
+        switch (reason)
+        {
+            case ExplicitLeafSplitFallbackRejectReason.MissingTraversal:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackMissingTraversalCount);
+                break;
+            case ExplicitLeafSplitFallbackRejectReason.DirtyAncestor:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackDirtyAncestorCount);
+                break;
+            case ExplicitLeafSplitFallbackRejectReason.ParentBoundaryMissing:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackParentBoundaryCount);
+                break;
+            case ExplicitLeafSplitFallbackRejectReason.TargetPageDirty:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount);
+                break;
+        }
+    }
+
+    private void RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason reason)
+    {
+        switch (reason)
+        {
+            case DirtyParentLeafSplitRecoveryRejectReason.MissingParentPage:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentMissingParentPageCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.TransactionLeafNotSplit:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.BaseParentBoundaryMissing:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.ParentInsertionShape:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentInsertionShapeCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.ParentInsertionMismatch:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentInsertionMismatchCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.MissingLocalRightPage:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.LocalSplitShape:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentLocalSplitShapeCount);
+                break;
+            case DirtyParentLeafSplitRecoveryRejectReason.RebaseFailure:
+                Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentRebaseFailureCount);
                 break;
         }
     }
@@ -2451,7 +2577,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             basePage.Memory,
             committedPage.Memory,
             transactionPage,
-            out byte[]? rebasedPage);
+            out byte[]? rebasedPage,
+            out LeafInsertRebaseRejectReason leafRejectReason);
+        ExplicitLeafSplitFallbackRejectReason splitFallbackRejectReason = ExplicitLeafSplitFallbackRejectReason.None;
         switch (leafRebaseResult)
         {
             case InsertOnlyRebaseResult.Success:
@@ -2476,19 +2604,31 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 break;
 
             case InsertOnlyRebaseResult.StructuralReject:
-                if (await TryResolveExplicitCommittedLeafSplitConflictAsync(
+                (bool splitFallbackResolved, ExplicitLeafSplitFallbackRejectReason splitFallbackReason) =
+                    await TryResolveExplicitCommittedLeafSplitConflictAsync(
                         tx,
                         conflictPageId,
                         conflictVersion,
                         basePage.Memory,
                         committedPage.Memory,
                         transactionPage,
-                        ct))
+                        ct);
+                splitFallbackRejectReason = splitFallbackReason;
+                if (splitFallbackResolved)
                 {
                     RecordExplicitLeafRebaseDiagnostics(InsertOnlyRebaseResult.Success);
                     return true;
                 }
                 break;
+        }
+
+        if (leafRebaseResult == InsertOnlyRebaseResult.StructuralReject)
+        {
+            if (leafRejectReason == LeafInsertRebaseRejectReason.NextLeafChanged)
+                RecordExplicitLeafSplitFallbackRejectReason(splitFallbackRejectReason);
+
+            RecordExplicitLeafStructuralRejectReason(
+                ClassifyExplicitLeafStructuralRejectReason(leafRejectReason, splitFallbackRejectReason));
         }
 
         RecordExplicitLeafRebaseDiagnostics(leafRebaseResult);
@@ -2597,7 +2737,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return true;
     }
 
-    private async ValueTask<bool> TryResolveExplicitCommittedLeafSplitConflictAsync(
+    private async ValueTask<(bool Success, ExplicitLeafSplitFallbackRejectReason RejectReason)> TryResolveExplicitCommittedLeafSplitConflictAsync(
         PagerTransactionState tx,
         uint conflictPageId,
         long conflictVersion,
@@ -2611,30 +2751,51 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             traversal.PageIds.Length < 2 ||
             traversal.PageIds[^1] != conflictPageId)
         {
-            return false;
-        }
-
-        for (int i = 0; i < traversal.PageIds.Length - 1; i++)
-        {
-            if (tx.DirtyPages.Contains(traversal.PageIds[i]))
-                return false;
+            return (false, ExplicitLeafSplitFallbackRejectReason.MissingTraversal);
         }
 
         uint parentPageId = traversal.PageIds[^2];
+        int dirtyAncestorCount = 0;
+        for (int i = 0; i < traversal.PageIds.Length - 1; i++)
+        {
+            if (tx.DirtyPages.Contains(traversal.PageIds[i]))
+                dirtyAncestorCount++;
+        }
+
+        if (dirtyAncestorCount > 0)
+        {
+            if (dirtyAncestorCount != 1 || !tx.DirtyPages.Contains(parentPageId))
+                return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+
+            return await TryResolveExplicitCommittedLeafSplitConflictWithDirtyParentAsync(
+                tx,
+                conflictPageId,
+                conflictVersion,
+                parentPageId,
+                basePage,
+                committedPage,
+                transactionPage,
+                ct);
+        }
+
         PageReadBuffer parentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
         var committedParent = new ReadOnlySlottedPage(parentPage.Memory, parentPageId);
         if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint splitRightPageId) ||
-            splitRightPageId == PageConstants.NullPageId ||
-            tx.DirtyPages.Contains(splitRightPageId))
+            splitRightPageId == PageConstants.NullPageId)
         {
-            return false;
+            return (false, ExplicitLeafSplitFallbackRejectReason.ParentBoundaryMissing);
+        }
+
+        if (tx.DirtyPages.Contains(splitRightPageId))
+        {
+            return (false, ExplicitLeafSplitFallbackRejectReason.TargetPageDirty);
         }
 
         var committedLeftLeaf = new ReadOnlySlottedPage(committedPage, conflictPageId);
         if (committedLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
             committedLeftLeaf.RightChildOrNextLeaf != splitRightPageId)
         {
-            return false;
+            return (false, ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape);
         }
 
         PageReadBuffer splitRightPage = await _buffers.GetPageReadAsync(splitRightPageId, ct);
@@ -2646,20 +2807,245 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             splitRightPage.Memory,
             transactionPage,
             out byte[]? rebasedLeftPage,
-            out byte[]? rebasedRightPage);
+            out byte[]? rebasedRightPage,
+            out LeafInsertRebaseRejectReason splitRejectReason);
         if (splitRebaseResult != InsertOnlyRebaseResult.Success)
-            return false;
+        {
+            ExplicitLeafSplitFallbackRejectReason splitFallbackRejectReason =
+                splitRejectReason == LeafInsertRebaseRejectReason.InvalidCommittedSplitShape
+                    ? ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape
+                    : ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape;
+            return (false, splitFallbackRejectReason);
+        }
 
-        tx.ModifiedPages[conflictPageId] = rebasedLeftPage!;
-        tx.ModifiedPages[splitRightPageId] = rebasedRightPage!;
+        ApplyResolvedCommittedLeafSplitPages(
+            tx,
+            conflictPageId,
+            splitRightPageId,
+            conflictVersion,
+            rebasedLeftPage!,
+            rebasedRightPage!);
+        return (true, ExplicitLeafSplitFallbackRejectReason.None);
+    }
+
+    private async ValueTask<(bool Success, ExplicitLeafSplitFallbackRejectReason RejectReason)> TryResolveExplicitCommittedLeafSplitConflictWithDirtyParentAsync(
+        PagerTransactionState tx,
+        uint conflictPageId,
+        long conflictVersion,
+        uint parentPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedPage,
+        byte[] transactionPage,
+        CancellationToken ct)
+    {
+        if (!tx.ModifiedPages.TryGetValue(parentPageId, out byte[]? transactionParentPage))
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.MissingParentPage);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        var baseLeaf = new ReadOnlySlottedPage(basePage, conflictPageId);
+        var transactionLeaf = new ReadOnlySlottedPage(transactionPage, conflictPageId);
+        if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
+            transactionLeaf.PageType != PageConstants.PageTypeLeaf)
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.TransactionLeafNotSplit);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        uint originalNextLeafPageId = baseLeaf.RightChildOrNextLeaf;
+        uint transactionSplitRightPageId = transactionLeaf.RightChildOrNextLeaf;
+        if (transactionSplitRightPageId == PageConstants.NullPageId ||
+            transactionSplitRightPageId == originalNextLeafPageId)
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.TransactionLeafNotSplit);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        if (!tx.ModifiedPages.TryGetValue(transactionSplitRightPageId, out byte[]? transactionSplitRightPage))
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.MissingLocalRightPage);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        if (!LeafInsertRebaseHelper.TryReadFirstLeafKey(
+                transactionSplitRightPageId,
+                transactionSplitRightPage,
+                out long transactionSplitKey))
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.LocalSplitShape);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        PageReadBuffer baseParentPage = await _buffers.GetSnapshotPageReadAsync(parentPageId, tx.Snapshot, ct);
+        var baseParent = new ReadOnlySlottedPage(baseParentPage.Memory, parentPageId);
+        if (!TryFindInteriorChildBoundary(baseParent, conflictPageId, out uint originalRightBoundaryChild))
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.BaseParentBoundaryMissing);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        InsertOnlyRebaseResult baseParentPlanResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorInsertion(
+            parentPageId,
+            baseParentPage.Memory,
+            conflictPageId,
+            originalRightBoundaryChild,
+            transactionSplitKey,
+            transactionSplitRightPageId,
+            out byte[]? expectedTransactionParentPageFromBase);
+
+        PageReadBuffer committedParentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        var committedParent = new ReadOnlySlottedPage(committedParentPage.Memory, parentPageId);
+        if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint splitRightPageId) ||
+            splitRightPageId == PageConstants.NullPageId)
+        {
+            return (false, ExplicitLeafSplitFallbackRejectReason.ParentBoundaryMissing);
+        }
+
+        if (tx.DirtyPages.Contains(splitRightPageId) || transactionSplitRightPageId == splitRightPageId)
+            return (false, ExplicitLeafSplitFallbackRejectReason.TargetPageDirty);
+
+        var committedLeftLeaf = new ReadOnlySlottedPage(committedPage, conflictPageId);
+        if (committedLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
+            committedLeftLeaf.RightChildOrNextLeaf != splitRightPageId)
+        {
+            return (false, ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape);
+        }
+
+        bool matchesBaseParentShape =
+            baseParentPlanResult == InsertOnlyRebaseResult.Success &&
+            expectedTransactionParentPageFromBase is not null &&
+            transactionParentPage.AsSpan().SequenceEqual(expectedTransactionParentPageFromBase);
+        if (!matchesBaseParentShape)
+        {
+            InsertOnlyRebaseResult committedParentPlanResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorInsertion(
+                parentPageId,
+                committedParentPage.Memory,
+                conflictPageId,
+                originalRightBoundaryChild,
+                transactionSplitKey,
+                transactionSplitRightPageId,
+                out byte[]? expectedTransactionParentPageFromCommitted);
+            bool matchesCommittedParentShape =
+                committedParentPlanResult == InsertOnlyRebaseResult.Success &&
+                expectedTransactionParentPageFromCommitted is not null &&
+                transactionParentPage.AsSpan().SequenceEqual(expectedTransactionParentPageFromCommitted);
+            bool canDiscardSimpleLeafSplitParent =
+                tx.ExplicitLeafInsertPaths.Count == 1 &&
+                tx.DirtyPages.Count == 3 &&
+                tx.ModifiedPages.ContainsKey(conflictPageId) &&
+                tx.ModifiedPages.ContainsKey(parentPageId) &&
+                tx.ModifiedPages.ContainsKey(transactionSplitRightPageId);
+            if (!matchesCommittedParentShape && !canDiscardSimpleLeafSplitParent)
+            {
+                InsertOnlyRebaseResult describedInsertionResult = InteriorInsertRebaseHelper.TryDescribeSingleInsertedInteriorEntry(
+                    parentPageId,
+                    baseParentPage.Memory,
+                    transactionParentPage,
+                    out InteriorInsertRebaseHelper.InteriorInsertion describedInsertion);
+                if (describedInsertionResult == InsertOnlyRebaseResult.Success &&
+                    describedInsertion.LeftChild == conflictPageId &&
+                    describedInsertion.Key == transactionSplitKey &&
+                    describedInsertion.NewChild == transactionSplitRightPageId)
+                {
+                    Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount);
+                }
+
+                RecordDirtyParentLeafSplitRecoveryRejectReason(
+                    baseParentPlanResult != InsertOnlyRebaseResult.Success &&
+                    committedParentPlanResult != InsertOnlyRebaseResult.Success
+                        ? DirtyParentLeafSplitRecoveryRejectReason.ParentInsertionShape
+                        : DirtyParentLeafSplitRecoveryRejectReason.ParentInsertionMismatch);
+                return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+            }
+        }
+
+        InsertOnlyRebaseResult collectInsertedCellsResult = LeafInsertRebaseHelper.TryCollectInsertedLeafCellsFromSplitPages(
+            conflictPageId,
+            transactionSplitRightPageId,
+            basePage,
+            transactionPage,
+            transactionSplitRightPage,
+            out List<byte[]>? transactionInsertedCells,
+            out _);
+        if (collectInsertedCellsResult != InsertOnlyRebaseResult.Success)
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.LocalSplitShape);
+            return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
+        }
+
+        PageReadBuffer splitRightPage = await _buffers.GetPageReadAsync(splitRightPageId, ct);
+        InsertOnlyRebaseResult splitRebaseResult = LeafInsertRebaseHelper.TryRebaseCommittedSplitLeafPagesWithInsertedCells(
+            conflictPageId,
+            splitRightPageId,
+            basePage,
+            committedPage,
+            splitRightPage.Memory,
+            transactionInsertedCells!,
+            out byte[]? rebasedLeftPage,
+            out byte[]? rebasedRightPage,
+            out LeafInsertRebaseRejectReason splitRejectReason);
+        if (splitRebaseResult != InsertOnlyRebaseResult.Success)
+        {
+            RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.RebaseFailure);
+            ExplicitLeafSplitFallbackRejectReason splitFallbackRejectReason =
+                splitRejectReason == LeafInsertRebaseRejectReason.InvalidCommittedSplitShape
+                    ? ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape
+                    : ExplicitLeafSplitFallbackRejectReason.DirtyAncestor;
+            return (false, splitFallbackRejectReason);
+        }
+
+        tx.ModifiedPages.Remove(parentPageId);
+        tx.DirtyPages.Remove(parentPageId);
+        tx.ResolvedWriteConflictVersions.Remove(parentPageId);
+
+        await FreeTransactionPageAsync(tx, transactionSplitRightPageId, ct);
+        ApplyResolvedCommittedLeafSplitPages(
+            tx,
+            conflictPageId,
+            splitRightPageId,
+            conflictVersion,
+            rebasedLeftPage!,
+            rebasedRightPage!);
+        return (true, ExplicitLeafSplitFallbackRejectReason.None);
+    }
+
+    private void ApplyResolvedCommittedLeafSplitPages(
+        PagerTransactionState tx,
+        uint conflictPageId,
+        uint splitRightPageId,
+        long conflictVersion,
+        byte[] rebasedLeftPage,
+        byte[] rebasedRightPage)
+    {
+        tx.ModifiedPages[conflictPageId] = rebasedLeftPage;
+        tx.ModifiedPages[splitRightPageId] = rebasedRightPage;
         tx.DirtyPages.Add(conflictPageId);
         tx.DirtyPages.Add(splitRightPageId);
 
-        long resolvedVersion = Math.Max(conflictVersion, _transactions.CurrentCommitVersion);
+        long resolvedVersion = Math.Max(conflictVersion, _transactions!.CurrentCommitVersion);
         tx.ResolvedWriteConflictVersions[conflictPageId] = resolvedVersion;
         tx.ResolvedWriteConflictVersions[splitRightPageId] = resolvedVersion;
-        return true;
     }
+
+    private static ExplicitLeafStructuralRejectReason ClassifyExplicitLeafStructuralRejectReason(
+        LeafInsertRebaseRejectReason leafRejectReason,
+        ExplicitLeafSplitFallbackRejectReason splitFallbackRejectReason)
+        => leafRejectReason switch
+        {
+            LeafInsertRebaseRejectReason.NonInsertOnlyDelta => ExplicitLeafStructuralRejectReason.NonInsertOnlyDelta,
+            LeafInsertRebaseRejectReason.DuplicateKey => ExplicitLeafStructuralRejectReason.DuplicateKey,
+            LeafInsertRebaseRejectReason.NextLeafChanged => splitFallbackRejectReason switch
+            {
+                ExplicitLeafSplitFallbackRejectReason.MissingTraversal => ExplicitLeafStructuralRejectReason.SplitFallbackPrecondition,
+                ExplicitLeafSplitFallbackRejectReason.DirtyAncestor => ExplicitLeafStructuralRejectReason.SplitFallbackPrecondition,
+                ExplicitLeafSplitFallbackRejectReason.ParentBoundaryMissing => ExplicitLeafStructuralRejectReason.SplitFallbackPrecondition,
+                ExplicitLeafSplitFallbackRejectReason.TargetPageDirty => ExplicitLeafStructuralRejectReason.SplitFallbackPrecondition,
+                ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape => ExplicitLeafStructuralRejectReason.SplitFallbackShape,
+                _ => ExplicitLeafStructuralRejectReason.Other,
+            },
+            _ => ExplicitLeafStructuralRejectReason.Other,
+        };
 
     private static bool TryFindInteriorChildBoundary(
         ReadOnlySlottedPage interior,

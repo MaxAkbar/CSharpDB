@@ -2,7 +2,7 @@
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current top-level snapshot in this README still centers on the April 7, 2026 validation refresh for the broad API and storage-mode tables: a fresh full-surface `--all` sweep, an April 7 guardrail compare against the checked-in March 30 focused baseline, same-day durable and buffered `master-table` median-of-3 reruns, and same-day focused collection reruns after the collection write-path recovery work. The dedicated multi-writer sections in this README now also include the April 10, 2026 Phase 3 closeout reruns for explicit `WriteTransaction`, concurrent durable auto-commit, and `--stress`, plus the April 11, 2026 focused checkpoint-retention, commit-fan-in, and insert-fan-in reruns for the split checkpoint/fan-in phase-4 work.
+The current top-level snapshot in this README still centers on the April 7, 2026 validation refresh for the broad API and storage-mode tables: a fresh full-surface `--all` sweep, an April 7 guardrail compare against the checked-in March 30 focused baseline, same-day durable and buffered `master-table` median-of-3 reruns, and same-day focused collection reruns after the collection write-path recovery work. The dedicated multi-writer sections in this README now also include the April 10, 2026 Phase 3 closeout reruns for explicit `WriteTransaction`, concurrent durable auto-commit, and `--stress`, plus the April 11, 2026 focused checkpoint-retention, commit-fan-in, and insert-fan-in reruns for the split checkpoint/fan-in phase-4 work, including the later same-day insert-side reservation follow-up.
 
 ## Latest Validation Snapshot
 
@@ -73,12 +73,20 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 
 | Item | Result |
 |------|--------|
-| Insert fan-in artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-151542.csv` |
-| Auto-commit explicit-id `W8` | `452 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 1` |
-| Auto-commit auto-id `W8` | `444 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 1` |
-| Explicit `WriteTransaction` explicit-id `W8` | `437 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 2` |
-| Explicit `WriteTransaction` auto-id `W8` | `418 commits/sec`, `commitsPerFlush = 1.00`, `duplicateKeys = 1` |
-| Insert note | `The insert hot path stayed structural across both shared auto-commit and explicit WriteTransaction variants; changing commit shape alone did not unlock the kind of fan-in seen for disjoint updates.` |
+| Insert fan-in artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-165557.csv` |
+| Auto-commit explicit-id `W8` | `458 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 1` |
+| Auto-commit auto-id `W8` | `449 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 1` |
+| Explicit `WriteTransaction` explicit-id `W8` | `438 commits/sec`, `commitsPerFlush = 1.00`, `maxPendingCommits = 2` |
+| Explicit `WriteTransaction` auto-id `W8` | `413 commits/sec`, `commitsPerFlush = 1.00`, `duplicateKeys = 0` |
+| Insert note | `The shared row-id reservation follow-up removed the earlier duplicate-key failures from the explicit auto-id rows, but the insert hot path still stayed structural across both shared auto-commit and explicit WriteTransaction variants.` |
+
+A rebuilt April 12, 2026 spot-check of the previously lagging explicit auto-id scenario also came back clean on the current binaries:
+
+| Item | Result |
+|------|--------|
+| Spot-check artifacts | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-scenario-ExplicitTx_AutoId_W8_Batch250us-20260412-034728.csv`, `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-scenario-ExplicitTx_AutoId_W8_Batch250us-20260412-034745.csv` |
+| Explicit `WriteTransaction` auto-id `W8` spot-check | `441-445 commits/sec`, `extraAttempts = 0`, `dirtyParentRecoveries = 0` |
+| Spot-check note | `The earlier retry-tail signal did not reproduce after rebuilding the benchmark binaries and rerunning the targeted scenario on the current storage path.` |
 
 A focused composite-index rerun was also completed on April 6, 2026 after the covered composite lookup fix:
 
@@ -122,7 +130,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | Explicit `WriteTransaction` artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260410-134444-median-of-3.csv` |
 | Checkpoint-retention artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/checkpoint-retention-diagnostics-20260411-082100-median-of-3.csv` |
 | Commit fan-in artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/commit-fan-in-diagnostics-20260411-141949.csv` |
-| Insert fan-in artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-151542.csv` |
+| Insert fan-in artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-165557.csv` |
 | Concurrent durable write artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260410-135529-median-of-3.csv` |
 | Stress artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260410-140205-median-of-3.csv` |
 | Focused collection steady-state rerun | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260407-162051.csv` |
@@ -158,7 +166,7 @@ High-level takeaways from the current refresh:
 - `Explicit WriteTransaction median-of-3 capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260410-134444-median-of-3.csv`
 - `Checkpoint retention median-of-3 capture on April 11, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/checkpoint-retention-diagnostics-20260411-082100-median-of-3.csv`
 - `Commit fan-in capture on April 11, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/commit-fan-in-diagnostics-20260411-141949.csv`
-- `Insert fan-in capture on April 11, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-151542.csv`
+- `Insert fan-in capture on April 11, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260411-165557.csv`
 - `Concurrent durable write capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260410-135529-median-of-3.csv`
 - `Stress median-of-3 capture on April 10, 2026: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260410-140205-median-of-3.csv`
 - `Broad micro sweep on April 7, 2026: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.*-report.csv`
@@ -814,7 +822,7 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - The same April 10 concurrent closeout showed no win from `1 MiB` WAL preallocation on this runner: `W8_Batch0_Prealloc1MiB` dropped to `420.0 commits/sec` and `W8_Batch250us_Prealloc1MiB` landed at `420.9`.
 - A fresh April 11, 2026 focused fan-in rerun in `commit-fan-in-diagnostics-20260411-141949.csv` now shows shared auto-commit disjoint updates actually coalescing commits on one shared engine: the `W4` row reached `525 commits/sec` with `commitsPerFlush = 1.99`, and the `W8` row reached `743 commits/sec` with `commitsPerFlush = 3.37`. On the same run, the explicit `WriteTransaction` `W8` disjoint-update row landed at `765 commits/sec` with `commitsPerFlush = 3.38`, so the shared non-insert auto-commit path is now effectively in the same commit-fan-in band on this runner.
 - That April 11 phase-4 result is intentionally narrower than "all auto-commit writes now coalesce." The targeted hot-insert sanity rerun in `concurrent-write-scenario-W8_Batch250us-20260411-142023.csv` still measured `428 commits/sec` with `commitsPerFlush = 1.00`, so hot single-row auto-commit inserts should still be treated as insert-specific contention rather than assumed to benefit from the new shared non-insert path.
-- The dedicated April 11 insert fan-in rerun in `insert-fan-in-diagnostics-20260411-151542.csv` makes that insert-side boundary much clearer. Shared auto-commit inserts stayed in a tight `443-452 commits/sec` band with `commitsPerFlush = 1.00` regardless of whether the key was explicit or auto-generated. Switching to explicit `WriteTransaction` did not unlock the update-style fan-in either: explicit-id inserts stayed at about `437 commits/sec` with only `maxPendingCommits = 2`, and the auto-generated-id explicit row fell to about `418 commits/sec` while surfacing one duplicate-key collision plus much heavier retry/tail-latency pressure.
+- The dedicated April 11 insert fan-in rerun in `insert-fan-in-diagnostics-20260411-165557.csv` makes that insert-side boundary much clearer. Shared auto-commit inserts stayed in a tight `449-458 commits/sec` band with `commitsPerFlush = 1.00` regardless of whether the key was explicit or auto-generated. Switching to explicit `WriteTransaction` still did not unlock the update-style fan-in: explicit-id inserts stayed at about `438 commits/sec` with only `maxPendingCommits = 2`, and the auto-generated-id explicit row stayed lower at about `413 commits/sec`. The shared row-id reservation follow-up did remove the earlier duplicate-key failures from that explicit auto-id path, but it did not change the structural no-fan-in result.
 - The April 10 stress closeout in `stress-20260410-140205-median-of-3.csv` still shows the intended logical-conflict separation: overlapping read transactions fell to `96.5 ops/sec` with a `63.1%` conflict rate, while disjoint read transactions reached `261.5 ops/sec` with `0.0%` conflicts. Disjoint write transactions held `156.0 ops/sec` with only `1.5%` conflicts.
 - Commit-path diagnostics across the April 10 and April 11 multi-writer reruns still point at the durable flush as the dominant fixed cost once the queue is available. The main phase-4 change is that shared non-insert auto-commit can now reach that queue; the insert hot loop still cannot, and explicit insert transactions do not solve that by themselves.
 - Recommended interpretation after the latest reruns: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, benchmark application-level batching first, then benchmark the explicit `WriteTransaction` API on your actual conflict shape. If your shared workload is mostly low-conflict `UPDATE` / `DELETE` traffic, the new shared auto-commit path means `UseDurableGroupCommit(...)` is now worth measuring directly. If your workload is a hot single-row insert loop, still treat batching or explicit transactions as the first lever rather than assuming phase-4 fan-in changed that path. If insert-side fan-in is revisited later, it likely needs an explicit row-id reservation / uniqueness design rather than more batch-window tuning.

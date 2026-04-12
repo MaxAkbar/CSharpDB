@@ -31,10 +31,12 @@ public sealed class InsertOnlyRebaseHelperTests
             basePage,
             committedPage,
             transactionPage,
-            out byte[]? rebasedPage);
+            out byte[]? rebasedPage,
+            out LeafInsertRebaseRejectReason rejectReason);
 
         Assert.Equal(InsertOnlyRebaseResult.CapacityReject, result);
         Assert.Null(rebasedPage);
+        Assert.Equal(LeafInsertRebaseRejectReason.None, rejectReason);
     }
 
     [Fact]
@@ -70,11 +72,13 @@ public sealed class InsertOnlyRebaseHelperTests
             committedRightPage,
             transactionPage,
             out byte[]? rebasedLeftPage,
-            out byte[]? rebasedRightPage);
+            out byte[]? rebasedRightPage,
+            out LeafInsertRebaseRejectReason rejectReason);
 
         Assert.Equal(InsertOnlyRebaseResult.Success, result);
         Assert.NotNull(rebasedLeftPage);
         Assert.NotNull(rebasedRightPage);
+        Assert.Equal(LeafInsertRebaseRejectReason.None, rejectReason);
 
         var rebasedLeftLeaf = new SlottedPage(rebasedLeftPage!, leftPageId);
         var rebasedRightLeaf = new SlottedPage(rebasedRightPage!, rightPageId);
@@ -86,6 +90,40 @@ public sealed class InsertOnlyRebaseHelperTests
         Assert.Equal(150, ReadLeafKey(rebasedLeftLeaf, 1));
         Assert.Equal(200, ReadLeafKey(rebasedRightLeaf, 0));
         Assert.Equal(300, ReadLeafKey(rebasedRightLeaf, 1));
+    }
+
+    [Fact]
+    public void TryRebaseInsertOnlyLeafPage_ChangedNextLeaf_ReturnsStructuralRejectReason()
+    {
+        const uint leftPageId = 1;
+        const uint originalNextLeafPageId = 2;
+        const uint committedNextLeafPageId = 3;
+
+        byte[] basePage = CreateLeafPage(leftPageId);
+        var baseLeaf = new SlottedPage(basePage, leftPageId);
+        baseLeaf.RightChildOrNextLeaf = originalNextLeafPageId;
+        InsertLeafCell(ref baseLeaf, key: 100, payloadLength: 256, fillByte: 0x11);
+
+        byte[] committedPage = (byte[])basePage.Clone();
+        var committedLeaf = new SlottedPage(committedPage, leftPageId);
+        committedLeaf.RightChildOrNextLeaf = committedNextLeafPageId;
+        InsertLeafCell(ref committedLeaf, key: 200, payloadLength: 256, fillByte: 0x22);
+
+        byte[] transactionPage = (byte[])basePage.Clone();
+        var transactionLeaf = new SlottedPage(transactionPage, leftPageId);
+        InsertLeafCell(ref transactionLeaf, key: 300, payloadLength: 256, fillByte: 0x33);
+
+        InsertOnlyRebaseResult result = LeafInsertRebaseHelper.TryRebaseInsertOnlyLeafPage(
+            leftPageId,
+            basePage,
+            committedPage,
+            transactionPage,
+            out byte[]? rebasedPage,
+            out LeafInsertRebaseRejectReason rejectReason);
+
+        Assert.Equal(InsertOnlyRebaseResult.StructuralReject, result);
+        Assert.Null(rebasedPage);
+        Assert.Equal(LeafInsertRebaseRejectReason.NextLeafChanged, rejectReason);
     }
 
     private static byte[] CreateLeafPage(uint pageId)
