@@ -1144,6 +1144,23 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return writePageIds;
     }
 
+    private static bool HaveExplicitWritePageIdsChanged(uint[] priorWritePageIds, HashSet<uint> dirtyPages)
+    {
+        int dirtyWritePageCount = dirtyPages.Contains(0)
+            ? dirtyPages.Count - 1
+            : dirtyPages.Count;
+        if (dirtyWritePageCount != priorWritePageIds.Length)
+            return true;
+
+        for (int i = 0; i < priorWritePageIds.Length; i++)
+        {
+            if (!dirtyPages.Contains(priorWritePageIds[i]))
+                return true;
+        }
+
+        return false;
+    }
+
     private async ValueTask<PagerCommitResult> BeginLegacyCommitAsync(CancellationToken ct)
     {
         try
@@ -1442,10 +1459,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         while (_transactions is not null &&
                                TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
                         {
-                            int dirtyPageCountBefore = tx.DirtyPages.Count;
                             if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
                             {
-                                if (tx.DirtyPages.Count != dirtyPageCountBefore)
+                                if (HaveExplicitWritePageIdsChanged(writePageIds, tx.DirtyPages))
                                 {
                                     refreshWritePageIds = true;
                                     break;
@@ -2436,19 +2452,46 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             committedPage.Memory,
             transactionPage,
             out byte[]? rebasedPage);
-        RecordExplicitLeafRebaseDiagnostics(leafRebaseResult);
-        if (leafRebaseResult == InsertOnlyRebaseResult.CapacityReject &&
-            await TryResolveExplicitLeafCapacityConflictAsync(
-                tx,
-                conflictPageId,
-                conflictVersion,
-                basePage.Memory,
-                committedPage.Memory,
-                transactionPage,
-                ct))
+        switch (leafRebaseResult)
         {
-            return true;
+            case InsertOnlyRebaseResult.Success:
+                RecordExplicitLeafRebaseDiagnostics(InsertOnlyRebaseResult.Success);
+                tx.ModifiedPages[conflictPageId] = rebasedPage!;
+                tx.ResolvedWriteConflictVersions[conflictPageId] = conflictVersion;
+                return true;
+
+            case InsertOnlyRebaseResult.CapacityReject:
+                if (await TryResolveExplicitLeafCapacityConflictAsync(
+                        tx,
+                        conflictPageId,
+                        conflictVersion,
+                        basePage.Memory,
+                        committedPage.Memory,
+                        transactionPage,
+                        ct))
+                {
+                    RecordExplicitLeafRebaseDiagnostics(InsertOnlyRebaseResult.Success);
+                    return true;
+                }
+                break;
+
+            case InsertOnlyRebaseResult.StructuralReject:
+                if (await TryResolveExplicitCommittedLeafSplitConflictAsync(
+                        tx,
+                        conflictPageId,
+                        conflictVersion,
+                        basePage.Memory,
+                        committedPage.Memory,
+                        transactionPage,
+                        ct))
+                {
+                    RecordExplicitLeafRebaseDiagnostics(InsertOnlyRebaseResult.Success);
+                    return true;
+                }
+                break;
         }
+
+        RecordExplicitLeafRebaseDiagnostics(leafRebaseResult);
 
         if (leafRebaseResult != InsertOnlyRebaseResult.Success)
         {
@@ -2551,6 +2594,70 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         RecordBTreeLeafSplit(splitPlan.RightEdgeSplit);
         RecordBTreeInteriorInsert(rightBoundaryChild == PageConstants.NullPageId);
+        return true;
+    }
+
+    private async ValueTask<bool> TryResolveExplicitCommittedLeafSplitConflictAsync(
+        PagerTransactionState tx,
+        uint conflictPageId,
+        long conflictVersion,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedPage,
+        byte[] transactionPage,
+        CancellationToken ct)
+    {
+        if (_transactions is null ||
+            !tx.ExplicitLeafInsertPaths.TryGetValue(conflictPageId, out ExplicitLeafInsertPath traversal) ||
+            traversal.PageIds.Length < 2 ||
+            traversal.PageIds[^1] != conflictPageId)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < traversal.PageIds.Length - 1; i++)
+        {
+            if (tx.DirtyPages.Contains(traversal.PageIds[i]))
+                return false;
+        }
+
+        uint parentPageId = traversal.PageIds[^2];
+        PageReadBuffer parentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        var committedParent = new ReadOnlySlottedPage(parentPage.Memory, parentPageId);
+        if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint splitRightPageId) ||
+            splitRightPageId == PageConstants.NullPageId ||
+            tx.DirtyPages.Contains(splitRightPageId))
+        {
+            return false;
+        }
+
+        var committedLeftLeaf = new ReadOnlySlottedPage(committedPage, conflictPageId);
+        if (committedLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
+            committedLeftLeaf.RightChildOrNextLeaf != splitRightPageId)
+        {
+            return false;
+        }
+
+        PageReadBuffer splitRightPage = await _buffers.GetPageReadAsync(splitRightPageId, ct);
+        InsertOnlyRebaseResult splitRebaseResult = LeafInsertRebaseHelper.TryRebaseCommittedSplitLeafPages(
+            conflictPageId,
+            splitRightPageId,
+            basePage,
+            committedPage,
+            splitRightPage.Memory,
+            transactionPage,
+            out byte[]? rebasedLeftPage,
+            out byte[]? rebasedRightPage);
+        if (splitRebaseResult != InsertOnlyRebaseResult.Success)
+            return false;
+
+        tx.ModifiedPages[conflictPageId] = rebasedLeftPage!;
+        tx.ModifiedPages[splitRightPageId] = rebasedRightPage!;
+        tx.DirtyPages.Add(conflictPageId);
+        tx.DirtyPages.Add(splitRightPageId);
+
+        long resolvedVersion = Math.Max(conflictVersion, _transactions.CurrentCommitVersion);
+        tx.ResolvedWriteConflictVersions[conflictPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[splitRightPageId] = resolvedVersion;
         return true;
     }
 

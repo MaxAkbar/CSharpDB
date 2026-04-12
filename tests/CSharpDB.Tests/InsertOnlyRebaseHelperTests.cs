@@ -1,3 +1,4 @@
+using CSharpDB.Primitives;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Paging;
 
@@ -36,6 +37,57 @@ public sealed class InsertOnlyRebaseHelperTests
         Assert.Null(rebasedPage);
     }
 
+    [Fact]
+    public void TryRebaseCommittedSplitLeafPages_RetargetsTransactionInsertIntoCommittedRightSibling()
+    {
+        const uint leftPageId = 1;
+        const uint rightPageId = 2;
+
+        byte[] basePage = CreateLeafPage(leftPageId);
+        var baseLeaf = new SlottedPage(basePage, leftPageId);
+        InsertLeafCell(ref baseLeaf, key: 100, payloadLength: 2052, fillByte: 0x11);
+        InsertLeafCell(ref baseLeaf, key: 150, payloadLength: 1000, fillByte: 0x22);
+
+        byte[] committedLeftPage = CreateLeafPage(leftPageId);
+        var committedLeftLeaf = new SlottedPage(committedLeftPage, leftPageId);
+        committedLeftLeaf.RightChildOrNextLeaf = rightPageId;
+        InsertLeafCell(ref committedLeftLeaf, key: 100, payloadLength: 2052, fillByte: 0x11);
+        InsertLeafCell(ref committedLeftLeaf, key: 150, payloadLength: 1000, fillByte: 0x22);
+
+        byte[] committedRightPage = CreateLeafPage(rightPageId);
+        var committedRightLeaf = new SlottedPage(committedRightPage, rightPageId);
+        InsertLeafCell(ref committedRightLeaf, key: 200, payloadLength: 1000, fillByte: 0x33);
+
+        byte[] transactionPage = (byte[])basePage.Clone();
+        var transactionLeaf = new SlottedPage(transactionPage, leftPageId);
+        InsertLeafCell(ref transactionLeaf, key: 300, payloadLength: 500, fillByte: 0x44);
+
+        InsertOnlyRebaseResult result = LeafInsertRebaseHelper.TryRebaseCommittedSplitLeafPages(
+            leftPageId,
+            rightPageId,
+            basePage,
+            committedLeftPage,
+            committedRightPage,
+            transactionPage,
+            out byte[]? rebasedLeftPage,
+            out byte[]? rebasedRightPage);
+
+        Assert.Equal(InsertOnlyRebaseResult.Success, result);
+        Assert.NotNull(rebasedLeftPage);
+        Assert.NotNull(rebasedRightPage);
+
+        var rebasedLeftLeaf = new SlottedPage(rebasedLeftPage!, leftPageId);
+        var rebasedRightLeaf = new SlottedPage(rebasedRightPage!, rightPageId);
+        Assert.Equal(rightPageId, rebasedLeftLeaf.RightChildOrNextLeaf);
+        Assert.Equal(PageConstants.NullPageId, rebasedRightLeaf.RightChildOrNextLeaf);
+        Assert.Equal((ushort)2, rebasedLeftLeaf.CellCount);
+        Assert.Equal((ushort)2, rebasedRightLeaf.CellCount);
+        Assert.Equal(100, ReadLeafKey(rebasedLeftLeaf, 0));
+        Assert.Equal(150, ReadLeafKey(rebasedLeftLeaf, 1));
+        Assert.Equal(200, ReadLeafKey(rebasedRightLeaf, 0));
+        Assert.Equal(300, ReadLeafKey(rebasedRightLeaf, 1));
+    }
+
     private static byte[] CreateLeafPage(uint pageId)
     {
         byte[] page = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
@@ -52,5 +104,12 @@ public sealed class InsertOnlyRebaseHelperTests
         byte[] cell = BTree.BuildLeafCell(key, payload);
         bool inserted = leaf.InsertCell(leaf.CellCount, cell);
         Assert.True(inserted, $"Expected key {key} with payloadLength={payloadLength} to fit the test page.");
+    }
+
+    private static long ReadLeafKey(SlottedPage leaf, int index)
+    {
+        ReadOnlySpan<byte> cell = leaf.GetCellMemory(index).Span;
+        Varint.Read(cell, out int headerBytes);
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(cell.Slice(headerBytes, 8));
     }
 }

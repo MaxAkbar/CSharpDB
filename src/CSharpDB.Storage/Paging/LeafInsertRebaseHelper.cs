@@ -108,6 +108,85 @@ internal static class LeafInsertRebaseHelper
         return InsertOnlyRebaseResult.Success;
     }
 
+    public static InsertOnlyRebaseResult TryRebaseCommittedSplitLeafPages(
+        uint leftPageId,
+        uint rightPageId,
+        ReadOnlyMemory<byte> basePage,
+        ReadOnlyMemory<byte> committedLeftPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        ReadOnlyMemory<byte> transactionPage,
+        out byte[]? rebasedLeftPage,
+        out byte[]? rebasedRightPage)
+    {
+        var baseLeaf = new ReadOnlySlottedPage(basePage, leftPageId);
+        var committedLeftLeaf = new ReadOnlySlottedPage(committedLeftPage, leftPageId);
+        var committedRightLeaf = new ReadOnlySlottedPage(committedRightPage, rightPageId);
+        var transactionLeaf = new ReadOnlySlottedPage(transactionPage, leftPageId);
+
+        rebasedLeftPage = null;
+        rebasedRightPage = null;
+        if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
+            committedLeftLeaf.PageType != PageConstants.PageTypeLeaf ||
+            committedRightLeaf.PageType != PageConstants.PageTypeLeaf ||
+            transactionLeaf.PageType != PageConstants.PageTypeLeaf)
+        {
+            return InsertOnlyRebaseResult.NotApplicable;
+        }
+
+        uint originalNextLeaf = baseLeaf.RightChildOrNextLeaf;
+        if (transactionLeaf.RightChildOrNextLeaf != originalNextLeaf ||
+            committedLeftLeaf.RightChildOrNextLeaf != rightPageId ||
+            committedRightLeaf.RightChildOrNextLeaf != originalNextLeaf ||
+            !TryReadOrderedSplitLeafCells(committedLeftLeaf, committedRightLeaf, out byte[][] committedCells) ||
+            !TryReadOrderedLeafCells(baseLeaf, out byte[][] baseCells) ||
+            !TryCollectInsertedLeafCells(baseCells, committedCells, out _) ||
+            !TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
+            transactionInsertedCells.Count == 0)
+        {
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        byte[] leftPage = committedLeftPage.ToArray();
+        byte[] rightPage = committedRightPage.ToArray();
+        var mergedLeftLeaf = new SlottedPage(leftPage, leftPageId);
+        var mergedRightLeaf = new SlottedPage(rightPage, rightPageId);
+        long splitKey = ReadLeafKey(committedRightLeaf, 0);
+
+        for (int i = 0; i < transactionInsertedCells.Count; i++)
+        {
+            byte[] insertedCell = transactionInsertedCells[i];
+            long insertedKey = ReadLeafCellKey(insertedCell);
+            if (insertedKey < splitKey)
+            {
+                int insertIndex = FindInsertPosition(mergedLeftLeaf, insertedKey);
+                if (insertIndex < mergedLeftLeaf.CellCount &&
+                    ReadLeafKey(mergedLeftLeaf, insertIndex) == insertedKey)
+                {
+                    return InsertOnlyRebaseResult.StructuralReject;
+                }
+
+                if (!TryInsertLeafCell(ref mergedLeftLeaf, insertIndex, insertedCell))
+                    return InsertOnlyRebaseResult.CapacityReject;
+
+                continue;
+            }
+
+            int rightInsertIndex = FindInsertPosition(mergedRightLeaf, insertedKey);
+            if (rightInsertIndex < mergedRightLeaf.CellCount &&
+                ReadLeafKey(mergedRightLeaf, rightInsertIndex) == insertedKey)
+            {
+                return InsertOnlyRebaseResult.StructuralReject;
+            }
+
+            if (!TryInsertLeafCell(ref mergedRightLeaf, rightInsertIndex, insertedCell))
+                return InsertOnlyRebaseResult.CapacityReject;
+        }
+
+        rebasedLeftPage = leftPage;
+        rebasedRightPage = rightPage;
+        return InsertOnlyRebaseResult.Success;
+    }
+
     public static byte[] BuildLeafPage(uint pageId, IReadOnlyList<byte[]> cells, uint nextLeafPageId)
     {
         byte[] page = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
@@ -133,17 +212,34 @@ internal static class LeafInsertRebaseHelper
         ReadOnlySlottedPage candidateLeaf,
         out List<byte[]> insertedCells)
     {
+        if (!TryReadOrderedLeafCells(baseLeaf, out byte[][] baseCells) ||
+            !TryReadOrderedLeafCells(candidateLeaf, out byte[][] candidateCells))
+        {
+            insertedCells = [];
+            return false;
+        }
+
+        return TryCollectInsertedLeafCells(baseCells, candidateCells, out insertedCells);
+    }
+
+    private static bool TryCollectInsertedLeafCells(
+        IReadOnlyList<byte[]> baseCells,
+        IReadOnlyList<byte[]> candidateCells,
+        out List<byte[]> insertedCells)
+    {
         insertedCells = [];
 
         int baseIndex = 0;
         int candidateIndex = 0;
-        while (baseIndex < baseLeaf.CellCount && candidateIndex < candidateLeaf.CellCount)
+        while (baseIndex < baseCells.Count && candidateIndex < candidateCells.Count)
         {
-            long baseKey = ReadLeafKey(baseLeaf, baseIndex);
-            long candidateKey = ReadLeafKey(candidateLeaf, candidateIndex);
+            byte[] baseCell = baseCells[baseIndex];
+            byte[] candidateCell = candidateCells[candidateIndex];
+            long baseKey = ReadLeafCellKey(baseCell);
+            long candidateKey = ReadLeafCellKey(candidateCell);
             if (candidateKey < baseKey)
             {
-                insertedCells.Add(candidateLeaf.GetCellMemory(candidateIndex).ToArray());
+                insertedCells.Add(candidateCell);
                 candidateIndex++;
                 continue;
             }
@@ -151,24 +247,71 @@ internal static class LeafInsertRebaseHelper
             if (candidateKey != baseKey)
                 return false;
 
-            if (!candidateLeaf.GetCellMemory(candidateIndex).Span.SequenceEqual(baseLeaf.GetCellMemory(baseIndex).Span))
+            if (!candidateCell.AsSpan().SequenceEqual(baseCell))
                 return false;
 
             baseIndex++;
             candidateIndex++;
         }
 
-        if (baseIndex != baseLeaf.CellCount)
+        if (baseIndex != baseCells.Count)
             return false;
 
-        while (candidateIndex < candidateLeaf.CellCount)
+        while (candidateIndex < candidateCells.Count)
         {
-            insertedCells.Add(candidateLeaf.GetCellMemory(candidateIndex).ToArray());
+            insertedCells.Add(candidateCells[candidateIndex]);
             candidateIndex++;
         }
 
         return true;
     }
+
+    private static bool TryReadOrderedSplitLeafCells(
+        ReadOnlySlottedPage leftLeaf,
+        ReadOnlySlottedPage rightLeaf,
+        out byte[][] cells)
+    {
+        cells = [];
+        if (!TryReadOrderedLeafCells(leftLeaf, out byte[][] leftCells) ||
+            !TryReadOrderedLeafCells(rightLeaf, out byte[][] rightCells) ||
+            rightCells.Length == 0)
+        {
+            return false;
+        }
+
+        if (leftCells.Length > 0 &&
+            ReadLeafCellKey(leftCells[^1]) >= ReadLeafCellKey(rightCells[0]))
+        {
+            return false;
+        }
+
+        cells = new byte[leftCells.Length + rightCells.Length][];
+        Array.Copy(leftCells, 0, cells, 0, leftCells.Length);
+        Array.Copy(rightCells, 0, cells, leftCells.Length, rightCells.Length);
+        return true;
+    }
+
+    private static bool TryReadOrderedLeafCells(ReadOnlySlottedPage leaf, out byte[][] cells)
+    {
+        cells = new byte[leaf.CellCount][];
+        long previousKey = long.MinValue;
+        for (int i = 0; i < leaf.CellCount; i++)
+        {
+            byte[] cell = leaf.GetCellMemory(i).ToArray();
+            long key = ReadLeafCellKey(cell);
+            if (i > 0 && key <= previousKey)
+            {
+                cells = [];
+                return false;
+            }
+
+            cells[i] = cell;
+            previousKey = key;
+        }
+
+        return true;
+    }
+
 
     private static bool TryMergeCommittedAndTransactionLeafCells(
         ReadOnlySlottedPage committedLeaf,
