@@ -85,48 +85,61 @@ internal static class LeafInsertRebaseHelper
         ReadOnlyMemory<byte> transactionPage,
         out LeafInsertSplitPlan? splitPlan)
     {
-        var baseLeaf = new ReadOnlySlottedPage(basePage, pageId);
-        var committedLeaf = new ReadOnlySlottedPage(committedPage, pageId);
-        var transactionLeaf = new ReadOnlySlottedPage(transactionPage, pageId);
-
         splitPlan = null;
-        if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
-            committedLeaf.PageType != PageConstants.PageTypeLeaf ||
-            transactionLeaf.PageType != PageConstants.PageTypeLeaf)
+        try
         {
-            return InsertOnlyRebaseResult.NotApplicable;
-        }
+            var baseLeaf = new ReadOnlySlottedPage(basePage, pageId);
+            var committedLeaf = new ReadOnlySlottedPage(committedPage, pageId);
+            var transactionLeaf = new ReadOnlySlottedPage(transactionPage, pageId);
 
-        uint nextLeaf = baseLeaf.RightChildOrNextLeaf;
-        if (committedLeaf.RightChildOrNextLeaf != nextLeaf ||
-            transactionLeaf.RightChildOrNextLeaf != nextLeaf)
+            if (baseLeaf.PageType != PageConstants.PageTypeLeaf ||
+                committedLeaf.PageType != PageConstants.PageTypeLeaf ||
+                transactionLeaf.PageType != PageConstants.PageTypeLeaf)
+            {
+                return InsertOnlyRebaseResult.NotApplicable;
+            }
+
+            uint nextLeaf = baseLeaf.RightChildOrNextLeaf;
+            if (committedLeaf.RightChildOrNextLeaf != nextLeaf ||
+                transactionLeaf.RightChildOrNextLeaf != nextLeaf)
+            {
+                return InsertOnlyRebaseResult.StructuralReject;
+            }
+
+            if (!TryCollectInsertedLeafCells(baseLeaf, committedLeaf, out _) ||
+                !TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
+                transactionInsertedCells.Count == 0 ||
+                !TryMergeCommittedAndTransactionLeafCells(committedLeaf, transactionInsertedCells, out byte[][]? mergedCells, out bool rightEdgeSplit))
+            {
+                return InsertOnlyRebaseResult.StructuralReject;
+            }
+
+            if (!TrySelectLeafSplitIndex(mergedCells, rightEdgeSplit, out int splitIndex))
+                return InsertOnlyRebaseResult.CapacityReject;
+
+            byte[][] leftCells = new byte[splitIndex][];
+            byte[][] rightCells = new byte[mergedCells.Length - splitIndex][];
+            Array.Copy(mergedCells, 0, leftCells, 0, leftCells.Length);
+            Array.Copy(mergedCells, splitIndex, rightCells, 0, rightCells.Length);
+
+            splitPlan = new LeafInsertSplitPlan(
+                leftCells,
+                rightCells,
+                ReadLeafCellKey(rightCells[0]),
+                committedLeaf.RightChildOrNextLeaf,
+                rightEdgeSplit);
+            return InsertOnlyRebaseResult.Success;
+        }
+        catch (ArgumentOutOfRangeException)
         {
+            splitPlan = null;
             return InsertOnlyRebaseResult.StructuralReject;
         }
-
-        if (!TryCollectInsertedLeafCells(baseLeaf, committedLeaf, out _) ||
-            !TryCollectInsertedLeafCells(baseLeaf, transactionLeaf, out List<byte[]>? transactionInsertedCells) ||
-            transactionInsertedCells.Count == 0 ||
-            !TryMergeCommittedAndTransactionLeafCells(committedLeaf, transactionInsertedCells, out byte[][]? mergedCells, out bool rightEdgeSplit))
+        catch (IndexOutOfRangeException)
         {
+            splitPlan = null;
             return InsertOnlyRebaseResult.StructuralReject;
         }
-
-        if (!TrySelectLeafSplitIndex(mergedCells, rightEdgeSplit, out int splitIndex))
-            return InsertOnlyRebaseResult.CapacityReject;
-
-        byte[][] leftCells = new byte[splitIndex][];
-        byte[][] rightCells = new byte[mergedCells.Length - splitIndex][];
-        Array.Copy(mergedCells, 0, leftCells, 0, leftCells.Length);
-        Array.Copy(mergedCells, splitIndex, rightCells, 0, rightCells.Length);
-
-        splitPlan = new LeafInsertSplitPlan(
-            leftCells,
-            rightCells,
-            ReadLeafCellKey(rightCells[0]),
-            committedLeaf.RightChildOrNextLeaf,
-            rightEdgeSplit);
-        return InsertOnlyRebaseResult.Success;
     }
 
     public static InsertOnlyRebaseResult TryRebaseCommittedSplitLeafPages(
@@ -393,39 +406,51 @@ internal static class LeafInsertRebaseHelper
         out List<byte[]> insertedCells)
     {
         insertedCells = [];
-
-        int baseIndex = 0;
-        int candidateIndex = 0;
-        while (baseIndex < baseCells.Count && candidateIndex < candidateCells.Count)
+        try
         {
-            byte[] baseCell = baseCells[baseIndex];
-            byte[] candidateCell = candidateCells[candidateIndex];
-            long baseKey = ReadLeafCellKey(baseCell);
-            long candidateKey = ReadLeafCellKey(candidateCell);
-            if (candidateKey < baseKey)
+            int baseIndex = 0;
+            int candidateIndex = 0;
+            while (baseIndex < baseCells.Count && candidateIndex < candidateCells.Count)
             {
-                insertedCells.Add(candidateCell);
+                byte[] baseCell = baseCells[baseIndex];
+                byte[] candidateCell = candidateCells[candidateIndex];
+                long baseKey = ReadLeafCellKey(baseCell);
+                long candidateKey = ReadLeafCellKey(candidateCell);
+                if (candidateKey < baseKey)
+                {
+                    insertedCells.Add(candidateCell);
+                    candidateIndex++;
+                    continue;
+                }
+
+                if (candidateKey != baseKey)
+                    return false;
+
+                if (!candidateCell.AsSpan().SequenceEqual(baseCell))
+                    return false;
+
+                baseIndex++;
                 candidateIndex++;
-                continue;
             }
 
-            if (candidateKey != baseKey)
+            if (baseIndex != baseCells.Count)
                 return false;
 
-            if (!candidateCell.AsSpan().SequenceEqual(baseCell))
-                return false;
-
-            baseIndex++;
-            candidateIndex++;
+            while (candidateIndex < candidateCells.Count)
+            {
+                insertedCells.Add(candidateCells[candidateIndex]);
+                candidateIndex++;
+            }
         }
-
-        if (baseIndex != baseCells.Count)
-            return false;
-
-        while (candidateIndex < candidateCells.Count)
+        catch (ArgumentOutOfRangeException)
         {
-            insertedCells.Add(candidateCells[candidateIndex]);
-            candidateIndex++;
+            insertedCells = [];
+            return false;
+        }
+        catch (IndexOutOfRangeException)
+        {
+            insertedCells = [];
+            return false;
         }
 
         return true;
@@ -459,19 +484,32 @@ internal static class LeafInsertRebaseHelper
     private static bool TryReadOrderedLeafCells(ReadOnlySlottedPage leaf, out byte[][] cells)
     {
         cells = new byte[leaf.CellCount][];
-        long previousKey = long.MinValue;
-        for (int i = 0; i < leaf.CellCount; i++)
+        try
         {
-            byte[] cell = leaf.GetCellMemory(i).ToArray();
-            long key = ReadLeafCellKey(cell);
-            if (i > 0 && key <= previousKey)
+            long previousKey = long.MinValue;
+            for (int i = 0; i < leaf.CellCount; i++)
             {
-                cells = [];
-                return false;
-            }
+                byte[] cell = leaf.GetCellMemory(i).ToArray();
+                long key = ReadLeafCellKey(cell);
+                if (i > 0 && key <= previousKey)
+                {
+                    cells = [];
+                    return false;
+                }
 
-            cells[i] = cell;
-            previousKey = key;
+                cells[i] = cell;
+                previousKey = key;
+            }
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            cells = [];
+            return false;
+        }
+        catch (IndexOutOfRangeException)
+        {
+            cells = [];
+            return false;
         }
 
         return true;
