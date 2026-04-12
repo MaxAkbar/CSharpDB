@@ -227,6 +227,8 @@ public sealed class QueryPlanner
     private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
     private readonly Func<string, long?>? _nextRowIdHintProvider;
+    private readonly Func<string, long, long>? _nextRowIdReservationProvider;
+    private readonly Action<string, long>? _nextRowIdObservationProvider;
     private readonly bool _useTransientNextRowIdHints;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
@@ -303,6 +305,8 @@ public sealed class QueryPlanner
         IRecordSerializer? recordSerializer = null,
         Func<string, long?>? tableRowCountProvider = null,
         Func<string, long?>? nextRowIdHintProvider = null,
+        Func<string, long, long>? nextRowIdReservationProvider = null,
+        Action<string, long>? nextRowIdObservationProvider = null,
         bool useTransientNextRowIdHints = false)
     {
         _pager = pager;
@@ -313,6 +317,8 @@ public sealed class QueryPlanner
             : null;
         _tableRowCountProvider = tableRowCountProvider;
         _nextRowIdHintProvider = nextRowIdHintProvider;
+        _nextRowIdReservationProvider = nextRowIdReservationProvider;
+        _nextRowIdObservationProvider = nextRowIdObservationProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
     }
@@ -1967,7 +1973,6 @@ public sealed class QueryPlanner
         await _catalog.ReplaceColumnStatisticsAsync(tableName, statistics.Columns, ct);
         await _catalog.ReplaceColumnDistributionStatisticsAsync(tableName, statistics.ColumnDistributions, ct);
         await _catalog.ReplaceIndexPrefixStatisticsForTableAsync(tableName, statistics.IndexPrefixes, ct);
-        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
     }
 
     private async ValueTask<AnalyzedTableStatisticsResult> CollectColumnStatisticsAsync(
@@ -14485,8 +14490,12 @@ public sealed class QueryPlanner
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
             nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
-        UpdateNextRowIdState(tableName, schema, checked(nextRowId + 1));
-        return nextRowId;
+        long rowId = _nextRowIdReservationProvider is not null
+            ? _nextRowIdReservationProvider(tableName, nextRowId)
+            : nextRowId;
+
+        UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
+        return rowId;
     }
 
     private void InvalidateRowIdCache(string tableName)
@@ -14561,6 +14570,7 @@ public sealed class QueryPlanner
             _nextRowIdCache[tableName] = nextRowId;
 
         _dirtyNextRowIdTables.Add(tableName);
+        _nextRowIdObservationProvider?.Invoke(tableName, nextRowId);
 
         // Explicit rowid inserts can push the durable high-water mark forward, but persisting
         // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as

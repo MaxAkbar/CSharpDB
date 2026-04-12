@@ -122,7 +122,7 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
 
     public async ValueTask ReclaimAsync(CancellationToken ct = default)
     {
-        var cursor = _inner.CreateCursor(IndexScanRange.All);
+        await using var cursor = _inner.CreateCursor(IndexScanRange.All);
         while (await cursor.MoveNextAsync(ct))
         {
             if (!IndexOverflowReferenceCodec.IsEncoded(cursor.CurrentValue.Span))
@@ -203,5 +203,7 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
             CurrentValue = await IndexOverflowPageStore.ReadAsync(_pager, storedPayload, ct);
             return true;
         }
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
     }
 }

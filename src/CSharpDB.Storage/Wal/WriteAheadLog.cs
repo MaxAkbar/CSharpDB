@@ -36,6 +36,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     private static readonly IComparer<KeyValuePair<uint, long>> PageIdComparer =
         Comparer<KeyValuePair<uint, long>>.Create(static (left, right) => left.Key.CompareTo(right.Key));
 
+    private static TaskCompletionSource CreateCompletedSignal()
+    {
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        signal.TrySetResult();
+        return signal;
+    }
+
     private readonly string _walPath;
     private FileStream? _stream;
     private SafeFileHandle? _readHandle; // separate read handle for concurrent reads
@@ -73,6 +80,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     private readonly object _pendingCommitSync = new();
     private readonly List<PendingCommitBatch> _pendingCommitBatches = new();
     private TaskCompletionSource? _pendingCommitBatchWindowSignal;
+    private TaskCompletionSource _pendingCommitProcessorIdleSignal = CreateCompletedSignal();
     private long _nextCommitSequence;
     private long _pendingCommitByteCount;
     private bool _flushInProgress;
@@ -862,6 +870,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         try
         {
             FailPendingCommits(new ObjectDisposedException(nameof(WriteAheadLog), "WAL was closed while commits were pending."));
+            await WaitForPendingCommitProcessorIdleAsync().ConfigureAwait(false);
             _incrementalCheckpoint = null;
             _uncommittedFrames.Clear();
             ClearBufferedUncommittedFrames();
@@ -892,6 +901,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     public async ValueTask DisposeAsync()
     {
         FailPendingCommits(new ObjectDisposedException(nameof(WriteAheadLog), "WAL was disposed while commits were pending."));
+        await WaitForPendingCommitProcessorIdleAsync().ConfigureAwait(false);
         _incrementalCheckpoint = null;
         _uncommittedFrames.Clear();
         ClearBufferedUncommittedFrames();
@@ -1240,6 +1250,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     {
         bool startLeader = false;
         TaskCompletionSource? batchWindowSignal = null;
+        TaskCompletionSource? pendingCommitProcessorIdleSignal = null;
         lock (_pendingCommitSync)
         {
             if (_writeFault is not null)
@@ -1262,6 +1273,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             if (!_flushInProgress)
             {
                 _flushInProgress = true;
+                pendingCommitProcessorIdleSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _pendingCommitProcessorIdleSignal = pendingCommitProcessorIdleSignal;
                 startLeader = true;
             }
         }
@@ -1269,7 +1282,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         batchWindowSignal?.TrySetResult();
 
         if (startLeader)
-            _ = ProcessPendingCommitsAsync();
+            _ = ProcessPendingCommitsAsync(pendingCommitProcessorIdleSignal!);
 
         return new WalCommitResult(batch.Completion.Task);
     }
@@ -1299,27 +1312,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         Interlocked.Add(ref _preallocatedByteCount, newLength - currentLength);
     }
 
-    private async Task ProcessPendingCommitsAsync()
+    private async Task ProcessPendingCommitsAsync(TaskCompletionSource pendingCommitProcessorIdleSignal)
     {
-        while (true)
+        try
         {
-            long flushThroughSequence;
-            lock (_pendingCommitSync)
+            while (true)
             {
-                if (_pendingCommitBatches.Count == 0)
-                {
-                    _flushInProgress = false;
-                    return;
-                }
-            }
-
-            try
-            {
-                long batchWindowWaitStartTicks = Stopwatch.GetTimestamp();
-                bool waitedForBatchWindow = await WaitForDurableCommitBatchWindowAsync().ConfigureAwait(false);
-                if (waitedForBatchWindow)
-                    RecordDurableBatchWindowWaitDiagnostics(batchWindowWaitStartTicks);
-
+                long flushThroughSequence;
                 lock (_pendingCommitSync)
                 {
                     if (_pendingCommitBatches.Count == 0)
@@ -1327,87 +1326,119 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                         _flushInProgress = false;
                         return;
                     }
-
-                    flushThroughSequence = _pendingCommitBatches[^1].Sequence;
                 }
 
-                if (_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush)
+                try
                 {
-                    if (_writeHandle is null)
-                        throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+                    long batchWindowWaitStartTicks = Stopwatch.GetTimestamp();
+                    bool waitedForBatchWindow = await WaitForDurableCommitBatchWindowAsync().ConfigureAwait(false);
+                    if (waitedForBatchWindow)
+                        RecordDurableBatchWindowWaitDiagnostics(batchWindowWaitStartTicks);
 
-                    long pendingCommitWriteStartTicks = Stopwatch.GetTimestamp();
-                    await WriteStagedPendingCommitBytesAsync(flushThroughSequence).ConfigureAwait(false);
-                    RecordPendingCommitWriteDiagnostics(pendingCommitWriteStartTicks);
-                    long durableFlushStartTicks = Stopwatch.GetTimestamp();
-                    await _flushPolicy.FlushCommitAsync(
-                        _writeHandle,
-                        CancellationToken.None).ConfigureAwait(false);
-                    RecordDurableFlushDiagnostics(durableFlushStartTicks);
+                    lock (_pendingCommitSync)
+                    {
+                        if (_pendingCommitBatches.Count == 0)
+                        {
+                            _flushInProgress = false;
+                            return;
+                        }
+
+                        flushThroughSequence = _pendingCommitBatches[^1].Sequence;
+                    }
+
+                    if (_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush)
+                    {
+                        if (_writeHandle is null)
+                            throw new CSharpDbException(ErrorCode.WalError, "WAL not open.");
+
+                        long pendingCommitWriteStartTicks = Stopwatch.GetTimestamp();
+                        await WriteStagedPendingCommitBytesAsync(flushThroughSequence).ConfigureAwait(false);
+                        RecordPendingCommitWriteDiagnostics(pendingCommitWriteStartTicks);
+                        long durableFlushStartTicks = Stopwatch.GetTimestamp();
+                        await _flushPolicy.FlushCommitAsync(
+                            _writeHandle,
+                            CancellationToken.None).ConfigureAwait(false);
+                        RecordDurableFlushDiagnostics(durableFlushStartTicks);
+                    }
+                    else
+                    {
+                        await _streamMutex.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            long bufferedFlushStartTicks = Stopwatch.GetTimestamp();
+                            await FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                            RecordBufferedFlushDiagnostics(bufferedFlushStartTicks);
+                        }
+                        finally
+                        {
+                            _streamMutex.Release();
+                        }
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    await _streamMutex.WaitAsync().ConfigureAwait(false);
-                    try
-                    {
-                        long bufferedFlushStartTicks = Stopwatch.GetTimestamp();
-                        await FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                        RecordBufferedFlushDiagnostics(bufferedFlushStartTicks);
-                    }
-                    finally
-                    {
-                        _streamMutex.Release();
-                    }
+                    await RewindPendingCommitBytesAsync().ConfigureAwait(false);
+                    FailPendingCommits(ex);
+                    return;
                 }
-            }
-            catch (Exception ex)
-            {
-                await RewindPendingCommitBytesAsync().ConfigureAwait(false);
-                FailPendingCommits(ex);
-                return;
-            }
 
-            List<PendingCommitBatch> committedBatches;
-            long pendingCommitDrainStartTicks = Stopwatch.GetTimestamp();
-            lock (_pendingCommitSync)
-            {
-                committedBatches = DrainCommittedBatches(flushThroughSequence);
-            }
-            if (committedBatches.Count > 0)
-                RecordPendingCommitDrainDiagnostics(pendingCommitDrainStartTicks);
+                List<PendingCommitBatch> committedBatches;
+                long pendingCommitDrainStartTicks = Stopwatch.GetTimestamp();
+                lock (_pendingCommitSync)
+                {
+                    committedBatches = DrainCommittedBatches(flushThroughSequence);
+                }
+                if (committedBatches.Count > 0)
+                    RecordPendingCommitDrainDiagnostics(pendingCommitDrainStartTicks);
 
-            long flushedByteCount = 0;
-            long publishStartTicks = committedBatches.Count > 0 ? Stopwatch.GetTimestamp() : 0;
-            foreach (var batch in committedBatches)
-            {
-                flushedByteCount += batch.ByteCount;
-                PublishCommittedBatch(batch);
-                batch.Dispose();
-                batch.Completion.TrySetResult();
-            }
+                long flushedByteCount = 0;
+                long publishStartTicks = committedBatches.Count > 0 ? Stopwatch.GetTimestamp() : 0;
+                foreach (var batch in committedBatches)
+                {
+                    flushedByteCount += batch.ByteCount;
+                    PublishCommittedBatch(batch);
+                    batch.Dispose();
+                    batch.Completion.TrySetResult();
+                }
 
-            if (committedBatches.Count > 0)
-                RecordPublishBatchDiagnostics(publishStartTicks);
+                if (committedBatches.Count > 0)
+                    RecordPublishBatchDiagnostics(publishStartTicks);
 
-            if (committedBatches.Count > 0)
-            {
-                Interlocked.Increment(ref _flushCount);
-                Interlocked.Add(ref _flushedCommitCount, committedBatches.Count);
-                Interlocked.Add(ref _flushedByteCount, flushedByteCount);
-            }
+                if (committedBatches.Count > 0)
+                {
+                    Interlocked.Increment(ref _flushCount);
+                    Interlocked.Add(ref _flushedCommitCount, committedBatches.Count);
+                    Interlocked.Add(ref _flushedByteCount, flushedByteCount);
+                }
 
-            bool morePending;
-            lock (_pendingCommitSync)
-            {
-                // Keep commit work marked in-flight until flushed batches are visible in the WAL index.
-                morePending = _pendingCommitBatches.Count > 0;
+                bool morePending;
+                lock (_pendingCommitSync)
+                {
+                    // Keep commit work marked in-flight until flushed batches are visible in the WAL index.
+                    morePending = _pendingCommitBatches.Count > 0;
+                    if (!morePending)
+                        _flushInProgress = false;
+                }
+
                 if (!morePending)
-                    _flushInProgress = false;
+                    return;
             }
-
-            if (!morePending)
-                return;
         }
+        finally
+        {
+            pendingCommitProcessorIdleSignal.TrySetResult();
+        }
+    }
+
+    private async ValueTask WaitForPendingCommitProcessorIdleAsync()
+    {
+        Task idleTask;
+        lock (_pendingCommitSync)
+        {
+            idleTask = _pendingCommitProcessorIdleSignal.Task;
+        }
+
+        await idleTask.ConfigureAwait(false);
     }
 
     private async Task<bool> WaitForDurableCommitBatchWindowAsync()
@@ -1562,15 +1593,19 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 exception);
 
         List<PendingCommitBatch> batches;
+        TaskCompletionSource? batchWindowSignal;
         lock (_pendingCommitSync)
         {
             _writeFault = fault;
             batches = new List<PendingCommitBatch>(_pendingCommitBatches);
             _pendingCommitBatches.Clear();
             _pendingCommitByteCount = 0;
+            batchWindowSignal = _pendingCommitBatchWindowSignal;
             _pendingCommitBatchWindowSignal = null;
             _flushInProgress = false;
         }
+
+        batchWindowSignal?.TrySetResult();
 
         foreach (var batch in batches)
         {

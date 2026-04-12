@@ -62,6 +62,7 @@ internal static class HybridStorageEngineFactory
                 RecordSerializer = options.SerializerProvider.RecordSerializer,
                 SchemaSerializer = schemaSerializer,
                 IndexProvider = options.IndexProvider,
+                CatalogStore = options.CatalogStore,
                 ChecksumProvider = options.ChecksumProvider,
                 AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
             };

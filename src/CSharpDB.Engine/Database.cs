@@ -5,6 +5,7 @@ using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
 using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
@@ -31,11 +32,16 @@ public sealed class Database : IAsyncDisposable
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly ISchemaSerializer _schemaSerializer;
+    private readonly IIndexProvider _indexProvider;
+    private readonly ICatalogStore _catalogStore;
+    private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sharedNextRowIdGate = new();
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _observedSchemaVersion;
@@ -69,14 +75,27 @@ public sealed class Database : IAsyncDisposable
         Pager pager,
         SchemaCatalog catalog,
         IRecordSerializer recordSerializer,
+        ISchemaSerializer schemaSerializer,
+        IIndexProvider indexProvider,
+        ICatalogStore catalogStore,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
+        _schemaSerializer = schemaSerializer;
+        _indexProvider = indexProvider;
+        _catalogStore = catalogStore;
+        _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
-        _planner = new QueryPlanner(pager, catalog, _recordSerializer);
+        _planner = new QueryPlanner(
+            pager,
+            catalog,
+            _recordSerializer,
+            nextRowIdHintProvider: TryGetSharedNextRowIdHint,
+            nextRowIdReservationProvider: ReserveSharedNextRowId,
+            nextRowIdObservationProvider: ObserveSharedNextRowId);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -94,12 +113,20 @@ public sealed class Database : IAsyncDisposable
         try
         {
             using var binding = storageTransaction.Bind();
-            var transactionCatalog = await SchemaCatalog.CreateAsync(_pager, ct);
+            var transactionCatalog = await SchemaCatalog.CreateAsync(
+                _pager,
+                _schemaSerializer,
+                _indexProvider,
+                _catalogStore,
+                _advisoryStatisticsPersistenceMode,
+                ct);
             var transactionPlanner = new QueryPlanner(
                 _pager,
                 transactionCatalog,
                 _recordSerializer,
                 nextRowIdHintProvider: TryGetSharedNextRowIdHint,
+                nextRowIdReservationProvider: ReserveSharedNextRowId,
+                nextRowIdObservationProvider: ObserveSharedNextRowId,
                 useTransientNextRowIdHints: true)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
@@ -128,23 +155,79 @@ public sealed class Database : IAsyncDisposable
 
     private void RefreshSharedNextRowIdHintsFromCatalog()
     {
-        _sharedNextRowIdHints.Clear();
-
-        foreach (string tableName in _catalog.GetTableNames())
+        lock (_sharedNextRowIdGate)
         {
-            long nextRowId = _catalog.GetTable(tableName)?.NextRowId ?? 0;
-            if (nextRowId > 0)
-                _sharedNextRowIdHints[tableName] = nextRowId;
+            var preservedHints = _sharedNextRowIdHints.Count == 0
+                ? null
+                : _sharedNextRowIdHints.ToArray();
+
+            _sharedNextRowIdHints.Clear();
+
+            foreach (string tableName in _catalog.GetTableNames())
+            {
+                long nextRowId = _catalog.GetTable(tableName)?.NextRowId ?? 0;
+                if (nextRowId > 0)
+                    _sharedNextRowIdHints[tableName] = nextRowId;
+            }
+
+            if (preservedHints is null)
+                return;
+
+            foreach ((string tableName, long nextRowId) in preservedHints)
+            {
+                if (nextRowId <= 0 || _catalog.GetTable(tableName) is null)
+                    continue;
+
+                _sharedNextRowIdHints.AddOrUpdate(
+                    tableName,
+                    nextRowId,
+                    (_, existing) => Math.Max(existing, nextRowId));
+            }
         }
     }
 
     private void ApplyCommittedNextRowIdHints(IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds)
     {
-        foreach ((string tableName, long nextRowId) in committedNextRowIds)
+        lock (_sharedNextRowIdGate)
         {
-            if (nextRowId <= 0)
-                continue;
+            foreach ((string tableName, long nextRowId) in committedNextRowIds)
+            {
+                if (nextRowId <= 0)
+                    continue;
 
+                _sharedNextRowIdHints.AddOrUpdate(
+                    tableName,
+                    nextRowId,
+                    (_, existing) => Math.Max(existing, nextRowId));
+            }
+        }
+    }
+
+    private long ReserveSharedNextRowId(string tableName, long minimumNextRowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        long normalizedMinimum = minimumNextRowId > 0 ? minimumNextRowId : 1;
+        lock (_sharedNextRowIdGate)
+        {
+            long currentNextRowId = _sharedNextRowIdHints.TryGetValue(tableName, out long existing)
+                ? Math.Max(existing, normalizedMinimum)
+                : normalizedMinimum;
+
+            _sharedNextRowIdHints[tableName] = checked(currentNextRowId + 1);
+            return currentNextRowId;
+        }
+    }
+
+    private void ObserveSharedNextRowId(string tableName, long nextRowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        if (nextRowId <= 0)
+            return;
+
+        lock (_sharedNextRowIdGate)
+        {
             _sharedNextRowIdHints.AddOrUpdate(
                 tableName,
                 nextRowId,
@@ -363,6 +446,9 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode);
     }
 
@@ -421,6 +507,9 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.Pager,
                 snapshotContext.Catalog,
                 snapshotContext.RecordSerializer,
+                snapshotContext.SchemaSerializer,
+                snapshotContext.IndexProvider,
+                snapshotContext.CatalogStore,
                 snapshotContext.AdvisoryStatisticsPersistenceMode,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
@@ -431,6 +520,9 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode);
         try
         {
@@ -485,6 +577,9 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode);
     }
 
@@ -503,6 +598,9 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode);
     }
 
@@ -843,8 +941,27 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
 
-        await FlushPendingAdvisoryStatisticsAsync(ct);
-        await _pager.SaveToFileAsync(filePath, ct);
+        await SaveToFileAsync(filePath, writeScopeHeld: false, ct);
+    }
+
+    internal async ValueTask SaveToFileAsync(
+        string filePath,
+        bool writeScopeHeld,
+        CancellationToken ct = default)
+    {
+        IDisposable? writeScope = null;
+        try
+        {
+            if (!writeScopeHeld)
+                writeScope = await AcquireWriteOperationScopeAsync(ct);
+
+            await FlushPendingAdvisoryStatisticsAsync(ct, writeScopeHeld: true);
+            await _pager.SaveToFileAsync(filePath, ct);
+        }
+        finally
+        {
+            writeScope?.Dispose();
+        }
     }
 
     /// <summary>
@@ -1515,15 +1632,18 @@ public sealed class Database : IAsyncDisposable
     private async ValueTask CompleteImplicitCommitAsync(PagerCommitResult commit, CancellationToken ct)
     {
         await WaitForCommitOrRecoverAsync(commit);
-        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct, writeScopeHeld: true);
     }
 
-    private ValueTask PersistHybridStateAsync(HybridPersistenceTriggers trigger, CancellationToken ct)
+    private ValueTask PersistHybridStateAsync(
+        HybridPersistenceTriggers trigger,
+        CancellationToken ct,
+        bool writeScopeHeld = false)
     {
         if (_hybridPersistenceCoordinator is null)
             return ValueTask.CompletedTask;
 
-        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, ct);
+        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, writeScopeHeld, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -1553,10 +1673,11 @@ public sealed class Database : IAsyncDisposable
         }
     }
 
-    private async ValueTask FlushPendingAdvisoryStatisticsAsync(CancellationToken ct)
+    private async ValueTask FlushPendingAdvisoryStatisticsAsync(
+        CancellationToken ct,
+        bool writeScopeHeld = false)
     {
-        if (_inTransaction ||
-            !_catalog.HasDirtyAdvisoryStatistics)
+        if (_inTransaction)
         {
             return;
         }
@@ -1564,12 +1685,18 @@ public sealed class Database : IAsyncDisposable
         IDisposable? writeScope = null;
         try
         {
-            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            if (!writeScopeHeld)
+                writeScope = await AcquireWriteOperationScopeAsync(ct);
+
+            await FlushPendingCollectionCatalogMutationsAsync(ct);
+            if (!_catalog.HasDirtyAdvisoryStatistics)
+                return;
+
             await _pager.BeginTransactionAsync(ct);
             await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
             await _catalog.PersistAllRootPageChangesAsync(ct);
             PagerCommitResult commit = await _pager.BeginCommitAsync(ct);
-            writeScope.Dispose();
+            writeScope?.Dispose();
             writeScope = null;
             await commit.WaitAsync(ct);
         }

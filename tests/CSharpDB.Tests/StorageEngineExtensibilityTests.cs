@@ -1063,5 +1063,7 @@ public sealed class StorageEngineExtensibilityTests
             CurrentValue = item.Value;
             return ValueTask.FromResult(true);
         }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

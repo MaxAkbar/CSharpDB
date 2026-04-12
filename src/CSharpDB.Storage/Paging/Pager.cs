@@ -30,6 +30,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private readonly AsyncLocal<int> _suppressedLogicalReadTrackingDepth = new();
     private readonly object _legacyLogicalWriteGate = new();
     private readonly HashSet<LogicalConflictKey> _legacyLogicalWriteKeys = [];
+    private int _disposeRequested;
 
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
@@ -2339,6 +2340,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     public async ValueTask DisposeAsync()
     {
+        Interlocked.Exchange(ref _disposeRequested, 1);
+
         if (_isSnapshotReader)
         {
             if (_ownsPageReadProviders)
@@ -2438,6 +2441,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     public void Dispose()
     {
+        Interlocked.Exchange(ref _disposeRequested, 1);
+
         if (_isSnapshotReader)
         {
             if (_ownsPageReadProviders)
@@ -2459,6 +2464,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         if (_isSnapshotReader ||
             _checkpoints is null ||
+            Volatile.Read(ref _disposeRequested) != 0 ||
             _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background ||
             GetCurrentTransaction() is not null ||
             _transactions?.InTransaction == true ||

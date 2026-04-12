@@ -24,10 +24,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         await _db.DisposeAsync();
-        if (File.Exists(_dbPath))
-            File.Delete(_dbPath);
-        if (File.Exists(_dbPath + ".wal"))
-            File.Delete(_dbPath + ".wal");
+        await DeleteDatabaseFilesAsync(_dbPath);
     }
 
     [Fact]
@@ -302,10 +299,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -382,10 +376,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -487,10 +478,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -1460,10 +1448,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -1531,10 +1516,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -1599,10 +1581,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(dbPath + ".wal"))
-                File.Delete(dbPath + ".wal");
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 
@@ -1648,10 +1627,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(walPath))
-                File.Delete(walPath);
+            await DeleteDatabaseFilesAsync(dbPath, walPath);
         }
     }
 
@@ -1712,10 +1688,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         {
             if (db is not null)
                 await db.DisposeAsync();
-            if (File.Exists(dbPath))
-                File.Delete(dbPath);
-            if (File.Exists(walPath))
-                File.Delete(walPath);
+            await DeleteDatabaseFilesAsync(dbPath, walPath);
         }
     }
 
@@ -1821,6 +1794,53 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         await using var result = await db.ExecuteAsync(sql, ct);
         DbValue[] row = Assert.Single(await result.ToListAsync(ct));
         return row[0].AsInteger;
+    }
+
+    private static async ValueTask DeleteDatabaseFilesAsync(string dbPath)
+    {
+        await DeleteIfExistsAsync(dbPath);
+        await DeleteIfExistsAsync(dbPath + ".wal");
+    }
+
+    private static async ValueTask DeleteDatabaseFilesAsync(string dbPath, string walPath)
+    {
+        await DeleteIfExistsAsync(dbPath);
+        await DeleteIfExistsAsync(walPath);
+    }
+
+    private static async ValueTask DeleteIfExistsAsync(string path)
+    {
+        if (!File.Exists(path))
+            return;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Exception? lastException = null;
+        while (true)
+        {
+            try
+            {
+                File.Delete(path);
+                return;
+            }
+            catch (IOException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+            catch (UnauthorizedAccessException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+
+            if (!File.Exists(path))
+                return;
+
+            if (sw.Elapsed >= TimeSpan.FromSeconds(2))
+                break;
+
+            await Task.Delay(25);
+        }
+
+        throw new IOException($"Failed to delete temporary database file '{path}' within the cleanup timeout.", lastException);
     }
 
     private sealed record UserDocument(string Name, int Age);

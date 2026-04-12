@@ -124,6 +124,7 @@ public sealed class SchemaCatalog
         _service.GetExactTableRowCountAsync(tableName, ct);
 
     public bool HasDirtyAdvisoryStatistics => _service.HasDirtyAdvisoryStatistics;
+    public bool HasAdvisoryCatalogContentChanges => _service.HasAdvisoryCatalogContentChanges;
 
     public uint GetTableRootPage(string tableName) => _service.GetTableRootPage(tableName);
 

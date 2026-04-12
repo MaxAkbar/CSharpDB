@@ -54,6 +54,7 @@ internal sealed class CatalogService
     private readonly Dictionary<string, ColumnDistributionStatistics[]> _columnDistributionStatsByTable = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IndexPrefixStatistics> _indexPrefixStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IndexPrefixStatistics[]> _indexPrefixStatsByTable = new(StringComparer.OrdinalIgnoreCase);
+    private bool _advisoryCatalogContentChanged;
     private uint _persistedIndexCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedViewCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
@@ -165,6 +166,7 @@ internal sealed class CatalogService
     }
 
     public long SchemaVersion => Volatile.Read(ref _schemaVersion);
+    public bool HasAdvisoryCatalogContentChanges => _advisoryCatalogContentChanged;
 
     public async ValueTask ReloadAsync(CancellationToken ct = default)
     {
@@ -206,6 +208,7 @@ internal sealed class CatalogService
         _columnDistributionStatsByTable.Clear();
         _indexPrefixStatsCache.Clear();
         _indexPrefixStatsByTable.Clear();
+        _advisoryCatalogContentChanged = false;
 
         _indexesSnapshot = Array.Empty<IndexSchema>();
         _viewNamesSnapshot = Array.Empty<string>();
@@ -1104,6 +1107,7 @@ internal sealed class CatalogService
         IReadOnlyList<ColumnStatistics> columnStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteColumnStatisticsAsync(tableName, ct);
 
         bool hasStaleColumns = false;
@@ -1133,6 +1137,7 @@ internal sealed class CatalogService
         IReadOnlyList<ColumnDistributionStatistics> columnStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteColumnDistributionStatisticsAsync(tableName, ct);
 
         for (int i = 0; i < columnStatistics.Count; i++)
@@ -1168,6 +1173,7 @@ internal sealed class CatalogService
         IReadOnlyList<IndexPrefixStatistics> indexStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
 
         for (int i = 0; i < indexStatistics.Count; i++)

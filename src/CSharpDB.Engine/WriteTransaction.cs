@@ -117,14 +117,21 @@ public sealed class WriteTransaction : IAsyncDisposable
         ColumnStatistics[] committedColumnStatistics;
         bool schemaChanged;
         bool rootPagesChanged;
+        bool advisoryCatalogContentChanged;
         try
         {
             using var binding = _storageTransaction.Bind();
             rootPagesChanged = await _catalog.PersistAllRootPageChangesAndDetectChangesAsync(ct);
+            advisoryCatalogContentChanged = _catalog.HasAdvisoryCatalogContentChanges;
             committedNextRowIds = _planner.GetCommittedNextRowIdHints().ToArray();
             committedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
             committedTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
             committedColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();
+            if (advisoryCatalogContentChanged)
+            {
+                committedColumnStatistics = [];
+                await _catalog.PersistDirtyTableStatisticsAsync(ct);
+            }
             schemaChanged = _catalog.SchemaVersion != _initialSchemaVersion;
             commit = await _storageTransaction.BeginCommitAsync(ct);
         }
@@ -146,7 +153,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         }
 
         await _database.OnExternalWriteTransactionCommittedAsync(
-            reloadSharedCatalog: rootPagesChanged || schemaChanged,
+            reloadSharedCatalog: rootPagesChanged || schemaChanged || advisoryCatalogContentChanged,
             schemaChanged,
             committedNextRowIds,
             committedTableRowCountDeltas,
