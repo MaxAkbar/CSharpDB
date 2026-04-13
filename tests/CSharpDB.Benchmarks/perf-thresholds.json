@@ -88,7 +88,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
         "Method",
         "PreSeededRows"
@@ -153,7 +153,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
         "Method"
       ],
@@ -538,7 +538,7 @@
     },
     {
       "csv": "write-transaction-diagnostics-median-of-3.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260413-033723",
       "baselineSubDir": "macro-stress-scaling",
       "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
       "keyColumns": [

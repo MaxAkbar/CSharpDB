@@ -108,6 +108,70 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ExplicitHotInsertBurst_CompletesWithoutDeadlock()
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(30));
+        CancellationToken ct = linkedCts.Token;
+
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_hot_explicitid_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
+        {
+            builder.UsePagerOptions(new PagerOptions
+            {
+                CheckpointPolicy = new FrameCountCheckpointPolicy(4096),
+                AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+                AutoCheckpointMaxPagesPerStep = 256,
+            });
+        });
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)", ct);
+
+            const int writerCount = 4;
+            const int insertsPerWriter = 96;
+            var retryOptions = new WriteTransactionOptions
+            {
+                MaxRetries = 20,
+            };
+
+            int nextId = 0;
+            await RunConcurrentWritersAsync(
+                writerCount,
+                async writerId =>
+                {
+                    for (int iteration = 0; iteration < insertsPerWriter; iteration++)
+                    {
+                        int id = Interlocked.Increment(ref nextId);
+                        await db.RunWriteTransactionAsync(
+                            async (tx, innerCt) =>
+                            {
+                                await tx.ExecuteAsync(
+                                    $"INSERT INTO bench (id, value, text_col, category) VALUES ({id}, {writerId}, 'explicit_hot_insert_test', 'Alpha')",
+                                    innerCt);
+                            },
+                            retryOptions,
+                            ct);
+                    }
+                },
+                ct).WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM bench", ct);
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(writerCount * insertsPerWriter, row[0].AsInteger);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
     public async Task ExplicitWriteTransaction_IdentityMetadataRefreshesSharedCatalogState()
     {
         var ct = TestContext.Current.CancellationToken;

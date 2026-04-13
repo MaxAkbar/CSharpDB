@@ -1618,8 +1618,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 return PagerCommitResult.Completed;
             }
 
-            WalCommitResult walCommit;
-            byte[] page0;
+            WalCommitResult walCommit = default;
+            byte[] page0 = Array.Empty<byte>();
             IDisposable? pendingCommitWindow = null;
             ExplicitCommitHeaderReservation? headerReservation = null;
             TransactionCoordinator.PendingCommitReservation? pendingCommitReservation = null;
@@ -1627,119 +1627,140 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             try
             {
-                long commitLockWaitStartTicks = Stopwatch.GetTimestamp();
-                IDisposable? commitLock = _transactions is not null
-                    ? await _transactions.AcquireCommitLockAsync(ct)
-                    : null;
-                RecordExplicitCommitLockWaitDiagnostics(commitLockWaitStartTicks);
-                long commitLockHoldStartTicks = commitLock is not null ? Stopwatch.GetTimestamp() : 0;
-                try
+                while (true)
                 {
-                    long conflictResolutionStartTicks = Stopwatch.GetTimestamp();
-                    bool needsFreelistRebase = tx.ConsumedFreelistPageIds.Count > 0 || tx.PendingFreelistPageIds.Count > 0;
-                    while (true)
+                    bool waitForCommitStateChange = false;
+                    long commitLockWaitStartTicks = Stopwatch.GetTimestamp();
+                    IDisposable? commitLock = _transactions is not null
+                        ? await _transactions.AcquireCommitLockAsync(ct)
+                        : null;
+                    RecordExplicitCommitLockWaitDiagnostics(commitLockWaitStartTicks);
+                    long commitLockHoldStartTicks = commitLock is not null ? Stopwatch.GetTimestamp() : 0;
+                    try
                     {
-                        writePageIds = GetExplicitWritePageIds(tx);
-                        bool refreshWritePageIds = false;
-                        while (_transactions is not null &&
-                               TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
+                        long conflictResolutionStartTicks = Stopwatch.GetTimestamp();
+                        bool needsFreelistRebase = tx.ConsumedFreelistPageIds.Count > 0 || tx.PendingFreelistPageIds.Count > 0;
+                        while (true)
                         {
-                            if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                            writePageIds = GetExplicitWritePageIds(tx);
+                            bool refreshWritePageIds = false;
+                            while (_transactions is not null &&
+                                   TryFindExplicitWriteConflict(tx, writePageIds, out uint conflictPageId, out long conflictVersion))
                             {
-                                if (HaveExplicitWritePageIdsChanged(writePageIds, tx.DirtyPages))
+                                if (conflictVersion > _transactions.CurrentCommitVersion)
                                 {
-                                    refreshWritePageIds = true;
+                                    waitForCommitStateChange = true;
                                     break;
                                 }
 
+                                if (await TryResolveExplicitWriteConflictAsync(tx, conflictPageId, conflictVersion, ct))
+                                {
+                                    if (HaveExplicitWritePageIdsChanged(writePageIds, tx.DirtyPages))
+                                    {
+                                        refreshWritePageIds = true;
+                                        break;
+                                    }
+
+                                    continue;
+                                }
+
+                                throw new CSharpDbConflictException(
+                                    $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                            }
+
+                            if (waitForCommitStateChange)
+                                break;
+
+                            if (refreshWritePageIds)
+                                continue;
+
+                            if (needsFreelistRebase)
+                            {
+                                await RebaseExplicitFreelistAsync(tx, ct);
+                                needsFreelistRebase = false;
                                 continue;
                             }
 
-                            throw new CSharpDbConflictException(
-                                $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
+                            break;
                         }
 
-                        if (refreshWritePageIds)
-                            continue;
-
-                        if (needsFreelistRebase)
+                        if (!waitForCommitStateChange)
                         {
-                            await RebaseExplicitFreelistAsync(tx, ct);
-                            needsFreelistRebase = false;
-                            continue;
-                        }
+                            ValidateLogicalConflicts(tx);
+                            RecordExplicitConflictResolutionDiagnostics(conflictResolutionStartTicks);
+                            dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
+                            if (_hasInterceptor)
+                            {
+                                await _interceptor.OnCommitStartAsync(dirtyCount, ct);
+                                commitStarted = true;
+                            }
 
+                            EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
+
+                            long pendingCommitWaitStartTicks = Stopwatch.GetTimestamp();
+                            pendingCommitWindow = _transactions is not null
+                                ? await _transactions.EnterPendingCommitWindowAsync(ct)
+                                : null;
+                            RecordExplicitPendingCommitWaitDiagnostics(pendingCommitWaitStartTicks);
+
+                            long headerPreparationStartTicks = Stopwatch.GetTimestamp();
+                            headerReservation = ReserveExplicitCommitHeaderState(tx);
+                            page0 = await BuildCommittedHeaderPageAsync(
+                                tx,
+                                headerReservation.PageCount,
+                                headerReservation.SchemaRootPage,
+                                headerReservation.FreelistHead,
+                                headerReservation.ChangeCounter,
+                                ct);
+                            RecordExplicitHeaderPreparationDiagnostics(headerPreparationStartTicks);
+
+                            long walAppendStartTicks = Stopwatch.GetTimestamp();
+
+                            if (_hasInterceptor)
+                            {
+                                _wal.BeginTransaction();
+                                try
+                                {
+                                    await AppendPageWithInterceptorAsync(0, page0, ct);
+                                    for (int i = 0; i < writePageIds.Length; i++)
+                                        await AppendPageWithInterceptorAsync(writePageIds[i], tx.ModifiedPages[writePageIds[i]], ct);
+
+                                    walCommit = await _wal.CommitAsync(headerReservation.PageCount, ct);
+                                }
+                                catch
+                                {
+                                    try { await _wal.RollbackAsync(ct); } catch { }
+                                    throw;
+                                }
+                            }
+                            else
+                            {
+                                WalFrameWrite[] frameBatch = new WalFrameWrite[dirtyCount];
+                                frameBatch[0] = new WalFrameWrite(0, page0);
+                                for (int i = 0; i < writePageIds.Length; i++)
+                                    frameBatch[i + 1] = new WalFrameWrite(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
+
+                                walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, headerReservation.PageCount, ct);
+                            }
+
+                            RecordWalAppendDiagnostics(walAppendStartTicks);
+                            long pendingCommitReservationStartTicks = Stopwatch.GetTimestamp();
+                            pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds, tx.LogicalWriteKeys)
+                                ?? throw new InvalidOperationException("Explicit write transactions require a transaction coordinator.");
+                            RecordExplicitPendingCommitReservationDiagnostics(pendingCommitReservationStartTicks);
+                            commitQueued = true;
+                        }
+                    }
+                    finally
+                    {
+                        RecordExplicitCommitLockHoldDiagnostics(commitLockHoldStartTicks);
+                        commitLock?.Dispose();
+                    }
+
+                    if (!waitForCommitStateChange)
                         break;
-                    }
 
-                    ValidateLogicalConflicts(tx);
-                    RecordExplicitConflictResolutionDiagnostics(conflictResolutionStartTicks);
-                    dirtyCount = writePageIds.Length + 1; // page 0 is synthesized for every successful commit
-                    if (_hasInterceptor)
-                    {
-                        await _interceptor.OnCommitStartAsync(dirtyCount, ct);
-                        commitStarted = true;
-                    }
-
-                    EnforceReaderWalBackpressure(dirtyCount, ignoredActiveReaders: 1);
-
-                    long pendingCommitWaitStartTicks = Stopwatch.GetTimestamp();
-                    pendingCommitWindow = _transactions is not null
-                        ? await _transactions.EnterPendingCommitWindowAsync(ct)
-                        : null;
-                    RecordExplicitPendingCommitWaitDiagnostics(pendingCommitWaitStartTicks);
-
-                    long headerPreparationStartTicks = Stopwatch.GetTimestamp();
-                    headerReservation = ReserveExplicitCommitHeaderState(tx);
-                    page0 = await BuildCommittedHeaderPageAsync(
-                        tx,
-                        headerReservation.PageCount,
-                        headerReservation.SchemaRootPage,
-                        headerReservation.FreelistHead,
-                        headerReservation.ChangeCounter,
-                        ct);
-                    RecordExplicitHeaderPreparationDiagnostics(headerPreparationStartTicks);
-
-                    long walAppendStartTicks = Stopwatch.GetTimestamp();
-
-                    if (_hasInterceptor)
-                    {
-                        _wal.BeginTransaction();
-                        try
-                        {
-                            await AppendPageWithInterceptorAsync(0, page0, ct);
-                            for (int i = 0; i < writePageIds.Length; i++)
-                                await AppendPageWithInterceptorAsync(writePageIds[i], tx.ModifiedPages[writePageIds[i]], ct);
-
-                            walCommit = await _wal.CommitAsync(headerReservation.PageCount, ct);
-                        }
-                        catch
-                        {
-                            try { await _wal.RollbackAsync(ct); } catch { }
-                            throw;
-                        }
-                    }
-                    else
-                    {
-                        WalFrameWrite[] frameBatch = new WalFrameWrite[dirtyCount];
-                        frameBatch[0] = new WalFrameWrite(0, page0);
-                        for (int i = 0; i < writePageIds.Length; i++)
-                            frameBatch[i + 1] = new WalFrameWrite(writePageIds[i], tx.ModifiedPages[writePageIds[i]]);
-
-                        walCommit = await _wal.AppendFramesAndCommitAsync(frameBatch, headerReservation.PageCount, ct);
-                    }
-
-                    RecordWalAppendDiagnostics(walAppendStartTicks);
-                    long pendingCommitReservationStartTicks = Stopwatch.GetTimestamp();
-                    pendingCommitReservation = _transactions?.ReservePendingCommit(writePageIds, tx.LogicalWriteKeys)
-                        ?? throw new InvalidOperationException("Explicit write transactions require a transaction coordinator.");
-                    RecordExplicitPendingCommitReservationDiagnostics(pendingCommitReservationStartTicks);
-                    commitQueued = true;
-                }
-                finally
-                {
-                    RecordExplicitCommitLockHoldDiagnostics(commitLockHoldStartTicks);
-                    commitLock?.Dispose();
+                    await _transactions!.WaitForCommitStateChangeAsync(ct);
                 }
             }
             catch
@@ -2620,12 +2641,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             !tx.ModifiedPages.TryGetValue(conflictPageId, out byte[]? transactionPage))
         {
             return false;
-        }
-
-        if (conflictVersion > _transactions.CurrentCommitVersion)
-        {
-            await _transactions.WaitForCommitStateChangeAsync(ct);
-            return true;
         }
 
         PageReadBuffer basePage = await _buffers.GetSnapshotPageReadAsync(conflictPageId, tx.Snapshot, ct);

@@ -500,10 +500,25 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         try
         {
-            if (CanFlushPendingCommitInline())
+            if (TryBeginInlinePendingCommitFlush())
             {
-                await FlushPendingCommitInlineAsync(frames, firstFrameOffset, streamMutexHeld: false, cancellationToken).ConfigureAwait(false);
-                return WalCommitResult.Completed;
+                bool inlineFlushSucceeded = false;
+                try
+                {
+                    await FlushPendingCommitInlineAsync(frames, firstFrameOffset, streamMutexHeld: false, cancellationToken).ConfigureAwait(false);
+                    inlineFlushSucceeded = true;
+                    return WalCommitResult.Completed;
+                }
+                catch
+                {
+                    FailInlinePendingCommitFlush();
+                    throw;
+                }
+                finally
+                {
+                    if (inlineFlushSucceeded)
+                        CompleteInlinePendingCommitFlush();
+                }
             }
 
             return QueuePendingCommit(CreatePendingBatch(frames, firstFrameOffset));
@@ -567,10 +582,25 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                     cancellationToken);
                 ClearBufferedUncommittedFrames();
 
-                if (CanFlushPendingCommitInline())
+                if (TryBeginInlinePendingCommitFlush())
                 {
-                    await FlushPendingCommitInlineAsync(streamMutexHeld: true, cancellationToken).ConfigureAwait(false);
-                    return WalCommitResult.Completed;
+                    bool inlineFlushSucceeded = false;
+                    try
+                    {
+                        await FlushPendingCommitInlineAsync(streamMutexHeld: true, cancellationToken).ConfigureAwait(false);
+                        inlineFlushSucceeded = true;
+                        return WalCommitResult.Completed;
+                    }
+                    catch
+                    {
+                        FailInlinePendingCommitFlush();
+                        throw;
+                    }
+                    finally
+                    {
+                        if (inlineFlushSucceeded)
+                            CompleteInlinePendingCommitFlush();
+                    }
                 }
 
                 return QueuePendingCommit(CreatePendingBatch(_uncommittedFrames, clearSource: true));
@@ -618,10 +648,25 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 cancellationToken);
             _writePosition = lastOffset + PageConstants.WalFrameSize;
 
-            if (CanFlushPendingCommitInline())
+            if (TryBeginInlinePendingCommitFlush())
             {
-                await FlushPendingCommitInlineAsync(streamMutexHeld: true, cancellationToken).ConfigureAwait(false);
-                return WalCommitResult.Completed;
+                bool inlineFlushSucceeded = false;
+                try
+                {
+                    await FlushPendingCommitInlineAsync(streamMutexHeld: true, cancellationToken).ConfigureAwait(false);
+                    inlineFlushSucceeded = true;
+                    return WalCommitResult.Completed;
+                }
+                catch
+                {
+                    FailInlinePendingCommitFlush();
+                    throw;
+                }
+                finally
+                {
+                    if (inlineFlushSucceeded)
+                        CompleteInlinePendingCommitFlush();
+                }
             }
 
             return QueuePendingCommit(CreatePendingBatch(_uncommittedFrames, clearSource: true));
@@ -1307,16 +1352,66 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         return new WalCommitResult(batch.Completion.Task);
     }
 
-    private bool CanFlushPendingCommitInline()
+    private bool TryBeginInlinePendingCommitFlush()
     {
         if (_durableCommitBatchWindow > TimeSpan.Zero)
             return false;
 
         lock (_pendingCommitSync)
         {
-            return _writeFault is null &&
-                   !_flushInProgress &&
-                   _pendingCommitBatches.Count == 0;
+            if (_writeFault is not null ||
+                _flushInProgress ||
+                _pendingCommitBatches.Count != 0)
+            {
+                return false;
+            }
+
+            _flushInProgress = true;
+            return true;
+        }
+    }
+
+    private void CompleteInlinePendingCommitFlush()
+    {
+        bool startLeader = false;
+        TaskCompletionSource? pendingCommitProcessorIdleSignal = null;
+        lock (_pendingCommitSync)
+        {
+            if (_pendingCommitBatches.Count == 0)
+            {
+                _flushInProgress = false;
+                return;
+            }
+
+            pendingCommitProcessorIdleSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingCommitProcessorIdleSignal = pendingCommitProcessorIdleSignal;
+            startLeader = true;
+        }
+
+        if (startLeader)
+            _ = ProcessPendingCommitsAsync(pendingCommitProcessorIdleSignal!);
+    }
+
+    private void FailInlinePendingCommitFlush()
+    {
+        List<PendingCommitBatch> batches;
+        TaskCompletionSource? batchWindowSignal;
+        lock (_pendingCommitSync)
+        {
+            batches = new List<PendingCommitBatch>(_pendingCommitBatches);
+            _pendingCommitBatches.Clear();
+            _pendingCommitByteCount = 0;
+            batchWindowSignal = _pendingCommitBatchWindowSignal;
+            _pendingCommitBatchWindowSignal = null;
+            _flushInProgress = false;
+        }
+
+        batchWindowSignal?.TrySetResult();
+
+        foreach (var batch in batches)
+        {
+            batch.Dispose();
+            batch.Completion.TrySetCanceled();
         }
     }
 

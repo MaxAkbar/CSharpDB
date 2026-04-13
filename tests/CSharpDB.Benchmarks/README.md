@@ -21,6 +21,12 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
 | Baseline used by release rerun | `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` |
 | Release rerun note | `BenchmarkDotNet class refreshes were run sequentially before compare to avoid shared job-directory collisions between concurrent filtered runs.` |
 
+As of April 12, 2026, the release guardrail surface has been updated to match the current phase-4 write contract. The release threshold file no longer treats the older hot-insert `concurrent-write-diagnostics` rows as release blockers. It now gates the shared non-insert queue shape with `commit-fan-in-diagnostics` and the remaining insert-side boundary with `insert-fan-in-diagnostics`, which matches the current storage guidance and the focused April 11, 2026 fan-in reruns.
+
+As of April 13, 2026, the release threshold file also points the `write-transaction-diagnostics` check at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260413-033723`. That refresh only updates the required `WriteTransactionDiagnostics_W1_Rows100_Batch0_10s` row after a same-runner comparison showed the older March 30 row was no longer reproducible locally, even when replayed against pre-`90615fa` WAL code.
+
+As of April 13, 2026, the release threshold file also points the `InsertBenchmarks` and `CollectionIndexBenchmarks` checks at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260413-050945`. That refresh carries full clean-HEAD reruns for those two micro benchmark classes after same-runner replays showed the older March 30 rows were no longer reproducible locally across more than the initially suspected rows.
+
 A separate multi-writer closeout rerun was completed on April 10, 2026 after the retained-WAL compaction fix used by incremental checkpoint finalization:
 
 ```powershell
@@ -447,11 +453,12 @@ Defaults:
 - PR threshold config: `tests/CSharpDB.Benchmarks/perf-thresholds-pr.json`
 - Last guardrail report: `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`
 - `Capture-Baseline.ps1` runs non-micro suites in reproducible mode by default and captures macro results as `--macro --repeat 3 --repro`.
-- The focused guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--concurrent-write-diagnostics --repeat 3 --repro` into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, and `macro-stress-scaling/concurrent-write-diagnostics-median-of-3.csv`.
+- The focused release guardrail set now stages stable durability CSVs from `--write-diagnostics --repeat 3 --repro`, `--durable-sql-batching --repeat 3 --repro`, and `--write-transaction-diagnostics --repeat 3 --repro`, plus the focused phase-4 fan-in captures from `--commit-fan-in-diagnostics --repro` and `--insert-fan-in-diagnostics --repro`, into `macro-stress-scaling/write-diagnostics-median-of-3.csv`, `macro-stress-scaling/durable-sql-batching-median-of-3.csv`, `macro-stress-scaling/write-transaction-diagnostics-median-of-3.csv`, `macro-stress-scaling/commit-fan-in-diagnostics.csv`, and `macro-stress-scaling/insert-fan-in-diagnostics.csv`.
 - `--pr` reads `perf-thresholds-pr.json` and runs only the dedicated PR guardrail classes. It skips the repeat-3 durability suites and the specialized read suites that stay release-only.
 - `--release` reads `perf-thresholds.json` and runs the existing tracked micro filters plus the tracked non-micro guardrail suites, sequentially.
 - `--micro` and `--all` keep the original full micro benchmark surface; they do not automatically add the PR guardrail duplicates unless you explicitly filter for `*GuardrailBenchmarks*`.
 - The focused validation baseline snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` is checked in and now carries the tracked micro guardrail CSVs plus the staged durable median-of-3 CSVs, so fresh clones can run the current guardrail set without first rebuilding older focused baseline snapshots.
+- That checked-in focused snapshot also now carries the April 11, 2026 `commit-fan-in-diagnostics` and `insert-fan-in-diagnostics` captures used by the release guardrails, so the checked-in baseline matches the current phase-4 release surface.
 - The checked-in focused snapshot under `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507` now carries the dedicated PR guardrail CSVs as well, so both release and PR validation use the same baseline snapshot.
 - That focused validation snapshot also tracks `CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv` so ordered-text collation regressions can be checked alongside the existing micro suites.
 - Baseline snapshots now include a `machine.json` fingerprint sidecar. `Run-Perf-Guardrails.ps1` stays strict on a matching perf runner or same-machine fingerprint, downgrades regressions to warnings on compatible hardware/runtime, and skips regression enforcement on materially different machines.
