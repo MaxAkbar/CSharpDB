@@ -11,7 +11,7 @@ namespace CSharpDB.Benchmarks.Micro;
 /// and batch inserts at various sizes.
 /// </summary>
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 10)]
+[Config(typeof(CollectionInProcessBenchmarkConfig))]
 public class InsertBenchmarks
 {
     [Params(100, 1_000, 10_000)]

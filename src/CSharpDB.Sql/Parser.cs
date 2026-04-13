@@ -870,7 +870,9 @@ public sealed class Parser
             if (!TryConsumeChar('('))
                 return false;
 
-            DbValue[] buffer = new DbValue[8];
+            // Most INSERT statements in the hot path are full-row inserts into the benchmark/table shape,
+            // which commonly means four values. Start there and grow only when a wider row needs it.
+            DbValue[] buffer = new DbValue[4];
             int count = 0;
 
             do

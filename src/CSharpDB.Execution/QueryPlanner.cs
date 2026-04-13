@@ -4439,8 +4439,16 @@ public sealed class QueryPlanner
         CancellationToken ct)
     {
         int inserted = 0;
-        var insertTraversalPath = new List<uint>(capacity: 8);
-        var insertTraversalSet = new HashSet<uint>();
+        List<uint>? insertTraversalPath = null;
+        HashSet<uint>? insertTraversalSet = null;
+        if (insert.RowCount > 1)
+        {
+            // Reuse traversal state across rows in a multi-row simple insert so successive inserts
+            // can stay on the hot path without paying this allocation cost for single-row statements.
+            insertTraversalPath = new List<uint>(capacity: 8);
+            insertTraversalSet = new HashSet<uint>();
+        }
+
         try
         {
             for (int i = 0; i < insert.RowCount; i++)
