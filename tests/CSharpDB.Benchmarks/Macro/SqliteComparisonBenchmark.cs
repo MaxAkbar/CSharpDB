@@ -13,6 +13,7 @@ public static class SqliteComparisonBenchmark
     private const int WarmupCount = 128;
     private const int ConcurrentReaderCount = 8;
     private const int ReusedSessionBurstReads = 32;
+    private const int HighThroughputLatencySampleEvery = 128;
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
     private static readonly string s_providerInfo = $"provider=Microsoft.Data.Sqlite/{GetProviderVersion()}";
@@ -132,9 +133,10 @@ public static class SqliteComparisonBenchmark
         await using var context = await SqliteBenchmarkContext.CreateReadSeededAsync(
             reuseSessionBurstReads ? "sqlite-compare-burst" : "sqlite-compare-concurrent");
         var histograms = new LatencyHistogram[ConcurrentReaderCount];
+        int latencySampleEvery = reuseSessionBurstReads ? HighThroughputLatencySampleEvery : 1;
 
         for (int i = 0; i < ConcurrentReaderCount; i++)
-            histograms[i] = new LatencyHistogram();
+            histograms[i] = new LatencyHistogram(latencySampleEvery);
 
         await WarmConcurrentReadersAsync(context);
 
@@ -170,7 +172,7 @@ public static class SqliteComparisonBenchmark
             StdDevMs = histograms.Average(static histogram => histogram.StdDev),
             ExtraInfo = context.WithNotes(
                 reuseSessionBurstReads
-                    ? $"session-mode=reused read-only connection; burst-reads={ReusedSessionBurstReads}"
+                    ? $"session-mode=reused read-only connection; burst-reads={ReusedSessionBurstReads}; latency-sampling=1/{latencySampleEvery}"
                     : "session-mode=per-query read-only connection",
                 $"readers={ConcurrentReaderCount}",
                 "workload=select count(*) from bench")
@@ -214,13 +216,20 @@ public static class SqliteComparisonBenchmark
                 using var connection = await context.OpenReadOnlyConnectionAsync(ct);
                 for (int i = 0; i < ReusedSessionBurstReads && !ct.IsCancellationRequested; i++)
                 {
-                    var sw = Stopwatch.StartNew();
+                    Stopwatch? sw = histogram.ShouldSampleNext() ? Stopwatch.StartNew() : null;
                     long count = await ExecuteScalarInt64Async(connection, "SELECT COUNT(*) FROM bench;", ct);
                     if (count != SeedCount)
                         throw new InvalidOperationException($"Expected COUNT(*)={SeedCount}, observed {count}.");
 
-                    sw.Stop();
-                    histogram.Record(sw.Elapsed.TotalMilliseconds);
+                    if (sw is null)
+                    {
+                        histogram.RecordUnsampled();
+                    }
+                    else
+                    {
+                        sw.Stop();
+                        histogram.Record(sw.Elapsed.TotalMilliseconds);
+                    }
                 }
             }
             catch (OperationCanceledException)
