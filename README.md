@@ -28,11 +28,11 @@
 
 ## Performance at a Glance
 
-| 1.99M gets/sec | 9.47M reads/sec | 587K inserts/sec | 238.7 ns |
+| 1.93M gets/sec | 11.58M reads/sec | 798.9K inserts/sec | 213.1 ns |
 |:-:|:-:|:-:|:-:|
-| Collection point reads | Concurrent snapshot readers (8x) | Batched SQL inserts | ADO.NET ExecuteScalar |
+| Collection point reads | Concurrent reader burst (8x reused) | Batched SQL inserts | ADO.NET ExecuteScalar |
 
-<sub>Intel i9-11900K, .NET 10, Windows 11. Full results in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
+<sub>Intel i9-11900K, .NET 10, Windows 11. Snapshot reflects the April 13, 2026 focused storage-mode and durable master-table reruns plus the latest checked-in ADO.NET micro result. Full results live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
 
 ---
 
@@ -42,29 +42,24 @@ Default CSharpDB benchmarks run in fully durable mode. CSharpDB also supports a 
 
 | Mode | SQL Single INSERT | SQL Batch x100 | Collection Single PUT | Collection Batch x100 |
 |------|------------------:|---------------:|----------------------:|----------------------:|
-| Durable (default) | 277.9 ops/sec | 26.46K rows/sec | 272.5 ops/sec | 25.12K docs/sec |
+| Durable (default) | 281.7 ops/sec | 26.07K rows/sec | 281.8 ops/sec | 26.93K docs/sec |
 | Buffered | 21.17K ops/sec | 456.63K rows/sec | 19.30K ops/sec | 399.76K docs/sec |
 
-<sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+<sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. The durable row is from the April 13, 2026 master-table rerun; the buffered row remains from the April 7, 2026 buffered rerun. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 
 ## Concurrent Durable Writes
 
-CSharpDB also supports concurrent single-row auto-commit writes against one shared engine and WAL. The numbers below are total durable commits/sec across all writers combined, not per-writer throughput.
+Current concurrent durable-write behavior depends on the write path. The numbers below are total durable commits/sec across all writers combined on one shared `Database` instance.
 
-| Writers | Commit Window | WAL Prealloc | Durable Commits/sec |
-|---------|--------------:|-------------:|--------------------:|
-| 4 | 0 | 0 | 569.5 |
-| 4 | 250us | 0 | 548.7 |
-| 4 | 500us | 0 | 563.4 |
-| 8 | 0 | 0 | 1,091.4 |
-| 8 | 250us | 0 | 1,126.9 |
-| 8 | 500us | 0 | 1,109.8 |
-| 8 | 0 | 1 MiB | 1,116.2 |
-| 8 | 250us | 1 MiB | 1,128.1 |
+| Workload | Writers | Durable Commits/sec | Notes |
+|----------|--------:|--------------------:|-------|
+| Shared auto-commit `INSERT` | 8 | 467.3 | April 10, 2026 closeout best no-preallocation row (`250us`), effectively tied with `0` |
+| Shared auto-commit `UPDATE` / `DELETE` | 8 | 743.0 | April 11, 2026 fan-in rerun after the isolated non-insert commit-path work |
+| Explicit `WriteTransaction` disjoint update | 8 | 765.0 | Same April 11 rerun; currently the top measured commit-fan-in row |
 
-<sub>Shared-engine April 7, 2026 benchmark snapshot. The full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md#concurrent-durable-writes-single-row-auto-commit-csharpdb-only">benchmark suite README</a>.</sub>
+<sub>The hot insert path is still structural: it stays around one commit per flush on the current runner. Shared non-insert auto-commit and explicit disjoint-update workloads can now build a real pending WAL commit queue. Full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 

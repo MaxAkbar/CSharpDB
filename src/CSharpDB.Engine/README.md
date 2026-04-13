@@ -65,6 +65,12 @@ await db.ExecuteAsync("INSERT INTO users VALUES (2, 'Bob', 'bob@example.com')");
 await db.CommitAsync();
 ```
 
+`BeginTransactionAsync()` / `CommitAsync()` is still the legacy single-owner
+explicit transaction API. Use it when one caller owns the whole transaction on
+that `Database` handle. If you want overlapping task-per-writer work on one
+shared `Database`, use the concurrent writer patterns below instead of starting
+one of these legacy explicit transactions per task.
+
 ### In-Memory Open, Load, and Save
 
 ```csharp
@@ -290,12 +296,162 @@ This is an opt-in weaker isolation path for the selected query only. It does
 not disable normal conflict tracking for later writes, foreign-key checks, or
 uniqueness validation inside the same transaction.
 
+### Concurrent Writer Patterns
+
+`Task.Run(...)` by itself does not opt you into multi-writer behavior. The write
+API you call determines whether work can overlap on one shared `Database`.
+
+- Shared auto-commit `UPDATE`, `DELETE`, and DDL statements already run through
+  isolated write-transaction state internally.
+- Shared auto-commit `INSERT` statements stay on the legacy serialized path by
+  default.
+- Multi-statement per-writer units should use `RunWriteTransactionAsync(...)`
+  or `BeginWriteTransactionAsync(...)`.
+
+#### Shared Auto-Commit Non-Insert Work
+
+If each task is issuing its own auto-commit `UPDATE` / `DELETE` statements, you
+can share one `Database` instance directly:
+
+```csharp
+using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("workers.db");
+
+await db.ExecuteAsync("CREATE TABLE IF NOT EXISTS worker_stats (worker_id INTEGER PRIMARY KEY, commits INTEGER)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (0, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (1, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (2, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (3, 0)");
+
+Task[] workers = new Task[4];
+
+for (int workerId = 0; workerId < workers.Length; workerId++)
+{
+    int localWorkerId = workerId;
+    workers[workerId] = Task.Run(async () =>
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            await db.ExecuteAsync(
+                $"UPDATE worker_stats SET commits = commits + 1 WHERE worker_id = {localWorkerId}");
+        }
+    });
+}
+
+await Task.WhenAll(workers);
+```
+
+#### Shared Auto-Commit Inserts
+
+If you want shared auto-commit `INSERT` statements to use isolated write
+transactions, opt in through `ImplicitInsertExecutionMode`:
+
+```csharp
+using System.Threading;
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions
+{
+    ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+};
+
+await using var db = await Database.OpenAsync("ingest.db", options);
+await db.ExecuteAsync("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, worker_id INTEGER, payload TEXT)");
+
+int nextId = 0;
+Task[] writers = new Task[4];
+
+for (int writerId = 0; writerId < writers.Length; writerId++)
+{
+    int localWriterId = writerId;
+    writers[writerId] = Task.Run(async () =>
+    {
+        for (int i = 0; i < 1_000; i++)
+        {
+            int id = Interlocked.Increment(ref nextId);
+            await db.ExecuteAsync(
+                $"INSERT INTO events (id, worker_id, payload) VALUES ({id}, {localWriterId}, 'queued')");
+        }
+    });
+}
+
+await Task.WhenAll(writers);
+```
+
+Keep the default `Serialized` mode for hot right-edge insert loops unless your
+own benchmark shows that `ConcurrentWriteTransactions` helps your key pattern.
+
+#### Explicit Multi-Statement Writers
+
+If each task needs multiple writes to commit atomically, use
+`RunWriteTransactionAsync(...)`. It creates an isolated `WriteTransaction` per
+attempt and retries on transaction conflicts using the supplied
+`WriteTransactionOptions`:
+
+```csharp
+using System.Threading;
+using CSharpDB.Engine;
+
+var options = new DatabaseOptions
+{
+    ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+};
+
+await using var db = await Database.OpenAsync("orders.db", options);
+await db.ExecuteAsync("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, worker_id INTEGER, status TEXT)");
+await db.ExecuteAsync("CREATE TABLE IF NOT EXISTS worker_stats (worker_id INTEGER PRIMARY KEY, commits INTEGER)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (0, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (1, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (2, 0)");
+await db.ExecuteAsync("INSERT INTO worker_stats VALUES (3, 0)");
+
+var txOptions = new WriteTransactionOptions
+{
+    MaxRetries = 10,
+    InitialBackoff = TimeSpan.FromMilliseconds(0.25),
+    MaxBackoff = TimeSpan.FromMilliseconds(20),
+};
+
+int nextId = 0;
+Task[] writers = new Task[4];
+
+for (int writerId = 0; writerId < writers.Length; writerId++)
+{
+    int localWriterId = writerId;
+    writers[writerId] = Task.Run(async () =>
+    {
+        for (int batch = 0; batch < 250; batch++)
+        {
+            await db.RunWriteTransactionAsync(
+                async (tx, ct) =>
+                {
+                    int id = Interlocked.Increment(ref nextId);
+                    await tx.ExecuteAsync(
+                        $"INSERT INTO orders (id, worker_id, status) VALUES ({id}, {localWriterId}, 'pending')",
+                        ct);
+                    await tx.ExecuteAsync(
+                        $"UPDATE worker_stats SET commits = commits + 1 WHERE worker_id = {localWriterId}",
+                        ct);
+                },
+                txOptions);
+        }
+    });
+}
+
+await Task.WhenAll(writers);
+```
+
+Use `BeginWriteTransactionAsync()` directly only when you need manual lifetime
+control inside one task. Do not share one `WriteTransaction` across tasks.
+
 ## Thread Safety
 
 The supported threading model for `Database` is:
 
-- Auto-commit updates, deletes, DDL, and the default auto-commit insert path can be issued concurrently against the same `Database` or `Collection<T>`, but they are serialized internally behind a single writer gate.
-- If `ImplicitInsertExecutionMode` is set to `ConcurrentWriteTransactions`, shared auto-commit `INSERT` statements are routed through isolated `WriteTransaction` commits instead. That improves disjoint-key insert fan-in, but hot right-edge insert workloads can regress.
+- Auto-commit SQL `UPDATE`, `DELETE`, and DDL statements can be issued concurrently against the same `Database` and now run through isolated `WriteTransaction` commits internally.
+- Shared auto-commit SQL `INSERT` statements use the legacy serialized path by default. Set `ImplicitInsertExecutionMode` to `ConcurrentWriteTransactions` if you want those inserts routed through isolated `WriteTransaction` commits instead.
+- `Collection<T>` writes can be issued concurrently, but they still serialize behind the collection/database write gate today.
 - Only one explicit transaction can be active per `Database`. Do not share one explicit transaction concurrently across multiple tasks.
 - Use one `ReaderSession` per concurrent SQL reader when you want snapshot-isolated reads alongside writes.
 - A single `ReaderSession` is not re-entrant and supports only one active query at a time.
