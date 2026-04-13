@@ -4861,7 +4861,6 @@ public sealed class QueryPlanner
             _ => 0,
         };
 
-        var row = new[] { DbValue.FromInteger(count) };
         var outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
             ? new[]
             {
@@ -4874,7 +4873,7 @@ public sealed class QueryPlanner
             }
             : DefaultCountStarOutputSchema;
 
-        result = QueryResult.FromSyncLookup(row, outputSchema);
+        result = QueryResult.FromSyncScalar(DbValue.FromInteger(count), outputSchema);
         return true;
     }
 
@@ -5454,7 +5453,7 @@ public sealed class QueryPlanner
     {
         if (TryGetExactTableRowCount(tableName, out long rowCount))
         {
-            result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+            result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
             return true;
         }
 

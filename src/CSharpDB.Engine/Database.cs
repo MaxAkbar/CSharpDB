@@ -1831,10 +1831,21 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public sealed class ReaderSession : IDisposable
     {
+        private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
+        [
+            new ColumnDefinition
+            {
+                Name = "COUNT(*)",
+                Type = DbType.Integer,
+                Nullable = false,
+            },
+        ];
+
         private readonly Pager _pager;
         private readonly SchemaCatalog _catalog;
         private readonly IRecordSerializer _recordSerializer;
         private readonly IRecordSerializer? _collectionReadSerializer;
+        private readonly Func<ValueTask> _releaseActiveQueryCallback;
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
@@ -1859,22 +1870,17 @@ public sealed class Database : IAsyncDisposable
             _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
                 ? new CollectionAwareRecordSerializer(recordSerializer)
                 : null;
+            _releaseActiveQueryCallback = ReleaseActiveQueryAsync;
             _statementCache = statementCache;
             _snapshot = snapshot;
             _snapshotRowCounts = snapshotRowCounts;
-            _snapshotPager = pager.CreateSnapshotReader(snapshot);
-            _planner = new QueryPlanner(
-                _snapshotPager,
-                catalog,
-                recordSerializer,
-                tableName => _snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
         }
 
         /// <summary>
         /// Execute a read-only SQL query against the snapshot.
         /// Only SELECT statements are allowed.
         /// </summary>
-        public async ValueTask<QueryResult> ExecuteReadAsync(string sql,
+        public ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
         {
             Statement stmt;
@@ -1891,14 +1897,14 @@ public sealed class Database : IAsyncDisposable
                 _lastParsedStatement = stmt;
             }
 
-            return await ExecuteReadAsync(stmt, ct);
+            return ExecuteReadAsync(stmt, ct);
         }
 
         /// <summary>
         /// Execute a read-only prepared statement against the snapshot.
         /// Only SELECT statements are allowed.
         /// </summary>
-        public async ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
+        public ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -1914,19 +1920,40 @@ public sealed class Database : IAsyncDisposable
 
             try
             {
-                QueryResult result;
-                if (stmt is SelectStatement select && await TryExecuteFastReadAsync(select, ct) is { } fastResult)
+                if (stmt is SelectStatement select)
                 {
-                    result = fastResult;
-                }
-                else
-                {
-                    _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
-                    result = await _planner.ExecuteAsync(stmt, ct);
+                    if (TryExecuteCountStarFastPath(select, out QueryResult fastCountResult))
+                    {
+                        fastCountResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                        return ValueTask.FromResult(fastCountResult);
+                    }
+
+                    ValueTask<QueryResult?> fastLookupTask = TryExecutePrimaryKeyLookupFastPathAsync(select, ct);
+                    if (fastLookupTask.IsCompletedSuccessfully)
+                    {
+                        QueryResult? fastLookupResult = fastLookupTask.Result;
+                        if (fastLookupResult is not null)
+                        {
+                            fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                            return ValueTask.FromResult(fastLookupResult);
+                        }
+                    }
+                    else
+                    {
+                        return CompleteReadWithPrimaryKeyFastPathAsync(stmt, fastLookupTask, ct);
+                    }
                 }
 
-                result.SetDisposeCallback(ReleaseActiveQueryAsync);
-                return result;
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
+                if (plannerTask.IsCompletedSuccessfully)
+                {
+                    QueryResult plannerResult = plannerTask.Result;
+                    plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                    return ValueTask.FromResult(plannerResult);
+                }
+
+                return CompleteReadWithPlannerAsync(plannerTask);
             }
             catch
             {
@@ -1951,12 +1978,45 @@ public sealed class Database : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
-        private async ValueTask<QueryResult?> TryExecuteFastReadAsync(SelectStatement stmt, CancellationToken ct)
+        private async ValueTask<QueryResult> CompleteReadWithPrimaryKeyFastPathAsync(
+            Statement stmt,
+            ValueTask<QueryResult?> fastLookupTask,
+            CancellationToken ct)
         {
-            if (TryExecuteCountStarFastPath(stmt, out var countResult))
-                return countResult;
+            try
+            {
+                QueryResult? fastLookupResult = await fastLookupTask;
+                if (fastLookupResult is not null)
+                {
+                    fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                    return fastLookupResult;
+                }
 
-            return await TryExecutePrimaryKeyLookupFastPathAsync(stmt, ct);
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
+                plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                return plannerResult;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
+        }
+
+        private async ValueTask<QueryResult> CompleteReadWithPlannerAsync(ValueTask<QueryResult> plannerTask)
+        {
+            try
+            {
+                QueryResult plannerResult = await plannerTask;
+                plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                return plannerResult;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
         }
 
         private bool TryExecuteCountStarFastPath(SelectStatement stmt, out QueryResult result)
@@ -1984,26 +2044,19 @@ public sealed class Database : IAsyncDisposable
             if (_catalog.GetTable(simpleRef.TableName) == null)
                 return false;
 
-            string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
-            ColumnDefinition[] outputSchema =
-            [
-                new ColumnDefinition
-                {
-                    Name = outputName,
-                    Type = DbType.Integer,
-                    Nullable = false,
-                },
-            ];
+            ColumnDefinition[] outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
+                ? [new ColumnDefinition { Name = alias, Type = DbType.Integer, Nullable = false }]
+                : DefaultCountStarOutputSchema;
 
             if (_snapshotRowCounts.TryGetValue(simpleRef.TableName, out long rowCount))
             {
-                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
             }
 
             if (_catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
             {
-                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
             }
 

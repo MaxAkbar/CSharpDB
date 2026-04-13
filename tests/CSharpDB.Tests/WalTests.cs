@@ -227,6 +227,41 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReaderSession_CountStarFastPath_DelaysSnapshotPagerAndPlannerUntilNeeded()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+
+        FieldInfo snapshotPagerField = typeof(Database.ReaderSession).GetField("_snapshotPager", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        FieldInfo plannerField = typeof(Database.ReaderSession).GetField("_planner", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        Assert.Null(snapshotPagerField.GetValue(reader));
+        Assert.Null(plannerField.GetValue(reader));
+
+        await using (var countResult = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM t", ct))
+        {
+            DbValue[] row = Assert.Single(await countResult.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+        }
+
+        Assert.Null(snapshotPagerField.GetValue(reader));
+        Assert.Null(plannerField.GetValue(reader));
+
+        await using (var fullScanResult = await reader.ExecuteReadAsync("SELECT * FROM t", ct))
+        {
+            DbValue[] row = Assert.Single(await fullScanResult.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+            Assert.Equal("original", row[1].AsText);
+        }
+
+        Assert.NotNull(snapshotPagerField.GetValue(reader));
+        Assert.NotNull(plannerField.GetValue(reader));
+    }
+
+    [Fact]
     public async Task ReaderSession_PreparedPrimaryKeyLookupStatement_ReturnsProjectedValue()
     {
         var ct = TestContext.Current.CancellationToken;
