@@ -553,6 +553,8 @@ internal sealed class SharedMemoryDatabaseSession : ICSharpDbSession
     private SharedMemoryDatabaseHost? _host;
     private readonly long _sessionId;
 
+    public bool SupportsStructuredExecution => true;
+
     internal SharedMemoryDatabaseSession(SharedMemoryDatabaseHost host, long sessionId)
     {
         _host = host;

@@ -6,8 +6,10 @@ namespace CSharpDB.Data;
 public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
 {
     private const string DataSourceKey = "Data Source";
+    private const string EndpointKey = "Endpoint";
     private const string LoadFromKey = "Load From";
     private const string PoolingKey = "Pooling";
+    private const string TransportKey = "Transport";
     private const string MaxPoolSizeKey = "Max Pool Size";
 
     internal const bool DefaultPooling = false;
@@ -17,6 +19,12 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => TryGetValue(DataSourceKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
         set => this[DataSourceKey] = value;
+    }
+
+    public string Endpoint
+    {
+        get => TryGetValue(EndpointKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
+        set => this[EndpointKey] = value;
     }
 
     public bool Pooling
@@ -29,6 +37,12 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => TryGetValue(LoadFromKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
         set => this[LoadFromKey] = value;
+    }
+
+    public string Transport
+    {
+        get => TryGetValue(TransportKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
+        set => this[TransportKey] = value;
     }
 
     public int MaxPoolSize

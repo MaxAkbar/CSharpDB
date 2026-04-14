@@ -13,6 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
   </ItemGroup>
 

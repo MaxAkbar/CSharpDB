@@ -7,6 +7,7 @@ namespace CSharpDB.Data;
 
 internal interface ICSharpDbSession : IAsyncDisposable
 {
+    bool SupportsStructuredExecution { get; }
     ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken cancellationToken = default);
     ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken cancellationToken = default);
     ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken cancellationToken = default);

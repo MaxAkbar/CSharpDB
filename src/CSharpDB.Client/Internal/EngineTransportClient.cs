@@ -40,7 +40,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         DatabaseOptions? directDatabaseOptions = null,
         HybridDatabaseOptions? hybridDatabaseOptions = null)
         : this(
-            databasePath,
+            NormalizeDisplayDataSource(databasePath),
             CreateOpenDatabaseAsync(directDatabaseOptions, hybridDatabaseOptions),
             directDatabaseOptions,
             hybridDatabaseOptions)
@@ -53,7 +53,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         DatabaseOptions? directDatabaseOptions = null,
         HybridDatabaseOptions? hybridDatabaseOptions = null)
     {
-        _databasePath = Path.GetFullPath(databasePath);
+        _databasePath = databasePath;
         _directDatabaseOptions = directDatabaseOptions ?? new DatabaseOptions();
         _hybridDatabaseOptions = hybridDatabaseOptions;
         _openDatabaseAsync = openDatabaseAsync ?? throw new ArgumentNullException(nameof(openDatabaseAsync));
@@ -449,6 +449,14 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return hybridDatabaseOptions is null
             ? (path, ct) => Database.OpenAsync(path, options, ct).AsTask()
             : (path, ct) => Database.OpenHybridAsync(path, options, hybridDatabaseOptions, ct).AsTask();
+    }
+
+    private static string NormalizeDisplayDataSource(string dataSource)
+    {
+        if (dataSource.StartsWith(":memory:", StringComparison.OrdinalIgnoreCase))
+            return dataSource;
+
+        return Path.GetFullPath(dataSource);
     }
 
     private async Task<Database> GetDatabaseAsync(CancellationToken ct)

@@ -12,9 +12,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.5" />
     <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.4.0" />
   </ItemGroup>
 

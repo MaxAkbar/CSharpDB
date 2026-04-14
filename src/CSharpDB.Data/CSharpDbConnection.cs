@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
+using CSharpDB.Client;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 
@@ -16,11 +17,19 @@ public sealed class CSharpDbConnection : DbConnection
     private ICSharpDbSession? _session;
     private CSharpDbTransaction? _currentTransaction;
 
+    internal HttpClient? TransportHttpClient { get; set; }
+
     public CSharpDbConnection() { }
 
     public CSharpDbConnection(string connectionString)
     {
         _connectionString = connectionString;
+    }
+
+    internal CSharpDbConnection(string connectionString, HttpClient? transportHttpClient)
+    {
+        _connectionString = connectionString;
+        TransportHttpClient = transportHttpClient;
     }
 
     [AllowNull]
@@ -31,7 +40,16 @@ public sealed class CSharpDbConnection : DbConnection
     }
 
     public override string Database => "";
-    public override string DataSource => new CSharpDbConnectionStringBuilder(_connectionString).DataSource;
+    public override string DataSource
+    {
+        get
+        {
+            var builder = new CSharpDbConnectionStringBuilder(_connectionString);
+            return string.IsNullOrWhiteSpace(builder.DataSource)
+                ? builder.Endpoint
+                : builder.DataSource;
+        }
+    }
     public override string ServerVersion => "1.0";
     public override ConnectionState State => _state;
 
@@ -61,13 +79,10 @@ public sealed class CSharpDbConnection : DbConnection
             throw new InvalidOperationException("Connection is already open.");
 
         var builder = new CSharpDbConnectionStringBuilder(_connectionString);
-        if (string.IsNullOrWhiteSpace(builder.DataSource))
-            throw new InvalidOperationException("Data Source is required in the connection string.");
 
         try
         {
-            var target = ParseTarget(builder.DataSource);
-            _session = await OpenSessionAsync(target, builder, cancellationToken);
+            _session = await OpenConfiguredSessionAsync(builder, cancellationToken);
             _state = ConnectionState.Open;
         }
         catch (CSharpDbException ex)
@@ -151,7 +166,7 @@ public sealed class CSharpDbConnection : DbConnection
     protected override DbCommand CreateDbCommand() => new CSharpDbCommand { Connection = this };
 
     public override void ChangeDatabase(string databaseName)
-        => throw new NotSupportedException("CSharpDB is a single-file database.");
+        => throw new NotSupportedException("CSharpDB does not support ChangeDatabase.");
 
     public static void ClearPool(string connectionString)
         => ClearPoolAsync(connectionString).GetAwaiter().GetResult();
@@ -257,6 +272,35 @@ public sealed class CSharpDbConnection : DbConnection
             await CloseAsync();
     }
 
+    private async ValueTask<ICSharpDbSession> OpenConfiguredSessionAsync(
+        CSharpDbConnectionStringBuilder builder,
+        CancellationToken cancellationToken)
+    {
+        CSharpDbTransport? configuredTransport = ParseTransportOrNull(builder.Transport);
+        if (!string.IsNullOrWhiteSpace(builder.Endpoint))
+        {
+            if (configuredTransport is null)
+            {
+                throw new InvalidOperationException(
+                    "Transport is required when Endpoint is specified. Use values like 'Grpc' or 'Http'.");
+            }
+
+            if (configuredTransport == CSharpDbTransport.Direct)
+                throw new InvalidOperationException("Use Data Source for direct embedded CSharpDB connections.");
+
+            return await OpenRemoteSessionAsync(builder, configuredTransport.Value, cancellationToken);
+        }
+
+        if (configuredTransport is not null && configuredTransport != CSharpDbTransport.Direct)
+            throw new InvalidOperationException("Endpoint is required for non-direct transports.");
+
+        if (string.IsNullOrWhiteSpace(builder.DataSource))
+            throw new InvalidOperationException("Data Source is required in the connection string.");
+
+        var target = ParseTarget(builder.DataSource);
+        return await OpenSessionAsync(target, builder, cancellationToken);
+    }
+
     private static async ValueTask<ICSharpDbSession> OpenSessionAsync(
         ConnectionTarget target,
         CSharpDbConnectionStringBuilder builder,
@@ -284,24 +328,81 @@ public sealed class CSharpDbConnection : DbConnection
 
         if (builder.Pooling)
         {
+            string pooledConnectionString = $"Data Source={normalizedPath}";
             var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
-            var pool = CSharpDbConnectionPoolRegistry.GetOrCreate(key);
-            var database = await pool.RentAsync(cancellationToken);
-            return new DirectDatabaseSession(database, pool.ReturnAsync);
+            var pool = CSharpDbConnectionPoolRegistry.GetOrCreate(
+                key,
+                pooledConnectionString,
+                OpenDirectClientAsync);
+            ICSharpDbClient pooledClient = await pool.RentAsync(cancellationToken);
+            return new RemoteDatabaseSession(pooledClient, pool.ReturnAsync);
         }
 
-        return new DirectDatabaseSession(await Engine.Database.OpenAsync(normalizedPath, cancellationToken));
+        ICSharpDbClient client = await OpenDirectClientAsync($"Data Source={normalizedPath}", cancellationToken);
+        return new RemoteDatabaseSession(client);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPrivateMemorySessionAsync(
         string? loadFromPath,
         CancellationToken cancellationToken)
     {
-        Database database = string.IsNullOrWhiteSpace(loadFromPath)
-            ? await Engine.Database.OpenInMemoryAsync(cancellationToken)
-            : await Engine.Database.LoadIntoMemoryAsync(NormalizeDataSourcePath(loadFromPath), cancellationToken);
+        string connectionString = string.IsNullOrWhiteSpace(loadFromPath)
+            ? "Data Source=:memory:"
+            : $"Data Source=:memory:;Load From={NormalizeDataSourcePath(loadFromPath)}";
 
-        return new DirectDatabaseSession(database);
+        ICSharpDbClient client = await OpenDirectClientAsync(connectionString, cancellationToken);
+        return new RemoteDatabaseSession(client);
+    }
+
+    private async ValueTask<ICSharpDbSession> OpenRemoteSessionAsync(
+        CSharpDbConnectionStringBuilder builder,
+        CSharpDbTransport transport,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(builder.DataSource))
+            throw new InvalidOperationException("Data Source is not used for daemon-backed connections. Use Endpoint instead.");
+
+        if (!string.IsNullOrWhiteSpace(builder.LoadFrom))
+            throw new InvalidOperationException("Load From is only supported for embedded in-memory data sources.");
+
+        if (builder.Pooling)
+            throw new InvalidOperationException("Pooling is not supported for daemon-backed connections.");
+
+        string endpoint = builder.Endpoint.Trim();
+        ICSharpDbClient client = await OpenClientAsync(new CSharpDbClientOptions
+        {
+            Transport = transport,
+            Endpoint = endpoint,
+            HttpClient = TransportHttpClient,
+        }, cancellationToken);
+
+        return new RemoteDatabaseSession(client);
+    }
+
+    private static async ValueTask<ICSharpDbClient> OpenDirectClientAsync(
+        string connectionString,
+        CancellationToken cancellationToken)
+        => await OpenClientAsync(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Direct,
+            ConnectionString = connectionString,
+        }, cancellationToken);
+
+    private static async ValueTask<ICSharpDbClient> OpenClientAsync(
+        CSharpDbClientOptions options,
+        CancellationToken cancellationToken)
+    {
+        var client = CSharpDbClient.Create(options);
+        try
+        {
+            await client.GetInfoAsync(cancellationToken);
+            return client;
+        }
+        catch
+        {
+            await client.DisposeAsync();
+            throw;
+        }
     }
 
     private static ConnectionTarget ParseTarget(string dataSource)
@@ -333,6 +434,25 @@ public sealed class CSharpDbConnection : DbConnection
 
     private static string NormalizeMemoryName(string name)
         => OperatingSystem.IsWindows() ? name.ToUpperInvariant() : name;
+
+    private static CSharpDbTransport? ParseTransportOrNull(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "direct" => CSharpDbTransport.Direct,
+            "http" => CSharpDbTransport.Http,
+            "grpc" => CSharpDbTransport.Grpc,
+            "namedpipes" => CSharpDbTransport.NamedPipes,
+            "named-pipes" => CSharpDbTransport.NamedPipes,
+            "npipe" => CSharpDbTransport.NamedPipes,
+            "pipe" => CSharpDbTransport.NamedPipes,
+            _ => throw new InvalidOperationException(
+                $"Unsupported Transport '{value}'. Expected Direct, Http, Grpc, or NamedPipes."),
+        };
+    }
 
     private enum ConnectionTargetKind
     {
