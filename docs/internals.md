@@ -61,14 +61,16 @@ CSharpDB.slnx
 │   │   ├── Internal/                   Transport resolver and direct/HTTP/gRPC implementations
 │   │   └── Models/                     Schema, data, procedure, transaction, and collection models
 │   │
-│   ├── CSharpDB.Data/               ADO.NET provider (depends on Engine)
+│   ├── CSharpDB.Data/               ADO.NET provider (depends on Client + Engine)
 │   │   ├── CSharpDbConnection.cs       DbConnection implementation
 │   │   ├── CSharpDbCommand.cs          DbCommand with parameterized queries
 │   │   ├── CSharpDbDataReader.cs       DbDataReader with typed accessors
 │   │   ├── CSharpDbParameter.cs        DbParameter / DbParameterCollection
 │   │   ├── CSharpDbTransaction.cs      DbTransaction implementation
 │   │   ├── CSharpDbFactory.cs          DbProviderFactory registration
+│   │   ├── RemoteDatabaseSession.cs    Client-backed provider session for direct and gRPC access
 │   │   ├── SqlParameterBinder.cs       @param placeholder binding
+│   │   ├── SharedMemoryDatabaseHost.cs Process-local named shared-memory host
 │   │   └── TypeMapper.cs               CSharpDB ↔ CLR type mapping
 │   │
 │   ├── CSharpDB.Native/             NativeAOT C FFI library (depends on Engine, Execution, Primitives)
@@ -132,7 +134,8 @@ CSharpDB.slnx
 │   │   ├── ConnectionTests.cs          Connection open/close/state
 │   │   ├── CommandTests.cs             Parameterized queries, ExecuteScalar, ExecuteNonQuery
 │   │   ├── DataReaderTests.cs          Typed getters, schema table, null handling
-│   │   └── TransactionTests.cs         ADO.NET transaction commit/rollback
+│   │   ├── TransactionTests.cs         ADO.NET transaction commit/rollback
+│   │   └── RemoteGrpcConnectionTests.cs ADO.NET over daemon-backed gRPC transport
 │   │
 │   ├── CSharpDB.Cli.Tests/          CLI smoke + integration tests
 │   │
@@ -312,6 +315,7 @@ Recognize `SELECT DISTINCT` in `ParseSelect()` and set a flag on `SelectStatemen
 | `CommandTests.cs` | ExecuteNonQuery, ExecuteScalar, ExecuteReader, parameterized queries |
 | `DataReaderTests.cs` | Typed getters (GetInt64, GetString, GetDouble, GetBoolean), IsDBNull, GetSchemaTable, HasRows |
 | `TransactionTests.cs` | ADO.NET transaction commit/rollback |
+| `RemoteGrpcConnectionTests.cs` | Daemon-backed `Transport=Grpc;Endpoint=...` provider coverage |
 
 ### Running Tests
 
@@ -328,20 +332,21 @@ dotnet test tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj
 
 ## Concurrency Model
 
-CSharpDB supports **single writer + concurrent readers** via WAL mode:
+CSharpDB now supports **concurrent readers plus isolated multi-writer execution
+paths above a still-serialized storage commit boundary**:
 
-- **Writer**: A `SemaphoreSlim(1,1)` ensures only one write transaction is active at a time. The writer appends modified pages to the WAL file and commits by flushing the WAL.
-
-- **Readers**: Each reader acquires a `WalSnapshot` — a frozen copy of the WAL index. The snapshot routes page reads through the WAL, so the reader sees a consistent point-in-time view even while the writer modifies data.
-
-- **Checkpoint**: Periodically (after 1000+ WAL frames by default, or manually via `CheckpointAsync`), committed WAL pages are copied to the main DB file and the WAL is reset. Checkpoint is skipped if any readers are active.
-
-- **Crash Recovery**: On open, the WAL is scanned for committed transactions. Valid committed frames are checkpointed to bring the DB file up to date.
+- **Storage boundary**: the pager/WAL layer still serializes the physical commit path with a writer lock. Dirty-page publication and durable WAL flush are not fully parallel at the storage layer.
+- **Explicit multi-writer API**: `WriteTransaction` / `RunWriteTransactionAsync(...)` create isolated pager, catalog, and planner state per attempt, then detect conflicts and retry when needed.
+- **Shared auto-commit work**: `UPDATE`, `DELETE`, and DDL already run through isolated write-transaction state internally on a shared `Database` handle. Shared auto-commit `INSERT` stays serialized by default and only switches to isolated write-transaction commits when `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`.
+- **Readers**: each reader acquires a `WalSnapshot`, so read traffic still sees a consistent point-in-time view while writers progress.
+- **Checkpoint**: committed WAL pages are copied back to the main DB file during checkpoint. Checkpoint finalization still respects active snapshots that retain WAL frames.
+- **Crash Recovery**: on open, the WAL is scanned for committed transactions and replayed into the durable view.
 
 ```
-Writer flow:      BeginTransaction → modify pages → CommitAsync (append to WAL) → release lock
-Reader flow:      AcquireSnapshot → create snapshot pager → read pages (WAL or DB file) → release
-Checkpoint flow:  Acquire mutex → copy WAL pages to DB → reset WAL → release mutex
+Legacy explicit flow:   BeginTransaction → modify pages → CommitAsync → release writer gate
+Multi-writer flow:      WriteTransaction attempt → isolated state → conflict check → commit or retry
+Reader flow:            AcquireSnapshot → create snapshot pager → read pages (WAL or DB file) → release
+Checkpoint flow:        Acquire checkpoint state → copy WAL pages to DB → reset retained WAL when safe
 ```
 
 ---
@@ -365,7 +370,7 @@ These are known simplifications:
 | **Collections** | No JSON-path querying or expression/path-based document indexes yet |
 | **Networking** | The shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in auth, authorization, and TLS/mTLS support remain planned |
-| **Concurrency** | Single writer only (no multi-writer) |
+| **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Multi-writer gains depend on conflict shape, and shared auto-commit `INSERT` uses the legacy serialized path unless `ImplicitInsertExecutionMode = ConcurrentWriteTransactions` is enabled |
 | **Indexes** | Composite indexes are supported, but ordered range-scan pushdown is still limited to narrower index shapes |
 
 ---

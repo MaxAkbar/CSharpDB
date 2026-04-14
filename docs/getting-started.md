@@ -631,6 +631,11 @@ while (await reader.ReadAsync())
 }
 ```
 
+The current provider routes ordinary embedded and daemon-backed usage through
+the same authoritative `CSharpDB.Client` layer used by the other host surfaces.
+That means you keep one provider API shape while choosing either a local
+embedded database or a remote daemon endpoint in the connection string.
+
 ### ExecuteScalar
 
 ```csharp
@@ -663,6 +668,30 @@ catch
     throw;
 }
 ```
+
+### Daemon-Backed ADO.NET
+
+If you want the same ADO.NET surface against a long-lived `CSharpDB.Daemon`
+process, change only the connection string:
+
+```csharp
+using CSharpDB.Data;
+
+await using var conn = new CSharpDbConnection(
+    "Transport=Grpc;Endpoint=http://localhost:5820");
+await conn.OpenAsync();
+
+using var cmd = conn.CreateCommand();
+cmd.CommandText = "SELECT COUNT(*) FROM products";
+var count = (long)(await cmd.ExecuteScalarAsync() ?? 0L);
+```
+
+Notes:
+
+- embedded/local mode uses `Data Source=...`
+- daemon-backed mode uses `Transport=Grpc;Endpoint=http://...`
+- named shared in-memory connections such as `Data Source=:memory:shared` are process-local and do not cross the daemon boundary
+- `NamedPipes` is not implemented end to end yet, so use `Grpc` for daemon access
 
 ---
 

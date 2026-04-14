@@ -85,7 +85,7 @@ Top-level database composition and execution-shape configuration.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Controls whether shared auto-commit `INSERT` statements stay behind the legacy database write gate or run as isolated `WriteTransaction` commits. |
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Controls whether shared auto-commit `INSERT` statements stay behind the legacy database write gate or run as isolated `WriteTransaction` commits. This does not disable the explicit multi-writer `WriteTransaction` APIs. |
 | `StorageEngineOptions` | `StorageEngineOptions` | default instance | Storage engine durability, pager, WAL, and checkpoint settings |
 | `StorageEngineFactory` | `IStorageEngineFactory` | `DefaultStorageEngineFactory` | Factory used to compose the backing storage engine |
 
@@ -267,8 +267,60 @@ These properties can be changed on an open `Database` instance:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Shared auto-commit `INSERT` statements use the legacy serialized path by default; set `ConcurrentWriteTransactions` to route them through isolated write transactions for better low-conflict insert fan-in. |
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Shared auto-commit `INSERT` statements use the legacy serialized path by default; set `ConcurrentWriteTransactions` to route them through isolated write transactions for better low-conflict insert fan-in. This setting only changes the shared implicit `INSERT` path. |
 | `PreferSyncPointLookups` | `bool` | `true` | Simple primary-key equality lookups use a synchronous cache-only fast path instead of the async pipeline. |
+
+---
+
+## Daemon Host Configuration
+
+`CSharpDB.Daemon` has a daemon-only host database section layered on top of the
+normal `ConnectionStrings:CSharpDB` input. The daemon still uses the same
+database locator, but it now builds its direct host client explicitly and
+applies daemon defaults for a long-lived shared process.
+
+Relevant keys:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ConnectionStrings:CSharpDB` | `Data Source=csharpdb.db` | Backing database connection string used by the daemon host |
+| `CSharpDB:HostDatabase:OpenMode` | `HybridIncrementalDurable` | `HybridIncrementalDurable` keeps the daemon in lazy-resident hybrid mode; `Direct` opens the file directly without the hybrid resident cache |
+| `CSharpDB:HostDatabase:ImplicitInsertExecutionMode` | `ConcurrentWriteTransactions` | Enables concurrent host-side implicit insert execution by default |
+| `CSharpDB:HostDatabase:UseWriteOptimizedPreset` | `true` | Applies `UseWriteOptimizedPreset()` to the daemon's direct host database options |
+| `CSharpDB:HostDatabase:HotTableNames` | `[]` | Optional hybrid hot-table preload hints |
+| `CSharpDB:HostDatabase:HotCollectionNames` | `[]` | Optional hybrid hot-collection preload hints |
+
+Default daemon `appsettings.json` shape:
+
+```json
+{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=csharpdb.db"
+  },
+  "CSharpDB": {
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
+  }
+}
+```
+
+Environment variable example:
+
+```powershell
+$env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
+$env:CSharpDB__HostDatabase__OpenMode = "Direct"
+$env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
+$env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
+```
+
+Use the daemon defaults when you want a warm long-lived gRPC host. Override
+them only when your deployment has a measured reason to prefer direct open mode
+or the legacy serialized implicit-insert path.
 
 ---
 

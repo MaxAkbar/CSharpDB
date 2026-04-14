@@ -20,7 +20,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Shared in-memory ADO.NET mode** | Support `Data Source=:memory:` and named shared in-memory databases with explicit save/load | Done |
 | **Collection field indexes** | Equality-based secondary indexes for `Collection<T>` via `EnsureIndexAsync` / `FindByIndexAsync` | Done |
 | **Reader session reuse** | Reuse snapshot pager and query planner inside `ReaderSession` for burst concurrent reads | Done |
-| **Architecture enforcement** | `CSharpDB.Client` is now the main caller-facing interaction layer across local and remote scenarios, with direct engine-backed transport intentionally retained for in-process access | Done |
+| **Architecture enforcement** | `CSharpDB.Client` is now the main caller-facing interaction layer across local and remote scenarios; ADO.NET now routes ordinary direct and daemon-backed access through that layer, with only named shared in-memory provider state still retaining an internal engine dependency | Done |
 | **Database administration** | Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report | Done |
 | **Dedicated gRPC daemon** | `CSharpDB.Daemon` host plus `CSharpDB.Client` gRPC coverage for SQL, schema, procedures, collections, and maintenance | Done |
 | **Storage tuning presets** | `UseLookupOptimizedPreset()` and `UseWriteOptimizedPreset()` for file-backed workloads | Done |
@@ -54,7 +54,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Planned |
 | **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
-| **Connection pooling** | Pool `Database` instances behind `CSharpDbConnection` to amortize open/close cost | Done |
+| **Connection pooling** | Pool underlying direct embedded sessions behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface | Done |
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
@@ -81,7 +81,8 @@ Advanced features and fundamental architecture enhancements.
 | **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path | In Progress |
 | **Low-latency durable writes** | Done in `v2.9.0`: advisory planner-stat persistence can stay deferred without weakening committed-row durability, and `sys.table_stats.row_count_is_exact` now makes exact versus estimated row-count semantics explicit to planner and `COUNT(*)` fast paths | Done |
 | **Group commit / deferred WAL flush** | Done in `v2.9.0`: opt-in `UseDurableCommitBatchWindow(...)` batches durable WAL flushes across contending in-process transactions and remains an expert measure-first knob rather than default behavior | Done |
-| **Multi-writer support** | Allow concurrent write transactions (conflict detection + retry) | Research |
+| **Initial multi-writer support** | Explicit `WriteTransaction` conflict-detected retry flow, shared auto-commit non-insert isolation, and opt-in `ConcurrentWriteTransactions` for shared implicit inserts | Done |
+| **Broader multi-writer insert optimization** | Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path | Research |
 | **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
 | **WebAssembly sandboxed UDFs** | Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime | Research |
 
@@ -104,7 +105,7 @@ These are known simplifications in the current implementation:
 | **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
 | **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
-| **Concurrency** | Single writer only (no multi-writer) |
+| **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit `INSERT` is left on the default serialized path |
 | **Storage** | No page-level compression |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
