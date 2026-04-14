@@ -414,10 +414,10 @@ Checkpoint flow:  Acquire mutex &#x2192; copy WAL pages to DB &#x2192; reset WAL
                         <tr><td><strong>Storage</strong></td><td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td></tr>
                         <tr><td><strong>RowId</strong></td><td>Legacy table schemas without persisted high-water metadata may still pay a one-time key scan on first insert</td></tr>
                         <tr><td><strong>Collections</strong></td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindAsync</code> remains a full scan</td></tr>
-                        <tr><td><strong>Collections</strong></td><td>No JSON-path querying or expression/path-based document indexes yet</td></tr>
+                        <tr><td><strong>Collections</strong></td><td><code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; unindexed predicates remain a full scan</td></tr>
                         <tr><td><strong>Networking</strong></td><td>Remote access is split between <code>CSharpDB.Api</code> for HTTP and <code>CSharpDB.Daemon</code> for gRPC; no named-pipe transport</td></tr>
                         <tr><td><strong>Security</strong></td><td>Remote HTTP and gRPC deployment rely on external network controls or front-end TLS termination; no built-in auth, authorization, or TLS/mTLS</td></tr>
-                        <tr><td><strong>Concurrency</strong></td><td>Single writer only (no multi-writer)</td></tr>
+                        <tr><td><strong>Concurrency</strong></td><td>Initial multi-writer support is shipped (explicit <code>WriteTransaction</code> with conflict detection, opt-in concurrent implicit inserts), but the physical WAL commit path is still serialized at the storage boundary</td></tr>
                         <tr><td><strong>Indexes</strong></td><td>Composite indexes are supported, but ordered range-scan pushdown is still limited to narrower index shapes</td></tr>
                     </tbody>
                 </table>

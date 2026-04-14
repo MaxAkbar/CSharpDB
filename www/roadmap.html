@@ -414,23 +414,44 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Cost-Based Query Optimizer</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">In Progress</span>
                             </div>
-                            <p>Statistics-driven join ordering and index selection with advanced histograms and adaptive re-optimization.</p>
+                            <p>Phase-2 stats-guided costing is in place: internal histograms, heavy hitters, composite-index prefix summaries, skew-aware estimates, correlation-aware filters/joins, and bounded DP join reordering. Adaptive re-optimization and public histogram inspection remain future work.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
-                                <h4>Async I/O &amp; Group Commit</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <h4>Async I/O Batching</h4>
+                                <span class="roadmap-badge roadmap-badge-done">In Progress</span>
                             </div>
-                            <p>Group multiple page writes into fewer system calls. Buffer committed WAL writes across transactions.</p>
+                            <p>WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
-                                <h4>Multi-Writer Support</h4>
+                                <h4>Low-Latency Durable Writes</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Advisory planner-stat persistence can stay deferred without weakening committed-row durability, and <code>sys.table_stats.row_count_is_exact</code> makes exact versus estimated row-count semantics explicit.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Group Commit / Deferred WAL Flush</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Opt-in <code>UseDurableCommitBatchWindow(...)</code> batches durable WAL flushes across contending in-process transactions — an expert measure-first knob rather than default behavior.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Initial Multi-Writer Support</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Explicit <code>WriteTransaction</code> conflict-detected retry flow, shared auto-commit non-insert isolation, and opt-in <code>ConcurrentWriteTransactions</code> for shared implicit inserts.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Broader Multi-Writer Optimization</h4>
                                 <span class="roadmap-badge roadmap-badge-research">Research</span>
                             </div>
-                            <p>Allow concurrent write transactions with conflict detection and retry.</p>
+                            <p>Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -456,16 +477,22 @@
                     <table class="doc-table">
                         <thead><tr><th>Area</th><th>Limitation</th></tr></thead>
                         <tbody>
-                            <tr><td>Functions</td><td>Limited scalar function surface; no user-defined functions yet</td></tr>
-                            <tr><td>Query</td><td>Correlated subqueries not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
-                            <tr><td>Query</td><td>No window functions; no UNION ALL</td></tr>
+                            <tr><td>Functions</td><td>Very limited scalar function surface today: built-in <code>TEXT(expr)</code> plus aggregate functions; no broader built-in function library or user-defined functions yet</td></tr>
+                            <tr><td>Query</td><td>Scalar/IN/EXISTS subqueries are supported, including correlated cases in WHERE, non-aggregate projection, and UPDATE/DELETE expressions; correlated subqueries are not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
+                            <tr><td>Query</td><td>UNION, INTERSECT, and EXCEPT are supported; UNION ALL is not implemented yet</td></tr>
+                            <tr><td>Query</td><td>No window functions</td></tr>
                             <tr><td>Schema</td><td>No SQL DEFAULT column values or CHECK constraints yet. Foreign keys are currently v1 only: single-column, column-level REFERENCES with optional ON DELETE CASCADE; table-level/composite/deferred foreign keys and ON UPDATE actions are not implemented</td></tr>
-                            <tr><td>Indexes</td><td>Ordered range-scan pushdown limited to single-column INTEGER index paths</td></tr>
-                            <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); consolidation planned</td></tr>
-                            <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls</td></tr>
-                            <tr><td>Collation</td><td>Default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented; dedicated ordered SQL text index optimization remains future work</td></tr>
-                            <tr><td>Concurrency</td><td>Single writer only (no multi-writer)</td></tr>
-                            <tr><td>Storage</td><td>No page-level compression or at-rest encryption</td></tr>
+                            <tr><td>Indexes</td><td>Equality lookups support current INTEGER/TEXT indexes, but ordered range-scan pushdown is still limited to single-column INTEGER index paths</td></tr>
+                            <tr><td>RowId</td><td>Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert</td></tr>
+                            <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td></tr>
+                            <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); host consolidation plus named pipes remain planned</td></tr>
+                            <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls or front-end TLS termination</td></tr>
+                            <tr><td>Collation</td><td>Default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes; dedicated ordered SQL text index optimization remains planned</td></tr>
+                            <tr><td>Concurrency</td><td>Physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains depend on conflict shape and whether shared auto-commit INSERT is left on the default serialized path</td></tr>
+                            <tr><td>Storage</td><td>No page-level compression</td></tr>
+                            <tr><td>Storage</td><td>No at-rest encryption for database/WAL files; on-disk storage is plaintext only</td></tr>
+                            <tr><td>Storage</td><td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td></tr>
+                            <tr><td>Storage</td><td>By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in <code>UseDurableCommitBatchWindow(...)</code> can trade some commit latency for higher throughput</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -477,39 +504,52 @@
                     <div class="milestone-grid">
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Single-file database with 4 KB page-oriented storage</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree-backed tables and secondary indexes</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Write-Ahead Log with crash recovery</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Concurrent snapshot-isolated readers via MVCC</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Write-Ahead Log with crash recovery and auto-checkpoint</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Concurrent snapshot-isolated readers via WAL-based MVCC</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full SQL pipeline: tokenizer, parser, planner, operators</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, CTEs</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> UNION, INTERSECT, EXCEPT set operations</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Scalar/IN/EXISTS subqueries (incl. correlated)</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Composite indexes with range scans</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ANALYZE with persisted table/column stats</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Scalar/IN/EXISTS subqueries (incl. correlated) in filters, projections, and UPDATE/DELETE</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Scalar TEXT(expr) for filter-friendly text coercion</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Composite (multi-column) indexes</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Ordered integer index range scans in the fast lookup path</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ANALYZE with persisted table/column stats and stale-aware refresh</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Phase-2 cost-based query planning: statistics-guided access paths, join method/reordering, histogram/cardinality estimation</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SELECT DISTINCT and DISTINCT aggregates</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Prepared statement and query plan caching</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Batch-first SQL row-batch execution foundation across scans, joins, aggregates, and result boundaries</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Views and triggers (BEFORE/AFTER)</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET provider with connection pooling</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET GetSchema metadata collections for tooling and ORMs</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> In-memory and hybrid database modes</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Document Collection API with path indexes</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ETL pipeline runtime with visual designer</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Stored procedures with typed parameters</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> SQL statement and SELECT plan caching</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> First-class IDENTITY / AUTOINCREMENT support for INTEGER PRIMARY KEY columns</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Persisted table NextRowId high-water mark with compatibility fallback</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Batch-first SQL row-batch execution across scans, joins, aggregates, and result boundaries</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Foreign key constraints: single-column REFERENCES with optional ON DELETE CASCADE</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ADO.NET provider with connection pooling and GetSchema metadata collections</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> In-memory database mode with explicit load/save APIs</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Shared/private in-memory ADO.NET connections with named shared-memory hosts</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Document Collection API with typed Put/Get/Delete/Scan/Find</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Collection secondary field indexes via EnsureIndexAsync / FindByIndexAsync</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Binary direct-payload collection storage with direct hydration and field/path extraction</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Collection path query APIs: FindByPathAsync and FindByPathRangeAsync</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Source-generated typed collection fast path with trim-safe NativeAOT-friendly access</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization, stemming, and relevance ranking</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide BackupAsync / RestoreAsync across direct, HTTP, gRPC, CLI, and Admin</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> ReplaceAsync for index stores</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Maintenance report, REINDEX, and VACUUM flows across client, CLI, API, and Admin UI</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Dedicated gRPC daemon host</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> REST API with 34+ endpoints</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Blazor Server admin dashboard</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Interactive CLI with meta-commands</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Storage tuning presets, bounded WAL read caching, memory-mapped reads, and sliced background checkpointing</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> SQL executor/read-path fast paths for compact projections, broader join/index coverage, and correlated subquery filters</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> REST API with 34+ endpoints and OpenAPI/Scalar documentation</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Blazor Server admin dashboard with Forms and Reports designers</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Interactive CLI with meta-commands and file execution</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Package-driven ETL pipelines with validation, dry-run, execute/resume, and Admin visual designer</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> VS Code extension with schema explorer</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> MCP server for AI assistant integration</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> NativeAOT C library for cross-language FFI</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Background WAL auto-checkpointing</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree delete rebalancing</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide backup and restore</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization and ranking</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Admin reports designer with banded layouts, grouping, expressions, and print preview</div>
-                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Source-generated collection models with trim-safe and NativeAOT-friendly access</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> B+tree delete rebalancing with underflow handling</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Reusable snapshot reader sessions for higher concurrent-read throughput</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Collection write-path performance recovery with separated read/write B-tree routing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Covered composite-index fast-path optimization</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Durable-write commit batching for higher concurrent write throughput</div>

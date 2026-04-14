@@ -100,6 +100,7 @@
                         <li><strong>Readers see a stable snapshot.</strong> A reader does not block the writer, and the writer does not rewrite the reader's view underneath it.</li>
                         <li><strong>Auto-commit writes are the easiest way to scale in-process write work.</strong> Independent tasks can issue writes concurrently and let the engine serialize commit order.</li>
                     </ul>
+                    <p>Since v2.9.0, CSharpDB also ships initial multi-writer support: explicit <code>WriteTransaction</code> with conflict-detected retry, shared auto-commit non-insert isolation, and opt-in <code>ConcurrentWriteTransactions</code> for shared implicit inserts. The physical WAL commit path is still serialized at the storage boundary, but the engine can now overlap write preparation across multiple transactions.</p>
                     <p>In one process, the recommended topology is a single long-lived <code>Database</code> instance for writes plus <code>ReaderSession</code> instances for concurrent snapshot reads.</p>
 
                     <h2>Recommended Pattern: One Shared Database</h2>
