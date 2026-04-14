@@ -40,13 +40,19 @@ It is not yet designed as:
 Today the daemon does the following:
 
 1. starts an ASP.NET Core host
-2. registers `ICSharpDbClient` from configuration
+2. registers a direct `ICSharpDbClient` from configuration
 3. opens and validates the configured database during startup by calling
    `GetInfoAsync()`
 4. exposes explicit generated gRPC methods under
    `/csharpdb.rpc.CSharpDbRpc/*` such as
    `/csharpdb.rpc.CSharpDbRpc/GetInfo` and
    `/csharpdb.rpc.CSharpDbRpc/ExecuteSql`
+
+By default the daemon now opens the configured database in lazy-resident hybrid
+incremental-durable mode, enables concurrent auto-commit `INSERT` execution on
+the host, and applies the write-optimized storage preset. The backing file is
+still the single source of durable state; hybrid mode just keeps touched pages
+resident in memory inside the daemon process.
 
 The transport contract is implemented in:
 
@@ -73,6 +79,33 @@ If you want HTTP/JSON routes under `/api/...`, use `CSharpDB.Api`.
 If you want the `CSharpDB.Client` remote transport over gRPC, use
 `CSharpDB.Daemon`.
 
+## Transport Guidance
+
+Use transports as follows:
+
+- `Direct`: fastest overall when the caller can open the database locally in the same process space; this bypasses the daemon entirely
+- `Grpc`: recommended remote transport and the fastest supported network transport in the current codebase
+- `Http`: use [`CSharpDB.Api`](../CSharpDB.Api/README.md) when you need REST/JSON routes rather than the client RPC contract
+- `NamedPipes`: reserved in transport enums and parsers, but not implemented end to end today
+
+For remote access to a daemon on another machine, use `Grpc` with a normal base
+address such as:
+
+```text
+http://db-host:5820
+https://db-host:5821
+```
+
+This is standard TCP networking through ASP.NET Core/Kestrel. It is the
+supported cross-server path. Named pipes are not the current answer for
+cross-server deployment here.
+
+For best remote performance:
+
+- keep `ICSharpDbClient` instances alive instead of reconnecting per operation
+- reuse the same gRPC channel/client for many requests
+- prefer `Direct` only when you do not need process or machine isolation
+
 ## Requirements
 
 - .NET SDK 10.0 or newer to build from source
@@ -88,9 +121,15 @@ the daemon because the daemon currently has no built-in authentication layer.
 
 ## Configuration
 
-The daemon currently reads only a small amount of configuration:
+The daemon reads the database path plus a small daemon-only host database
+section:
 
 - `ConnectionStrings:CSharpDB`
+- `CSharpDB:HostDatabase:OpenMode`
+- `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
+- `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
+- `CSharpDB:HostDatabase:HotTableNames`
+- `CSharpDB:HostDatabase:HotCollectionNames`
 - standard ASP.NET Core host settings such as `ASPNETCORE_URLS`
 - standard ASP.NET Core environment selection such as
   `ASPNETCORE_ENVIRONMENT`
@@ -101,6 +140,15 @@ Default [`appsettings.json`](./appsettings.json):
 {
   "ConnectionStrings": {
     "CSharpDB": "Data Source=csharpdb.db"
+  },
+  "CSharpDB": {
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
   }
 }
 ```
@@ -111,10 +159,22 @@ If no connection string is provided, the daemon falls back to:
 Data Source=csharpdb.db
 ```
 
+Current daemon defaults:
+
+- `OpenMode = HybridIncrementalDurable`
+- `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
+- `UseWriteOptimizedPreset = true`
+- `HotTableNames = []`
+- `HotCollectionNames = []`
+
 Useful overrides:
 
 ```powershell
 $env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
+$env:CSharpDB__HostDatabase__OpenMode = "Direct"
+$env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
+$env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
+$env:CSharpDB__HostDatabase__HotCollectionNames__0 = "session_cache"
 $env:ASPNETCORE_URLS = "http://0.0.0.0:5820"
 ```
 
@@ -122,8 +182,17 @@ Linux/macOS shell:
 
 ```bash
 export ConnectionStrings__CSharpDB="Data Source=/var/lib/csharpdb/app.db"
+export CSharpDB__HostDatabase__OpenMode="Direct"
+export CSharpDB__HostDatabase__ImplicitInsertExecutionMode="Serialized"
+export CSharpDB__HostDatabase__HotTableNames__0="users"
+export CSharpDB__HostDatabase__HotCollectionNames__0="session_cache"
 export ASPNETCORE_URLS="http://0.0.0.0:5820"
 ```
+
+`OpenMode=HybridIncrementalDurable` is the default and recommended daemon
+shape. Use `Direct` only when you want the host to open the backing file
+without the lazy-resident hybrid cache. `HotTableNames` and
+`HotCollectionNames` are optional hybrid-only preload hints.
 
 ## Local Development
 
@@ -171,6 +240,7 @@ Notes:
 - use `Transport = Grpc`
 - set `Endpoint` to the daemon base address, not the raw RPC path
 - the client handles the generated gRPC contract internally
+- for remote hosts, prefer `https://...` or private-network `http://...` endpoints with long-lived client reuse
 
 ## Deployment Patterns
 

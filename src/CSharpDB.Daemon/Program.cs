@@ -1,13 +1,18 @@
 using CSharpDB.Client;
+using CSharpDB.Daemon.Configuration;
 using CSharpDB.Daemon.Grpc;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
-{
-    ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
-        ?? "Data Source=csharpdb.db",
-});
+builder.Services.AddSingleton(sp =>
+    DaemonClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
+
+builder.Services.AddSingleton(sp =>
+    DaemonClientOptionsBuilder.Build(
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<DaemonHostDatabaseOptions>()));
+
+builder.Services.AddCSharpDbClient(sp => sp.GetRequiredService<CSharpDbClientOptions>());
 
 builder.Services.AddGrpc();
 
