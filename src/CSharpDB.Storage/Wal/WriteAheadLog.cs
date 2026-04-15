@@ -582,7 +582,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                     cancellationToken);
                 ClearBufferedUncommittedFrames();
 
-                if (TryBeginInlinePendingCommitFlush())
+                if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush &&
+                    TryBeginInlinePendingCommitFlush())
                 {
                     bool inlineFlushSucceeded = false;
                     try
@@ -648,7 +649,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 cancellationToken);
             _writePosition = lastOffset + PageConstants.WalFrameSize;
 
-            if (TryBeginInlinePendingCommitFlush())
+            if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush &&
+                TryBeginInlinePendingCommitFlush())
             {
                 bool inlineFlushSucceeded = false;
                 try
@@ -1431,7 +1433,9 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             throw;
         }
 
+        long publishStartTicks = Stopwatch.GetTimestamp();
         PublishCommittedFramesFromBatch(frames, firstFrameOffset);
+        RecordPublishBatchDiagnostics(publishStartTicks);
         Interlocked.Increment(ref _flushCount);
         Interlocked.Increment(ref _flushedCommitCount);
         Interlocked.Add(ref _flushedByteCount, (long)frames.Length * PageConstants.WalFrameSize);
@@ -1454,7 +1458,9 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             throw;
         }
 
+        long publishStartTicks = Stopwatch.GetTimestamp();
         PublishCommittedFrames();
+        RecordPublishBatchDiagnostics(publishStartTicks);
         Interlocked.Increment(ref _flushCount);
         Interlocked.Increment(ref _flushedCommitCount);
         Interlocked.Add(ref _flushedByteCount, byteCount);

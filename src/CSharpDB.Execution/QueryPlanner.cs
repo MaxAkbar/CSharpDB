@@ -5453,7 +5453,7 @@ public sealed class QueryPlanner
     {
         if (TryGetExactTableRowCount(tableName, out long rowCount))
         {
-            result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
+            result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
         }
 
