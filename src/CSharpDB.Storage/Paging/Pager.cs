@@ -2332,6 +2332,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         try
         {
+            if (_transactions?.HasActiveExplicitTransactions == true)
+                return false;
+
             bool finalized = false;
             int frameCount = _walIndex.FrameCount;
             await _checkpoints.RunCheckpointAsync(
