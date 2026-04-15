@@ -176,6 +176,7 @@ Major features already implemented:
 - [Architecture Guide](architecture.md) — How the engine is structured
 - [Internals & Contributing](internals.md) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
+- [Multi-Writer Follow-Up Plan](multi-writer-follow-up-plan.md) — Post-initial multi-writer roadmap, insert-path gaps, and release criteria for broader completion
 - [Query And Durable Write Performance Plan](query-and-durable-write-performance/README.md) — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
