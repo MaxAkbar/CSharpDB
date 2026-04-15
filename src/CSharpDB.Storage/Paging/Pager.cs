@@ -1184,7 +1184,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (tx.ModifiedPages.TryGetValue(pageId, out byte[]? modified))
             return modified;
 
-        PageReadBuffer committedPage = await _buffers.GetPageReadAsync(pageId, ct);
+        PageReadBuffer committedPage = await _buffers.ReadPageUncachedAsync(pageId, ct);
         byte[] clone = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
         committedPage.Memory.Span.CopyTo(clone);
         tx.ModifiedPages[pageId] = clone;
@@ -1222,7 +1222,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         $"Freelist chain contains a cycle at page {currentPageId}.");
                 }
 
-                PageReadBuffer currentPage = await _buffers.GetPageReadAsync(currentPageId, ct);
+                PageReadBuffer currentPage = await _buffers.ReadPageUncachedAsync(currentPageId, ct);
                 uint nextPageId = ReadFreelistNextPageId(currentPageId, currentPage.Memory.Span);
                 if (tx.ConsumedFreelistPageIds.Contains(currentPageId))
                 {
@@ -2644,7 +2644,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
 
         PageReadBuffer basePage = await _buffers.GetSnapshotPageReadAsync(conflictPageId, tx.Snapshot, ct);
-        PageReadBuffer committedPage = await _buffers.GetPageReadAsync(conflictPageId, ct);
+        PageReadBuffer committedPage = await _buffers.ReadPageUncachedAsync(conflictPageId, ct);
         if (transactionPage.AsSpan().SequenceEqual(committedPage.Memory.Span))
         {
             tx.ResolvedWriteConflictVersions[conflictPageId] = conflictVersion;
@@ -2763,7 +2763,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return false;
 
         uint parentPageId = traversal.PageIds[^2];
-        PageReadBuffer parentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        PageReadBuffer parentPage = await _buffers.ReadPageUncachedAsync(parentPageId, ct);
         var committedParent = new ReadOnlySlottedPage(parentPage.Memory, parentPageId);
         if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint rightBoundaryChild))
             return false;
@@ -2857,7 +2857,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 ct);
         }
 
-        PageReadBuffer parentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        PageReadBuffer parentPage = await _buffers.ReadPageUncachedAsync(parentPageId, ct);
         var committedParent = new ReadOnlySlottedPage(parentPage.Memory, parentPageId);
         if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint splitRightPageId) ||
             splitRightPageId == PageConstants.NullPageId)
@@ -2877,7 +2877,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return (false, ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape);
         }
 
-        PageReadBuffer splitRightPage = await _buffers.GetPageReadAsync(splitRightPageId, ct);
+        PageReadBuffer splitRightPage = await _buffers.ReadPageUncachedAsync(splitRightPageId, ct);
         InsertOnlyRebaseResult splitRebaseResult = LeafInsertRebaseHelper.TryRebaseCommittedSplitLeafPages(
             conflictPageId,
             splitRightPageId,
@@ -2973,7 +2973,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             transactionSplitRightPageId,
             out byte[]? expectedTransactionParentPageFromBase);
 
-        PageReadBuffer committedParentPage = await _buffers.GetPageReadAsync(parentPageId, ct);
+        PageReadBuffer committedParentPage = await _buffers.ReadPageUncachedAsync(parentPageId, ct);
         var committedParent = new ReadOnlySlottedPage(committedParentPage.Memory, parentPageId);
         if (!TryFindInteriorChildBoundary(committedParent, conflictPageId, out uint splitRightPageId) ||
             splitRightPageId == PageConstants.NullPageId)
@@ -3053,7 +3053,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return (false, ExplicitLeafSplitFallbackRejectReason.DirtyAncestor);
         }
 
-        PageReadBuffer splitRightPage = await _buffers.GetPageReadAsync(splitRightPageId, ct);
+        PageReadBuffer splitRightPage = await _buffers.ReadPageUncachedAsync(splitRightPageId, ct);
         InsertOnlyRebaseResult splitRebaseResult = LeafInsertRebaseHelper.TryRebaseCommittedSplitLeafPagesWithInsertedCells(
             conflictPageId,
             splitRightPageId,
