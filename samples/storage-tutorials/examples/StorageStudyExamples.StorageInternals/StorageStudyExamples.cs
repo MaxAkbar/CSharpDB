@@ -631,8 +631,28 @@ public sealed class CountingChecksumProvider : IPageChecksumProvider
 public sealed class InMemoryIndexStore : IIndexStore
 {
     private readonly SortedDictionary<long, byte[]> _data = new();
+    private readonly string _logicalName;
+    private readonly uint _rootPageId;
 
-    public uint RootPageId => 0; // Not backed by a pager
+    public InMemoryIndexStore(uint rootPageId = 0, string logicalName = "in-memory")
+    {
+        _rootPageId = rootPageId;
+        _logicalName = logicalName;
+    }
+
+    public string LogicalName => _logicalName;
+
+    public uint RootPageId => _rootPageId; // Not backed by a pager
+
+    public void RecordPointRead(long key)
+    {
+        // No-op for the study example. Real stores can forward this to diagnostics.
+    }
+
+    public void RecordRangeRead(IndexScanRange range)
+    {
+        // No-op for the study example. Real stores can forward this to diagnostics.
+    }
 
     public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
     {
@@ -717,6 +737,12 @@ public sealed class InMemoryIndexStore : IIndexStore
         {
             return ValueTask.FromResult(_enumerator.MoveNext());
         }
+
+        public ValueTask DisposeAsync()
+        {
+            _enumerator.Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
@@ -728,9 +754,9 @@ public sealed class InMemoryIndexProvider : IIndexProvider
 {
     private readonly ConcurrentDictionary<uint, InMemoryIndexStore> _stores = new();
 
-    public IIndexStore CreateIndexStore(Pager pager, uint rootPageId)
+    public IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName)
     {
-        return _stores.GetOrAdd(rootPageId, _ => new InMemoryIndexStore());
+        return _stores.GetOrAdd(rootPageId, _ => new InMemoryIndexStore(rootPageId, logicalName));
     }
 }
 
