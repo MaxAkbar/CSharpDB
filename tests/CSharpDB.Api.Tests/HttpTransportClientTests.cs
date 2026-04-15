@@ -36,8 +36,8 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         await _client.DisposeAsync();
         _httpClient.Dispose();
         await _factory.DisposeAsync();
-        TryDelete(_dbPath);
-        TryDelete(_dbPath + ".wal");
+        await DeleteIfExistsAsync(_dbPath);
+        await DeleteIfExistsAsync(_dbPath + ".wal");
     }
 
     [Fact]
@@ -357,9 +357,9 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         }
         finally
         {
-            TryDelete(backupPath);
-            TryDelete(backupPath + ".wal");
-            TryDelete(manifestPath);
+            await DeleteIfExistsAsync(backupPath);
+            await DeleteIfExistsAsync(backupPath + ".wal");
+            await DeleteIfExistsAsync(manifestPath);
         }
     }
 
@@ -378,15 +378,38 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         }
     }
 
-    private static void TryDelete(string path)
+    private static async ValueTask DeleteIfExistsAsync(string path)
     {
-        try
+        if (!File.Exists(path))
+            return;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Exception? lastException = null;
+        while (true)
         {
-            if (File.Exists(path))
+            try
+            {
                 File.Delete(path);
+                return;
+            }
+            catch (IOException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+            catch (UnauthorizedAccessException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+
+            if (!File.Exists(path))
+                return;
+
+            if (sw.Elapsed >= TimeSpan.FromSeconds(2))
+                break;
+
+            await Task.Delay(25);
         }
-        catch (IOException)
-        {
-        }
+
+        throw new IOException($"Failed to delete temporary database file '{path}' within the cleanup timeout.", lastException);
     }
 }
