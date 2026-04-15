@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using CSharpDB.Engine;
+using CSharpDB.Client;
 
 namespace CSharpDB.Data;
 
@@ -7,8 +7,17 @@ internal static class CSharpDbConnectionPoolRegistry
 {
     private static readonly ConcurrentDictionary<PoolKey, CSharpDbConnectionPool> s_pools = new();
 
-    internal static CSharpDbConnectionPool GetOrCreate(PoolKey key)
-        => s_pools.GetOrAdd(key, static staticKey => new CSharpDbConnectionPool(staticKey.DataSource, staticKey.MaxPoolSize));
+    internal static CSharpDbConnectionPool GetOrCreate(
+        PoolKey key,
+        string connectionString,
+        Func<string, CancellationToken, ValueTask<ICSharpDbClient>> openClientAsync)
+        => s_pools.GetOrAdd(
+            key,
+            static (staticKey, state) => new CSharpDbConnectionPool(
+                state.ConnectionString,
+                staticKey.MaxPoolSize,
+                state.OpenClientAsync),
+            (ConnectionString: connectionString, OpenClientAsync: openClientAsync));
 
     internal static async ValueTask ClearPoolAsync(PoolKey key)
     {
@@ -39,16 +48,21 @@ internal readonly record struct PoolKey(string DataSource, int MaxPoolSize);
 
 internal sealed class CSharpDbConnectionPool
 {
-    private readonly string _dataSource;
+    private readonly string _connectionString;
     private readonly int _maxPoolSize;
+    private readonly Func<string, CancellationToken, ValueTask<ICSharpDbClient>> _openClientAsync;
     private readonly object _gate = new();
-    private readonly Stack<Database> _idle = new();
+    private readonly Stack<ICSharpDbClient> _idle = new();
     private bool _disabled;
 
-    internal CSharpDbConnectionPool(string dataSource, int maxPoolSize)
+    internal CSharpDbConnectionPool(
+        string connectionString,
+        int maxPoolSize,
+        Func<string, CancellationToken, ValueTask<ICSharpDbClient>> openClientAsync)
     {
-        _dataSource = dataSource;
+        _connectionString = connectionString;
         _maxPoolSize = maxPoolSize;
+        _openClientAsync = openClientAsync;
     }
 
     internal int IdleCount
@@ -60,7 +74,7 @@ internal sealed class CSharpDbConnectionPool
         }
     }
 
-    internal async ValueTask<Database> RentAsync(CancellationToken ct)
+    internal async ValueTask<ICSharpDbClient> RentAsync(CancellationToken ct)
     {
         lock (_gate)
         {
@@ -68,36 +82,36 @@ internal sealed class CSharpDbConnectionPool
                 return _idle.Pop();
         }
 
-        return await Database.OpenAsync(_dataSource, ct);
+        return await _openClientAsync(_connectionString, ct);
     }
 
-    internal async ValueTask ReturnAsync(Database database)
+    internal async ValueTask ReturnAsync(ICSharpDbClient client)
     {
-        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(client);
 
         bool disposeImmediately;
         lock (_gate)
         {
             disposeImmediately = _disabled || _idle.Count >= _maxPoolSize;
             if (!disposeImmediately)
-                _idle.Push(database);
+                _idle.Push(client);
         }
 
         if (disposeImmediately)
-            await database.DisposeAsync();
+            await client.DisposeAsync();
     }
 
     internal async ValueTask DisableAsync()
     {
-        Database[] idleDatabases;
+        ICSharpDbClient[] idleClients;
         lock (_gate)
         {
             _disabled = true;
-            idleDatabases = _idle.ToArray();
+            idleClients = _idle.ToArray();
             _idle.Clear();
         }
 
-        foreach (var database in idleDatabases)
-            await database.DisposeAsync();
+        foreach (var client in idleClients)
+            await client.DisposeAsync();
     }
 }

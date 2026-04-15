@@ -49,7 +49,8 @@ Cli     → Sql
 Cli     → Storage.Diagnostics
 Cli     → Pipelines
 Mcp     → Client
-Data    → Engine
+Data    → Client
+Data    → Engine            (named shared-memory host + internal session types)
 Client  → Engine
 Client  → Pipelines
 Client  → Sql
@@ -493,7 +494,7 @@ The `Database` class ties all layers together:
 1. **Open**: Opens the database in file-backed, fully in-memory, or hybrid lazy-resident mode. Supports opt-in memory-mapped main-file reads, storage tuning presets (`UseLookupOptimizedPreset`, `UseWriteOptimizedPreset`), bounded WAL read caching, and background sliced auto-checkpointing. Runs crash recovery if a WAL file exists and loads the schema catalog.
 2. **ExecuteAsync**: Parses SQL → dispatches to QueryPlanner → returns `QueryResult`
 3. **Auto-commit**: Non-SELECT statements automatically begin and commit a transaction if none is active
-4. **Explicit transactions**: `BeginTransactionAsync` / `CommitAsync` / `RollbackAsync` for multi-statement atomicity
+4. **Explicit transactions**: `BeginTransactionAsync` / `CommitAsync` / `RollbackAsync` for the legacy single-handle transaction shape, plus `BeginWriteTransactionAsync(...)` / `RunWriteTransactionAsync(...)` for isolated multi-writer work with conflict detection and retry
 5. **CheckpointAsync**: Manually triggers a WAL checkpoint (copies committed WAL pages to DB file)
 6. **CreateReaderSession**: Returns an independent `ReaderSession` that sees a snapshot of the database at the current point in time. Multiple reader sessions can coexist with an active writer.
 7. **Collections**: `GetCollectionAsync<T>` exposes the typed document path beside SQL with binary direct-payload storage, path-based indexing (`EnsureIndexAsync`, `FindByPathAsync`, `FindByPathRangeAsync`), and direct binary hydration
@@ -636,6 +637,16 @@ while (await reader.ReadAsync())
 }
 ```
 
+Today the provider sits mostly above `CSharpDB.Client`, not beside it:
+
+- ordinary file-backed direct connections route through `CSharpDB.Client`
+- private `:memory:` connections route through `CSharpDB.Client`
+- daemon-backed `Transport=Grpc;Endpoint=...` connections route through `CSharpDB.Client`
+- named shared `:memory:name` stays as the one internal engine-assisted exception for now because that host is process-local state inside the provider
+
+That means ADO.NET is now primarily a provider-shaped facade over the same
+authoritative client contract used by the other host surfaces.
+
 ---
 
 ## Layer 9: Remote Hosts (`CSharpDB.Api` + `CSharpDB.Daemon`)
@@ -672,6 +683,14 @@ Components:
 - **GrpcTransportClient** — remote client implementation in `CSharpDB.Client`
 - **CSharpDbRpcService** — gRPC method host in `CSharpDB.Daemon`
 - **Startup validation** — resolves `ICSharpDbClient` and validates the configured database during host startup
+
+The current daemon default host shape is:
+
+- direct transport internally
+- hybrid incremental-durable open mode
+- `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
+- `UseWriteOptimizedPreset = true`
+- optional hot-table / hot-collection preload hints through `CSharpDB:HostDatabase`
 
 See the [REST API Reference](rest-api.md) for HTTP details and the [Daemon README](../src/CSharpDB.Daemon/README.md) for the gRPC host design.
 

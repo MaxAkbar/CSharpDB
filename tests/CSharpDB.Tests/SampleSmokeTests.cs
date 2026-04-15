@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using CSharpDB.Client;
+using CSharpDB.Engine;
 using CSharpDB.Sql;
 using ClientModels = CSharpDB.Client.Models;
 
@@ -81,6 +83,63 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task CsvBulkImportSample_RunsAndImportsBundledRows()
+    {
+        string repoRoot = GetRepoPath();
+        string projectPath = GetRepoPath("samples", "csv-bulk-import", "CsvBulkImportSample.csproj");
+        string csvPath = GetRepoPath("samples", "csv-bulk-import", "events.csv");
+        string outputDir = Path.Combine(Path.GetTempPath(), $"csharpdb_csv_sample_{Guid.NewGuid():N}");
+        string dbPath = Path.Combine(outputDir, "imported-events.db");
+        int expectedRowCount = File.ReadLines(csvPath)
+            .Skip(1)
+            .Count(line => !string.IsNullOrWhiteSpace(line));
+
+        Directory.CreateDirectory(outputDir);
+
+        try
+        {
+            ProcessResult result = await RunDotNetAsync(
+                [
+                    "run",
+                    "--project",
+                    projectPath,
+                    "--verbosity",
+                    "quiet",
+                    "--",
+                    "--database-path",
+                    dbPath,
+                ],
+                repoRoot,
+                Ct);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.DoesNotContain("Import failed:", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Import failed:", result.StdErr, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(dbPath), "The sample did not produce the expected database file.");
+
+            await using var db = await Database.OpenAsync(dbPath, Ct);
+
+            await using (var countQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM events;", Ct))
+            {
+                var rows = await countQuery.ToListAsync(Ct);
+                Assert.Equal(expectedRowCount, rows[0][0].AsInteger);
+            }
+
+            await using (var warnQuery = await db.ExecuteAsync(
+                             "SELECT COUNT(*) FROM events WHERE severity = 'warn';",
+                             Ct))
+            {
+                var rows = await warnQuery.ToListAsync(Ct);
+                Assert.True(rows[0][0].AsInteger > 0);
+            }
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(outputDir);
+        }
+    }
+
     private static IReadOnlyList<ClientModels.ProcedureDefinition> LoadProcedures(string proceduresPath)
     {
         var options = new JsonSerializerOptions
@@ -114,6 +173,43 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         return Path.Combine([root, .. segments]);
     }
 
+    private static async Task<ProcessResult> RunDotNetAsync(
+        IReadOnlyList<string> args,
+        string workingDirectory,
+        CancellationToken ct)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        foreach (string arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using var process = new Process { StartInfo = startInfo };
+        if (!process.Start())
+            throw new InvalidOperationException("Failed to start the sample process.");
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
+
+        await process.WaitForExitAsync(ct);
+
+        return new ProcessResult(
+            process.ExitCode,
+            await stdoutTask,
+            await stderrTask);
+    }
+
+    private static void DeleteDirectoryIfExists(string path)
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, recursive: true);
+    }
+
     private sealed class SampleProcedureDefinition
     {
         public string Name { get; set; } = string.Empty;
@@ -131,4 +227,6 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         public object? Default { get; set; }
         public string? Description { get; set; }
     }
+
+    private sealed record ProcessResult(int ExitCode, string StdOut, string StdErr);
 }

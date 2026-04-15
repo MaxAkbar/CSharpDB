@@ -11,7 +11,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Tools & Ecosystem",
-        "description": "CSharpDB ecosystem — CLI REPL, Admin UI, REST API, gRPC daemon, Client SDK, ADO.NET provider, MCP server, and VS Code extension.",
+        "description": "CSharpDB ecosystem — embedded APIs, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.",
         "url": "https://csharpdb.com/docs/ecosystem.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -26,8 +26,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Tools & Ecosystem',
-        description: 'CSharpDB ecosystem \u2014 CLI REPL, Admin UI, REST API, gRPC daemon, Client SDK, ADO.NET provider, MCP server, and VS Code extension.',
-        keywords: 'CSharpDB tools, CLI, Admin UI, REST API, gRPC, Client SDK, ADO.NET, MCP server, VS Code',
+        description: 'CSharpDB ecosystem \u2014 embedded APIs, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.',
+        keywords: 'CSharpDB tools, CLI, Admin UI, REST API, gRPC, Client SDK, ADO.NET, MCP server, VS Code, pipelines, forms, reports',
         canonicalPath: 'docs/ecosystem.html',
         ogType: 'article',
     };
@@ -38,7 +38,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Tools &amp; Ecosystem</h1>
-                <p class="lead">CSharpDB provides 10+ ways to interact with your database — from embedded APIs to remote services, AI integrations, and visual tools.</p>
+                <p class="lead">CSharpDB provides a broad application surface around one engine — embedded APIs, remote services, AI integrations, browser-based designers, and cross-language tooling.</p>
 
                 <h2>Data Access Layers</h2>
 
@@ -96,7 +96,7 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
                 <h2>Hosting &amp; Services</h2>
 
                 <h3>REST API</h3>
-                <p>An ASP.NET Core Minimal API exposing 33+ endpoints across 13 groups. Includes OpenAPI/Swagger documentation with Scalar UI for interactive exploration.</p>
+                <p>An ASP.NET Core Minimal API exposing 30+ endpoints across schema, data, SQL, procedures, collections, pipelines, transactions, inspection, and maintenance groups. Includes OpenAPI documentation with Scalar UI for interactive exploration.</p>
                 <table class="doc-table">
                     <thead><tr><th>Endpoint Group</th><th>Description</th></tr></thead>
                     <tbody>
@@ -118,6 +118,7 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
 
                 <h3>gRPC Daemon</h3>
                 <p>A standalone gRPC service host (<code>CSharpDB.Daemon</code>) for remote client access. Enables multi-machine architectures with the same Client SDK interface used locally.</p>
+                <p>For the current remote-host concurrency model, recommended defaults, and application usage patterns, see the <a href="tutorials/multi-writer-daemon-grpc.html">Multi-Writer gRPC Daemon tutorial</a>.</p>
 
                 <h2>Developer Tools</h2>
 
@@ -157,9 +158,11 @@ csharpdb> .quit</code></pre>
                         <tr><td><strong>Query</strong></td><td>SQL editor with syntax highlighting and results grid</td></tr>
                         <tr><td><strong>Query Designer</strong></td><td>Visual SQL builder with draggable table nodes, join lines, and live SQL preview</td></tr>
                         <tr><td><strong>Procedures</strong></td><td>Create, edit, and execute stored procedures</td></tr>
+                        <tr><td><strong>Forms</strong></td><td>Visual forms designer and runtime data-entry/editing flows backed by database metadata</td></tr>
                         <tr><td><strong>Pipeline Designer</strong></td><td>Visual ETL editor with nodes, connections, properties panel, and execution controls</td></tr>
                         <tr><td><strong>Storage</strong></td><td>Disk inspection, page layout, and integrity analysis</td></tr>
                         <tr><td><strong>Reports</strong></td><td>Visual report designer with banded layouts, grouping, aggregates, and printable preview</td></tr>
+                        <tr><td><strong>Maintenance</strong></td><td>Backup/restore, reindex, vacuum, and foreign-key retrofit workflows</td></tr>
                     </tbody>
                 </table>
 

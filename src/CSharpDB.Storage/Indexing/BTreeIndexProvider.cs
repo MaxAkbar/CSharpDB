@@ -5,6 +5,6 @@ namespace CSharpDB.Storage.Indexing;
 /// </summary>
 public sealed class BTreeIndexProvider : IIndexProvider
 {
-    public IIndexStore CreateIndexStore(Pager pager, uint rootPageId) =>
-        new BTreeIndexStore(new BTree(pager, rootPageId));
+    public IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName) =>
+        new BTreeIndexStore(new BTree(pager, rootPageId), logicalName);
 }

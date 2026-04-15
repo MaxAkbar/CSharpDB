@@ -268,8 +268,9 @@ function Convert-TimeToNanoseconds
 
     $text = $Value.Trim("'").Trim()
     $text = $text -replace ",", ""
+    $text = $text.Replace([string][char]0x03BC, "u")
 
-    if ($text -match "^([0-9]*\.?[0-9]+)\s*(ns|us|μs|ms|s)$")
+    if ($text -match "^([0-9]*\.?[0-9]+)\s*(ns|us|ms|s)$")
     {
         $number = [double]$matches[1]
         $unit = $matches[2]
@@ -277,7 +278,6 @@ function Convert-TimeToNanoseconds
         {
             "ns" { return $number }
             "us" { return $number * 1000.0 }
-            "μs" { return $number * 1000.0 }
             "ms" { return $number * 1000000.0 }
             "s" { return $number * 1000000000.0 }
         }
@@ -1089,7 +1089,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     $lines.Add("")
     $lines.Add($summary)
     $lines.Add("")
-    $lines.Add("| CSV | Key | Mean Δ% | Alloc Δ% | Alloc Δ B | Enforcement | Status | Notes |")
+    $lines.Add("| CSV | Key | Mean Delta% | Alloc Delta% | Alloc Delta B | Enforcement | Status | Notes |")
     $lines.Add("|---|---|---:|---:|---:|---|---|---|")
     foreach ($result in ($results | Sort-Object Csv, Key))
     {

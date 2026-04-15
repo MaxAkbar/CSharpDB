@@ -9,13 +9,13 @@ ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedd
 
 ## Overview
 
-`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your embedded database. Supports parameterized queries, transactions, prepared statements, prepared-template caching, schema introspection, and both file-backed and in-memory connection modes.
+`CSharpDB.Data` provides a standard `System.Data.Common` (ADO.NET) data provider for CSharpDB. Use familiar `DbConnection`/`DbCommand`/`DbDataReader` patterns to query and modify your database. Supports parameterized queries, transactions, prepared statements, prepared-template caching, schema introspection, embedded file-backed and in-memory connection modes, and daemon-backed remote connections over the `CSharpDB.Daemon` gRPC host.
 
 ## Key Types
 
 | Type | Description |
 |------|-------------|
-| `CSharpDbConnection` | `DbConnection` for file-backed databases, private `:memory:` databases, and named shared `:memory:name` databases |
+| `CSharpDbConnection` | `DbConnection` for file-backed databases, private `:memory:` databases, named shared `:memory:name` databases, and daemon-backed remote connections |
 | `CSharpDbCommand` | `DbCommand` with prepared statement support, template caching, and parameter binding |
 | `CSharpDbDataReader` | `DbDataReader` with async iteration, typed getters, and `HasRows` |
 | `CSharpDbTransaction` | `DbTransaction` with auto-rollback on dispose |
@@ -84,6 +84,42 @@ await using var conn = factory.CreateConnection();
 conn.ConnectionString = "Data Source=myapp.db";
 await conn.OpenAsync();
 ```
+
+## Daemon-Backed Connections
+
+Use a remote transport connection string when you want ADO.NET to talk to a running `CSharpDB.Daemon` host instead of opening the database file directly:
+
+```csharp
+await using var connection = new CSharpDbConnection(
+    "Transport=Grpc;Endpoint=http://localhost:5000");
+await connection.OpenAsync();
+
+await using var command = connection.CreateCommand();
+command.CommandText = "SELECT COUNT(*) FROM products";
+var count = (long)(await command.ExecuteScalarAsync() ?? 0L);
+```
+
+Connection-string rules:
+
+- Embedded/direct mode: use `Data Source=...`
+- Daemon-backed mode: use `Transport=Grpc;Endpoint=http://...`
+- `Data Source`, `Load From`, and connection pooling are embedded-only options
+- `Endpoint` requires an explicit `Transport`
+
+For a daemon host, `Grpc` is the primary transport today:
+
+```text
+Transport=Grpc;Endpoint=http://localhost:5000
+```
+
+That gives you standard ADO.NET commands and transactions against the daemon-managed database while keeping the existing embedded connection-string shape unchanged.
+
+Transport guidance:
+
+- `Direct` with `Data Source=...` is still faster than any network hop when the caller can open the database locally
+- `Grpc` is the fastest supported network transport in the current CSharpDB stack
+- `NamedPipes` is not implemented end to end today, so do not target it yet for daemon-backed ADO.NET
+- for daemon-backed workloads, reuse open connections instead of reconnecting for each command
 
 ## In-Memory Connection Strings
 

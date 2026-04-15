@@ -5,6 +5,9 @@ namespace CSharpDB.Client.Internal;
 
 internal static class ClientTransportResolver
 {
+    private const string PrivateMemoryDataSource = ":memory:";
+    private const string MemoryDataSourcePrefix = ":memory:";
+
     public static ICSharpDbClient Create(CSharpDbClientOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -12,10 +15,7 @@ internal static class ClientTransportResolver
         var resolution = Resolve(options);
         return resolution.Transport switch
         {
-            CSharpDbTransport.Direct => new EngineTransportClient(
-                resolution.DatabasePath!,
-                resolution.DirectDatabaseOptions,
-                resolution.HybridDatabaseOptions),
+            CSharpDbTransport.Direct => CreateDirectClient(resolution),
             CSharpDbTransport.Http => new HttpTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.Grpc => new GrpcTransportClient(resolution.EndpointUri!, options.HttpClient),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
@@ -43,15 +43,19 @@ internal static class ClientTransportResolver
 
     private static Resolution ResolveDirect(CSharpDbClientOptions options, string? endpointPath)
     {
-        string? dataSource = string.IsNullOrWhiteSpace(options.DataSource)
+        DirectTarget? endpointTarget = endpointPath is null
             ? null
-            : NormalizePath(options.DataSource);
+            : new DirectTarget(DirectTargetKind.File, NormalizePath(endpointPath), LoadFromPath: null);
+
+        DirectTarget? dataSourceTarget = string.IsNullOrWhiteSpace(options.DataSource)
+            ? null
+            : ParseDirectTarget(options.DataSource, loadFromPath: null);
 
         string? connectionString = string.IsNullOrWhiteSpace(options.ConnectionString)
             ? null
             : options.ConnectionString.Trim();
 
-        string? connectionStringPath = null;
+        DirectTarget? connectionStringTarget = null;
         if (connectionString is not null)
         {
             var builder = new DbConnectionStringBuilder
@@ -62,23 +66,40 @@ internal static class ClientTransportResolver
             if (!TryGetDataSource(builder, out string? dataSourceValue) || string.IsNullOrWhiteSpace(dataSourceValue))
                 throw new CSharpDbClientConfigurationException("ConnectionString must include a Data Source.");
 
-            connectionStringPath = NormalizePath(dataSourceValue);
+            connectionStringTarget = ParseDirectTarget(
+                dataSourceValue,
+                TryGetOptionalValue(builder, "Load From", out string? loadFromValue) ? loadFromValue : null);
         }
 
-        string? resolvedPath = endpointPath ?? dataSource ?? connectionStringPath;
-        if (resolvedPath is null)
+        DirectTarget? resolvedTarget = endpointTarget ?? dataSourceTarget ?? connectionStringTarget;
+        if (resolvedTarget is null)
             throw new CSharpDbClientConfigurationException("Direct transport requires Endpoint, DataSource, or ConnectionString.");
 
-        if (dataSource is not null && !PathsEqual(resolvedPath, dataSource))
+        if (dataSourceTarget is not null && !DirectTargetsEqual(resolvedTarget, dataSourceTarget))
             throw new CSharpDbClientConfigurationException("DataSource does not match the resolved direct target.");
 
-        if (connectionStringPath is not null && !PathsEqual(resolvedPath, connectionStringPath))
-            throw new CSharpDbClientConfigurationException("ConnectionString Data Source does not match the resolved direct target.");
+        if (connectionStringTarget is not null && !DirectTargetsEqual(resolvedTarget, connectionStringTarget))
+        {
+            throw new CSharpDbClientConfigurationException(
+                "ConnectionString Data Source does not match the resolved direct target.");
+        }
+
+        if (resolvedTarget.Kind == DirectTargetKind.PrivateMemory && options.HybridDatabaseOptions is not null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                "HybridDatabaseOptions are only supported for file-backed direct transports.");
+        }
+
+        if (resolvedTarget.Kind == DirectTargetKind.NamedSharedMemory)
+        {
+            throw new CSharpDbClientConfigurationException(
+                "Named shared in-memory direct targets are not implemented in CSharpDB.Client yet.");
+        }
 
         return new Resolution
         {
             Transport = CSharpDbTransport.Direct,
-            DatabasePath = resolvedPath,
+            DirectTarget = resolvedTarget,
             DirectDatabaseOptions = options.DirectDatabaseOptions,
             HybridDatabaseOptions = options.HybridDatabaseOptions,
         };
@@ -218,6 +239,102 @@ internal static class ClientTransportResolver
         return false;
     }
 
+    private static bool TryGetOptionalValue(DbConnectionStringBuilder builder, string key, out string? value)
+    {
+        foreach (string existingKey in builder.Keys.Cast<string>())
+        {
+            if (!existingKey.Equals(key, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            value = Convert.ToString(builder[existingKey], System.Globalization.CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static ICSharpDbClient CreateDirectClient(Resolution resolution)
+    {
+        DirectTarget directTarget = resolution.DirectTarget
+            ?? throw new CSharpDbClientConfigurationException("Direct transport requires a resolved direct target.");
+
+        return directTarget.Kind switch
+        {
+            DirectTargetKind.File => new EngineTransportClient(
+                directTarget.Key,
+                resolution.DirectDatabaseOptions,
+                resolution.HybridDatabaseOptions),
+            DirectTargetKind.PrivateMemory => new EngineTransportClient(
+                directTarget.DisplayName,
+                CreatePrivateMemoryOpenDatabaseAsync(directTarget.LoadFromPath, resolution.DirectDatabaseOptions),
+                resolution.DirectDatabaseOptions,
+                hybridDatabaseOptions: null),
+            _ => throw new CSharpDbClientConfigurationException(
+                $"Direct target kind '{directTarget.Kind}' is not implemented in CSharpDB.Client yet."),
+        };
+    }
+
+    private static Func<string, CancellationToken, Task<Database>> CreatePrivateMemoryOpenDatabaseAsync(
+        string? loadFromPath,
+        DatabaseOptions? directDatabaseOptions)
+    {
+        var options = directDatabaseOptions ?? new DatabaseOptions();
+        return string.IsNullOrWhiteSpace(loadFromPath)
+            ? (_, ct) => Database.OpenInMemoryAsync(options, ct).AsTask()
+            : (_, ct) => Database.LoadIntoMemoryAsync(loadFromPath, options, ct).AsTask();
+    }
+
+    private static DirectTarget ParseDirectTarget(string dataSource, string? loadFromPath)
+    {
+        if (string.Equals(dataSource, PrivateMemoryDataSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return new DirectTarget(
+                DirectTargetKind.PrivateMemory,
+                PrivateMemoryDataSource,
+                NormalizeOptionalPath(loadFromPath));
+        }
+
+        if (dataSource.StartsWith(MemoryDataSourcePrefix, StringComparison.OrdinalIgnoreCase) &&
+            dataSource.Length > MemoryDataSourcePrefix.Length)
+        {
+            string name = dataSource[MemoryDataSourcePrefix.Length..];
+            if (string.IsNullOrWhiteSpace(name))
+                throw new CSharpDbClientConfigurationException("Named in-memory databases require a non-empty name.");
+
+            return new DirectTarget(
+                DirectTargetKind.NamedSharedMemory,
+                dataSource,
+                NormalizeOptionalPath(loadFromPath));
+        }
+
+        if (!string.IsNullOrWhiteSpace(loadFromPath))
+        {
+            throw new CSharpDbClientConfigurationException(
+                "Load From is only supported for in-memory direct targets.");
+        }
+
+        return new DirectTarget(DirectTargetKind.File, NormalizePath(dataSource), LoadFromPath: null);
+    }
+
+    private static string? NormalizeOptionalPath(string? path)
+        => string.IsNullOrWhiteSpace(path) ? null : NormalizePath(path);
+
+    private static bool DirectTargetsEqual(DirectTarget left, DirectTarget right)
+        => left.Kind == right.Kind
+            && string.Equals(left.Key, right.Key, OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal)
+            && PathsEqualNullable(left.LoadFromPath, right.LoadFromPath);
+
+    private static bool PathsEqualNullable(string? left, string? right)
+    {
+        if (left is null || right is null)
+            return left is null && right is null;
+
+        return PathsEqual(left, right);
+    }
+
     private static bool LooksLikeFilePath(string value)
     {
         if (Path.IsPathRooted(value))
@@ -241,9 +358,21 @@ internal static class ClientTransportResolver
     private sealed class Resolution
     {
         public required CSharpDbTransport Transport { get; init; }
-        public string? DatabasePath { get; init; }
+        public DirectTarget? DirectTarget { get; init; }
         public Uri? EndpointUri { get; init; }
         public DatabaseOptions? DirectDatabaseOptions { get; init; }
         public HybridDatabaseOptions? HybridDatabaseOptions { get; init; }
+    }
+
+    private enum DirectTargetKind
+    {
+        File,
+        PrivateMemory,
+        NamedSharedMemory,
+    }
+
+    private sealed record DirectTarget(DirectTargetKind Kind, string Key, string? LoadFromPath)
+    {
+        public string DisplayName => Key;
     }
 }

@@ -32,4 +32,6 @@ public sealed class BTreeIndexCursor : IIndexCursor
 
         return await _cursor.MoveNextAsync(ct);
     }
+
+    public ValueTask DisposeAsync() => _cursor.DisposeAsync();
 }

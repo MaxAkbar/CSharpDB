@@ -30,6 +30,7 @@ public sealed class Collection<
 {
     private const int MaxProbeDistance = 128;
     private const string CollectionIndexPrefix = "_cidx_";
+    private const int DefaultImplicitConflictRetries = 10;
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
@@ -774,12 +775,28 @@ public sealed class Collection<
             {
                 if (binding.UsesTextKey)
                 {
+                    if (!binding.IsMultiValueArray)
+                    {
+                        if (binding.TryGetSingleTextValueFromDirectPayload(payload.Span, out string? textValue))
+                            await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                        continue;
+                    }
+
                     var textValues = new HashSet<string>(StringComparer.Ordinal);
                     if (!binding.TryCollectTextValuesFromDirectPayload(payload.Span, textValues))
                         continue;
 
                     foreach (string textValue in textValues)
                         await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                    continue;
+                }
+
+                if (!binding.IsMultiValueArray)
+                {
+                    if (binding.TryBuildKeyFromDirectPayload(payload.Span, out long indexKey))
+                        await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
 
                     continue;
                 }
@@ -807,12 +824,28 @@ public sealed class Collection<
     {
         if (binding.UsesTextKey)
         {
+            if (!binding.IsMultiValueArray)
+            {
+                if (binding.TryGetSingleTextValueFromDocument(document, out string? textValue))
+                    await InsertTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                return;
+            }
+
             var textValues = new HashSet<string>(StringComparer.Ordinal);
             if (!binding.TryCollectTextValuesFromDocument(document, textValues))
                 return;
 
             foreach (string textValue in textValues)
                 await InsertTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
+        if (!binding.IsMultiValueArray)
+        {
+            if (binding.TryBuildKeyFromDocument(document, out long indexKey))
+                await InsertRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
 
             return;
         }
@@ -833,12 +866,28 @@ public sealed class Collection<
     {
         if (binding.UsesTextKey)
         {
+            if (!binding.IsMultiValueArray)
+            {
+                if (binding.TryGetSingleTextValueFromDocument(document, out string? textValue))
+                    await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+                return;
+            }
+
             var textValues = new HashSet<string>(StringComparer.Ordinal);
             if (!binding.TryCollectTextValuesFromDocument(document, textValues))
                 return;
 
             foreach (string textValue in textValues)
                 await DeleteTextRowIdAsync(binding.IndexStore, textValue, rowId, ct);
+
+            return;
+        }
+
+        if (!binding.IsMultiValueArray)
+        {
+            if (binding.TryBuildKeyFromDocument(document, out long indexKey))
+                await DeleteRowIdAsync(binding.IndexStore, indexKey, rowId, ct);
 
             return;
         }
@@ -1074,22 +1123,23 @@ public sealed class Collection<
     {
         RefreshIndexesIfSchemaChanged();
 
-        CollectionIndexBinding<T> binding = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding)
+        bool hasAttachedIndex = TryGetOrAttachIndexBinding(fieldPath, out var attachedBinding);
+        CollectionIndexBinding<T> binding = hasAttachedIndex
             ? attachedBinding
             : field is not null
                 ? CollectionIndexBinding<T>.CreateTransient(field)
                 : CreateTransientBinding(fieldPath);
         var comparer = EqualityComparer<TField>.Default;
+        bool hasExpectedComparableValue = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
 
-        if (!TryGetOrAttachIndexBinding(fieldPath, out attachedBinding) ||
+        if (!hasAttachedIndex ||
             !attachedBinding.TryBuildKeyFromValue(value, out long indexKey))
         {
-            bool canCompareDirectPayload = CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue);
             var cursor = _tree.CreateCursor();
             while (await cursor.MoveNextAsync(ct))
             {
                 ReadOnlySpan<byte> fallbackPayload = cursor.CurrentValue.Span;
-                if (canCompareDirectPayload && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
+                if (hasExpectedComparableValue && CollectionPayloadCodec.IsDirectPayload(fallbackPayload))
                 {
                     if (!binding.TryDirectPayloadValueEquals(fallbackPayload, expectedValue))
                         continue;
@@ -1114,8 +1164,7 @@ public sealed class Collection<
         ReadOnlyMemory<byte> rowIdPayload = payload;
         if (attachedBinding.UsesTextKey)
         {
-            if (!CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) ||
-                expectedValue.Type != DbType.Text)
+            if (!hasExpectedComparableValue || expectedValue.Type != DbType.Text)
             {
                 yield break;
             }
@@ -1143,18 +1192,16 @@ public sealed class Collection<
 
             if (attachedBinding.UsesIntegerKey)
             {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                var (matchedKey, matchedDocument) = _codec.Decode(documentMemory.Span);
                 yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
                 continue;
             }
 
-            if (CollectionIndexBinding<T>.TryConvertComparableValue(value, out var expectedValue) &&
+            if (hasExpectedComparableValue &&
                 CollectionPayloadCodec.IsDirectPayload(documentMemory.Span) &&
                 binding.TryDirectPayloadValueEquals(documentMemory.Span, expectedValue))
             {
-                string matchedKey = _codec.DecodeKey(documentMemory.Span);
-                T matchedDocument = _codec.DecodeDocument(documentMemory.Span);
+                var (matchedKey, matchedDocument) = _codec.Decode(documentMemory.Span);
                 yield return new KeyValuePair<string, T>(matchedKey, matchedDocument);
                 continue;
             }
@@ -1394,6 +1441,22 @@ public sealed class Collection<
             return;
         }
 
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await ExecuteImplicitAutoCommitCoreAsync(action, ct);
+                return;
+            }
+            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+            {
+                await DelayImplicitConflictRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    private async ValueTask ExecuteImplicitAutoCommitCoreAsync(Func<ValueTask> action, CancellationToken ct)
+    {
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
@@ -1408,11 +1471,6 @@ public sealed class Collection<
             await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
-        finally
-        {
-            writeScope?.Dispose();
-        }
-
         try
         {
             await commit.WaitAsync();
@@ -1422,7 +1480,20 @@ public sealed class Collection<
             await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
+        finally
+        {
+            writeScope?.Dispose();
+        }
 
         await _afterImplicitCommitAsync(ct);
+    }
+
+    private static async ValueTask DelayImplicitConflictRetryAsync(int attempt, CancellationToken ct)
+    {
+        double delayMs = Math.Min(20, 0.25 * Math.Pow(2, Math.Max(0, attempt)));
+        double jitterMs = delayMs <= 0 ? 0 : Random.Shared.NextDouble() * delayMs;
+        TimeSpan delay = TimeSpan.FromMilliseconds(jitterMs);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, ct);
     }
 }

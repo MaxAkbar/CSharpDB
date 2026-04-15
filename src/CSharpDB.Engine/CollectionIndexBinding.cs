@@ -218,6 +218,21 @@ internal sealed class CollectionIndexBinding<
     internal bool TryBuildKeyFromDocument(T document, out long indexKey)
         => TryBuildKey(_fieldAccessor(document), out indexKey);
 
+    internal bool TryGetSingleTextValueFromDocument(
+        T document,
+        [NotNullWhen(true)] out string? textValue)
+    {
+        textValue = null;
+        if (!UsesTextKey || IsMultiValueArray)
+            return false;
+
+        if (!TryConvertToDbValue(_fieldAccessor(document), out var dbValue) || dbValue.Type != DbType.Text)
+            return false;
+
+        textValue = NormalizeTextForIndex(dbValue.AsText);
+        return true;
+    }
+
     internal bool TryBuildKeyFromValue(object? value, out long indexKey)
         => TryBuildKey(value, out indexKey);
 
@@ -246,6 +261,21 @@ internal sealed class CollectionIndexBinding<
             return false;
 
         return TryBuildKey(DbValue.FromText(textValue), out indexKey);
+    }
+
+    internal bool TryGetSingleTextValueFromDirectPayload(
+        ReadOnlySpan<byte> payload,
+        [NotNullWhen(true)] out string? textValue)
+    {
+        textValue = null;
+        if (!UsesTextKey || IsMultiValueArray)
+            return false;
+
+        if (!_payloadAccessor.TryReadString(payload, out string? rawText) || rawText == null)
+            return false;
+
+        textValue = NormalizeTextForIndex(rawText);
+        return true;
     }
 
     internal bool TryCollectKeysFromDocument(T document, HashSet<long> indexKeys)
@@ -1066,7 +1096,17 @@ internal sealed class CollectionIndexBinding<
     {
         internal static readonly NoopIndexStore Instance = new();
 
+        public string LogicalName => "noop";
+
         public uint RootPageId => 0;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
             => ValueTask.FromResult<byte[]?>(null);

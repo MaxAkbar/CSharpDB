@@ -5,8 +5,12 @@ namespace CSharpDB.Storage.Indexing;
 /// </summary>
 public interface IIndexStore
 {
+    string LogicalName { get; }
+
     uint RootPageId { get; }
 
+    void RecordPointRead(long key);
+    void RecordRangeRead(IndexScanRange range);
     ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default);
     ValueTask<long?> FindMaxKeyAsync(IndexScanRange range, CancellationToken ct = default);
     ValueTask InsertAsync(long key, ReadOnlyMemory<byte> payload, CancellationToken ct = default);

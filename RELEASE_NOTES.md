@@ -1,34 +1,38 @@
 # What's New
 
-## v3.0.0
+## v3.1.0
 
-### Generated Collections and Trim-Safe Models
+This release carries forward the full `version3.1.0` branch from the April 8, 2026
+phase-1 multi-writer base through the current head, combining substantial
+durable-write/runtime work with new samples, tutorials, and refreshed docs.
 
-- Added source-generated collection model support through the new `CSharpDB.Generators` package so typed collections can use generated metadata instead of reflection.
-- Added `GetGeneratedCollectionAsync<T>()` and `GeneratedCollection<T>` for trim-safe and NativeAOT-friendly collection access when a generated or manually registered collection model is available.
-- Added collection model attributes, runtime model registration, generated field metadata, and expanded generated collection coverage across the engine and tests.
-- Added a generated collections sample plus a trim-smoke validation project to prove the end-to-end generated-model path.
+### Multi-Writer and Durable Write Progress
 
-### Collection Runtime and Performance
+- Built out the post-phase-1 multi-writer engine work from the initial `WriteTransaction` base, including stronger explicit transaction handling, richer logical conflict tracking, range and disjunctive predicate conflict validation, and broader concurrency coverage.
+- Added phase-3 snapshot checkpoint retention tuning and phase-4 shared auto-commit fan-in work so overlapping durable writes can build a real pending commit queue in more shapes than the original single-writer path allowed.
+- Added the opt-in `ImplicitInsertExecutionMode = ConcurrentWriteTransactions` path for shared auto-commit inserts, plus focused insert fan-in diagnostics, split-aware conflict recovery, and right-edge/leaf rebase hardening around hot insert workloads.
+- Added commit-path and insert-fan-in diagnostics so durable-write behavior is easier to measure, explain, and regress-test.
 
-- Recovered collection write-path performance after merging `main` by separating collection write probes from the read-side B-tree routing-cache path and reusing traversal scratch during insert and replace operations.
-- Buffered collection row-count and catalog mutation bookkeeping inside explicit transactions so collection counts remain correct without paying row-by-row catalog churn during transactional write batches.
-- Added regression coverage for generated collection behavior, collection model generation, and explicit-transaction collection count visibility.
+### Insert, Collection, and Query Performance
 
-### Mainline Engine and CLI Updates
+- Optimized insert commit allocation paths, single-insert hot-path work, and related WAL/commit plumbing to reduce fixed per-commit cost on hot ingest paths.
+- Improved collection secondary-index maintenance and related collection/runtime bookkeeping.
+- Added a fast path for reader-session `COUNT(*)` behavior.
+- Refreshed focused benchmarks, baselines, and benchmark documentation around concurrent durable writes, insert fan-in, checkpoint retention, and storage-mode behavior.
 
-- Merged the latest `main` branch engine work into `version3.0.0`, including planner-statistics improvements, durable-write batching infrastructure, covered composite-index fast-path recovery, and related stabilization work.
-- Pulled in the current CLI improvements, including the refactored help and info command organization and the newer `Spectre.Console`-based shell presentation.
+### Transport and Hosting
 
-### Documentation and Samples
+- Routed the ADO.NET provider through `CSharpDB.Client`, adding the supporting remote session and connection plumbing needed for the newer transport model.
+- Defaulted the daemon host to hybrid multi-writer mode and updated daemon configuration/docs to match the current runtime recommendations.
 
-- Added the generated collections sample and supporting generator documentation.
-- Added the collection-versus-SQL boundary note to capture the recommended future refactor direction without splitting the engine core.
-- Updated the roadmap to reflect generated collections work.
+### Samples, Tutorials, and Docs
+
+- Added the Atlas Platform Showcase sample with schema, workbook queries, procedures, and a runnable sample app.
+- Added the CSV bulk import sample and tutorial showing the current best-practice relational bulk-ingest path on the public API: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, and post-load index creation.
+- Added the multi-writer follow-up plan document and linked it from the roadmap.
+- Refreshed the README, architecture/configuration/FAQ/internals docs, ecosystem docs, benchmark docs, and website pages to reflect the current multi-writer, transport, and tooling story.
 
 ### Validation
 
-- Validated with `dotnet build CSharpDB.slnx`.
-- Validated with `dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj --no-build` (`35` passed).
-- Validated with `dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --no-build --filter "(FullyQualifiedName~GeneratedCollectionModelTests|FullyQualifiedName~CollectionModelGeneratorTests|FullyQualifiedName~CollectionTests|FullyQualifiedName~CollectionIndexTests)"` (`95` passed).
-- Validated with `dotnet build tests/CSharpDB.GeneratedCollections.TrimSmoke/CSharpDB.GeneratedCollections.TrimSmoke.csproj --no-restore -m:1 -p:UseSharedCompilation=false`.
+- Validated the CSV bulk import sample with `dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj -- --database-path artifacts/sample-verification/csv-import-demo.db`.
+- Validated sample smoke coverage with `dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~SampleSmokeTests" -nologo`.

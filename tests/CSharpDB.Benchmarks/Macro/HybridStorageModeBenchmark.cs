@@ -10,6 +10,7 @@ public static class HybridStorageModeBenchmark
     private const int BatchSize = 100;
     private const int ConcurrentReaderCount = 8;
     private const int ReusedSessionBurstReads = 32;
+    private const int HighThroughputLatencySampleEvery = 128;
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
 
@@ -197,9 +198,10 @@ public static class HybridStorageModeBenchmark
         await using var context = await BenchmarkContext.CreateSqlReadAsync(mode);
         var db = context.Database;
         var histograms = new LatencyHistogram[ConcurrentReaderCount];
+        int latencySampleEvery = reuseSessionBurstReads ? HighThroughputLatencySampleEvery : 1;
 
         for (int i = 0; i < ConcurrentReaderCount; i++)
-            histograms[i] = new LatencyHistogram();
+            histograms[i] = new LatencyHistogram(latencySampleEvery);
 
         using var cts = new CancellationTokenSource(MeasuredDuration);
         var readerTasks = new Task[ConcurrentReaderCount];
@@ -231,6 +233,9 @@ public static class HybridStorageModeBenchmark
             MaxMs = histograms.Max(static histogram => histogram.Max),
             MeanMs = histograms.Average(static histogram => histogram.Mean),
             StdDevMs = histograms.Average(static histogram => histogram.StdDev),
+            ExtraInfo = reuseSessionBurstReads
+                ? $"session-mode=reused reader session; burst-reads={ReusedSessionBurstReads}; readers={ConcurrentReaderCount}; latency-sampling=1/{latencySampleEvery}"
+                : $"session-mode=per-query reader session; readers={ConcurrentReaderCount}",
         };
     }
 
@@ -262,7 +267,7 @@ public static class HybridStorageModeBenchmark
             using var reader = db.CreateReaderSession();
             for (int i = 0; i < ReusedSessionBurstReads && !ct.IsCancellationRequested; i++)
             {
-                var sw = Stopwatch.StartNew();
+                Stopwatch? sw = histogram.ShouldSampleNext() ? Stopwatch.StartNew() : null;
                 try
                 {
                     await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM bench;", ct);
@@ -273,8 +278,15 @@ public static class HybridStorageModeBenchmark
                     return;
                 }
 
-                sw.Stop();
-                histogram.Record(sw.Elapsed.TotalMilliseconds);
+                if (sw is null)
+                {
+                    histogram.RecordUnsampled();
+                }
+                else
+                {
+                    sw.Stop();
+                    histogram.Record(sw.Elapsed.TotalMilliseconds);
+                }
             }
         }
     }

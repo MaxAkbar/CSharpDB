@@ -3,12 +3,17 @@ using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
+using CSharpDB.Daemon.Configuration;
+using CSharpDB.Engine;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using CSharpDB.Storage.Checkpointing;
+using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Daemon.Tests;
 
@@ -30,6 +35,101 @@ public sealed class GrpcClientTests : IAsyncLifetime
         await _factory.DisposeAsync();
         TryDelete(_dbPath);
         TryDelete(_dbPath + ".wal");
+    }
+
+    [Fact]
+    public void Daemon_DefaultHostDatabaseOptions_EnableHybridConcurrentInsertAndWritePreset()
+    {
+        DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(_factory);
+        CSharpDbClientOptions clientOptions = GetResolvedClientOptions(_factory);
+
+        Assert.Equal(DaemonHostOpenMode.HybridIncrementalDurable, hostOptions.OpenMode);
+        Assert.Equal(ImplicitInsertExecutionMode.ConcurrentWriteTransactions, hostOptions.ImplicitInsertExecutionMode);
+        Assert.True(hostOptions.UseWriteOptimizedPreset);
+        Assert.Empty(hostOptions.HotTableNames);
+        Assert.Empty(hostOptions.HotCollectionNames);
+
+        Assert.Equal(CSharpDbTransport.Direct, clientOptions.Transport);
+        Assert.NotNull(clientOptions.DirectDatabaseOptions);
+        Assert.NotNull(clientOptions.HybridDatabaseOptions);
+
+        DatabaseOptions directOptions = clientOptions.DirectDatabaseOptions!;
+        Assert.Equal(ImplicitInsertExecutionMode.ConcurrentWriteTransactions, directOptions.ImplicitInsertExecutionMode);
+
+        PagerOptions pagerOptions = directOptions.StorageEngineOptions.PagerOptions;
+        var checkpointPolicy = Assert.IsType<FrameCountCheckpointPolicy>(pagerOptions.CheckpointPolicy);
+        Assert.Equal(4096, checkpointPolicy.Threshold);
+        Assert.Equal(AutoCheckpointExecutionMode.Background, pagerOptions.AutoCheckpointExecutionMode);
+
+        HybridDatabaseOptions hybridOptions = clientOptions.HybridDatabaseOptions!;
+        Assert.Equal(HybridPersistenceMode.IncrementalDurable, hybridOptions.PersistenceMode);
+        Assert.Empty(hybridOptions.HotTableNames);
+        Assert.Empty(hybridOptions.HotCollectionNames);
+    }
+
+    [Fact]
+    public void Daemon_HostDatabaseOpenModeDirect_DisablesHybridOpen()
+    {
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:HostDatabase:OpenMode"] = "Direct",
+            });
+
+        DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(factory);
+        CSharpDbClientOptions clientOptions = GetResolvedClientOptions(factory);
+
+        Assert.Equal(DaemonHostOpenMode.Direct, hostOptions.OpenMode);
+        Assert.Equal(CSharpDbTransport.Direct, clientOptions.Transport);
+        Assert.NotNull(clientOptions.DirectDatabaseOptions);
+        Assert.Null(clientOptions.HybridDatabaseOptions);
+    }
+
+    [Fact]
+    public void Daemon_ImplicitInsertExecutionModeOverride_IsRespected()
+    {
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:HostDatabase:ImplicitInsertExecutionMode"] = "Serialized",
+            });
+
+        DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(factory);
+        CSharpDbClientOptions clientOptions = GetResolvedClientOptions(factory);
+
+        Assert.Equal(ImplicitInsertExecutionMode.Serialized, hostOptions.ImplicitInsertExecutionMode);
+        Assert.NotNull(clientOptions.DirectDatabaseOptions);
+        Assert.Equal(
+            ImplicitInsertExecutionMode.Serialized,
+            clientOptions.DirectDatabaseOptions!.ImplicitInsertExecutionMode);
+    }
+
+    [Fact]
+    public async Task Daemon_HybridHotSetOverrides_FlowIntoClientOptions()
+    {
+        await SeedHybridHotSetDatabaseAsync(_dbPath);
+
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:HostDatabase:HotTableNames:0"] = "users",
+                ["CSharpDB:HostDatabase:HotTableNames:1"] = "sessions",
+                ["CSharpDB:HostDatabase:HotCollectionNames:0"] = "session_cache",
+            });
+
+        DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(factory);
+        CSharpDbClientOptions clientOptions = GetResolvedClientOptions(factory);
+
+        Assert.Equal(["users", "sessions"], hostOptions.HotTableNames);
+        Assert.Equal(["session_cache"], hostOptions.HotCollectionNames);
+
+        HybridDatabaseOptions hybridOptions = Assert.IsType<HybridDatabaseOptions>(clientOptions.HybridDatabaseOptions);
+        Assert.Equal(HybridPersistenceMode.IncrementalDurable, hybridOptions.PersistenceMode);
+        Assert.Equal(["users", "sessions"], hybridOptions.HotTableNames);
+        Assert.Equal(["session_cache"], hybridOptions.HotCollectionNames);
     }
 
     [Fact]
@@ -429,6 +529,30 @@ public sealed class GrpcClientTests : IAsyncLifetime
         };
     }
 
+    private static DaemonHostDatabaseOptions GetResolvedHostDatabaseOptions(TestDaemonFactory factory)
+        => factory.Services.GetRequiredService<DaemonHostDatabaseOptions>();
+
+    private static CSharpDbClientOptions GetResolvedClientOptions(TestDaemonFactory factory)
+        => factory.Services.GetRequiredService<CSharpDbClientOptions>();
+
+    private static async Task SeedHybridHotSetDatabaseAsync(string dbPath)
+    {
+        await using var db = await Database.OpenAsync(dbPath, TestContext.Current.CancellationToken);
+        await db.ExecuteAsync(
+            "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT);",
+            TestContext.Current.CancellationToken);
+        await db.ExecuteAsync(
+            "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, token TEXT);",
+            TestContext.Current.CancellationToken);
+
+        var collection = await db.GetCollectionAsync<JsonElement>(
+            "session_cache",
+            TestContext.Current.CancellationToken);
+
+        using JsonDocument document = JsonDocument.Parse("""{"seed": true}""");
+        await collection.PutAsync("seed", document.RootElement.Clone(), TestContext.Current.CancellationToken);
+    }
+
     private sealed class TestDaemonFactory(
         string dbPath,
         IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
@@ -461,7 +585,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             if (File.Exists(path))
                 File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Ignore transient file locks in test cleanup.
         }

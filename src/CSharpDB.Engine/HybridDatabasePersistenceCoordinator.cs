@@ -19,6 +19,7 @@ internal sealed class HybridDatabasePersistenceCoordinator : IDisposable
     public async ValueTask PersistAsync(
         Database database,
         HybridPersistenceTriggers trigger,
+        bool writeScopeHeld = false,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -29,7 +30,7 @@ internal sealed class HybridDatabasePersistenceCoordinator : IDisposable
         await _gate.WaitAsync(ct);
         try
         {
-            await database.SaveToFileAsync(_backingFilePath, ct);
+            await database.SaveToFileAsync(_backingFilePath, writeScopeHeld, ct);
         }
         finally
         {

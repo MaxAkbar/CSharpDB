@@ -10,6 +10,8 @@ internal sealed class DirectDatabaseSession : ICSharpDbSession
     private Database? _database;
     private readonly Func<Database, ValueTask>? _releaseAsync;
 
+    public bool SupportsStructuredExecution => true;
+
     internal DirectDatabaseSession(Database database, Func<Database, ValueTask>? releaseAsync = null)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));

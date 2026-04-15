@@ -1,0 +1,116 @@
+[
+  {
+    "name": "RefreshPlatformStats",
+    "bodySql": "ANALYZE;\nSELECT table_name, row_count, row_count_is_exact, has_stale_columns\nFROM sys.table_stats\nORDER BY table_name;",
+    "parameters": [],
+    "description": "Refreshes planner statistics for the sample and returns persisted table-level stats.",
+    "isEnabled": true
+  },
+  {
+    "name": "GetCustomer360",
+    "bodySql": "SELECT *\nFROM customer_360\nWHERE customer_id = @customerId;\nSELECT order_id, ordered_date, order_status, channel, total_amount, line_count\nFROM order_revenue_rollup\nWHERE customer_id = @customerId\nORDER BY ordered_date DESC, order_id DESC;\nSELECT ticket_id, category, priority, ticket_status, subject, assigned_agent, severity_score\nFROM support_queue\nWHERE customer_id = @customerId\nORDER BY severity_score DESC, ticket_id;",
+    "parameters": [
+      {
+        "name": "customerId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Customer identifier."
+      }
+    ],
+    "description": "Returns the customer summary, order rollup, and current support queue rows for one account.",
+    "isEnabled": true
+  },
+  {
+    "name": "EscalateSupportTicket",
+    "bodySql": "UPDATE support_tickets\nSET priority = @newPriority,\n    status = @newStatus,\n    assigned_agent_id = @assignedAgentId,\n    last_updated_date = @changedDate\nWHERE id = @ticketId;\nINSERT INTO ticket_comments (ticket_id, author_name, comment_date, body)\nVALUES (@ticketId, @changedBy, @changedDate, @note);\nSELECT *\nFROM support_queue\nWHERE ticket_id = @ticketId;\nSELECT id, entity_type, entity_id, event_type, event_date, actor_name, details\nFROM platform_events\nWHERE entity_type = 'ticket' AND entity_id = @ticketId\nORDER BY id DESC\nLIMIT 10;",
+    "parameters": [
+      {
+        "name": "ticketId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Ticket identifier."
+      },
+      {
+        "name": "newPriority",
+        "type": "TEXT",
+        "required": true,
+        "description": "Updated priority."
+      },
+      {
+        "name": "newStatus",
+        "type": "TEXT",
+        "required": true,
+        "description": "Updated workflow status."
+      },
+      {
+        "name": "assignedAgentId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Assigned support agent."
+      },
+      {
+        "name": "changedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Ops Console",
+        "description": "Actor recorded in the comment trail."
+      },
+      {
+        "name": "changedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-08",
+        "description": "Change date (YYYY-MM-DD)."
+      },
+      {
+        "name": "note",
+        "type": "TEXT",
+        "required": false,
+        "default": "Ticket escalated from sample procedure.",
+        "description": "Internal note appended to the ticket."
+      }
+    ],
+    "description": "Escalates a ticket, appends a note, and returns the refreshed queue row plus recent platform events.",
+    "isEnabled": true
+  },
+  {
+    "name": "ReceiveInventory",
+    "bodySql": "UPDATE inventory_positions\nSET on_hand_qty = on_hand_qty + @quantity,\n    last_received_date = @receivedDate\nWHERE warehouse_id = @warehouseId AND product_id = @productId;\nINSERT INTO platform_events (entity_type, entity_id, event_type, event_date, actor_name, details)\nSELECT 'inventory_position', id, 'inventory_received', @receivedDate, 'warehouse', @referenceCode\nFROM inventory_positions\nWHERE warehouse_id = @warehouseId AND product_id = @productId;\nSELECT *\nFROM inventory_watch\nWHERE warehouse_id = @warehouseId AND product_id = @productId;",
+    "parameters": [
+      {
+        "name": "warehouseId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Warehouse identifier."
+      },
+      {
+        "name": "productId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Product identifier."
+      },
+      {
+        "name": "quantity",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Quantity received."
+      },
+      {
+        "name": "receivedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-08",
+        "description": "Receipt date (YYYY-MM-DD)."
+      },
+      {
+        "name": "referenceCode",
+        "type": "TEXT",
+        "required": false,
+        "default": "PO-NEW",
+        "description": "Receiving reference."
+      }
+    ],
+    "description": "Applies an inventory receipt and returns the refreshed warehouse-product position.",
+    "isEnabled": true
+  }
+]

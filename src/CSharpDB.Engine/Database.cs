@@ -1,12 +1,15 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Collections.Concurrent;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
 using CSharpDB.Storage.BTrees;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
+using CSharpDB.Storage.Transactions;
 using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Engine;
@@ -17,17 +20,32 @@ namespace CSharpDB.Engine;
 public sealed class Database : IAsyncDisposable
 {
     private const int DefaultStatementCacheCapacity = 512;
+    private const int DefaultImplicitConflictRetries = 10;
+    private static readonly WriteTransactionOptions ImplicitAutoCommitWriteTransactionOptions = new()
+    {
+        MaxRetries = DefaultImplicitConflictRetries,
+        InitialBackoff = TimeSpan.FromMilliseconds(0.25),
+        MaxBackoff = TimeSpan.FromMilliseconds(20),
+    };
 
     private readonly Pager _pager;
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly ISchemaSerializer _schemaSerializer;
+    private readonly IIndexProvider _indexProvider;
+    private readonly ICatalogStore _catalogStore;
+    private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sharedNextRowIdGate = new();
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
+    private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _observedSchemaVersion;
+    private ImplicitInsertExecutionMode _implicitInsertExecutionMode;
     private bool _inTransaction;
 
     /// <summary>
@@ -38,6 +56,15 @@ public sealed class Database : IAsyncDisposable
     {
         get => _planner.PreferSyncPointLookups;
         set => _planner.PreferSyncPointLookups = value;
+    }
+
+    /// <summary>
+    /// Controls how shared auto-commit INSERT statements execute on this database handle.
+    /// </summary>
+    public ImplicitInsertExecutionMode ImplicitInsertExecutionMode
+    {
+        get => _implicitInsertExecutionMode;
+        set => _implicitInsertExecutionMode = value;
     }
 
     public int ActiveReaderCount => _pager.ActiveReaderCount;
@@ -58,16 +85,347 @@ public sealed class Database : IAsyncDisposable
         Pager pager,
         SchemaCatalog catalog,
         IRecordSerializer recordSerializer,
+        ISchemaSerializer schemaSerializer,
+        IIndexProvider indexProvider,
+        ICatalogStore catalogStore,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
+        ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
         _catalog = catalog;
         _recordSerializer = recordSerializer;
+        _schemaSerializer = schemaSerializer;
+        _indexProvider = indexProvider;
+        _catalogStore = catalogStore;
+        _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
+        _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
-        _planner = new QueryPlanner(pager, catalog, _recordSerializer);
+        _planner = new QueryPlanner(
+            pager,
+            catalog,
+            _recordSerializer,
+            nextRowIdHintProvider: TryGetSharedNextRowIdHint,
+            nextRowIdReservationProvider: ReserveSharedNextRowId,
+            nextRowIdObservationProvider: ObserveSharedNextRowId);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
+        RefreshSharedNextRowIdHintsFromCatalog();
+    }
+
+    /// <summary>
+    /// Begin an explicit multi-writer transaction with its own isolated catalog and planner context.
+    /// </summary>
+    public async ValueTask<WriteTransaction> BeginWriteTransactionAsync(CancellationToken ct = default)
+    {
+        if (_inTransaction)
+            throw new InvalidOperationException("Cannot start a multi-writer transaction while a legacy explicit transaction is active.");
+
+        PagerWriteTransaction storageTransaction = await _pager.BeginWriteTransactionAsync(ct);
+        try
+        {
+            using var binding = storageTransaction.Bind();
+            var transactionCatalog = await SchemaCatalog.CreateAsync(
+                _pager,
+                _schemaSerializer,
+                _indexProvider,
+                _catalogStore,
+                _advisoryStatisticsPersistenceMode,
+                ct);
+            var transactionPlanner = new QueryPlanner(
+                _pager,
+                transactionCatalog,
+                _recordSerializer,
+                nextRowIdHintProvider: TryGetSharedNextRowIdHint,
+                nextRowIdReservationProvider: ReserveSharedNextRowId,
+                nextRowIdObservationProvider: ObserveSharedNextRowId,
+                useTransientNextRowIdHints: true)
+            {
+                PreferSyncPointLookups = PreferSyncPointLookups,
+            };
+
+            return new WriteTransaction(
+                this,
+                storageTransaction,
+                transactionCatalog,
+                transactionPlanner,
+                transactionCatalog.SchemaVersion);
+        }
+        catch
+        {
+            await storageTransaction.DisposeAsync();
+            throw;
+        }
+    }
+
+    private long? TryGetSharedNextRowIdHint(string tableName)
+    {
+        return _sharedNextRowIdHints.TryGetValue(tableName, out long nextRowId) && nextRowId > 0
+            ? nextRowId
+            : null;
+    }
+
+    private void RefreshSharedNextRowIdHintsFromCatalog()
+    {
+        lock (_sharedNextRowIdGate)
+        {
+            var preservedHints = _sharedNextRowIdHints.Count == 0
+                ? null
+                : _sharedNextRowIdHints.ToArray();
+
+            _sharedNextRowIdHints.Clear();
+
+            foreach (string tableName in _catalog.GetTableNames())
+            {
+                long nextRowId = _catalog.GetTable(tableName)?.NextRowId ?? 0;
+                if (nextRowId > 0)
+                    _sharedNextRowIdHints[tableName] = nextRowId;
+            }
+
+            if (preservedHints is null)
+                return;
+
+            foreach ((string tableName, long nextRowId) in preservedHints)
+            {
+                if (nextRowId <= 0 || _catalog.GetTable(tableName) is null)
+                    continue;
+
+                _sharedNextRowIdHints.AddOrUpdate(
+                    tableName,
+                    nextRowId,
+                    (_, existing) => Math.Max(existing, nextRowId));
+            }
+        }
+    }
+
+    private void ApplyCommittedNextRowIdHints(IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds)
+    {
+        lock (_sharedNextRowIdGate)
+        {
+            foreach ((string tableName, long nextRowId) in committedNextRowIds)
+            {
+                if (nextRowId <= 0)
+                    continue;
+
+                _sharedNextRowIdHints.AddOrUpdate(
+                    tableName,
+                    nextRowId,
+                    (_, existing) => Math.Max(existing, nextRowId));
+            }
+        }
+    }
+
+    private long ReserveSharedNextRowId(string tableName, long minimumNextRowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        long normalizedMinimum = minimumNextRowId > 0 ? minimumNextRowId : 1;
+        lock (_sharedNextRowIdGate)
+        {
+            long currentNextRowId = _sharedNextRowIdHints.TryGetValue(tableName, out long existing)
+                ? Math.Max(existing, normalizedMinimum)
+                : normalizedMinimum;
+
+            _sharedNextRowIdHints[tableName] = checked(currentNextRowId + 1);
+            return currentNextRowId;
+        }
+    }
+
+    private void ObserveSharedNextRowId(string tableName, long nextRowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        if (nextRowId <= 0)
+            return;
+
+        lock (_sharedNextRowIdGate)
+        {
+            _sharedNextRowIdHints.AddOrUpdate(
+                tableName,
+                nextRowId,
+                (_, existing) => Math.Max(existing, nextRowId));
+        }
+    }
+
+    /// <summary>
+    /// Run a multi-writer transaction with automatic retry on transaction conflicts.
+    /// </summary>
+    public async ValueTask RunWriteTransactionAsync(
+        Func<WriteTransaction, CancellationToken, ValueTask> action,
+        WriteTransactionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        options ??= new WriteTransactionOptions();
+
+        for (int attempt = 0; ; attempt++)
+        {
+            await using WriteTransaction transaction = await BeginWriteTransactionAsync(ct);
+            try
+            {
+                await action(transaction, ct);
+                await transaction.CommitAsync(ct);
+                return;
+            }
+            catch (CSharpDbConflictException) when (attempt < options.MaxRetries)
+            {
+                await options.DelayBeforeRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Run a multi-writer transaction with automatic retry on transaction conflicts.
+    /// </summary>
+    public async ValueTask<TResult> RunWriteTransactionAsync<TResult>(
+        Func<WriteTransaction, CancellationToken, ValueTask<TResult>> action,
+        WriteTransactionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        options ??= new WriteTransactionOptions();
+
+        for (int attempt = 0; ; attempt++)
+        {
+            await using WriteTransaction transaction = await BeginWriteTransactionAsync(ct);
+            try
+            {
+                TResult result = await action(transaction, ct);
+                await transaction.CommitAsync(ct);
+                return result;
+            }
+            catch (CSharpDbConflictException) when (attempt < options.MaxRetries)
+            {
+                await options.DelayBeforeRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    internal async ValueTask OnExternalWriteTransactionCommittedAsync(
+        bool reloadSharedCatalog,
+        bool schemaChanged,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedTableRowCountDeltas,
+        IReadOnlyCollection<TableStatistics> committedTableStatistics,
+        IReadOnlyCollection<ColumnStatistics> committedColumnStatistics,
+        CancellationToken ct)
+    {
+        bool applyAdvisoryStats = committedTableStatistics.Count > 0 || committedColumnStatistics.Count > 0;
+        bool applyTableMetadata = committedNextRowIds.Count > 0;
+        bool applyTableRowCountDeltas = committedTableRowCountDeltas.Count > 0;
+
+        if (reloadSharedCatalog || applyTableMetadata || applyAdvisoryStats || applyTableRowCountDeltas)
+        {
+            await _sharedStateGate.WaitAsync(ct);
+            try
+            {
+                TableStatistics[] preservedDirtyTableStatistics = [];
+                ColumnStatistics[] preservedDirtyColumnStatistics = [];
+                KeyValuePair<string, long>[] preservedTableRowCountDeltas = [];
+
+                if (reloadSharedCatalog)
+                {
+                    preservedDirtyTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
+                    preservedDirtyColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();
+                    preservedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
+
+                    await _catalog.ReloadAsync(ct);
+                    _collectionCache.Clear();
+                    if (schemaChanged)
+                        _statementCache.Clear();
+
+                    _observedSchemaVersion = _catalog.SchemaVersion;
+                    RefreshSharedNextRowIdHintsFromCatalog();
+
+                    if (preservedDirtyTableStatistics.Length > 0 || preservedDirtyColumnStatistics.Length > 0)
+                    {
+                        _catalog.ApplyCommittedAdvisoryStatisticsSnapshot(
+                            preservedDirtyTableStatistics,
+                            preservedDirtyColumnStatistics,
+                            markDirty: true);
+                    }
+
+                    if (preservedTableRowCountDeltas.Length > 0)
+                        _catalog.ApplyCommittedTableRowCountDeltas(preservedTableRowCountDeltas);
+                }
+
+                if (applyTableMetadata)
+                {
+                    _catalog.ApplyCommittedTableMetadataSnapshot(committedNextRowIds);
+                    ApplyCommittedNextRowIdHints(committedNextRowIds);
+                }
+
+                if (applyAdvisoryStats)
+                {
+                    IReadOnlyCollection<TableStatistics> mergedTableStatistics =
+                        MergeCommittedTableStatistics(committedTableStatistics, committedTableRowCountDeltas);
+                    _catalog.ApplyCommittedAdvisoryStatisticsSnapshot(
+                        mergedTableStatistics,
+                        committedColumnStatistics,
+                        markDirty: true);
+                }
+
+                if (applyTableRowCountDeltas)
+                    _catalog.ApplyCommittedTableRowCountDeltas(committedTableRowCountDeltas);
+            }
+            finally
+            {
+                _sharedStateGate.Release();
+            }
+        }
+
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+    }
+
+    private IReadOnlyCollection<TableStatistics> MergeCommittedTableStatistics(
+        IReadOnlyCollection<TableStatistics> committedTableStatistics,
+        IReadOnlyCollection<KeyValuePair<string, long>> committedTableRowCountDeltas)
+    {
+        if (committedTableStatistics.Count == 0 || committedTableRowCountDeltas.Count == 0)
+            return committedTableStatistics;
+
+        var deltasByTable = committedTableRowCountDeltas.ToDictionary(
+            static entry => entry.Key,
+            static entry => entry.Value,
+            StringComparer.OrdinalIgnoreCase);
+        var merged = new List<TableStatistics>(committedTableStatistics.Count);
+
+        foreach (TableStatistics stats in committedTableStatistics)
+        {
+            if (!deltasByTable.TryGetValue(stats.TableName, out long rowCountDelta))
+            {
+                merged.Add(stats);
+                continue;
+            }
+
+            TableStatistics? existing = _catalog.GetTableStatistics(stats.TableName);
+            if (existing is null || !existing.RowCountIsExact)
+            {
+                merged.Add(
+                    new TableStatistics
+                    {
+                        TableName = stats.TableName,
+                        RowCount = stats.RowCount,
+                        RowCountIsExact = stats.RowCountIsExact,
+                        HasStaleColumns = stats.HasStaleColumns || (existing?.HasStaleColumns ?? false),
+                        LastPersistedChangeCounter = existing?.LastPersistedChangeCounter ?? stats.LastPersistedChangeCounter,
+                    });
+                continue;
+            }
+
+            long baseRowCount = existing?.RowCount ?? 0;
+            merged.Add(
+                new TableStatistics
+                {
+                    TableName = stats.TableName,
+                    RowCount = checked(baseRowCount + rowCountDelta),
+                    RowCountIsExact = stats.RowCountIsExact && (existing?.RowCountIsExact ?? true),
+                    HasStaleColumns = stats.HasStaleColumns || (existing?.HasStaleColumns ?? false),
+                    LastPersistedChangeCounter = existing?.LastPersistedChangeCounter ?? stats.LastPersistedChangeCounter,
+                });
+        }
+
+        return merged;
     }
 
     /// <summary>
@@ -100,7 +458,11 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -158,7 +520,11 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.Pager,
                 snapshotContext.Catalog,
                 snapshotContext.RecordSerializer,
+                snapshotContext.SchemaSerializer,
+                snapshotContext.IndexProvider,
+                snapshotContext.CatalogStore,
                 snapshotContext.AdvisoryStatisticsPersistenceMode,
+                options.ImplicitInsertExecutionMode,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
         }
@@ -168,7 +534,11 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -222,7 +592,11 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -240,7 +614,11 @@ public sealed class Database : IAsyncDisposable
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
-            context.AdvisoryStatisticsPersistenceMode);
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode);
     }
 
     /// <summary>
@@ -346,92 +724,161 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        QueryResult result;
-        string? insertedTableName = null;
-        PagerCommitResult commit = PagerCommitResult.Completed;
-        IDisposable? writeScope = null;
-        try
+        if (_inTransaction)
         {
-            if (!_inTransaction)
+            if (stmt is InsertStatement explicitInsert)
             {
-                writeScope = await AcquireWriteOperationScopeAsync(ct);
-                await _pager.BeginTransactionAsync(ct);
-            }
-
-            if (stmt is InsertStatement insert)
-            {
-                insertedTableName = insert.TableName;
-                result = await _planner.ExecuteInsertAsync(
-                    insert,
+                return await _planner.ExecuteInsertAsync(
+                    explicitInsert,
                     persistRootChanges: false,
                     ct);
             }
-            else
-            {
-                result = await _planner.ExecuteAsync(stmt, ct);
-            }
 
-            if (!_inTransaction)
-            {
-                commit = insertedTableName != null
-                    ? await BeginCommitForTableWithCatalogSyncAsync(insertedTableName, ct)
-                    : await BeginCommitWithCatalogSyncAsync(ct);
-            }
+            return await _planner.ExecuteAsync(stmt, ct);
         }
-        catch
+
+        if (stmt is InsertStatement insert)
         {
-            if (!_inTransaction)
-                await RecoverCatalogStateAfterFailedCommitAsync();
-            throw;
-        }
-        finally
-        {
-            writeScope?.Dispose();
+            if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
+                return await ExecuteConcurrentImplicitInsertAsync(insert, ct);
+
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    return await ExecuteImplicitInsertCoreAsync(insert, ct);
+                }
+                catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+                {
+                    await DelayImplicitConflictRetryAsync(attempt, ct);
+                }
+            }
         }
 
-        if (!_inTransaction)
-            await CompleteImplicitCommitAsync(commit, ct);
-
-        return result;
+        return await ExecuteImplicitWriteStatementCoreAsync(stmt, ct);
     }
 
-    private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
+    private ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(stmt, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
+
+    private ValueTask<QueryResult> ExecuteConcurrentImplicitInsertAsync(InsertStatement insert, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(insert, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
+
+    private async ValueTask<QueryResult> ExecuteImplicitInsertCoreAsync(InsertStatement insert, CancellationToken ct)
     {
         QueryResult result;
         PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
         {
-            if (!_inTransaction)
+            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
+            result = await _planner.ExecuteInsertAsync(
+                insert,
+                persistRootChanges: false,
+                ct);
+            commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
+        }
+        catch
+        {
+            await RecoverCatalogStateAfterFailedCommitAsync();
+            throw;
+        }
+        finally
+        {
+            if (writeScope is not null)
             {
-                writeScope = await AcquireWriteOperationScopeAsync(ct);
-                await _pager.BeginTransactionAsync(ct);
+                try
+                {
+                    await CompleteImplicitCommitAsync(commit, ct);
+                }
+                finally
+                {
+                    writeScope.Dispose();
+                }
             }
+        }
+
+        return result;
+    }
+
+    private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
+    {
+        if (_inTransaction)
+        {
+            return await _planner.ExecuteSimpleInsertAsync(
+                insert,
+                persistRootChanges: false,
+                ct);
+        }
+
+        if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
+            return await ExecuteConcurrentImplicitSimpleInsertAsync(insert, ct);
+
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteImplicitSimpleInsertCoreAsync(insert, ct);
+            }
+            catch (CSharpDbConflictException) when (attempt < DefaultImplicitConflictRetries)
+            {
+                await DelayImplicitConflictRetryAsync(attempt, ct);
+            }
+        }
+    }
+
+    private async ValueTask<QueryResult> ExecuteImplicitSimpleInsertCoreAsync(SimpleInsertSql insert, CancellationToken ct)
+    {
+        QueryResult result;
+        PagerCommitResult commit = PagerCommitResult.Completed;
+        IDisposable? writeScope = null;
+        try
+        {
+            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            await _pager.BeginTransactionAsync(ct);
 
             result = await _planner.ExecuteSimpleInsertAsync(
                 insert,
                 persistRootChanges: false,
                 ct);
 
-            if (!_inTransaction)
-                commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
+            commit = await BeginCommitForTableWithCatalogSyncAsync(insert.TableName, ct);
         }
         catch
         {
-            if (!_inTransaction)
-                await RecoverCatalogStateAfterFailedCommitAsync();
+            await RecoverCatalogStateAfterFailedCommitAsync();
             throw;
         }
         finally
         {
-            writeScope?.Dispose();
+            if (writeScope is not null)
+            {
+                try
+                {
+                    await CompleteImplicitCommitAsync(commit, ct);
+                }
+                finally
+                {
+                    writeScope.Dispose();
+                }
+            }
         }
-
-        if (!_inTransaction)
-            await CompleteImplicitCommitAsync(commit, ct);
 
         return result;
     }
+
+    private ValueTask<QueryResult> ExecuteConcurrentImplicitSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct) =>
+        RunWriteTransactionAsync(
+            (transaction, token) => transaction.ExecuteImplicitAutoCommitAsync(insert, token),
+            ImplicitAutoCommitWriteTransactionOptions,
+            ct);
 
     /// <summary>
     /// Begin an explicit transaction.
@@ -529,8 +976,27 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new InvalidOperationException("Cannot save while an explicit transaction is active.");
 
-        await FlushPendingAdvisoryStatisticsAsync(ct);
-        await _pager.SaveToFileAsync(filePath, ct);
+        await SaveToFileAsync(filePath, writeScopeHeld: false, ct);
+    }
+
+    internal async ValueTask SaveToFileAsync(
+        string filePath,
+        bool writeScopeHeld,
+        CancellationToken ct = default)
+    {
+        IDisposable? writeScope = null;
+        try
+        {
+            if (!writeScopeHeld)
+                writeScope = await AcquireWriteOperationScopeAsync(ct);
+
+            await FlushPendingAdvisoryStatisticsAsync(ct, writeScopeHeld: true);
+            await _pager.SaveToFileAsync(filePath, ct);
+        }
+        finally
+        {
+            writeScope?.Dispose();
+        }
     }
 
     /// <summary>
@@ -567,6 +1033,8 @@ public sealed class Database : IAsyncDisposable
     /// Returns the names of all tables in the database.
     /// </summary>
     public IReadOnlyCollection<string> GetTableNames() => _catalog.GetTableNames();
+
+    internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
     /// <summary>
     /// Returns the schema for a table, or null if not found.
@@ -1083,6 +1551,15 @@ public sealed class Database : IAsyncDisposable
         return await tree.CountEntriesAsync(ct);
     }
 
+    private static async ValueTask DelayImplicitConflictRetryAsync(int attempt, CancellationToken ct)
+    {
+        double delayMs = Math.Min(20, 0.25 * Math.Pow(2, Math.Max(0, attempt)));
+        double jitterMs = delayMs <= 0 ? 0 : Random.Shared.NextDouble() * delayMs;
+        TimeSpan delay = TimeSpan.FromMilliseconds(jitterMs);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, ct);
+    }
+
     private async ValueTask<IDisposable> AcquireWriteOperationScopeAsync(CancellationToken ct)
     {
         await _writeOperationGate.WaitAsync(ct);
@@ -1190,15 +1667,18 @@ public sealed class Database : IAsyncDisposable
     private async ValueTask CompleteImplicitCommitAsync(PagerCommitResult commit, CancellationToken ct)
     {
         await WaitForCommitOrRecoverAsync(commit);
-        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+        await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct, writeScopeHeld: true);
     }
 
-    private ValueTask PersistHybridStateAsync(HybridPersistenceTriggers trigger, CancellationToken ct)
+    private ValueTask PersistHybridStateAsync(
+        HybridPersistenceTriggers trigger,
+        CancellationToken ct,
+        bool writeScopeHeld = false)
     {
         if (_hybridPersistenceCoordinator is null)
             return ValueTask.CompletedTask;
 
-        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, ct);
+        return _hybridPersistenceCoordinator.PersistAsync(this, trigger, writeScopeHeld, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -1224,13 +1704,15 @@ public sealed class Database : IAsyncDisposable
             await _pager.DisposeAsync();
             _hybridPersistenceCoordinator?.Dispose();
             _writeOperationGate.Dispose();
+            _sharedStateGate.Dispose();
         }
     }
 
-    private async ValueTask FlushPendingAdvisoryStatisticsAsync(CancellationToken ct)
+    private async ValueTask FlushPendingAdvisoryStatisticsAsync(
+        CancellationToken ct,
+        bool writeScopeHeld = false)
     {
-        if (_inTransaction ||
-            !_catalog.HasDirtyAdvisoryStatistics)
+        if (_inTransaction)
         {
             return;
         }
@@ -1238,12 +1720,18 @@ public sealed class Database : IAsyncDisposable
         IDisposable? writeScope = null;
         try
         {
-            writeScope = await AcquireWriteOperationScopeAsync(ct);
+            if (!writeScopeHeld)
+                writeScope = await AcquireWriteOperationScopeAsync(ct);
+
+            await FlushPendingCollectionCatalogMutationsAsync(ct);
+            if (!_catalog.HasDirtyAdvisoryStatistics)
+                return;
+
             await _pager.BeginTransactionAsync(ct);
             await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
             await _catalog.PersistAllRootPageChangesAsync(ct);
             PagerCommitResult commit = await _pager.BeginCommitAsync(ct);
-            writeScope.Dispose();
+            writeScope?.Dispose();
             writeScope = null;
             await commit.WaitAsync(ct);
         }
@@ -1343,10 +1831,21 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public sealed class ReaderSession : IDisposable
     {
+        private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
+        [
+            new ColumnDefinition
+            {
+                Name = "COUNT(*)",
+                Type = DbType.Integer,
+                Nullable = false,
+            },
+        ];
+
         private readonly Pager _pager;
         private readonly SchemaCatalog _catalog;
         private readonly IRecordSerializer _recordSerializer;
         private readonly IRecordSerializer? _collectionReadSerializer;
+        private readonly Func<ValueTask> _releaseActiveQueryCallback;
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
@@ -1371,22 +1870,17 @@ public sealed class Database : IAsyncDisposable
             _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
                 ? new CollectionAwareRecordSerializer(recordSerializer)
                 : null;
+            _releaseActiveQueryCallback = ReleaseActiveQueryAsync;
             _statementCache = statementCache;
             _snapshot = snapshot;
             _snapshotRowCounts = snapshotRowCounts;
-            _snapshotPager = pager.CreateSnapshotReader(snapshot);
-            _planner = new QueryPlanner(
-                _snapshotPager,
-                catalog,
-                recordSerializer,
-                tableName => _snapshotRowCounts.TryGetValue(tableName, out long rowCount) ? rowCount : null);
         }
 
         /// <summary>
         /// Execute a read-only SQL query against the snapshot.
         /// Only SELECT statements are allowed.
         /// </summary>
-        public async ValueTask<QueryResult> ExecuteReadAsync(string sql,
+        public ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
         {
             Statement stmt;
@@ -1403,14 +1897,14 @@ public sealed class Database : IAsyncDisposable
                 _lastParsedStatement = stmt;
             }
 
-            return await ExecuteReadAsync(stmt, ct);
+            return ExecuteReadAsync(stmt, ct);
         }
 
         /// <summary>
         /// Execute a read-only prepared statement against the snapshot.
         /// Only SELECT statements are allowed.
         /// </summary>
-        public async ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
+        public ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -1426,19 +1920,40 @@ public sealed class Database : IAsyncDisposable
 
             try
             {
-                QueryResult result;
-                if (stmt is SelectStatement select && await TryExecuteFastReadAsync(select, ct) is { } fastResult)
+                if (stmt is SelectStatement select)
                 {
-                    result = fastResult;
-                }
-                else
-                {
-                    _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
-                    result = await _planner.ExecuteAsync(stmt, ct);
+                    if (TryExecuteCountStarFastPath(select, out QueryResult fastCountResult))
+                    {
+                        fastCountResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                        return ValueTask.FromResult(fastCountResult);
+                    }
+
+                    ValueTask<QueryResult?> fastLookupTask = TryExecutePrimaryKeyLookupFastPathAsync(select, ct);
+                    if (fastLookupTask.IsCompletedSuccessfully)
+                    {
+                        QueryResult? fastLookupResult = fastLookupTask.Result;
+                        if (fastLookupResult is not null)
+                        {
+                            fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                            return ValueTask.FromResult(fastLookupResult);
+                        }
+                    }
+                    else
+                    {
+                        return CompleteReadWithPrimaryKeyFastPathAsync(stmt, fastLookupTask, ct);
+                    }
                 }
 
-                result.SetDisposeCallback(ReleaseActiveQueryAsync);
-                return result;
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
+                if (plannerTask.IsCompletedSuccessfully)
+                {
+                    QueryResult plannerResult = plannerTask.Result;
+                    plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                    return ValueTask.FromResult(plannerResult);
+                }
+
+                return CompleteReadWithPlannerAsync(plannerTask);
             }
             catch
             {
@@ -1452,7 +1967,7 @@ public sealed class Database : IAsyncDisposable
             if (!_disposed)
             {
                 _snapshotPager?.Dispose();
-                _pager.ReleaseReaderSnapshot();
+                _pager.ReleaseReaderSnapshot(_snapshot);
                 _disposed = true;
             }
         }
@@ -1463,12 +1978,45 @@ public sealed class Database : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
-        private async ValueTask<QueryResult?> TryExecuteFastReadAsync(SelectStatement stmt, CancellationToken ct)
+        private async ValueTask<QueryResult> CompleteReadWithPrimaryKeyFastPathAsync(
+            Statement stmt,
+            ValueTask<QueryResult?> fastLookupTask,
+            CancellationToken ct)
         {
-            if (TryExecuteCountStarFastPath(stmt, out var countResult))
-                return countResult;
+            try
+            {
+                QueryResult? fastLookupResult = await fastLookupTask;
+                if (fastLookupResult is not null)
+                {
+                    fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                    return fastLookupResult;
+                }
 
-            return await TryExecutePrimaryKeyLookupFastPathAsync(stmt, ct);
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
+                plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                return plannerResult;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
+        }
+
+        private async ValueTask<QueryResult> CompleteReadWithPlannerAsync(ValueTask<QueryResult> plannerTask)
+        {
+            try
+            {
+                QueryResult plannerResult = await plannerTask;
+                plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
+                return plannerResult;
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
         }
 
         private bool TryExecuteCountStarFastPath(SelectStatement stmt, out QueryResult result)
@@ -1496,26 +2044,19 @@ public sealed class Database : IAsyncDisposable
             if (_catalog.GetTable(simpleRef.TableName) == null)
                 return false;
 
-            string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
-            ColumnDefinition[] outputSchema =
-            [
-                new ColumnDefinition
-                {
-                    Name = outputName,
-                    Type = DbType.Integer,
-                    Nullable = false,
-                },
-            ];
+            ColumnDefinition[] outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
+                ? [new ColumnDefinition { Name = alias, Type = DbType.Integer, Nullable = false }]
+                : DefaultCountStarOutputSchema;
 
             if (_snapshotRowCounts.TryGetValue(simpleRef.TableName, out long rowCount))
             {
-                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
             }
 
             if (_catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
             {
-                result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
+                result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
             }
 

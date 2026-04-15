@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "CSV Bulk Import Tutorial",
+        "description": "API-first tutorial for loading fixed-schema CSV data into a CSharpDB SQL table with PrepareInsertBatch, explicit transactions, and post-load indexes.",
+        "url": "https://csharpdb.com/docs/tutorials/csv-bulk-import.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'CSV Bulk Import Tutorial',
+            description: 'API-first tutorial for loading fixed-schema CSV data into a CSharpDB SQL table with PrepareInsertBatch, explicit transactions, and post-load indexes.',
+            keywords: 'CSharpDB CSV import, PrepareInsertBatch, SQL bulk insert, batch ingest tutorial, CSharpDB sample',
+            canonicalPath: 'docs/tutorials/csv-bulk-import.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>CSV Bulk Import Tutorial</h1>
+                <p class="lead">Use the public engine API to stream a fixed-schema CSV file into a SQL table with batched inserts, explicit transactions, and secondary indexes created after the load.</p>
+
+                <div class="callout callout-info">
+                    <strong>Current product boundary:</strong> CSharpDB does not currently expose a first-class table-import CLI command or SQL <code>BULK INSERT</code> / <code>COPY</code> surface. The recommended relational bulk-ingest path today is <code>Database.OpenAsync(...)</code> + <code>PrepareInsertBatch(...)</code> + explicit transaction batching.
+                </div>
+
+                <nav class="toc">
+                    <h2>Contents</h2>
+                    <ol>
+                        <li><a href="#when-to-use">When to use this pattern</a></li>
+                        <li><a href="#run-the-sample">Run the sample</a></li>
+                        <li><a href="#schema-setup">Create the schema first</a></li>
+                        <li><a href="#stream-and-validate">Stream and validate the CSV</a></li>
+                        <li><a href="#batch-inserts">Batch rows into explicit transactions</a></li>
+                        <li><a href="#post-load-indexes">Build indexes after the load</a></li>
+                        <li><a href="#inspect-with-cli">Inspect the result with the CLI</a></li>
+                    </ol>
+                </nav>
+
+                <h2 id="when-to-use">When to use this pattern</h2>
+                <p>This approach is a good fit when you already know the target schema, want deterministic row conversion logic, and care more about throughput than about exposing a generic import surface. It keeps the logic on top of the existing public API instead of introducing a new product feature.</p>
+                <ul>
+                    <li>Use it for fixed-schema CSV feeds, benchmark seeding, sample data, and one-off operational imports.</li>
+                    <li>Use <code>PrepareInsertBatch(...)</code> to bypass repeated SQL parsing and reduce per-row allocation churn.</li>
+                    <li>Use explicit transaction batching so one durable commit covers many rows instead of one row.</li>
+                    <li>Create secondary indexes after the load when you control the schema and want the faster ingest path.</li>
+                </ul>
+
+                <h2 id="run-the-sample">Run the sample</h2>
+                <p>The runnable example lives in <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/csv-bulk-import"><code>samples/csv-bulk-import</code></a>.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj</code></pre>
+                </div>
+
+                <p>Optional flags let you override the input CSV, output database path, and batch size:</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj -- \
+  --csv-path samples/csv-bulk-import/events.csv \
+  --database-path artifacts/samples/csv-import-demo.db \
+  --batch-size 1000</code></pre>
+                </div>
+
+                <h2 id="schema-setup">Create the schema first</h2>
+                <p>The sample creates the table in code before it reads any CSV rows. That keeps the tutorial focused on ingest mechanics rather than generic schema inference.</p>
+
+                <div class="code-block" data-title="Program.cs — Schema setup">
+                    <pre><code>var dbOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+await using var db = await Database.OpenAsync(databasePath, dbOptions);
+
+await db.ExecuteAsync("""
+    CREATE TABLE events (
+        id INTEGER PRIMARY KEY,
+        timestamp_utc TEXT NOT NULL,
+        source TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        category TEXT NOT NULL,
+        payload_size INTEGER NOT NULL,
+        ingest_ms REAL NOT NULL
+    )
+    """);</code></pre>
+                </div>
+
+                <p><code>UseWriteOptimizedPreset()</code> is the recommended starting point for durable file-backed ingest. The main throughput win still comes from batching and transaction shape, not from trying to tune advanced knobs first.</p>
+
+                <h2 id="stream-and-validate">Stream and validate the CSV</h2>
+                <p>The sample reads the file line-by-line, validates the header case-insensitively, and fails fast if a row cannot be converted into the expected schema. This keeps bad data visible and ties each parsing failure back to a concrete line number.</p>
+
+                <div class="code-block" data-title="Program.cs — Header validation">
+                    <pre><code>string? headerLine = await reader.ReadLineAsync();
+if (headerLine is null)
+    throw new FormatException("CSV file is empty.");
+
+ValidateHeader(headerLine);</code></pre>
+                </div>
+
+                <div class="code-block" data-title="Program.cs — Row conversion">
+                    <pre><code>DbValue[] row = ConvertRow(fields, lineNumber);
+batch.AddRow(row);</code></pre>
+                </div>
+
+                <p>In the sample, each row becomes a fixed <code>DbValue[]</code> containing an integer primary key, ISO-8601 timestamp text, categorical text fields, an integer payload size, and a real-valued ingest latency.</p>
+
+                <h2 id="batch-inserts">Batch rows into explicit transactions</h2>
+                <p>This is the core of the sample. Rows are buffered into one reusable <code>InsertBatch</code>, and each flush is wrapped in an explicit transaction.</p>
+
+                <div class="code-block" data-title="Program.cs — Batch ingest loop">
+                    <pre><code>var batch = db.PrepareInsertBatch("events", batchSize);
+
+while (await reader.ReadLineAsync() is { } line)
+{
+    lineNumber++;
+    if (string.IsNullOrWhiteSpace(line))
+        continue;
+
+    string[] fields = ParseCsvLine(line, lineNumber);
+    batch.AddRow(ConvertRow(fields, lineNumber));
+
+    if (batch.Count &gt;= batchSize)
+        importedRows += await FlushBatchAsync(db, batch);
+}</code></pre>
+                </div>
+
+                <div class="code-block" data-title="Program.cs — Explicit flush">
+                    <pre><code>await db.BeginTransactionAsync();
+try
+{
+    int rows = await batch.ExecuteAsync();
+    await db.CommitAsync();
+    return rows;
+}
+catch
+{
+    await db.RollbackAsync();
+    throw;
+}</code></pre>
+                </div>
+
+                <p>This pattern reduces the number of durable commits dramatically compared with issuing one auto-commit <code>INSERT</code> per row. It is the current public equivalent of a bulk-load path for relational tables.</p>
+
+                <h2 id="post-load-indexes">Build indexes after the load</h2>
+                <p>Secondary indexes are created only after all CSV rows are on disk. That avoids maintaining them on every insert while the table is still being filled.</p>
+
+                <div class="code-block" data-title="Program.cs — Post-load indexes">
+                    <pre><code>await db.ExecuteAsync("CREATE INDEX idx_events_timestamp_utc ON events (timestamp_utc)");
+await db.ExecuteAsync("CREATE INDEX idx_events_severity ON events (severity)");
+await db.ExecuteAsync("CREATE INDEX idx_events_source ON events (source)");</code></pre>
+                </div>
+
+                <p>If you need a reusable operational import tool later, this is the first behavior to preserve: fixed conversion rules up front, batched row writes in the middle, and index creation after the data load.</p>
+
+                <h2 id="inspect-with-cli">Inspect the result with the CLI</h2>
+                <p>The sample prints the database path after the import completes. Use the CLI to inspect the rows and confirm the indexes are paying off for the queries you care about.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project src/CSharpDB.Cli -- artifacts/samples/csv-import-demo.db</code></pre>
+                </div>
+
+                <div class="code-block" data-title="SQL">
+                    <pre><code>SELECT COUNT(*) FROM events;
+SELECT severity, COUNT(*) FROM events GROUP BY severity ORDER BY severity;
+SELECT source, AVG(ingest_ms) FROM events GROUP BY source ORDER BY source;
+SELECT * FROM events ORDER BY timestamp_utc LIMIT 5;</code></pre>
+                </div>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="../samples.html" class="next-step-card">
+                            <h4>Samples Overview</h4>
+                            <p>Browse runnable examples and sample datasets</p>
+                        </a>
+                        <a href="../cli.html" class="next-step-card">
+                            <h4>CLI Guide</h4>
+                            <p>Query and inspect the generated database</p>
+                        </a>
+                        <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/csv-bulk-import" class="next-step-card">
+                            <h4>Sample Source</h4>
+                            <p>See the complete runnable project in the repository</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

@@ -85,5 +85,7 @@ public sealed class IndexCursorTests
             CurrentValue = item.Value;
             return ValueTask.FromResult(true);
         }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

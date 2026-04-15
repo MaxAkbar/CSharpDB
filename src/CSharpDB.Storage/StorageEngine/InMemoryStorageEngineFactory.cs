@@ -50,6 +50,7 @@ internal static class InMemoryStorageEngineFactory
                 RecordSerializer = options.SerializerProvider.RecordSerializer,
                 SchemaSerializer = schemaSerializer,
                 IndexProvider = options.IndexProvider,
+                CatalogStore = options.CatalogStore,
                 ChecksumProvider = options.ChecksumProvider,
                 AdvisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode,
             };

@@ -40,6 +40,20 @@ public static class ConcurrentDurableWriteBenchmark
         return results;
     }
 
+    public static Task<BenchmarkResult> RunNamedScenarioAsync(string scenarioName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+
+        ConcurrentWriteScenario? scenario = s_scenarios.FirstOrDefault(
+            scenario => scenario.Name.Equals(scenarioName, StringComparison.OrdinalIgnoreCase));
+        if (scenario is null)
+            throw new ArgumentException(
+                $"Unknown concurrent durable-write scenario '{scenarioName}'.",
+                nameof(scenarioName));
+
+        return RunScenarioAsync(scenario);
+    }
+
     private static async Task<BenchmarkResult> RunScenarioAsync(ConcurrentWriteScenario scenario)
     {
         _nextId = 0;
@@ -51,7 +65,7 @@ public static class ConcurrentDurableWriteBenchmark
                 AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
                 AutoCheckpointMaxPagesPerStep = 256,
             });
-            builder.UseDurableCommitBatchWindow(scenario.BatchWindow);
+            builder.UseDurableGroupCommit(scenario.BatchWindow);
             builder.UseWalPreallocationChunkBytes(scenario.WalPreallocationChunkBytes);
         });
 

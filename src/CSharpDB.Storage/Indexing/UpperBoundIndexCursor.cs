@@ -39,4 +39,6 @@ public sealed class UpperBoundIndexCursor : IIndexCursor
 
         return true;
     }
+
+    public ValueTask DisposeAsync() => _inner.DisposeAsync();
 }

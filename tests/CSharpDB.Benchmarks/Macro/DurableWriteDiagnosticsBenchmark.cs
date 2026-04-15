@@ -100,7 +100,7 @@ public static class DurableWriteDiagnosticsBenchmark
                     AutoCheckpointMaxPagesPerStep = scenario.AutoCheckpointMaxPagesPerStep,
                     Interceptors = [interceptor],
                 });
-                builder.UseDurableCommitBatchWindow(scenario.DurableCommitBatchWindow);
+                builder.UseDurableGroupCommit(scenario.DurableCommitBatchWindow);
                 builder.UseWalPreallocationChunkBytes(scenario.WalPreallocationChunkBytes);
             });
 

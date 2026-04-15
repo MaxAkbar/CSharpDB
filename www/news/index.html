@@ -184,7 +184,7 @@
                         <p>Long-term research items being explored for future versions:</p>
                         <ul>
                             <li><strong>At-rest encryption</strong> — Encrypt database and WAL files with passphrase-based key management</li>
-                            <li><strong>Multi-writer support</strong> — Concurrent write transactions with conflict detection</li>
+                            <li><strong>Broader multi-writer optimization</strong> — Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path (initial multi-writer support shipped in v2.9.0)</li>
                             <li><strong>Replication &amp; change feed</strong> — Stream committed changes for read replicas or event-driven architectures</li>
                             <li><strong>WebAssembly sandboxed UDFs</strong> — Execute untrusted functions in a WASM sandbox via Wasmtime</li>
                         </ul>
@@ -194,6 +194,38 @@
                 <!-- ════════ RECENT RELEASES ════════ -->
                 <div class="news-section-label">Recent Releases</div>
                 <div class="news-timeline">
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
+                        <h3>v3.0.0 — Source-Generated Collections &amp; Performance Recovery</h3>
+                        <p>Source-generated collection models are now part of the engine, with a trim-safe generated collection API and focused write-path performance recovery:</p>
+                        <ul>
+                            <li><strong>CSharpDB.Generators</strong> — No-reflection, trim-safe typed collection API via <code>GetGeneratedCollectionAsync&lt;T&gt;()</code> and <code>GeneratedCollection&lt;T&gt;</code></li>
+                            <li><strong>Generated field metadata</strong> — Analyzer-packaged collection models, codecs, and field descriptors with NativeAOT-friendly model registration</li>
+                            <li><strong>Collection write-path recovery</strong> — Separated write probes from read-side B-tree routing-cache, reused traversal scratch during insert/replace, and buffered catalog mutation bookkeeping</li>
+                            <li><strong>Covered composite-index fast-path</strong> — Recovered covered composite-index lookup optimization for index-only queries</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">March 2026</span>
+                        </div>
+                        <h3>v2.9.0 — Cost-Based Optimizer, Multi-Writer &amp; CLI Refresh</h3>
+                        <p>A broad release carrying phase-2 planner statistics, durable-write batching, initial multi-writer support, and a richer CLI experience:</p>
+                        <ul>
+                            <li><strong>Phase-2 planner statistics</strong> — Internal histograms, heavy hitters, composite-prefix summaries, and bounded DP join reordering for richer selectivity and cardinality estimates</li>
+                            <li><strong>Durable group commit</strong> — Opt-in <code>UseDurableCommitBatchWindow(...)</code> batches durable WAL flushes across contending writers</li>
+                            <li><strong>Initial multi-writer support</strong> — Explicit <code>WriteTransaction</code> with conflict-detected retry, shared auto-commit non-insert isolation, and opt-in concurrent implicit inserts</li>
+                            <li><strong>Async I/O batching</strong> — WAL frame-chunk writes, chunked checkpoint copies, and reusable B-tree copy utilities</li>
+                            <li><strong>CLI refresh</strong> — Spectre.Console-based output, richer tables, interactive <code>.</code> dot-command menu, and branded ASCII startup banner</li>
+                            <li><strong>New docs</strong> — Configuration reference, query execution pipeline walkthrough, expanded SQL reference</li>
+                        </ul>
+                    </div>
+
                     <div class="news-entry">
                         <div class="news-entry-header">
                             <span class="news-badge news-badge-release">Release</span>

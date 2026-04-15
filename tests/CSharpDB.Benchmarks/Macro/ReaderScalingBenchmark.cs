@@ -10,6 +10,7 @@ namespace CSharpDB.Benchmarks.Macro;
 public static class ReaderScalingBenchmark
 {
     private const int ReusedSessionBurstReads = 32;
+    private const int HighThroughputLatencySampleEvery = 128;
     private static int _idCounter = 1_000_000;
 
     public static async Task<List<BenchmarkResult>> RunAsync()
@@ -66,10 +67,11 @@ public static class ReaderScalingBenchmark
 
         var readerHistograms = new LatencyHistogram[readerCount];
         var readerTasks = new Task[readerCount];
+        int latencySampleEvery = sessionReadsPerSnapshot > 1 ? HighThroughputLatencySampleEvery : 1;
 
         for (int r = 0; r < readerCount; r++)
         {
-            readerHistograms[r] = new LatencyHistogram();
+            readerHistograms[r] = new LatencyHistogram(latencySampleEvery);
             var hist = readerHistograms[r];
 
             readerTasks[r] = Task.Run(async () =>
@@ -79,7 +81,7 @@ public static class ReaderScalingBenchmark
                     using var reader = bench.Db.CreateReaderSession();
                     for (int i = 0; i < sessionReadsPerSnapshot && !cts.Token.IsCancellationRequested; i++)
                     {
-                        var sw = Stopwatch.StartNew();
+                        Stopwatch? sw = hist.ShouldSampleNext() ? Stopwatch.StartNew() : null;
                         try
                         {
                             await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM bench");
@@ -87,8 +89,16 @@ public static class ReaderScalingBenchmark
                         }
                         catch (OperationCanceledException) { return; }
                         catch { /* ignore transient errors */ }
-                        sw.Stop();
-                        hist.Record(sw.Elapsed.TotalMilliseconds);
+
+                        if (sw is null)
+                        {
+                            hist.RecordUnsampled();
+                        }
+                        else
+                        {
+                            sw.Stop();
+                            hist.Record(sw.Elapsed.TotalMilliseconds);
+                        }
                     }
                 }
             });
@@ -123,7 +133,10 @@ public static class ReaderScalingBenchmark
             MinMs = readerHistograms.Min(h => h.Min),
             MaxMs = readerHistograms.Max(h => h.Max),
             MeanMs = readerHistograms.Average(h => h.Mean),
-            StdDevMs = readerHistograms.Average(h => h.StdDev)
+            StdDevMs = readerHistograms.Average(h => h.StdDev),
+            ExtraInfo = sessionReadsPerSnapshot > 1
+                ? $"session-mode=reused reader session; burst-reads={sessionReadsPerSnapshot}; readers={readerCount}; latency-sampling=1/{latencySampleEvery}"
+                : $"session-mode=per-query reader session; readers={readerCount}"
         };
         results.Add(readerResult);
         Console.WriteLine($"  {readerCount} readers ({description}) - Total reader ops: {totalReaderOps:N0}, Avg P50={avgReaderP50:F3}ms, Avg P99={avgReaderP99:F3}ms");

@@ -64,6 +64,30 @@ public sealed class QueryPlanner
         public HashSet<string> StaleTables { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
+    private sealed class LogicalMutationConflictMetadata
+    {
+        public required string RowResourceName { get; init; }
+        public required LogicalColumnConflictMetadata[] Columns { get; init; }
+    }
+
+    private enum LogicalColumnConflictKind
+    {
+        None = 0,
+        Integer = 1,
+        Text = 2,
+    }
+
+    private readonly record struct LogicalColumnConflictMetadata(
+        LogicalColumnConflictKind Kind,
+        string? ResourceName,
+        string? NormalizedCollation)
+    {
+        public bool RequiresTextNormalization =>
+            Kind == LogicalColumnConflictKind.Text &&
+            !string.IsNullOrEmpty(NormalizedCollation) &&
+            !string.Equals(NormalizedCollation, CollationSupport.BinaryCollation, StringComparison.Ordinal);
+    }
+
     private readonly record struct ForeignKeyDeleteKey(string TableName, long RowId)
     {
         public bool Equals(ForeignKeyDeleteKey other) =>
@@ -195,9 +219,11 @@ public sealed class QueryPlanner
     /// <summary>Cache of parsed trigger bodies to avoid re-parsing on every row.</summary>
     private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _dirtyNextRowIdTables = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
     private readonly Dictionary<TableSchema, string> _qualifiedMappingFingerprintCache = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>> _logicalMutationConflictMetadataCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
@@ -225,6 +251,10 @@ public sealed class QueryPlanner
 
     private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
+    private readonly Func<string, long?>? _nextRowIdHintProvider;
+    private readonly Func<string, long, long>? _nextRowIdReservationProvider;
+    private readonly Action<string, long>? _nextRowIdObservationProvider;
+    private readonly bool _useTransientNextRowIdHints;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
     private const int MaxSelectPlanCacheEntries = 1024;
@@ -298,7 +328,11 @@ public sealed class QueryPlanner
         Pager pager,
         SchemaCatalog catalog,
         IRecordSerializer? recordSerializer = null,
-        Func<string, long?>? tableRowCountProvider = null)
+        Func<string, long?>? tableRowCountProvider = null,
+        Func<string, long?>? nextRowIdHintProvider = null,
+        Func<string, long, long>? nextRowIdReservationProvider = null,
+        Action<string, long>? nextRowIdObservationProvider = null,
+        bool useTransientNextRowIdHints = false)
     {
         _pager = pager;
         _catalog = catalog;
@@ -307,32 +341,84 @@ public sealed class QueryPlanner
             ? new CollectionAwareRecordSerializer(_recordSerializer)
             : null;
         _tableRowCountProvider = tableRowCountProvider;
+        _nextRowIdHintProvider = nextRowIdHintProvider;
+        _nextRowIdReservationProvider = nextRowIdReservationProvider;
+        _nextRowIdObservationProvider = nextRowIdObservationProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
+        _useTransientNextRowIdHints = useTransientNextRowIdHints;
+    }
+
+    public IReadOnlyCollection<KeyValuePair<string, long>> GetCommittedNextRowIdHints()
+    {
+        if (_dirtyNextRowIdTables.Count == 0)
+            return Array.Empty<KeyValuePair<string, long>>();
+
+        var committed = new List<KeyValuePair<string, long>>(_dirtyNextRowIdTables.Count);
+        foreach (string tableName in _dirtyNextRowIdTables)
+        {
+            if (_nextRowIdCache.TryGetValue(tableName, out long nextRowId) && nextRowId > 0)
+                committed.Add(new KeyValuePair<string, long>(tableName, nextRowId));
+        }
+
+        return committed;
     }
 
     public ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
     {
         InvalidateSchemaSensitiveCachesIfNeeded();
 
+        return ExecuteCoreAsync(stmt, ct);
+    }
+
+    private async ValueTask<QueryResult> ExecuteCoreAsync(Statement stmt, CancellationToken ct)
+    {
         return stmt switch
         {
-            CreateTableStatement create => ExecuteCreateTableAsync(create, ct),
-            DropTableStatement drop => ExecuteDropTableAsync(drop, ct),
-            InsertStatement insert => ExecuteInsertAsync(insert, persistRootChanges: true, ct),
-            QueryStatement query => ExecuteQueryAsync(query, ct),
-            DeleteStatement delete => ExecuteDeleteAsync(delete, ct),
-            UpdateStatement update => ExecuteUpdateAsync(update, ct),
-            AlterTableStatement alter => ExecuteAlterTableAsync(alter, ct),
-            CreateIndexStatement createIdx => ExecuteCreateIndexAsync(createIdx, ct),
-            DropIndexStatement dropIdx => ExecuteDropIndexAsync(dropIdx, ct),
-            CreateViewStatement createView => ExecuteCreateViewAsync(createView, ct),
-            DropViewStatement dropView => ExecuteDropViewAsync(dropView, ct),
-            WithStatement with => ExecuteWithAsync(with, ct),
-            CreateTriggerStatement createTrig => ExecuteCreateTriggerAsync(createTrig, ct),
-            DropTriggerStatement dropTrig => ExecuteDropTriggerAsync(dropTrig, ct),
-            AnalyzeStatement analyze => ExecuteAnalyzeAsync(analyze, ct),
+            CreateTableStatement create => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateTableAsync(create, token),
+                ct),
+            DropTableStatement drop => await ExecuteSchemaMutationAsync(
+                token => ExecuteDropTableAsync(drop, token),
+                ct),
+            InsertStatement insert => await ExecuteInsertAsync(insert, persistRootChanges: true, ct),
+            QueryStatement query => await ExecuteQueryAsync(query, ct),
+            DeleteStatement delete => await ExecuteDeleteAsync(delete, ct),
+            UpdateStatement update => await ExecuteUpdateAsync(update, ct),
+            AlterTableStatement alter => await ExecuteSchemaMutationAsync(
+                token => ExecuteAlterTableAsync(alter, token),
+                ct),
+            CreateIndexStatement createIdx => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateIndexAsync(createIdx, token),
+                ct),
+            DropIndexStatement dropIdx => await ExecuteSchemaMutationAsync(
+                token => ExecuteDropIndexAsync(dropIdx, token),
+                ct),
+            CreateViewStatement createView => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateViewAsync(createView, token),
+                ct),
+            DropViewStatement dropView => await ExecuteSchemaMutationAsync(
+                token => ExecuteDropViewAsync(dropView, token),
+                ct),
+            WithStatement with => await ExecuteWithAsync(with, ct),
+            CreateTriggerStatement createTrig => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateTriggerAsync(createTrig, token),
+                ct),
+            DropTriggerStatement dropTrig => await ExecuteSchemaMutationAsync(
+                token => ExecuteDropTriggerAsync(dropTrig, token),
+                ct),
+            AnalyzeStatement analyze => await ExecuteAnalyzeAsync(analyze, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
+    }
+
+    private async ValueTask<QueryResult> ExecuteSchemaMutationAsync(
+        Func<CancellationToken, ValueTask<QueryResult>> action,
+        CancellationToken ct)
+    {
+        if (_pager.IsExplicitWriteTransactionActive)
+            await _pager.AcquireSchemaWriteLockAsync(ct);
+
+        return await action(ct);
     }
 
     private ValueTask<QueryResult> ExecuteQueryAsync(QueryStatement stmt, CancellationToken ct)
@@ -396,6 +482,7 @@ public sealed class QueryPlanner
 
         _triggerBodyCache.Clear();
         _nextRowIdCache.Clear();
+        _dirtyNextRowIdTables.Clear();
         _compiledExpressionCache.Clear();
         _compiledSpanExpressionCache.Clear();
         _qualifiedMappingFingerprintCache.Clear();
@@ -485,6 +572,7 @@ public sealed class QueryPlanner
         for (int i = 0; i < foreignKeys.Length; i++)
             await CreateForeignKeySupportIndexAsync(schema, foreignKeys[i], ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -506,6 +594,7 @@ public sealed class QueryPlanner
 
         await _catalog.DropTableAsync(stmt.TableName, ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
 
@@ -657,6 +746,8 @@ public sealed class QueryPlanner
                 await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
+                if (_dirtyNextRowIdTables.Remove(stmt.TableName))
+                    _dirtyNextRowIdTables.Add(rename.NewTableName);
                 break;
             }
 
@@ -1223,6 +1314,18 @@ public sealed class QueryPlanner
             {
                 var operand = await RewriteSubqueriesInExpressionAsync(inSubquery.Operand, ct);
                 var query = await RewriteSubqueriesInQueryAsync(inSubquery.Query, ct);
+                if (_pager.IsExplicitWriteTransactionActive)
+                {
+                    // Preserve IN subqueries inside explicit write transactions so per-row evaluation
+                    // can use operand-aware probes and avoid recording full-set logical reads.
+                    return new InSubqueryExpression
+                    {
+                        Operand = operand,
+                        Query = query,
+                        Negated = inSubquery.Negated,
+                    };
+                }
+
                 if (!CanExecuteStandalone(query))
                 {
                     return new InSubqueryExpression
@@ -1895,7 +1998,6 @@ public sealed class QueryPlanner
         await _catalog.ReplaceColumnStatisticsAsync(tableName, statistics.Columns, ct);
         await _catalog.ReplaceColumnDistributionStatisticsAsync(tableName, statistics.ColumnDistributions, ct);
         await _catalog.ReplaceIndexPrefixStatisticsForTableAsync(tableName, statistics.IndexPrefixes, ct);
-        await _catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
     }
 
     private async ValueTask<AnalyzedTableStatisticsResult> CollectColumnStatisticsAsync(
@@ -2977,40 +3079,8 @@ public sealed class QueryPlanner
             return null;
         }
 
-        if (!TryCreateSimpleBoundSubquerySource(query, out var source, out var sourceSchema, out var residualPredicate))
-            return null;
-
-        int projectedColumnIndex = projectedColumn.TableAlias != null
-            ? sourceSchema.GetQualifiedColumnIndex(projectedColumn.TableAlias, projectedColumn.ColumnName)
-            : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
-        if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
-            return null;
-
-        await using (source)
-        {
-            ApplySimpleSubqueryDecodeHints(source, sourceSchema, residualPredicate, projectedColumnIndex);
-
-            await source.OpenAsync(ct);
-            while (await source.MoveNextAsync(ct))
-            {
-                if (residualPredicate != null &&
-                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
-                {
-                    continue;
-                }
-
-                var candidateValue = projectedColumnIndex < source.Current.Length
-                    ? source.Current[projectedColumnIndex]
-                    : DbValue.Null;
-                if (candidateValue.IsNull)
-                    continue;
-
-                if (DbValue.Compare(candidateValue, operandValue) == 0)
-                    return true;
-            }
-        }
-
-        return false;
+        QueryStatement probeQuery = CreateSimpleInProbeQuery(select, projectedColumn, operandValue);
+        return await TryExecuteSimpleExistsProbeAsync(probeQuery, ct);
     }
 
     private async ValueTask<bool?> TryExecuteSimpleNotInFilterProbeAsync(
@@ -3036,6 +3106,15 @@ public sealed class QueryPlanner
             : sourceSchema.GetColumnIndex(projectedColumn.ColumnName);
         if (projectedColumnIndex < 0 || projectedColumnIndex >= sourceSchema.Columns.Count)
             return null;
+
+        if (!sourceSchema.Columns[projectedColumnIndex].Nullable)
+        {
+            // When the projected subquery column cannot contain NULLs, NOT IN reduces to
+            // an equality anti-semi probe and we can avoid scanning the full inner source.
+            QueryStatement probeQuery = CreateSimpleInProbeQuery(select, projectedColumn, operandValue);
+            bool? exists = await TryExecuteSimpleExistsProbeAsync(probeQuery, ct);
+            return exists.HasValue ? !exists.Value : null;
+        }
 
         bool sawNullCandidate = false;
 
@@ -3110,10 +3189,48 @@ public sealed class QueryPlanner
 
         if (select.Where == null)
             residualPredicate = null;
-        else if (source is TableScanOperator)
+        else if (source is TableScanOperator tableScan)
+        {
+            ApplyLogicalPredicateReadScope(simpleRef.TableName, select.Where, sourceSchema, tableScan);
             residualPredicate = select.Where;
+        }
 
         return true;
+    }
+
+    private static QueryStatement CreateSimpleInProbeQuery(
+        SelectStatement select,
+        ColumnRefExpression projectedColumn,
+        DbValue operandValue)
+    {
+        var probePredicate = new BinaryExpression
+        {
+            Op = BinaryOp.Equals,
+            Left = projectedColumn,
+            Right = CreateLiteralExpression(operandValue),
+        };
+
+        var probeQuery = new SelectStatement
+        {
+            IsDistinct = select.IsDistinct,
+            Columns = select.Columns,
+            From = select.From,
+            Where = select.Where is null
+                ? probePredicate
+                : new BinaryExpression
+                {
+                    Op = BinaryOp.And,
+                    Left = select.Where,
+                    Right = probePredicate,
+                },
+            GroupBy = select.GroupBy,
+            Having = select.Having,
+            OrderBy = select.OrderBy,
+            Limit = select.Limit,
+            Offset = select.Offset,
+        };
+
+        return probeQuery;
     }
 
     private static void ApplySimpleSubqueryDecodeHints(
@@ -4322,8 +4439,16 @@ public sealed class QueryPlanner
         CancellationToken ct)
     {
         int inserted = 0;
-        var insertTraversalPath = new List<uint>(capacity: 8);
-        var insertTraversalSet = new HashSet<uint>();
+        List<uint>? insertTraversalPath = null;
+        HashSet<uint>? insertTraversalSet = null;
+        if (insert.RowCount > 1)
+        {
+            // Reuse traversal state across rows in a multi-row simple insert so successive inserts
+            // can stay on the hot path without paying this allocation cost for single-row statements.
+            insertTraversalPath = new List<uint>(capacity: 8);
+            insertTraversalSet = new HashSet<uint>();
+        }
+
         try
         {
             for (int i = 0; i < insert.RowCount; i++)
@@ -4405,6 +4530,7 @@ public sealed class QueryPlanner
                     await tree.InsertAsync(rowId, encodedRow, traversalPath, traversalSet, ct);
                 else
                     await tree.InsertAsync(rowId, encodedRow, ct);
+                RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
                 return rowId;
             }
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
@@ -4735,7 +4861,6 @@ public sealed class QueryPlanner
             _ => 0,
         };
 
-        var row = new[] { DbValue.FromInteger(count) };
         var outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
             ? new[]
             {
@@ -4748,7 +4873,7 @@ public sealed class QueryPlanner
             }
             : DefaultCountStarOutputSchema;
 
-        result = QueryResult.FromSyncLookup(row, outputSchema);
+        result = QueryResult.FromSyncScalar(DbValue.FromInteger(count), outputSchema);
         return true;
     }
 
@@ -5071,7 +5196,7 @@ public sealed class QueryPlanner
                 func.IsDistinct,
                 compactIndexedSchema);
 
-            result = new QueryResult(new FilteredScalarAggregatePayloadOperator(
+            var filteredPayloadAggregate = new FilteredScalarAggregatePayloadOperator(
                 indexedSource,
                 GetReadSerializer(schema),
                 compactIndexedDecodeColumns,
@@ -5082,7 +5207,9 @@ public sealed class QueryPlanner
                 aggregateArgumentEvaluator: compactIndexedAggregateEvaluator,
                 isDistinct: func.IsDistinct,
                 isCountStar,
-                batchPlan: indexedScalarBatchPlan));
+                batchPlan: indexedScalarBatchPlan);
+            ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, filteredPayloadAggregate);
+            result = new QueryResult(filteredPayloadAggregate);
             return true;
         }
 
@@ -5118,7 +5245,7 @@ public sealed class QueryPlanner
             func.IsDistinct,
             compactSchema);
 
-        result = new QueryResult(new FilteredScalarAggregateTableOperator(
+        var filteredAggregate = new FilteredScalarAggregateTableOperator(
             _catalog.GetTableTree(simpleRef.TableName, _pager),
             compactAggregateColumnIndex,
             func.FunctionName,
@@ -5129,7 +5256,9 @@ public sealed class QueryPlanner
             isDistinct: func.IsDistinct,
             isCountStar,
             recordSerializer: GetReadSerializer(schema),
-            batchPlan: scalarBatchPlan));
+            batchPlan: scalarBatchPlan);
+        ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, filteredAggregate);
+        result = new QueryResult(filteredAggregate);
         return true;
     }
 
@@ -5902,6 +6031,7 @@ public sealed class QueryPlanner
             ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
         var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        ApplyLogicalPredicateReadScope(stmt.TableName, stmt.Where, schema, scan);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -5929,6 +6059,7 @@ public sealed class QueryPlanner
                 await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Delete, row, null, schema, ct);
 
                 await tree.DeleteAsync(rowId, ct);
+                RecordLogicalMutationWrites(stmt.TableName, schema, oldRow: row, newRow: null, oldRowId: rowId);
 
                 // Maintain indexes
                 await DeleteFromAllIndexesAsync(indexes, schema, row, rowId, ct);
@@ -5989,6 +6120,7 @@ public sealed class QueryPlanner
             ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
             : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
         var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        ApplyLogicalPredicateReadScope(stmt.TableName, stmt.Where, schema, scan);
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
         {
@@ -6048,6 +6180,7 @@ public sealed class QueryPlanner
 
                 await tree.DeleteAsync(rowId, ct);
                 await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+                RecordLogicalMutationWrites(stmt.TableName, schema, oldRow, newRow, rowId, newRowId);
 
                 // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
                 await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
@@ -6090,6 +6223,7 @@ public sealed class QueryPlanner
 
             await tree.DeleteAsync(rowId, ct);
             await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+            RecordLogicalMutationWrites(stmt.TableName, schema, oldRow, newRow, rowId, newRowId);
 
             // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
             await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
@@ -8190,6 +8324,18 @@ public sealed class QueryPlanner
         output.Add(expression);
     }
 
+    private static void CollectOrDisjuncts(Expression expression, List<Expression> output)
+    {
+        if (expression is BinaryExpression { Op: BinaryOp.Or } orExpr)
+        {
+            CollectOrDisjuncts(orExpr.Left, output);
+            CollectOrDisjuncts(orExpr.Right, output);
+            return;
+        }
+
+        output.Add(expression);
+    }
+
     private static bool TryExtractHashJoinKeyPair(
         Expression expression,
         TableSchema compositeSchema,
@@ -9779,11 +9925,13 @@ public sealed class QueryPlanner
                     remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
                     var compactStarOp = BuildCompactSelectStarScanOperator(
                         tableTree,
+                        simpleRef.TableName,
                         schema,
                         serializer,
                         estimatedRowCount,
                         starExtractedPredicates,
-                        remainingWhere);
+                        remainingWhere,
+                        stmt.Where);
 
                     result = CreateQueryResult(ApplyOffsetAndLimit(compactStarOp, stmt.Offset, stmt.Limit));
                     return true;
@@ -9791,11 +9939,13 @@ public sealed class QueryPlanner
 
                 var compactRowWindowOp = BuildCompactSelectStarScanOperator(
                     tableTree,
+                    simpleRef.TableName,
                     schema,
                     serializer,
                     estimatedRowCount,
                     null,
-                    remainingWhere);
+                    remainingWhere,
+                    stmt.Where);
 
                 result = CreateQueryResult(ApplyOffsetAndLimit(compactRowWindowOp, stmt.Offset, stmt.Limit));
                 return true;
@@ -9806,6 +9956,7 @@ public sealed class QueryPlanner
                 schema,
                 serializer,
                 estimatedRowCount);
+            ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, scanOp);
             IOperator op = scanOp;
 
             if (remainingWhere != null &&
@@ -9857,6 +10008,7 @@ public sealed class QueryPlanner
                 outputCols,
                 serializer,
                 estimatedRowCount);
+            ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, compactOp);
 
             if (pushedPredicates is { Count: > 0 })
                 ApplyPushdownPredicates(compactOp, pushedPredicates);
@@ -9885,6 +10037,7 @@ public sealed class QueryPlanner
             GetOrCompileExpressions(expressions, compactSchema),
             serializer,
             estimatedRowCount);
+        ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, compactExpressionOp);
 
         if (pushedPredicates is { Count: > 0 })
             ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
@@ -9909,11 +10062,13 @@ public sealed class QueryPlanner
 
     private CompactTableScanProjectionOperator BuildCompactSelectStarScanOperator(
         BTree tableTree,
+        string tableName,
         TableSchema schema,
         IRecordSerializer serializer,
         int? estimatedRowCount,
         List<PushdownPredicateSpec>? pushedPredicates,
-        Expression? remainingWhere)
+        Expression? remainingWhere,
+        Expression? logicalReadWhere)
     {
         int[] allColumnIndices = CreateIdentityColumnIndices(schema.Columns.Count);
         var compactOp = new CompactTableScanProjectionOperator(
@@ -9923,6 +10078,8 @@ public sealed class QueryPlanner
             schema.Columns.ToArray(),
             serializer,
             estimatedRowCount);
+
+        ApplyLogicalPredicateReadScope(tableName, logicalReadWhere, schema, compactOp);
 
         if (pushedPredicates is { Count: > 0 })
             ApplyPushdownPredicates(compactOp, pushedPredicates);
@@ -9939,6 +10096,292 @@ public sealed class QueryPlanner
         }
 
         return compactOp;
+    }
+
+    private void ApplyLogicalPredicateReadScope(
+        string tableName,
+        Expression? where,
+        TableSchema schema,
+        TableScanOperator scan)
+    {
+        Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+        if (logicalReadScope is not null)
+            scan.SetLogicalReadScope(logicalReadScope);
+    }
+
+    private void ApplyLogicalPredicateReadScope(
+        string tableName,
+        Expression? where,
+        TableSchema schema,
+        CompactTableScanProjectionOperator scan)
+    {
+        Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+        if (logicalReadScope is not null)
+            scan.SetLogicalReadScope(logicalReadScope);
+    }
+
+    private void ApplyLogicalPredicateReadScope(
+        string tableName,
+        Expression? where,
+        TableSchema schema,
+        FilteredScalarAggregateTableOperator aggregate)
+    {
+        Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+        if (logicalReadScope is not null)
+            aggregate.SetLogicalReadScope(logicalReadScope);
+    }
+
+    private void ApplyLogicalPredicateReadScope(
+        string tableName,
+        Expression? where,
+        TableSchema schema,
+        FilteredScalarAggregatePayloadOperator aggregate)
+    {
+        Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+        if (logicalReadScope is not null)
+            aggregate.SetLogicalReadScope(logicalReadScope);
+    }
+
+    private Action? TryCreateLogicalPredicateReadScope(string tableName, Expression? where, TableSchema schema)
+    {
+        if (where is null || !_pager.IsExplicitWriteTransactionActive)
+            return null;
+
+        return TryCreateDisjunctiveLogicalPredicateReadScope(tableName, where, schema)
+            ?? TryCreateConjunctiveLogicalPredicateReadScope(tableName, where, schema);
+    }
+
+    private Action? TryCreateConjunctiveLogicalPredicateReadScope(string tableName, Expression where, TableSchema schema)
+    {
+        Expression? remainingWhere = where;
+        List<Action>? logicalReadScopes = null;
+
+        while (remainingWhere is not null)
+        {
+            var selectedScope = TrySelectLogicalPredicateReadScope(tableName, remainingWhere, schema);
+            if (!selectedScope.HasValue)
+                return null;
+
+            (logicalReadScopes ??= []).Add(selectedScope.Value.Scope);
+            remainingWhere = selectedScope.Value.RemainingWhere;
+        }
+
+        if (logicalReadScopes is null || logicalReadScopes.Count == 0)
+            return null;
+
+        if (logicalReadScopes.Count == 1)
+            return logicalReadScopes[0];
+
+        return () =>
+        {
+            for (int i = 0; i < logicalReadScopes.Count; i++)
+                logicalReadScopes[i]();
+        };
+    }
+
+    private Action? TryCreateDisjunctiveLogicalPredicateReadScope(string tableName, Expression where, TableSchema schema)
+    {
+        var disjuncts = new List<Expression>();
+        CollectOrDisjuncts(where, disjuncts);
+        if (disjuncts.Count <= 1)
+            return null;
+
+        Action? selectedScope = null;
+        int selectedScore = 0;
+
+        for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+        {
+            if (!TryCreateDisjunctiveLogicalPredicateReadScopeForColumn(
+                    tableName,
+                    schema,
+                    columnIndex,
+                    disjuncts,
+                    out Action? candidateScope,
+                    out int candidateScore))
+            {
+                continue;
+            }
+
+            if (candidateScore <= selectedScore)
+                continue;
+
+            selectedScope = candidateScope;
+            selectedScore = candidateScore;
+        }
+
+        return selectedScope ?? TryCreateCompositeDisjunctiveLogicalPredicateReadScope(tableName, schema, disjuncts);
+    }
+
+    private bool TryCreateDisjunctiveLogicalPredicateReadScopeForColumn(
+        string tableName,
+        TableSchema schema,
+        int columnIndex,
+        List<Expression> disjuncts,
+        out Action? logicalReadScope,
+        out int logicalReadScore)
+    {
+        logicalReadScope = null;
+        logicalReadScore = 0;
+
+        ColumnDefinition column = schema.Columns[columnIndex];
+        if (column.Type is not (DbType.Integer or DbType.Text))
+            return false;
+
+        var ranges = new List<IndexScanRange>(disjuncts.Count);
+        string? expectedCollation = column.Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(column.Collation)
+            : null;
+
+        for (int i = 0; i < disjuncts.Count; i++)
+        {
+            IndexScanRange range;
+            Expression? remainingWhere;
+            int consumedTermCount;
+
+            if (column.Type == DbType.Integer)
+            {
+                ExtractOrderedIndexRange(
+                    disjuncts[i],
+                    schema,
+                    columnIndex,
+                    out range,
+                    out remainingWhere,
+                    out consumedTermCount);
+            }
+            else
+            {
+                ExtractOrderedTextIndexRange(
+                    disjuncts[i],
+                    schema,
+                    columnIndex,
+                    expectedCollation,
+                    out range,
+                    out _,
+                    out _,
+                    out remainingWhere,
+                    out consumedTermCount);
+            }
+
+            if (consumedTermCount <= 0 || remainingWhere is not null)
+                return false;
+
+            logicalReadScore += ComputePredicateLogicalReadScore(range, consumedTermCount);
+            ranges.Add(range);
+        }
+
+        string columnName = column.Name;
+        logicalReadScope = () =>
+        {
+            for (int i = 0; i < ranges.Count; i++)
+                _pager.RecordLogicalTableColumnRangeRead(tableName, columnName, ranges[i]);
+        };
+
+        return true;
+    }
+
+    private Action? TryCreateCompositeDisjunctiveLogicalPredicateReadScope(
+        string tableName,
+        TableSchema schema,
+        List<Expression> disjuncts)
+    {
+        List<Action>? logicalReadScopes = null;
+
+        for (int i = 0; i < disjuncts.Count; i++)
+        {
+            Action? disjunctScope = TryCreateConjunctiveLogicalPredicateReadScope(tableName, disjuncts[i], schema);
+            if (disjunctScope is null)
+                return null;
+
+            (logicalReadScopes ??= []).Add(disjunctScope);
+        }
+
+        if (logicalReadScopes is null || logicalReadScopes.Count == 0)
+            return null;
+
+        if (logicalReadScopes.Count == 1)
+            return logicalReadScopes[0];
+
+        return () =>
+        {
+            for (int i = 0; i < logicalReadScopes.Count; i++)
+                logicalReadScopes[i]();
+        };
+    }
+
+    private (Action Scope, Expression? RemainingWhere)? TrySelectLogicalPredicateReadScope(
+        string tableName,
+        Expression where,
+        TableSchema schema)
+    {
+        Action? selectedScope = null;
+        Expression? selectedRemainingWhere = null;
+        int selectedScore = 0;
+
+        for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+        {
+            ColumnDefinition column = schema.Columns[columnIndex];
+            switch (column.Type)
+            {
+                case DbType.Integer:
+                {
+                    ExtractOrderedIndexRange(
+                        where,
+                        schema,
+                        columnIndex,
+                        out IndexScanRange range,
+                        out Expression? candidateRemainingWhere,
+                        out int consumedTermCount);
+                    if (consumedTermCount <= 0)
+                        break;
+
+                    int score = ComputePredicateLogicalReadScore(range, consumedTermCount);
+                    if (score <= selectedScore)
+                        break;
+
+                    string columnName = column.Name;
+                    selectedScore = score;
+                    selectedRemainingWhere = candidateRemainingWhere;
+                    selectedScope = () => _pager.RecordLogicalTableColumnRangeRead(tableName, columnName, range);
+                    break;
+                }
+                case DbType.Text:
+                {
+                    string? expectedCollation = CollationSupport.NormalizeMetadataName(column.Collation);
+                    ExtractOrderedTextIndexRange(
+                        where,
+                        schema,
+                        columnIndex,
+                        expectedCollation,
+                        out IndexScanRange range,
+                        out _,
+                        out _,
+                        out Expression? candidateRemainingWhere,
+                        out int consumedTermCount);
+                    if (consumedTermCount <= 0)
+                        break;
+
+                    int score = ComputePredicateLogicalReadScore(range, consumedTermCount);
+                    if (score <= selectedScore)
+                        break;
+
+                    string columnName = column.Name;
+                    selectedScore = score;
+                    selectedRemainingWhere = candidateRemainingWhere;
+                    selectedScope = () => _pager.RecordLogicalTableColumnRangeRead(tableName, columnName, range);
+                    break;
+                }
+            }
+        }
+
+        return selectedScope is null ? null : (selectedScope, selectedRemainingWhere);
+    }
+
+    private static int ComputePredicateLogicalReadScore(IndexScanRange range, int consumedTermCount)
+    {
+        int specificity = range.LowerBound.HasValue && range.UpperBound.HasValue
+            ? range.LowerBound == range.UpperBound && range.LowerInclusive && range.UpperInclusive ? 2 : 1
+            : 0;
+        return consumedTermCount * 10 + specificity;
     }
 
     private void ApplyPushdownPredicates(
@@ -11014,6 +11457,7 @@ public sealed class QueryPlanner
             {
                 if (usesDirectIntegerKey)
                 {
+                    _pager.RecordLogicalIndexRead(idx.IndexName, indexKey);
                     var existing = await indexStore.FindAsync(indexKey, ct);
                     if (existing != null)
                         throw new CSharpDbException(ErrorCode.ConstraintViolation,
@@ -11022,11 +11466,14 @@ public sealed class QueryPlanner
                     var payload = new byte[8];
                     BitConverter.TryWriteBytes(payload, rowId);
                     await indexStore.InsertAsync(indexKey, payload, ct);
+                    _pager.RecordLogicalIndexWrite(idx.IndexName, indexKey);
                 }
                 else
                 {
                     await IndexMaintenanceHelper.EnsureUniqueConstraintAsync(
+                        _pager,
                         indexStore,
+                        idx.IndexName,
                         tableTree,
                         schema,
                         GetReadSerializer(schema),
@@ -11035,15 +11482,30 @@ public sealed class QueryPlanner
                         keyComponents!,
                         indexKey,
                         storageMode,
-                        idx.IndexName,
                         ct);
 
-                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(
+                        _pager,
+                        indexStore,
+                        idx.IndexName,
+                        indexKey,
+                        rowId,
+                        keyComponents,
+                        storageMode,
+                        ct);
                 }
             }
             else
             {
-                await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
+                await IndexMaintenanceHelper.InsertRowIdAsync(
+                    _pager,
+                    indexStore,
+                    idx.IndexName,
+                    indexKey,
+                    rowId,
+                    keyComponents,
+                    storageMode,
+                    ct);
             }
         }
     }
@@ -11079,7 +11541,15 @@ public sealed class QueryPlanner
             }
 
             var indexStore = _catalog.GetIndexStore(idx.IndexName);
-            await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, indexKey, rowId, keyComponents, storageMode, ct);
+            await IndexMaintenanceHelper.DeleteRowIdAsync(
+                _pager,
+                indexStore,
+                idx.IndexName,
+                indexKey,
+                rowId,
+                keyComponents,
+                storageMode,
+                ct);
         }
     }
 
@@ -11135,7 +11605,15 @@ public sealed class QueryPlanner
             // Remove old entry.
             if (hasOldKey)
             {
-                await IndexMaintenanceHelper.DeleteRowIdAsync(indexStore, oldKey, oldRowId, oldComponents, storageMode, ct);
+                await IndexMaintenanceHelper.DeleteRowIdAsync(
+                    _pager,
+                    indexStore,
+                    idx.IndexName,
+                    oldKey,
+                    oldRowId,
+                    oldComponents,
+                    storageMode,
+                    ct);
             }
 
             // Add new entry.
@@ -11145,6 +11623,7 @@ public sealed class QueryPlanner
                 {
                     if (usesDirectIntegerKey)
                     {
+                        _pager.RecordLogicalIndexRead(idx.IndexName, newKey);
                         var existing = await indexStore.FindAsync(newKey, ct);
                         if (existing != null)
                             throw new CSharpDbException(ErrorCode.ConstraintViolation,
@@ -11153,11 +11632,14 @@ public sealed class QueryPlanner
                         var payload = new byte[8];
                         BitConverter.TryWriteBytes(payload, newRowId);
                         await indexStore.InsertAsync(newKey, payload, ct);
+                        _pager.RecordLogicalIndexWrite(idx.IndexName, newKey);
                     }
                     else
                     {
                         await IndexMaintenanceHelper.EnsureUniqueConstraintAsync(
+                            _pager,
                             indexStore,
+                            idx.IndexName,
                             tableTree,
                             schema,
                             GetReadSerializer(schema),
@@ -11166,15 +11648,30 @@ public sealed class QueryPlanner
                             newComponents!,
                             newKey,
                             storageMode,
-                            idx.IndexName,
                             ct);
 
-                        await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, storageMode, ct);
+                        await IndexMaintenanceHelper.InsertRowIdAsync(
+                            _pager,
+                            indexStore,
+                            idx.IndexName,
+                            newKey,
+                            newRowId,
+                            newComponents,
+                            storageMode,
+                            ct);
                     }
                 }
                 else
                 {
-                    await IndexMaintenanceHelper.InsertRowIdAsync(indexStore, newKey, newRowId, newComponents, storageMode, ct);
+                    await IndexMaintenanceHelper.InsertRowIdAsync(
+                        _pager,
+                        indexStore,
+                        idx.IndexName,
+                        newKey,
+                        newRowId,
+                        newComponents,
+                        storageMode,
+                        ct);
                 }
             }
         }
@@ -13642,6 +14139,7 @@ public sealed class QueryPlanner
         }
 
         await tree.DeleteAsync(rowId, ct);
+        RecordLogicalMutationWrites(tableName, schema, oldRow: currentRow, newRow: null, oldRowId: rowId);
         await DeleteFromAllIndexesAsync(indexes, schema, currentRow, rowId, ct);
         await _catalog.AdjustTableRowCountAsync(tableName, -1, ct);
         mutationContext.TouchedTables.Add(tableName);
@@ -13668,6 +14166,7 @@ public sealed class QueryPlanner
         if (supportIndex is not null &&
             TryBuildForeignKeyLookup(supportIndex, childSchema, childColumnIndex, referencedValue, out long lookupKey, out DbValue[]? keyComponents, out SqlIndexStorageMode storageMode, out bool usesDirectIntegerKey))
         {
+            _pager.RecordLogicalIndexRead(supportIndex.IndexName, lookupKey);
             byte[]? payload = await _catalog.GetIndexStore(supportIndex.IndexName).FindAsync(lookupKey, ct);
             ReadOnlyMemory<byte> rowIdPayload = GetMatchingIndexRowIds(payload, keyComponents, storageMode, usesDirectIntegerKey);
             if (!rowIdPayload.IsEmpty)
@@ -13720,6 +14219,7 @@ public sealed class QueryPlanner
             parentSchema.Columns[parentColumnIndex].Type == DbType.Integer &&
             expectedValue.Type == DbType.Integer)
         {
+            _pager.RecordLogicalTableRowRead(parentSchema.TableName, expectedValue.AsInteger);
             return await _catalog.GetTableTree(parentSchema.TableName, _pager).FindMemoryAsync(expectedValue.AsInteger, ct) is not null;
         }
 
@@ -13727,6 +14227,7 @@ public sealed class QueryPlanner
         if (lookupIndex is not null &&
             TryBuildForeignKeyLookup(lookupIndex, parentSchema, parentColumnIndex, expectedValue, out long lookupKey, out DbValue[]? keyComponents, out SqlIndexStorageMode storageMode, out bool usesDirectIntegerKey))
         {
+            _pager.RecordLogicalIndexRead(lookupIndex.IndexName, lookupKey);
             byte[]? payload = await _catalog.GetIndexStore(lookupIndex.IndexName).FindAsync(lookupKey, ct);
             ReadOnlyMemory<byte> rowIdPayload = GetMatchingIndexRowIds(payload, keyComponents, storageMode, usesDirectIntegerKey);
             if (!rowIdPayload.IsEmpty)
@@ -13877,6 +14378,109 @@ public sealed class QueryPlanner
         return payload is { } rowPayload ? GetReadSerializer(schema).Decode(rowPayload.Span) : null;
     }
 
+    private void RecordLogicalMutationWrites(
+        string tableName,
+        TableSchema schema,
+        DbValue[]? oldRow,
+        DbValue[]? newRow,
+        long? oldRowId = null,
+        long? newRowId = null)
+    {
+        LogicalMutationConflictMetadata metadata = GetLogicalMutationConflictMetadata(tableName, schema);
+        if (oldRowId.HasValue)
+            _pager.RecordLogicalResourceWrite(metadata.RowResourceName, oldRowId.Value);
+        if (newRowId.HasValue && newRowId != oldRowId)
+            _pager.RecordLogicalResourceWrite(metadata.RowResourceName, newRowId.Value);
+
+        RecordLogicalColumnWrites(metadata, oldRow);
+        RecordLogicalColumnWrites(metadata, newRow);
+    }
+
+    private void RecordLogicalColumnWrites(LogicalMutationConflictMetadata metadata, DbValue[]? row)
+    {
+        if (row is null)
+            return;
+
+        int columnCount = Math.Min(metadata.Columns.Length, row.Length);
+        for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+        {
+            LogicalColumnConflictMetadata columnMetadata = metadata.Columns[columnIndex];
+            if (!TryGetLogicalColumnConflictKey(columnMetadata, row[columnIndex], out long key))
+                continue;
+
+            _pager.RecordLogicalResourceWrite(columnMetadata.ResourceName!, key);
+        }
+    }
+
+    private LogicalMutationConflictMetadata GetLogicalMutationConflictMetadata(string tableName, TableSchema schema)
+    {
+        if (!_logicalMutationConflictMetadataCache.TryGetValue(schema, out Dictionary<string, LogicalMutationConflictMetadata>? schemaCache))
+        {
+            schemaCache = new Dictionary<string, LogicalMutationConflictMetadata>(StringComparer.OrdinalIgnoreCase);
+            _logicalMutationConflictMetadataCache.Add(schema, schemaCache);
+        }
+
+        if (!schemaCache.TryGetValue(tableName, out LogicalMutationConflictMetadata? metadata))
+        {
+            metadata = BuildLogicalMutationConflictMetadata(tableName, schema);
+            schemaCache.Add(tableName, metadata);
+        }
+
+        return metadata;
+    }
+
+    private static LogicalMutationConflictMetadata BuildLogicalMutationConflictMetadata(string tableName, TableSchema schema)
+    {
+        var columnMetadata = new LogicalColumnConflictMetadata[schema.Columns.Count];
+        for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+            columnMetadata[columnIndex] = BuildLogicalColumnConflictMetadata(tableName, schema.Columns[columnIndex]);
+
+        return new LogicalMutationConflictMetadata
+        {
+            RowResourceName = Pager.BuildLogicalTableRowResourceName(tableName),
+            Columns = columnMetadata,
+        };
+    }
+
+    private static LogicalColumnConflictMetadata BuildLogicalColumnConflictMetadata(string tableName, ColumnDefinition column)
+    {
+        return column.Type switch
+        {
+            DbType.Integer => new LogicalColumnConflictMetadata(
+                LogicalColumnConflictKind.Integer,
+                Pager.BuildLogicalTableColumnResourceName(tableName, column.Name),
+                NormalizedCollation: null),
+            DbType.Text => new LogicalColumnConflictMetadata(
+                LogicalColumnConflictKind.Text,
+                Pager.BuildLogicalTableColumnResourceName(tableName, column.Name),
+                CollationSupport.NormalizeMetadataName(column.Collation)),
+            _ => default,
+        };
+    }
+
+    private static bool TryGetLogicalColumnConflictKey(LogicalColumnConflictMetadata column, DbValue value, out long key)
+    {
+        key = 0;
+        if (value.IsNull)
+            return false;
+
+        switch (column.Kind)
+        {
+            case LogicalColumnConflictKind.Integer when value.Type == DbType.Integer:
+                key = value.AsInteger;
+                return true;
+            case LogicalColumnConflictKind.Text when value.Type == DbType.Text:
+                string text = value.AsText;
+                if (column.RequiresTextNormalization)
+                    text = CollationSupport.NormalizeText(text, column.NormalizedCollation);
+
+                key = OrderedTextIndexKeyCodec.ComputeKey(text);
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private async ValueTask<long> ExecuteResolvedInsertRowAsync(
         string tableName,
         TableSchema schema,
@@ -13898,6 +14502,7 @@ public sealed class QueryPlanner
             try
             {
                 await tree.InsertAsync(rowId, _recordSerializer.Encode(row), ct);
+                RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
                 break;
             }
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
@@ -13954,7 +14559,7 @@ public sealed class QueryPlanner
 
             long rowId = row[pkIdx].AsInteger;
             if (rowId >= 0 && rowId < long.MaxValue)
-                UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
+                ObserveExplicitRowId(tableName, schema, checked(rowId + 1));
             return (rowId, false);
         }
 
@@ -13966,8 +14571,12 @@ public sealed class QueryPlanner
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
             nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
-        UpdateNextRowIdState(tableName, schema, checked(nextRowId + 1));
-        return nextRowId;
+        long rowId = _nextRowIdReservationProvider is not null
+            ? _nextRowIdReservationProvider(tableName, nextRowId)
+            : nextRowId;
+
+        UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
+        return rowId;
     }
 
     private void InvalidateRowIdCache(string tableName)
@@ -13981,6 +14590,12 @@ public sealed class QueryPlanner
         {
             _nextRowIdCache[tableName] = schema.NextRowId;
             return schema.NextRowId;
+        }
+
+        if (_nextRowIdHintProvider?.Invoke(tableName) is long hintedNextRowId && hintedNextRowId > 0)
+        {
+            _nextRowIdCache[tableName] = hintedNextRowId;
+            return hintedNextRowId;
         }
 
         long loadedNextRowId = await ScanNextRowIdAsync(tree, ct);
@@ -14010,6 +14625,15 @@ public sealed class QueryPlanner
         else
             _nextRowIdCache[tableName] = nextRowId;
 
+        _dirtyNextRowIdTables.Add(tableName);
+
+        if (_useTransientNextRowIdHints)
+        {
+            if (schema.NextRowId > 0 && nextRowId > schema.NextRowId)
+                schema.NextRowId = 0;
+            return;
+        }
+
         if (schema.NextRowId < nextRowId)
             schema.NextRowId = nextRowId;
     }
@@ -14025,6 +14649,9 @@ public sealed class QueryPlanner
             _nextRowIdCache[tableName] = Math.Max(schema.NextRowId, nextRowId);
         else
             _nextRowIdCache[tableName] = nextRowId;
+
+        _dirtyNextRowIdTables.Add(tableName);
+        _nextRowIdObservationProvider?.Invoke(tableName, nextRowId);
 
         // Explicit rowid inserts can push the durable high-water mark forward, but persisting
         // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as

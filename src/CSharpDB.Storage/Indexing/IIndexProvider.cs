@@ -5,5 +5,5 @@ namespace CSharpDB.Storage.Indexing;
 /// </summary>
 public interface IIndexProvider
 {
-    IIndexStore CreateIndexStore(Pager pager, uint rootPageId);
+    IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName);
 }

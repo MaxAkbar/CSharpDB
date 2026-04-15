@@ -17,4 +17,6 @@ public sealed class EmptyIndexCursor : IIndexCursor
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default) =>
         ValueTask.FromResult(false);
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

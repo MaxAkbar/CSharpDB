@@ -1,0 +1,16 @@
+Focused validation micro baseline refresh created on 2026-04-13.
+
+Source snapshot:
+- focused-validation/20260330-122507
+
+Files refreshed in this snapshot:
+- CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv
+- CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv
+
+Refresh source:
+- Full class reruns from isolated clean HEAD worktree:
+  - C:\Users\maxim\AppData\Local\Temp\csharpdb-regression-head-clean
+
+Reason:
+- Same-runner reruns on 2026-04-13 showed the March 30 baseline values for these two classes were no longer reproducible locally.
+- Clean-HEAD reruns confirmed the drift exists in committed code as well, so this snapshot tracks the current committed benchmark shape rather than current workspace-only changes.

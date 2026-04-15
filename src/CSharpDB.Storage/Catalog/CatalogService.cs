@@ -45,6 +45,7 @@ internal sealed class CatalogService
     private readonly Dictionary<string, long> _persistedTableNextRowIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableStatistics> _tableStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyTableStatistics = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _pendingTableRowCountDeltas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _exactTableRowCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ColumnStatistics> _columnStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyColumnStatistics = new(StringComparer.OrdinalIgnoreCase);
@@ -53,6 +54,7 @@ internal sealed class CatalogService
     private readonly Dictionary<string, ColumnDistributionStatistics[]> _columnDistributionStatsByTable = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IndexPrefixStatistics> _indexPrefixStatsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IndexPrefixStatistics[]> _indexPrefixStatsByTable = new(StringComparer.OrdinalIgnoreCase);
+    private bool _advisoryCatalogContentChanged;
     private uint _persistedIndexCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedViewCatalogRootPage = PageConstants.NullPageId;
     private uint _persistedTriggerCatalogRootPage = PageConstants.NullPageId;
@@ -164,6 +166,7 @@ internal sealed class CatalogService
     }
 
     public long SchemaVersion => Volatile.Read(ref _schemaVersion);
+    public bool HasAdvisoryCatalogContentChanges => _advisoryCatalogContentChanged;
 
     public async ValueTask ReloadAsync(CancellationToken ct = default)
     {
@@ -196,6 +199,7 @@ internal sealed class CatalogService
         _triggersByTable.Clear();
         _tableStatsCache.Clear();
         _dirtyTableStatistics.Clear();
+        _pendingTableRowCountDeltas.Clear();
         _exactTableRowCounts.Clear();
         _columnStatsCache.Clear();
         _dirtyColumnStatistics.Clear();
@@ -204,6 +208,7 @@ internal sealed class CatalogService
         _columnDistributionStatsByTable.Clear();
         _indexPrefixStatsCache.Clear();
         _indexPrefixStatsByTable.Clear();
+        _advisoryCatalogContentChanged = false;
 
         _indexesSnapshot = Array.Empty<IndexSchema>();
         _viewNamesSnapshot = Array.Empty<string>();
@@ -545,6 +550,31 @@ internal sealed class CatalogService
         return _tableStatisticsSnapshot;
     }
 
+    public IReadOnlyCollection<TableStatistics> GetDirtyTableStatistics()
+    {
+        if (_dirtyTableStatistics.Count == 0)
+            return Array.Empty<TableStatistics>();
+
+        var dirty = new List<TableStatistics>(_dirtyTableStatistics.Count);
+        foreach (string tableName in _dirtyTableStatistics)
+        {
+            if (_tableStatsCache.TryGetValue(tableName, out var stats))
+                dirty.Add(stats);
+        }
+
+        return dirty;
+    }
+
+    public IReadOnlyCollection<KeyValuePair<string, long>> GetPendingTableRowCountDeltas()
+    {
+        if (_pendingTableRowCountDeltas.Count == 0)
+            return Array.Empty<KeyValuePair<string, long>>();
+
+        return _pendingTableRowCountDeltas
+            .Where(static entry => entry.Value != 0)
+            .ToArray();
+    }
+
     public ColumnStatistics? GetColumnStatistics(string tableName, string columnName)
     {
         _columnStatsCache.TryGetValue(GetColumnStatisticsCacheKey(tableName, columnName), out var stats);
@@ -568,6 +598,93 @@ internal sealed class CatalogService
         }
 
         return _columnStatisticsSnapshot;
+    }
+
+    public IReadOnlyCollection<ColumnStatistics> GetDirtyColumnStatistics()
+    {
+        if (_dirtyColumnStatistics.Count == 0)
+            return Array.Empty<ColumnStatistics>();
+
+        var dirty = new List<ColumnStatistics>(_dirtyColumnStatistics.Count);
+        foreach (string cacheKey in _dirtyColumnStatistics)
+        {
+            if (_columnStatsCache.TryGetValue(cacheKey, out var stats))
+                dirty.Add(stats);
+        }
+
+        return dirty;
+    }
+
+    public void ApplyCommittedAdvisoryStatisticsSnapshot(
+        IReadOnlyCollection<TableStatistics> tableStatistics,
+        IReadOnlyCollection<ColumnStatistics> columnStatistics,
+        bool markDirty = false)
+    {
+        ArgumentNullException.ThrowIfNull(tableStatistics);
+        ArgumentNullException.ThrowIfNull(columnStatistics);
+
+        foreach (TableStatistics stats in tableStatistics)
+        {
+            if (!markDirty)
+            {
+                _dirtyTableStatistics.Remove(stats.TableName);
+                _pendingTableRowCountDeltas.Remove(stats.TableName);
+            }
+
+            CacheTableStatistics(stats, stats.RowCountIsExact, markDirty);
+        }
+
+        foreach (ColumnStatistics stats in columnStatistics)
+        {
+            string cacheKey = GetColumnStatisticsCacheKey(stats.TableName, stats.ColumnName);
+            if (!markDirty)
+                _dirtyColumnStatistics.Remove(cacheKey);
+
+            CacheColumnStatistics(
+                new ColumnStatistics
+                {
+                    TableName = stats.TableName,
+                    ColumnName = stats.ColumnName,
+                    DistinctCount = stats.DistinctCount,
+                    NonNullCount = stats.NonNullCount,
+                    MinValue = stats.MinValue,
+                    MaxValue = stats.MaxValue,
+                    IsStale = stats.IsStale,
+                },
+                markDirty);
+        }
+    }
+
+    public void ApplyCommittedTableRowCountDeltas(IReadOnlyCollection<KeyValuePair<string, long>> rowCountDeltas)
+    {
+        ArgumentNullException.ThrowIfNull(rowCountDeltas);
+
+        foreach ((string tableName, long delta) in rowCountDeltas)
+        {
+            if (delta == 0)
+                continue;
+
+            if (_pendingTableRowCountDeltas.TryGetValue(tableName, out long existing))
+                _pendingTableRowCountDeltas[tableName] = checked(existing + delta);
+            else
+                _pendingTableRowCountDeltas[tableName] = delta;
+        }
+    }
+
+    public void ApplyCommittedTableMetadataSnapshot(IReadOnlyCollection<KeyValuePair<string, long>> nextRowIds)
+    {
+        ArgumentNullException.ThrowIfNull(nextRowIds);
+
+        foreach ((string tableName, long nextRowId) in nextRowIds)
+        {
+            if (nextRowId <= 0)
+                continue;
+
+            if (_cache.TryGetValue(tableName, out var schema) && schema.NextRowId < nextRowId)
+                schema.NextRowId = nextRowId;
+
+            _persistedTableNextRowIds[tableName] = nextRowId;
+        }
     }
 
     public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats)
@@ -692,6 +809,20 @@ internal sealed class CatalogService
         await PersistAuxiliaryCatalogRootPageChangesAsync(ct);
     }
 
+    public async ValueTask<bool> PersistAllRootPageChangesAndDetectChangesAsync(CancellationToken ct = default)
+    {
+        bool changed = false;
+
+        foreach (var tableName in _tableTrees.Keys)
+            changed |= await PersistTableRootPageChangeAsync(tableName, ct);
+
+        foreach (var indexName in _indexStores.Keys)
+            changed |= await PersistIndexRootPageChangeAsync(indexName, ct);
+
+        changed |= await PersistAuxiliaryCatalogRootPageChangesAsync(ct);
+        return changed;
+    }
+
     public async ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default)
         => await CreateTableCoreAsync(schema, normalizeNewSchema: true, ct);
 
@@ -723,7 +854,7 @@ internal sealed class CatalogService
 
         _cache[storedSchema.TableName] = storedSchema;
         _tableRootPages[storedSchema.TableName] = tableRootPage;
-        _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage);
+        _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage, storedSchema.TableName);
         _tableTrees[storedSchema.TableName].SetCachedEntryCount(0);
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
         RebuildForeignKeyCaches();
@@ -809,7 +940,13 @@ internal sealed class CatalogService
         RebuildForeignKeyCaches();
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
-            _tableTrees[storedSchema.TableName] = existingTree;
+        {
+            var renamedTree = new BTree(_pager, rootPage, storedSchema.TableName);
+            if (existingTree.TryGetCachedEntryCount(out long cachedEntryCount))
+                renamedTree.SetCachedEntryCount(cachedEntryCount);
+
+            _tableTrees[storedSchema.TableName] = renamedTree;
+        }
 
         bool isPureTableRename =
             !string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase) &&
@@ -837,6 +974,7 @@ internal sealed class CatalogService
     public async ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(rowCount);
+        _pendingTableRowCountDeltas.Remove(tableName);
         uint lastPersistedChangeCounter = _tableStatsCache.TryGetValue(tableName, out var existing)
             ? existing.LastPersistedChangeCounter
             : 0;
@@ -856,6 +994,7 @@ internal sealed class CatalogService
 
     public async ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default)
     {
+        AccumulateTableRowCountDelta(tableName, delta);
         long rowCount;
         bool hasStaleColumns;
         uint lastPersistedChangeCounter;
@@ -902,6 +1041,7 @@ internal sealed class CatalogService
 
     public async ValueTask AdjustTableRowCountKnownExactAsync(string tableName, long delta, CancellationToken ct = default)
     {
+        AccumulateTableRowCountDelta(tableName, delta);
         long rowCount;
         bool hasStaleColumns;
         uint lastPersistedChangeCounter;
@@ -946,11 +1086,13 @@ internal sealed class CatalogService
             if (!_tableStatsCache.TryGetValue(tableName, out var stats))
             {
                 _dirtyTableStatistics.Remove(tableName);
+                _pendingTableRowCountDeltas.Remove(tableName);
                 continue;
             }
 
             await UpsertTableStatisticsAsync(stats, _exactTableRowCounts.Contains(tableName), ct);
             _dirtyTableStatistics.Remove(tableName);
+            _pendingTableRowCountDeltas.Remove(tableName);
         }
     }
 
@@ -965,6 +1107,7 @@ internal sealed class CatalogService
         IReadOnlyList<ColumnStatistics> columnStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteColumnStatisticsAsync(tableName, ct);
 
         bool hasStaleColumns = false;
@@ -994,6 +1137,7 @@ internal sealed class CatalogService
         IReadOnlyList<ColumnDistributionStatistics> columnStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteColumnDistributionStatisticsAsync(tableName, ct);
 
         for (int i = 0; i < columnStatistics.Count; i++)
@@ -1029,6 +1173,7 @@ internal sealed class CatalogService
         IReadOnlyList<IndexPrefixStatistics> indexStatistics,
         CancellationToken ct = default)
     {
+        _advisoryCatalogContentChanged = true;
         await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
 
         for (int i = 0; i < indexStatistics.Count; i++)
@@ -1114,7 +1259,7 @@ internal sealed class CatalogService
             return tree;
 
         uint rootPage = GetTableRootPage(tableName);
-        tree = new BTree(_pager, rootPage);
+        tree = new BTree(_pager, rootPage, tableName);
         if (_tableStatsCache.TryGetValue(tableName, out var stats))
             tree.SetCachedEntryCount(stats.RowCount);
         _tableTrees[tableName] = tree;
@@ -1131,7 +1276,7 @@ internal sealed class CatalogService
             return GetTableTree(tableName);
 
         uint rootPage = GetTableRootPage(tableName);
-        var tree = new BTree(pager, rootPage);
+        var tree = new BTree(pager, rootPage, tableName);
         if (_tableStatsCache.TryGetValue(tableName, out var stats))
             tree.SetCachedEntryCount(stats.RowCount);
         return tree;
@@ -1378,7 +1523,7 @@ internal sealed class CatalogService
 
     private IIndexStore CreateIndexStore(Pager pager, IndexSchema schema, uint rootPageId)
     {
-        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId);
+        IIndexStore store = _indexProvider.CreateIndexStore(pager, rootPageId, schema.IndexName);
         return ShouldUseOverflowingIndexStore(schema)
             ? new OverflowingIndexStore(store, pager)
             : store;
@@ -1667,6 +1812,7 @@ internal sealed class CatalogService
     private async ValueTask DeleteTableStatisticsAsync(string tableName, CancellationToken ct)
     {
         _dirtyTableStatistics.Remove(tableName);
+        _pendingTableRowCountDeltas.Remove(tableName);
         _exactTableRowCounts.Remove(tableName);
         if (_tableStatsCatalogTree == null)
         {
@@ -1688,6 +1834,7 @@ internal sealed class CatalogService
 
         bool isExact = _exactTableRowCounts.Contains(oldTableName);
         _dirtyTableStatistics.Remove(oldTableName);
+        _pendingTableRowCountDeltas.Remove(oldTableName);
         await DeleteTableStatisticsAsync(oldTableName, ct);
         await UpsertTableStatisticsAsync(
             new TableStatistics
@@ -1699,6 +1846,17 @@ internal sealed class CatalogService
             },
             isExact,
             ct);
+    }
+
+    private void AccumulateTableRowCountDelta(string tableName, long delta)
+    {
+        if (delta == 0)
+            return;
+
+        if (_pendingTableRowCountDeltas.TryGetValue(tableName, out long existing))
+            _pendingTableRowCountDeltas[tableName] = checked(existing + delta);
+        else
+            _pendingTableRowCountDeltas[tableName] = delta;
     }
 
     private async ValueTask SetTableHasStaleColumnsAsync(string tableName, bool hasStaleColumns, CancellationToken ct)
@@ -2536,39 +2694,41 @@ internal sealed class CatalogService
         Interlocked.Increment(ref _schemaVersion);
     }
 
-    private async ValueTask PersistAuxiliaryCatalogRootPageChangesAsync(CancellationToken ct)
+    private async ValueTask<bool> PersistAuxiliaryCatalogRootPageChangesAsync(CancellationToken ct)
     {
-        await PersistIndexCatalogRootPageChangeAsync(ct);
-        await PersistViewCatalogRootPageChangeAsync(ct);
-        await PersistTriggerCatalogRootPageChangeAsync(ct);
-        await PersistTableStatsCatalogRootPageChangeAsync(ct);
-        await PersistColumnStatsCatalogRootPageChangeAsync(ct);
-        await PersistColumnDistributionStatsCatalogRootPageChangeAsync(ct);
-        await PersistIndexPrefixStatsCatalogRootPageChangeAsync(ct);
+        bool changed = false;
+        changed |= await PersistIndexCatalogRootPageChangeAsync(ct);
+        changed |= await PersistViewCatalogRootPageChangeAsync(ct);
+        changed |= await PersistTriggerCatalogRootPageChangeAsync(ct);
+        changed |= await PersistTableStatsCatalogRootPageChangeAsync(ct);
+        changed |= await PersistColumnStatsCatalogRootPageChangeAsync(ct);
+        changed |= await PersistColumnDistributionStatsCatalogRootPageChangeAsync(ct);
+        changed |= await PersistIndexPrefixStatsCatalogRootPageChangeAsync(ct);
+        return changed;
     }
 
-    private ValueTask PersistIndexCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistIndexCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_indexCatalogTree, IndexCatalogSentinel, _persistedIndexCatalogRootPage, ct, rootPage => _persistedIndexCatalogRootPage = rootPage);
 
-    private ValueTask PersistViewCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistViewCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_viewCatalogTree, ViewCatalogSentinel, _persistedViewCatalogRootPage, ct, rootPage => _persistedViewCatalogRootPage = rootPage);
 
-    private ValueTask PersistTriggerCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistTriggerCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_triggerCatalogTree, TriggerCatalogSentinel, _persistedTriggerCatalogRootPage, ct, rootPage => _persistedTriggerCatalogRootPage = rootPage);
 
-    private ValueTask PersistTableStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistTableStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_tableStatsCatalogTree, TableStatsCatalogSentinel, _persistedTableStatsCatalogRootPage, ct, rootPage => _persistedTableStatsCatalogRootPage = rootPage);
 
-    private ValueTask PersistColumnStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistColumnStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_columnStatsCatalogTree, ColumnStatsCatalogSentinel, _persistedColumnStatsCatalogRootPage, ct, rootPage => _persistedColumnStatsCatalogRootPage = rootPage);
 
-    private ValueTask PersistColumnDistributionStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistColumnDistributionStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_columnDistributionStatsCatalogTree, ColumnDistributionStatsCatalogSentinel, _persistedColumnDistributionStatsCatalogRootPage, ct, rootPage => _persistedColumnDistributionStatsCatalogRootPage = rootPage);
 
-    private ValueTask PersistIndexPrefixStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
+    private ValueTask<bool> PersistIndexPrefixStatsCatalogRootPageChangeAsync(CancellationToken ct) =>
         PersistAuxiliaryCatalogRootPageChangeAsync(_indexPrefixStatsCatalogTree, IndexPrefixStatsCatalogSentinel, _persistedIndexPrefixStatsCatalogRootPage, ct, rootPage => _persistedIndexPrefixStatsCatalogRootPage = rootPage);
 
-    private async ValueTask PersistAuxiliaryCatalogRootPageChangeAsync(
+    private async ValueTask<bool> PersistAuxiliaryCatalogRootPageChangeAsync(
         BTree? tree,
         long sentinelKey,
         uint persistedRootPage,
@@ -2576,11 +2736,11 @@ internal sealed class CatalogService
         Action<uint> setPersistedRootPage)
     {
         if (tree == null)
-            return;
+            return false;
 
         uint currentRootPage = tree.RootPageId;
         if (persistedRootPage == currentRootPage)
-            return;
+            return false;
 
         var payload = new byte[4];
         BitConverter.TryWriteBytes(payload, currentRootPage);
@@ -2589,24 +2749,25 @@ internal sealed class CatalogService
 
         setPersistedRootPage(currentRootPage);
         _pager.SchemaRootPage = _catalogTree.RootPageId;
+        return true;
     }
 
-    private async ValueTask PersistTableRootPageChangeAsync(string tableName, CancellationToken ct)
+    private async ValueTask<bool> PersistTableRootPageChangeAsync(string tableName, CancellationToken ct)
     {
         if (!_tableTrees.TryGetValue(tableName, out var tree))
-            return;
+            return false;
 
         if (!_tableRootPages.TryGetValue(tableName, out uint persistedRootPage))
-            return;
+            return false;
 
         if (!_cache.TryGetValue(tableName, out var schema))
-            return;
+            return false;
 
         uint currentRootPage = tree.RootPageId;
         _persistedTableNextRowIds.TryGetValue(tableName, out long persistedNextRowId);
         bool metadataChanged = persistedNextRowId != schema.NextRowId;
         if (currentRootPage == persistedRootPage && !metadataChanged)
-            return;
+            return false;
 
         var schemaBytes = _schemaSerializer.Serialize(schema);
         var payload = _catalogStore.WriteRootPayload(currentRootPage, schemaBytes);
@@ -2618,19 +2779,20 @@ internal sealed class CatalogService
         _tableRootPages[tableName] = currentRootPage;
         _persistedTableNextRowIds[tableName] = schema.NextRowId;
         _pager.SchemaRootPage = _catalogTree.RootPageId;
+        return currentRootPage != persistedRootPage;
     }
 
-    private async ValueTask PersistIndexRootPageChangeAsync(string indexName, CancellationToken ct)
+    private async ValueTask<bool> PersistIndexRootPageChangeAsync(string indexName, CancellationToken ct)
     {
         if (!_indexStores.TryGetValue(indexName, out var store))
-            return;
+            return false;
 
         if (!_indexRootPages.TryGetValue(indexName, out uint persistedRootPage))
-            return;
+            return false;
 
         uint currentRootPage = store.RootPageId;
         if (currentRootPage == persistedRootPage)
-            return;
+            return false;
 
         var schema = _indexCache[indexName];
         var schemaBytes = _schemaSerializer.SerializeIndex(schema);
@@ -2641,6 +2803,7 @@ internal sealed class CatalogService
         await _indexCatalogTree.InsertAsync(key, payload, ct);
 
         _indexRootPages[indexName] = currentRootPage;
+        return true;
     }
 
 }

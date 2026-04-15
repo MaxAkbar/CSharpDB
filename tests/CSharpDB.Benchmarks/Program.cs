@@ -67,9 +67,69 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount);
                 return;
 
+            case "--write-transaction-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--commit-fan-in-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--commit-fan-in-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"commit-fan-in-scenario-{GetRequiredOptionValue(args, "--commit-fan-in-scenario")}",
+                    () => RunCommitFanInScenarioOnceAsync(GetRequiredOptionValue(args, "--commit-fan-in-scenario")),
+                    repeatCount);
+                return;
+
+            case "--insert-fan-in-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--insert-fan-in-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"insert-fan-in-scenario-{GetRequiredOptionValue(args, "--insert-fan-in-scenario")}",
+                    () => RunInsertFanInScenarioOnceAsync(GetRequiredOptionValue(args, "--insert-fan-in-scenario")),
+                    repeatCount);
+                return;
+
+            case "--checkpoint-retention-diagnostics":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--checkpoint-retention-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"checkpoint-retention-scenario-{GetRequiredOptionValue(args, "--checkpoint-retention-scenario")}",
+                    () => RunCheckpointRetentionScenarioOnceAsync(GetRequiredOptionValue(args, "--checkpoint-retention-scenario")),
+                    repeatCount);
+                return;
+
+            case "--write-transaction-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"write-transaction-scenario-{GetRequiredOptionValue(args, "--write-transaction-scenario")}",
+                    () => RunWriteTransactionScenarioOnceAsync(GetRequiredOptionValue(args, "--write-transaction-scenario")),
+                    repeatCount);
+                return;
+
             case "--concurrent-write-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
+                return;
+
+            case "--concurrent-write-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"concurrent-write-scenario-{GetRequiredOptionValue(args, "--concurrent-write-scenario")}",
+                    () => RunConcurrentWriteScenarioOnceAsync(GetRequiredOptionValue(args, "--concurrent-write-scenario")),
+                    repeatCount);
                 return;
 
             case "--direct-file-cache-transport":
@@ -148,6 +208,18 @@ public static class Program
                 Console.WriteLine("=== Durable SQL Batching Benchmark ===");
                 await RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount);
                 Console.WriteLine();
+                Console.WriteLine("=== Explicit WriteTransaction Benchmark ===");
+                await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
+                Console.WriteLine();
+                Console.WriteLine("=== Commit Fan-In Benchmark ===");
+                await RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount);
+                Console.WriteLine();
+                Console.WriteLine("=== Insert Fan-In Benchmark ===");
+                await RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount);
+                Console.WriteLine();
+                Console.WriteLine("=== Checkpoint Retention Benchmark ===");
+                await RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount);
+                Console.WriteLine();
                 Console.WriteLine("=== Hybrid Storage Mode Benchmark ===");
                 await RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount);
                 Console.WriteLine();
@@ -200,6 +272,30 @@ public static class Program
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
             await RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--write-transaction-diagnostics"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--commit-fan-in-diagnostics"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--checkpoint-retention-diagnostics"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -448,10 +544,64 @@ public static class Program
         return await DurableSqlBatchingBenchmark.RunAsync();
     }
 
+    private static async Task<List<BenchmarkResult>> RunWriteTransactionDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Explicit WriteTransaction Benchmark ---");
+        return await WriteTransactionDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCommitFanInDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Commit Fan-In Benchmark ---");
+        return await CommitFanInDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCommitFanInScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Commit Fan-In Scenario: {scenarioName} ---");
+        return [await CommitFanInDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
+    private static async Task<List<BenchmarkResult>> RunInsertFanInDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Insert Fan-In Benchmark ---");
+        return await InsertFanInDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunInsertFanInScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Insert Fan-In Scenario: {scenarioName} ---");
+        return [await InsertFanInDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCheckpointRetentionDiagnosticsOnceAsync()
+    {
+        Console.WriteLine("--- Checkpoint Retention Benchmark ---");
+        return await CheckpointRetentionDiagnosticsBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCheckpointRetentionScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Checkpoint Retention Scenario: {scenarioName} ---");
+        return [await CheckpointRetentionDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
+    private static async Task<List<BenchmarkResult>> RunWriteTransactionScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Explicit WriteTransaction Scenario: {scenarioName} ---");
+        return [await WriteTransactionDiagnosticsBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
     private static async Task<List<BenchmarkResult>> RunConcurrentWriteDiagnosticsOnceAsync()
     {
         Console.WriteLine("--- Concurrent Durable Write Benchmark ---");
         return await ConcurrentDurableWriteBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentWriteScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Concurrent Durable Write Scenario: {scenarioName} ---");
+        return [await ConcurrentDurableWriteBenchmark.RunNamedScenarioAsync(scenarioName)];
     }
 
     private static async Task<List<BenchmarkResult>> RunDirectFileCacheTransportOnceAsync()
@@ -515,6 +665,9 @@ public static class Program
         Console.WriteLine("--- Crash Recovery Benchmark ---");
         results.AddRange(await CrashRecoveryBenchmark.RunAsync());
 
+        Console.WriteLine("--- Logical Conflict Range Benchmark ---");
+        results.AddRange(await LogicalConflictRangeBenchmark.RunAsync());
+
         Console.WriteLine("--- WAL Growth Benchmark ---");
         results.AddRange(await WalGrowthBenchmark.RunAsync());
 
@@ -542,6 +695,10 @@ public static class Program
             "macro-batch-memory" => RunSuiteWithRepeatsAsync("macro-batch-memory", RunInMemoryBatchBenchmarksOnceAsync, repeatCount),
             "write-diagnostics" => RunSuiteWithRepeatsAsync("write-diagnostics", RunWriteDiagnosticsOnceAsync, repeatCount),
             "durable-sql-batching" => RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount),
+            "write-transaction-diagnostics" => RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount),
+            "commit-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("commit-fan-in-diagnostics", RunCommitFanInDiagnosticsOnceAsync, repeatCount),
+            "insert-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount),
+            "checkpoint-retention-diagnostics" => RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount),
             "concurrent-write-diagnostics" => RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount),
             "direct-file-cache-transport" => RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount),
             "hybrid-storage-mode" => RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount),
@@ -758,6 +915,22 @@ public static class Program
         return args.Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static string GetRequiredOptionValue(string[] args, string option)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(option, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
+                throw new ArgumentException($"Missing value for {option}.");
+
+            return args[i + 1];
+        }
+
+        throw new ArgumentException($"Missing required option {option}.");
+    }
+
     private static bool ContainsExplicitFilter(string[] args)
     {
         return args.Any(static arg => arg.Equals("--filter", StringComparison.OrdinalIgnoreCase));
@@ -812,7 +985,16 @@ public static class Program
         Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
         Console.WriteLine("  dotnet run -- --durable-sql-batching  Run focused durable SQL batching benchmark");
+        Console.WriteLine("  dotnet run -- --write-transaction-diagnostics  Run focused explicit WriteTransaction diagnostics");
+        Console.WriteLine("  dotnet run -- --commit-fan-in-diagnostics  Compare shared auto-commit vs explicit WriteTransaction fan-in");
+        Console.WriteLine("  dotnet run -- --commit-fan-in-scenario ExplicitTx_DisjointUpdate_W8_Batch250us  Run one commit fan-in scenario");
+        Console.WriteLine("  dotnet run -- --insert-fan-in-diagnostics  Compare insert-side fan-in across auto-commit and explicit WriteTransaction");
+        Console.WriteLine("  dotnet run -- --insert-fan-in-scenario AutoCommit_ExplicitId_W8_Batch250us  Run one insert fan-in scenario");
+        Console.WriteLine("  dotnet run -- --checkpoint-retention-diagnostics  Run focused background-checkpoint retention diagnostics");
+        Console.WriteLine("  dotnet run -- --checkpoint-retention-scenario W8_Blocker3s_Batch250us  Run one checkpoint-retention scenario");
+        Console.WriteLine("  dotnet run -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB  Run one explicit WriteTransaction scenario");
         Console.WriteLine("  dotnet run -- --concurrent-write-diagnostics  Run focused multi-writer durable commit diagnostics");
+        Console.WriteLine("  dotnet run -- --concurrent-write-scenario W8_Batch250us_Prealloc1MiB  Run one concurrent durable-write scenario");
         Console.WriteLine("  dotnet run -- --direct-file-cache-transport  Run focused direct default-vs-tuned file-cache benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused file-backed vs in-memory vs persistent-memory hybrid benchmark");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");
@@ -826,7 +1008,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");

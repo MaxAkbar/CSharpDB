@@ -73,6 +73,20 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
     }
 
     public bool HasPendingCheckpoint => _incrementalCheckpoint is not null;
+    public bool IsCheckpointCopyComplete =>
+        _incrementalCheckpoint is not null &&
+        _incrementalCheckpoint.NextPageIndex >= _incrementalCheckpoint.CommittedPageCount;
+    public bool TryGetCheckpointRetainedWalStartOffset(out long walOffset)
+    {
+        if (_incrementalCheckpoint is { } checkpoint)
+        {
+            walOffset = checkpoint.RetainedWalStartOffset;
+            return true;
+        }
+
+        walOffset = 0;
+        return false;
+    }
     public bool HasPendingCommitWork => false;
     public bool IsOpen => _isOpen;
 
@@ -83,8 +97,73 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
     {
     }
 
-    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() =>
-        CommitPathDiagnosticsSnapshot.Empty;
+    CommitPathDiagnosticsSnapshot ICommitPathDiagnosticsProvider.GetCommitPathDiagnosticsSnapshot() => new(
+        WalAppendCount: 0,
+        WalAppendTicks: 0,
+        ExplicitCommitLockWaitCount: 0,
+        ExplicitCommitLockWaitTicks: 0,
+        ExplicitCommitLockHoldCount: 0,
+        ExplicitCommitLockHoldTicks: 0,
+        ExplicitConflictResolutionCount: 0,
+        ExplicitConflictResolutionTicks: 0,
+        ExplicitLeafRebaseAttemptCount: 0,
+        ExplicitLeafRebaseSuccessCount: 0,
+        ExplicitLeafRebaseStructuralRejectCount: 0,
+        ExplicitLeafRebaseCapacityRejectCount: 0,
+        ExplicitLeafRebaseRejectNonInsertOnlyCount: 0,
+        ExplicitLeafRebaseRejectDuplicateKeyCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackPreconditionCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackMissingTraversalCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackDirtyAncestorCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackParentBoundaryCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackTargetPageDirtyCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentMissingParentPageCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentTransactionLeafNotSplitCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentBaseBoundaryMissingCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentInsertionShapeCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentInsertionMismatchCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentMissingLocalRightPageCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentLocalSplitShapeCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentRebaseFailureCount: 0,
+        ExplicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount: 0,
+        ExplicitLeafRebaseRejectSplitFallbackShapeCount: 0,
+        ExplicitLeafRebaseRejectOtherCount: 0,
+        ExplicitInteriorRebaseAttemptCount: 0,
+        ExplicitInteriorRebaseSuccessCount: 0,
+        ExplicitInteriorRebaseStructuralRejectCount: 0,
+        ExplicitInteriorRebaseCapacityRejectCount: 0,
+        ExplicitPendingCommitWaitCount: 0,
+        ExplicitPendingCommitWaitTicks: 0,
+        ExplicitHeaderPreparationCount: 0,
+        ExplicitHeaderPreparationTicks: 0,
+        ExplicitPendingCommitReservationCount: 0,
+        ExplicitPendingCommitReservationTicks: 0,
+        DurableBatchWindowWaitCount: 0,
+        DurableBatchWindowWaitTicks: 0,
+        PendingCommitWriteCount: 0,
+        PendingCommitWriteTicks: 0,
+        PendingCommitDrainCount: 0,
+        PendingCommitDrainTicks: 0,
+        BufferedFlushCount: 0,
+        BufferedFlushTicks: 0,
+        DurableFlushCount: 0,
+        DurableFlushTicks: 0,
+        PublishBatchCount: 0,
+        PublishBatchTicks: 0,
+        FinalizeCommitCount: 0,
+        FinalizeCommitTicks: 0,
+        CheckpointDecisionCount: 0,
+        CheckpointDecisionTicks: 0,
+        BackgroundCheckpointStartCount: 0,
+        BTreeLeafSplitCount: 0,
+        BTreeRightEdgeLeafSplitCount: 0,
+        BTreeInteriorInsertCount: 0,
+        BTreeRightEdgeInteriorInsertCount: 0,
+        BTreeInteriorSplitCount: 0,
+        BTreeRightEdgeInteriorSplitCount: 0,
+        BTreeRootSplitCount: 0,
+        MaxPendingCommitCount: 0,
+        MaxPendingCommitBytes: 0);
 
     void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()
     {
@@ -290,10 +369,16 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         }
     }
 
-    public async ValueTask CheckpointAsync(IStorageDevice device, uint pageCount, CancellationToken cancellationToken = default)
+    public async ValueTask CheckpointAsync(
+        IStorageDevice device,
+        uint pageCount,
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
-        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken))
+        while (!await CheckpointStepAsync(device, pageCount, int.MaxValue, cancellationToken, allowFinalize))
         {
+            if (!allowFinalize && IsCheckpointCopyComplete)
+                return;
         }
     }
 
@@ -301,7 +386,8 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         IStorageDevice device,
         uint pageCount,
         int maxPages,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool allowFinalize = true)
     {
         if (!_isOpen)
             return true;
@@ -332,6 +418,10 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
             }
 
             await device.FlushAsync(cancellationToken);
+
+            if (!allowFinalize)
+                return false;
+
             await FinalizeIncrementalCheckpointAsync(pageCount, cancellationToken);
             return true;
         }

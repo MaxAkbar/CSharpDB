@@ -5,6 +5,8 @@ namespace CSharpDB.Storage.StorageEngine;
 /// </summary>
 public sealed class StorageEngineOptions
 {
+    private DurableGroupCommitOptions _durableGroupCommit = DurableGroupCommitOptions.Disabled;
+
     /// <summary>
     /// Durability policy applied to file-backed WAL commits.
     /// Buffered maps to SQLite WAL NORMAL semantics; Durable maps to FULL semantics.
@@ -12,11 +14,24 @@ public sealed class StorageEngineOptions
     public DurabilityMode DurabilityMode { get; init; } = DurabilityMode.Durable;
 
     /// <summary>
-    /// Optional delay used by durable WAL group commit to collect additional
+    /// Opt-in settings used by durable WAL group commit to collect additional
     /// pending commits before forcing the OS flush. Ignored unless file-backed
     /// durable commit flushing allows concurrent writers.
     /// </summary>
-    public TimeSpan DurableCommitBatchWindow { get; init; } = TimeSpan.Zero;
+    public DurableGroupCommitOptions DurableGroupCommit
+    {
+        get => _durableGroupCommit;
+        init => _durableGroupCommit = value;
+    }
+
+    /// <summary>
+    /// Compatibility alias for <see cref="DurableGroupCommit"/>.<see cref="DurableGroupCommitOptions.BatchWindow"/>.
+    /// </summary>
+    public TimeSpan DurableCommitBatchWindow
+    {
+        get => _durableGroupCommit.BatchWindow;
+        init => _durableGroupCommit = new DurableGroupCommitOptions(value);
+    }
 
     /// <summary>
     /// Controls when advisory planner statistics are persisted.

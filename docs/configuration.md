@@ -44,9 +44,11 @@ await using var db = await Database.OpenHybridAsync("mydata.db",
 
 ```
 DatabaseOptions
+├── ImplicitInsertExecutionMode
 ├── StorageEngineOptions
 │   ├── DurabilityMode
-│   ├── DurableCommitBatchWindow
+│   ├── DurableGroupCommit
+│   ├── DurableCommitBatchWindow (compatibility alias)
 │   ├── AdvisoryStatisticsPersistenceMode
 │   ├── WalPreallocationChunkBytes
 │   └── PagerOptions
@@ -77,6 +79,18 @@ FullTextIndexOptions (per-index, for EnsureFullTextIndexAsync)
 
 ---
 
+## DatabaseOptions
+
+Top-level database composition and execution-shape configuration.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Controls whether shared auto-commit `INSERT` statements stay behind the legacy database write gate or run as isolated `WriteTransaction` commits. This does not disable the explicit multi-writer `WriteTransaction` APIs. |
+| `StorageEngineOptions` | `StorageEngineOptions` | default instance | Storage engine durability, pager, WAL, and checkpoint settings |
+| `StorageEngineFactory` | `IStorageEngineFactory` | `DefaultStorageEngineFactory` | Factory used to compose the backing storage engine |
+
+---
+
 ## StorageEngineOptions
 
 Top-level storage engine configuration.
@@ -84,7 +98,8 @@ Top-level storage engine configuration.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `DurabilityMode` | `DurabilityMode` | `Durable` | WAL commit flushing strategy |
-| `DurableCommitBatchWindow` | `TimeSpan` | `TimeSpan.Zero` | Delay for group commit batching before OS flush |
+| `DurableGroupCommit` | `DurableGroupCommitOptions` | `Disabled` | Opt-in durable group-commit settings |
+| `DurableCommitBatchWindow` | `TimeSpan` | `TimeSpan.Zero` | Compatibility alias for `DurableGroupCommit.BatchWindow` |
 | `AdvisoryStatisticsPersistenceMode` | `AdvisoryStatisticsPersistenceMode` | `Immediate` | When to persist query planner statistics |
 | `WalPreallocationChunkBytes` | `long` | `0` (disabled) | Pre-reserve WAL file space in chunks of this size |
 | `PagerOptions` | `PagerOptions` | `new()` | Page cache, locking, and checkpoint settings |
@@ -98,9 +113,11 @@ Controls how WAL commits are flushed to disk.
 | `Durable` | Forces an OS-level flush on every commit. Maximum safety, analogous to SQLite `synchronous=FULL`. This is the default. |
 | `Buffered` | Flushes managed buffers to the OS but does not force an OS flush per commit. Higher throughput at the cost of potential data loss of recent commits on power failure. Analogous to SQLite `synchronous=NORMAL`. |
 
-### DurableCommitBatchWindow
+### DurableGroupCommit
 
-When using `Durable` mode, setting this to a non-zero `TimeSpan` (e.g., `TimeSpan.FromMilliseconds(5)`) causes the engine to batch concurrent commits into a single OS flush. This amortizes the cost of `fsync` across multiple writers without reducing durability guarantees for any individual commit.
+When using `Durable` mode, setting `DurableGroupCommit.BatchWindow` to a non-zero `TimeSpan` (for example, `TimeSpan.FromMilliseconds(0.25)`) allows the engine to batch concurrent commits into a single OS flush. This amortizes the cost of `fsync` across multiple writers without reducing durability guarantees for any individual commit.
+
+`DurableCommitBatchWindow` remains available as a compatibility alias for the same `BatchWindow` value.
 
 ### AdvisoryStatisticsPersistenceMode
 
@@ -147,12 +164,17 @@ Controls the page cache, writer locking, and automatic checkpointing.
 | `AutoCheckpointMaxPagesPerStep` | `int` | `64` | Max pages per background checkpoint step (ignored for foreground). |
 | `MaxWalBytesWhenReadersActive` | `long?` | `null` | Optional WAL growth cap while snapshot readers are active. Commits fail with `ErrorCode.Busy` if exceeded. |
 
+Snapshot readers now block checkpoint finalization only when they still reference
+retained WAL frames. Readers whose snapshot was taken after the WAL had already
+been drained can coexist with auto-checkpoint finalization without forcing WAL
+growth.
+
 #### Built-in Checkpoint Policies
 
 **FrameCountCheckpointPolicy(int threshold)**
 
-Triggers when committed frame count reaches the threshold and no snapshot readers are
-active. Default threshold is 1000 frames.
+Triggers when committed frame count reaches the threshold and no active snapshot
+currently requires retained WAL frames. Default threshold is 1000 frames.
 
 ```csharp
 new FrameCountCheckpointPolicy(2000)
@@ -245,7 +267,60 @@ These properties can be changed on an open `Database` instance:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
+| `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Shared auto-commit `INSERT` statements use the legacy serialized path by default; set `ConcurrentWriteTransactions` to route them through isolated write transactions for better low-conflict insert fan-in. This setting only changes the shared implicit `INSERT` path. |
 | `PreferSyncPointLookups` | `bool` | `true` | Simple primary-key equality lookups use a synchronous cache-only fast path instead of the async pipeline. |
+
+---
+
+## Daemon Host Configuration
+
+`CSharpDB.Daemon` has a daemon-only host database section layered on top of the
+normal `ConnectionStrings:CSharpDB` input. The daemon still uses the same
+database locator, but it now builds its direct host client explicitly and
+applies daemon defaults for a long-lived shared process.
+
+Relevant keys:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ConnectionStrings:CSharpDB` | `Data Source=csharpdb.db` | Backing database connection string used by the daemon host |
+| `CSharpDB:HostDatabase:OpenMode` | `HybridIncrementalDurable` | `HybridIncrementalDurable` keeps the daemon in lazy-resident hybrid mode; `Direct` opens the file directly without the hybrid resident cache |
+| `CSharpDB:HostDatabase:ImplicitInsertExecutionMode` | `ConcurrentWriteTransactions` | Enables concurrent host-side implicit insert execution by default |
+| `CSharpDB:HostDatabase:UseWriteOptimizedPreset` | `true` | Applies `UseWriteOptimizedPreset()` to the daemon's direct host database options |
+| `CSharpDB:HostDatabase:HotTableNames` | `[]` | Optional hybrid hot-table preload hints |
+| `CSharpDB:HostDatabase:HotCollectionNames` | `[]` | Optional hybrid hot-collection preload hints |
+
+Default daemon `appsettings.json` shape:
+
+```json
+{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=csharpdb.db"
+  },
+  "CSharpDB": {
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
+  }
+}
+```
+
+Environment variable example:
+
+```powershell
+$env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
+$env:CSharpDB__HostDatabase__OpenMode = "Direct"
+$env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
+$env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
+```
+
+Use the daemon defaults when you want a warm long-lived gRPC host. Override
+them only when your deployment has a measured reason to prefer direct open mode
+or the legacy serialized implicit-insert path.
 
 ---
 

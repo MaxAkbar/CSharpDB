@@ -98,6 +98,12 @@ public sealed class CSharpDbCommand : DbCommand
 
         try
         {
+            if (!session.SupportsStructuredExecution)
+            {
+                string sql = SqlParameterBinder.Bind(CommandText, _parameters);
+                return await session.ExecuteAsync(sql, cancellationToken);
+            }
+
             var preparedTemplate = _preparedTemplate;
             if (preparedTemplate == null)
             {

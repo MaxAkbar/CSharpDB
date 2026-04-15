@@ -8,7 +8,28 @@ CSharpDB is an embedded database engine written in C# for .NET. It runs in-proce
 
 ### Does CSharpDB require a server process?
 
-No. You open the database file directly from your application using the Engine API or ADO.NET provider.
+No for embedded use. You can open the database directly in-process through
+`CSharpDB.Engine`, `CSharpDB.Client` direct transport, or the ADO.NET provider.
+
+There is also an optional `CSharpDB.Daemon` gRPC host when you want a long-lived
+shared process or cross-machine access.
+
+### Can ADO.NET connect to the daemon?
+
+Yes. Use a remote connection string such as:
+
+```text
+Transport=Grpc;Endpoint=http://localhost:5820
+```
+
+The same `CSharpDbConnection` / `CSharpDbCommand` usage stays the same after
+open. Named shared `:memory:name` databases are still process-local provider
+state and do not flow through the daemon.
+
+### Is named pipes transport supported yet?
+
+No. `NamedPipes` is part of the transport model and parsers, but it is not
+implemented end to end yet. Use `Grpc` for remote daemon access.
 
 ### Which .NET version is supported?
 

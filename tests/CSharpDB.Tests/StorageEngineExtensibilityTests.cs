@@ -259,6 +259,17 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_PreservesImplicitInsertExecutionMode()
+    {
+        var options = new DatabaseOptions
+        {
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25)));
+
+        Assert.Equal(ImplicitInsertExecutionMode.ConcurrentWriteTransactions, options.ImplicitInsertExecutionMode);
+    }
+
+    [Fact]
     public void StorageEngineOptions_DefaultsToDurableWalCommits()
     {
         var options = new StorageEngineOptions();
@@ -267,11 +278,25 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public void StorageEngineOptions_DefaultsToZeroDurableCommitBatchWindow()
+    public void StorageEngineOptions_DefaultsToDisabledDurableGroupCommit()
     {
         var options = new StorageEngineOptions();
 
+        Assert.Equal(DurableGroupCommitOptions.Disabled, options.DurableGroupCommit);
         Assert.Equal(TimeSpan.Zero, options.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void StorageEngineOptions_ObjectInitializer_DurableCommitBatchWindowAlias_RemainsSupported()
+    {
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
+        var options = new StorageEngineOptions
+        {
+            DurableCommitBatchWindow = batchWindow,
+        };
+
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.DurableGroupCommit);
+        Assert.Equal(batchWindow, options.DurableCommitBatchWindow);
     }
 
     [Fact]
@@ -292,13 +317,37 @@ public sealed class StorageEngineExtensibilityTests
     }
 
     [Fact]
-    public void DatabaseOptions_ConfigureStorageEngine_SetsDurableCommitBatchWindow()
+    public void DatabaseOptions_ConfigureStorageEngine_SetsDurableGroupCommit()
+    {
+        TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
+
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(batchWindow));
+
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.StorageEngineOptions.DurableGroupCommit);
+        Assert.Equal(batchWindow, options.StorageEngineOptions.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_DisablesDurableGroupCommit()
+    {
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25)))
+            .ConfigureStorageEngine(builder => builder.DisableDurableGroupCommit());
+
+        Assert.Equal(DurableGroupCommitOptions.Disabled, options.StorageEngineOptions.DurableGroupCommit);
+        Assert.Equal(TimeSpan.Zero, options.StorageEngineOptions.DurableCommitBatchWindow);
+    }
+
+    [Fact]
+    public void DatabaseOptions_ConfigureStorageEngine_DurableCommitBatchWindowAlias_SetsDurableGroupCommit()
     {
         TimeSpan batchWindow = TimeSpan.FromMilliseconds(0.25);
 
         var options = new DatabaseOptions()
             .ConfigureStorageEngine(builder => builder.UseDurableCommitBatchWindow(batchWindow));
 
+        Assert.Equal(new DurableGroupCommitOptions(batchWindow), options.StorageEngineOptions.DurableGroupCommit);
         Assert.Equal(batchWindow, options.StorageEngineOptions.DurableCommitBatchWindow);
     }
 
@@ -784,7 +833,17 @@ public sealed class StorageEngineExtensibilityTests
 
         public int FindCallCount => Volatile.Read(ref _findCallCount);
 
+        public string LogicalName => "counting";
+
         public uint RootPageId => 1;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
         {
@@ -839,10 +898,10 @@ public sealed class StorageEngineExtensibilityTests
 
         public int CreateCursorCallCount => Volatile.Read(ref _createCursorCallCount);
 
-        public IIndexStore CreateIndexStore(Pager pager, uint rootPageId)
+        public IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName)
         {
             var data = _byRootPage.GetOrAdd(rootPageId, static _ => new InMemoryIndexData());
-            return new InMemoryIndexStore(rootPageId, data, () => Interlocked.Increment(ref _createCursorCallCount));
+            return new InMemoryIndexStore(rootPageId, logicalName, data, () => Interlocked.Increment(ref _createCursorCallCount));
         }
     }
 
@@ -855,17 +914,29 @@ public sealed class StorageEngineExtensibilityTests
     private sealed class InMemoryIndexStore : IIndexStore
     {
         private readonly uint _rootPageId;
+        private readonly string _logicalName;
         private readonly InMemoryIndexData _data;
         private readonly Action _onCreateCursor;
 
-        public InMemoryIndexStore(uint rootPageId, InMemoryIndexData data, Action onCreateCursor)
+        public InMemoryIndexStore(uint rootPageId, string logicalName, InMemoryIndexData data, Action onCreateCursor)
         {
             _rootPageId = rootPageId;
+            _logicalName = logicalName;
             _data = data;
             _onCreateCursor = onCreateCursor;
         }
 
+        public string LogicalName => _logicalName;
+
         public uint RootPageId => _rootPageId;
+
+        public void RecordPointRead(long key)
+        {
+        }
+
+        public void RecordRangeRead(IndexScanRange range)
+        {
+        }
 
         public ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
         {
@@ -1003,5 +1074,7 @@ public sealed class StorageEngineExtensibilityTests
             CurrentValue = item.Value;
             return ValueTask.FromResult(true);
         }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

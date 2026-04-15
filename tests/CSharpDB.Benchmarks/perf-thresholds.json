@@ -88,7 +88,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
         "Method",
         "PreSeededRows"
@@ -153,7 +153,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
         "Method"
       ],
@@ -537,7 +537,49 @@
       "outputPattern": "durable-sql-batching-*-median-of-3.csv"
     },
     {
-      "csv": "concurrent-write-diagnostics-median-of-3.csv",
+      "csv": "write-transaction-diagnostics-median-of-3.csv",
+      "baselineSnapshot": "focused-validation/20260413-033723",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "WriteTransactionDiagnostics_W1_Rows100_Batch0_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W4_Rows1_Batch250us_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB_10s"
+        },
+        {
+          "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows10_Batch250us_Prealloc1MiB_10s"
+        }
+      ],
+      "maxMeanRegressionPercent": 20.0,
+      "skipAllocationComparison": true,
+      "overrides": [
+        {
+          "match": {
+            "Name": "WriteTransactionDiagnostics_UpdateDisjoint_W8_Rows10_Batch250us_Prealloc1MiB_10s"
+          },
+          "maxMeanRegressionPercent": 30.0
+        }
+      ],
+      "suiteKey": "write-transaction-diagnostics",
+      "suiteLabel": "WriteTransaction Diagnostics",
+      "suiteArgs": [
+        "--write-transaction-diagnostics",
+        "--repeat",
+        "3",
+        "--repro"
+      ],
+      "outputPattern": "write-transaction-diagnostics-*-median-of-3.csv"
+    },
+    {
+      "csv": "commit-fan-in-diagnostics.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",
       "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
@@ -546,32 +588,76 @@
       ],
       "requiredRows": [
         {
-          "Name": "ConcurrentDurableWrite_W4_Batch0_10s"
+          "Name": "CommitFanIn_AutoCommit_DisjointUpdate_W4_Batch250us_5s"
         },
         {
-          "Name": "ConcurrentDurableWrite_W4_Batch250us_10s"
+          "Name": "CommitFanIn_AutoCommit_DisjointUpdate_W8_Batch250us_5s"
         },
         {
-          "Name": "ConcurrentDurableWrite_W8_Batch0_10s"
+          "Name": "CommitFanIn_ExplicitTx_DisjointUpdate_W4_Batch250us_5s"
         },
         {
-          "Name": "ConcurrentDurableWrite_W8_Batch250us_10s"
-        },
-        {
-          "Name": "ConcurrentDurableWrite_W8_Batch0_Prealloc1MiB_10s"
+          "Name": "CommitFanIn_ExplicitTx_DisjointUpdate_W8_Batch250us_5s"
         }
       ],
-      "maxMeanRegressionPercent": 18.0,
+      "maxMeanRegressionPercent": 25.0,
       "skipAllocationComparison": true,
-      "suiteKey": "concurrent-write-diagnostics",
-      "suiteLabel": "Concurrent Write Diagnostics",
+      "suiteKey": "commit-fan-in-diagnostics",
+      "suiteLabel": "Commit Fan-In Diagnostics",
       "suiteArgs": [
-        "--concurrent-write-diagnostics",
-        "--repeat",
-        "3",
+        "--commit-fan-in-diagnostics",
         "--repro"
       ],
-      "outputPattern": "concurrent-write-diagnostics-*-median-of-3.csv"
+      "outputPattern": "commit-fan-in-diagnostics-*.csv"
+    },
+    {
+      "csv": "insert-fan-in-diagnostics.csv",
+      "baselineSnapshot": "focused-validation/20260412-172336",
+      "baselineSubDir": "macro-stress-scaling",
+      "currentResultsDir": "tests/CSharpDB.Benchmarks/results/.tmp-current-diagnostics",
+      "keyColumns": [
+        "Name"
+      ],
+      "requiredRows": [
+        {
+          "Name": "InsertFanIn_AutoCommit_ExplicitId_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_AutoCommit_AutoId_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_AutoCommit_ExplicitIdDisjoint_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_AutoCommitConcurrent_ExplicitIdDisjoint_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_ExplicitTx_ExplicitId_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_ExplicitTx_ExplicitIdDisjoint_W8_Batch250us_5s"
+        },
+        {
+          "Name": "InsertFanIn_ExplicitTx_AutoId_W8_Batch250us_5s"
+        }
+      ],
+      "maxMeanRegressionPercent": 25.0,
+      "skipAllocationComparison": true,
+      "overrides": [
+        {
+          "match": {
+            "Name": "InsertFanIn_ExplicitTx_AutoId_W8_Batch250us_5s"
+          },
+          "maxMeanRegressionPercent": 30.0
+        }
+      ],
+      "suiteKey": "insert-fan-in-diagnostics",
+      "suiteLabel": "Insert Fan-In Diagnostics",
+      "suiteArgs": [
+        "--insert-fan-in-diagnostics",
+        "--repro"
+      ],
+      "outputPattern": "insert-fan-in-diagnostics-*.csv"
     }
   ]
 }

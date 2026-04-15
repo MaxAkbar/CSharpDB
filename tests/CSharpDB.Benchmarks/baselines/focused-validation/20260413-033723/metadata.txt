@@ -1,0 +1,11 @@
+UTC Timestamp: 20260413-033723
+Purpose: Focused validation write-transaction guardrail baseline refresh
+Commit: 6ca61bf7c942f803dd8e7b07e255d7bda084de2f
+Repository: C:\Users\maxim\source\Code\CSharpDB
+Base snapshot copied from: tests/CSharpDB.Benchmarks/baselines/focused-validation/20260330-122507
+Refreshed staged write-transaction CSV: macro-stress-scaling/write-transaction-diagnostics-median-of-3.csv
+Refreshed source scenario CSV: tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-scenario-W1_Rows100_Batch0-20260413-033723-median-of-3.csv
+Validation comparison: pre-90615fa isolated worktree replay measured ~175.9 ops/sec for W1_Rows100_Batch0 on the same runner, confirming the older March 30 row was no longer reproducible locally.
+Scope: refresh only the W1_Rows100_Batch0 required row used by perf-thresholds.json for release write-transaction diagnostics.
+
+git status --short:

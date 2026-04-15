@@ -3,7 +3,7 @@ namespace CSharpDB.Storage.BTrees;
 /// <summary>
 /// A forward-only cursor over a B+tree. Iterates leaf pages in order via next-leaf pointers.
 /// </summary>
-public sealed class BTreeCursor
+public sealed class BTreeCursor : IAsyncDisposable
 {
     private const int InteriorCellHeaderBytes = 1; // varint(12)
     private const int InteriorCellLeftChildOffset = InteriorCellHeaderBytes;
@@ -17,9 +17,11 @@ public sealed class BTreeCursor
     private ReadOnlySlottedPage _currentLeaf;
     private uint _prefetchedLeafPageId;
     private Task<PageReadBuffer>? _prefetchedLeafTask;
+    private CancellationTokenSource? _prefetchedLeafCancellationSource;
     private bool _currentLeafLoaded;
     private bool _initialized;
     private bool _eof;
+    private bool _disposed;
 
     internal BTreeCursor(BTree tree, Pager pager)
     {
@@ -45,6 +47,8 @@ public sealed class BTreeCursor
     /// </summary>
     public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         if (_eof) return false;
 
         if (!_initialized)
@@ -61,6 +65,7 @@ public sealed class BTreeCursor
         {
             if (_currentPageId == PageConstants.NullPageId)
             {
+                ClearPrefetchedLeaf();
                 _eof = true;
                 return false;
             }
@@ -87,6 +92,8 @@ public sealed class BTreeCursor
     /// </summary>
     public async ValueTask<bool> SeekAsync(long targetKey, CancellationToken ct = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         _initialized = true;
         _eof = false;
         ResetCurrentLeaf(clearPrefetch: true);
@@ -245,12 +252,102 @@ public sealed class BTreeCursor
         }
 
         _prefetchedLeafPageId = nextLeafPageId;
-        _prefetchedLeafTask = _pager.ReadPageUncachedAsync(nextLeafPageId, CancellationToken.None).AsTask();
+        _prefetchedLeafCancellationSource = new CancellationTokenSource();
+        _prefetchedLeafTask = _pager.ReadPageUncachedAsync(nextLeafPageId, _prefetchedLeafCancellationSource.Token).AsTask();
     }
 
     private void ClearPrefetchedLeaf()
     {
+        CancelPrefetchedLeaf();
         _prefetchedLeafPageId = PageConstants.NullPageId;
         _prefetchedLeafTask = null;
+        _prefetchedLeafCancellationSource = null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _eof = true;
+        ResetCurrentLeaf(clearPrefetch: false);
+        await CancelAndDrainPrefetchedLeafAsync();
+    }
+
+    private void CancelPrefetchedLeaf()
+    {
+        Task<PageReadBuffer>? prefetchedLeafTask = _prefetchedLeafTask;
+        CancellationTokenSource? prefetchedLeafCancellationSource = _prefetchedLeafCancellationSource;
+
+        if (prefetchedLeafTask is not null)
+            ObserveTaskFault(prefetchedLeafTask);
+
+        if (prefetchedLeafCancellationSource is not null)
+        {
+            try
+            {
+                prefetchedLeafCancellationSource.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                prefetchedLeafCancellationSource.Dispose();
+            }
+        }
+    }
+
+    private async ValueTask CancelAndDrainPrefetchedLeafAsync()
+    {
+        Task<PageReadBuffer>? prefetchedLeafTask = _prefetchedLeafTask;
+        CancellationTokenSource? prefetchedLeafCancellationSource = _prefetchedLeafCancellationSource;
+
+        _prefetchedLeafPageId = PageConstants.NullPageId;
+        _prefetchedLeafTask = null;
+        _prefetchedLeafCancellationSource = null;
+
+        if (prefetchedLeafCancellationSource is not null)
+        {
+            try
+            {
+                prefetchedLeafCancellationSource.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        if (prefetchedLeafTask is not null)
+        {
+            try
+            {
+                await prefetchedLeafTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch
+            {
+            }
+        }
+
+        prefetchedLeafCancellationSource?.Dispose();
+    }
+
+    private static void ObserveTaskFault(Task<PageReadBuffer> task)
+    {
+        _ = task.ContinueWith(
+            static completed =>
+            {
+                _ = completed.Exception;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }

@@ -31,10 +31,21 @@ public sealed class CachingIndexStore : IIndexStore, ICacheAwareIndexStore, IRec
 
     public uint RootPageId => _inner.RootPageId;
 
+    public string LogicalName => _inner.LogicalName;
+
+    public void RecordPointRead(long key)
+        => _inner.RecordPointRead(key);
+
+    public void RecordRangeRead(IndexScanRange range)
+        => _inner.RecordRangeRead(range);
+
     public async ValueTask<byte[]?> FindAsync(long key, CancellationToken ct = default)
     {
         if (TryGetCached(key, out var cached))
+        {
+            RecordPointRead(key);
             return cached;
+        }
 
         var value = await _inner.FindAsync(key, ct);
         Cache(key, value);
@@ -85,11 +96,15 @@ public sealed class CachingIndexStore : IIndexStore, ICacheAwareIndexStore, IRec
     public bool TryFindCached(long key, out byte[]? payload)
     {
         if (TryGetCached(key, out payload))
+        {
+            RecordPointRead(key);
             return true;
+        }
 
         if (_inner is ICacheAwareIndexStore innerCache && innerCache.TryFindCached(key, out payload))
         {
             Cache(key, payload);
+            RecordPointRead(key);
             return true;
         }
 

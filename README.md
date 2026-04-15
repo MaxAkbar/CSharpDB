@@ -28,11 +28,11 @@
 
 ## Performance at a Glance
 
-| 1.99M gets/sec | 9.47M reads/sec | 587K inserts/sec | 238.7 ns |
+| 1.93M gets/sec | 11.58M reads/sec | 798.9K inserts/sec | 213.1 ns |
 |:-:|:-:|:-:|:-:|
-| Collection point reads | Concurrent snapshot readers (8x) | Batched SQL inserts | ADO.NET ExecuteScalar |
+| Collection point reads | Concurrent reader burst (8x reused) | Batched SQL inserts | ADO.NET ExecuteScalar |
 
-<sub>Intel i9-11900K, .NET 10, Windows 11. Full results in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
+<sub>Intel i9-11900K, .NET 10, Windows 11. Snapshot reflects the April 13, 2026 focused storage-mode and durable master-table reruns plus the latest checked-in ADO.NET micro result. Full results live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
 
 ---
 
@@ -42,29 +42,24 @@ Default CSharpDB benchmarks run in fully durable mode. CSharpDB also supports a 
 
 | Mode | SQL Single INSERT | SQL Batch x100 | Collection Single PUT | Collection Batch x100 |
 |------|------------------:|---------------:|----------------------:|----------------------:|
-| Durable (default) | 277.9 ops/sec | 26.46K rows/sec | 272.5 ops/sec | 25.12K docs/sec |
+| Durable (default) | 281.7 ops/sec | 26.07K rows/sec | 281.8 ops/sec | 26.93K docs/sec |
 | Buffered | 21.17K ops/sec | 456.63K rows/sec | 19.30K ops/sec | 399.76K docs/sec |
 
-<sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+<sub>`Durable` is fsync-on-commit. `Buffered` is less durable and analogous to SQLite WAL `synchronous=NORMAL`. The durable row is from the April 13, 2026 master-table rerun; the buffered row remains from the April 7, 2026 buffered rerun. Full methodology and the complete matrix live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 
 ## Concurrent Durable Writes
 
-CSharpDB also supports concurrent single-row auto-commit writes against one shared engine and WAL. The numbers below are total durable commits/sec across all writers combined, not per-writer throughput.
+Current concurrent durable-write behavior depends on the write path. The numbers below are total durable commits/sec across all writers combined on one shared `Database` instance.
 
-| Writers | Commit Window | WAL Prealloc | Durable Commits/sec |
-|---------|--------------:|-------------:|--------------------:|
-| 4 | 0 | 0 | 569.5 |
-| 4 | 250us | 0 | 548.7 |
-| 4 | 500us | 0 | 563.4 |
-| 8 | 0 | 0 | 1,091.4 |
-| 8 | 250us | 0 | 1,126.9 |
-| 8 | 500us | 0 | 1,109.8 |
-| 8 | 0 | 1 MiB | 1,116.2 |
-| 8 | 250us | 1 MiB | 1,128.1 |
+| Workload | Writers | Durable Commits/sec | Notes |
+|----------|--------:|--------------------:|-------|
+| Shared auto-commit `INSERT` | 8 | 467.3 | April 10, 2026 closeout best no-preallocation row (`250us`), effectively tied with `0` |
+| Shared auto-commit `UPDATE` / `DELETE` | 8 | 743.0 | April 11, 2026 fan-in rerun after the isolated non-insert commit-path work |
+| Explicit `WriteTransaction` disjoint update | 8 | 765.0 | Same April 11 rerun; currently the top measured commit-fan-in row |
 
-<sub>Shared-engine April 7, 2026 benchmark snapshot. The full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md#concurrent-durable-writes-single-row-auto-commit-csharpdb-only">benchmark suite README</a>.</sub>
+<sub>The hot insert path is still structural: it stays around one commit per flush on the current runner. Shared non-insert auto-commit and explicit disjoint-update workloads can now build a real pending WAL commit queue. Full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 
@@ -98,7 +93,7 @@ await foreach (var row in result.GetRowsAsync())
 - **No moving parts** — single `.db` file, no server process, no native binaries, no external dependencies
 - **SQL + NoSQL in one engine** — full SQL with JOINs, CTEs, subqueries, views, and triggers *plus* a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
 - **ACID by default** — WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
-- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, and MCP server for AI agents
+- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, pipeline tooling, integrated forms and reports designers, and MCP server for AI agents
 - **Use from any language** — NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
 
 ---
@@ -109,20 +104,30 @@ await foreach (var row in result.GetRowsAsync())
 |:-:|:-:|:-:|
 | ![Query tab](docs/images/QuerySytemTable.png) | ![Data browser](docs/images/TableDetails.png) | ![Schema view](docs/images/TableSchema.png) |
 
-Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, integrated forms and reports designers, stored procedures, and storage diagnostics.
+Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, stored procedures, visual pipeline design, integrated forms and reports designers, backup and maintenance flows, and storage diagnostics.
 
 ---
 
 ## Ecosystem
 
-| | | | |
-|:-:|:-:|:-:|:-:|
-| **Engine API** | **Collection API** | **ADO.NET Provider** | **Client SDK** |
-| Direct async SQL | Typed NoSQL key-value | Standard DbConnection | Unified API with pluggable transports |
-| **REST API** | **gRPC Daemon** | **CLI REPL** | **MCP Server** |
-| 33 HTTP endpoints | Remote binary protocol | Interactive shell | AI assistant integration |
-| **VS Code Extension** | **Native FFI** | **Admin UI** | **Node.js Package** |
-| Schema + query + CRUD | NativeAOT C library | Blazor dashboard | TypeScript/JavaScript |
+CSharpDB is more than an embedded SQL engine. The same database can be used through in-process APIs, remote service hosts, AI tooling, visual designers, and cross-language bindings.
+
+| Surface | Primary use | Highlights |
+|---|---|---|
+| **Engine API** | Embedded in-process access | Direct async SQL, transactions, views, triggers, procedures, and query stats |
+| **Collection API** | Typed document and key-value access | `Collection<T>`, nested path indexes, point reads, scans, and path/range queries |
+| **ADO.NET Provider** | Standard .NET data access | `DbConnection`, `DbCommand`, `DbDataReader`, and `DbTransaction` support |
+| **Client SDK** | One C# API across transports | Direct, HTTP, and gRPC transports plus maintenance and diagnostics |
+| **REST API** | HTTP integration and automation | 30+ endpoints with OpenAPI and Scalar for SQL, schema, data, collections, and maintenance |
+| **gRPC Daemon** | Long-running remote host | Strongly typed RPC surface for SQL, schema, procedures, collections, and maintenance |
+| **CLI REPL** | Terminal-first workflows | Interactive SQL shell, schema inspection, backup/restore, and migration commands |
+| **MCP Server** | AI assistant integration | Tool-based schema inspection, query execution, and row operations for MCP-compatible clients |
+| **Admin UI** | Browser-based database studio | Query editor, visual query designer, CRUD, schema editing, procedures, and storage diagnostics |
+| **Forms + Reports** | Internal app workflows and printable output | Database-backed forms designer/runtime plus banded reports with grouping, expressions, preview, and print |
+| **Pipelines** | ETL and automation | Package-based runtime, visual pipeline designer, transforms, dry-run, checkpoints, and run history |
+| **VS Code Extension** | IDE integration | Schema explorer, `.csql` support, query results, CRUD, and storage diagnostics |
+| **Native FFI** | Polyglot embedding | NativeAOT C library for Python, Go, Rust, Swift, Kotlin, Dart, Android, and iOS |
+| **Node.js Package** | JavaScript and TypeScript access | Local embedded wrapper over the native library for Node.js apps and tooling |
 
 ---
 
@@ -199,9 +204,13 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 |---|---|
 | [Getting Started](https://csharpdb.com/getting-started.html) | Step-by-step walkthrough |
 | [Architecture Guide](https://csharpdb.com/docs/architecture.html) | Engine design deep dive |
+| [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
+| [Admin UI Guide](https://csharpdb.com/docs/admin-ui.html) | Querying, schema, pipelines, forms, reports, and storage |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
+| [Pipelines](https://csharpdb.com/docs/pipelines.html) | ETL package model and visual designer |
+| [Reports](https://csharpdb.com/docs/reports.html) | Visual banded report designer and preview |
 | [Native FFI](https://csharpdb.com/docs/tutorials/native-ffi.html) | C library API and cross-language examples |
-| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | All 33 endpoints |
+| [REST API Reference](https://csharpdb.com/docs/rest-api.html) | HTTP API, schema/data CRUD, and maintenance |
 | [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |

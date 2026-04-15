@@ -16,6 +16,7 @@ public static class DatabaseOptionsExtensions
 
         return new DatabaseOptions
         {
+            ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions.Configure(configure),
         };

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Using CSharpDB from Multiple Threads — Blog — CSharpDB</title>
+    <meta name="description" content="Learn how to use CSharpDB safely from multiple threads with a shared Database, snapshot readers, auto-commit writes, explicit transactions, and ADO.NET connection-per-worker patterns.">
+    <link rel="canonical" href="https://csharpdb.com/blog/using-csharpdb-from-multiple-threads.html">
+    <meta property="og:title" content="Using CSharpDB from Multiple Threads">
+    <meta property="og:description" content="Learn how to use CSharpDB safely from multiple threads with a shared Database, snapshot readers, auto-commit writes, explicit transactions, and ADO.NET connection-per-worker patterns.">
+    <meta property="og:url" content="https://csharpdb.com/blog/using-csharpdb-from-multiple-threads.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Using CSharpDB from Multiple Threads",
+        "description": "Learn how to use CSharpDB safely from multiple threads with a shared Database, snapshot readers, auto-commit writes, explicit transactions, and ADO.NET connection-per-worker patterns.",
+        "url": "https://csharpdb.com/blog/using-csharpdb-from-multiple-threads.html",
+        "datePublished": "2026-04-08",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Using CSharpDB from Multiple Threads',
+        description: 'Learn how to use CSharpDB safely from multiple threads with a shared Database, snapshot readers, auto-commit writes, explicit transactions, and ADO.NET connection-per-worker patterns.',
+        keywords: 'CSharpDB concurrency, multiple threads, snapshot readers, ADO.NET pooling, embedded database threading',
+        canonicalPath: 'blog/using-csharpdb-from-multiple-threads.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Using CSharpDB from Multiple Threads</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>April 8, 2026</span>
+                    <span>&middot; 7 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB works well in multi-threaded applications, but the right pattern depends on which API you are using. The engine is designed around a simple rule: one writer at a time, many readers at once.</p>
+                    <p>That means you do not need to build your own lock manager around the database. You do need to choose the right ownership model for reads, writes, and explicit transactions.</p>
+
+                    <h2>The Concurrency Model</h2>
+                    <p>At the engine level, CSharpDB uses a single-writer, multiple-reader model with snapshot isolation:</p>
+                    <ul>
+                        <li><strong>Only one write transaction is active at a time.</strong> Contending writes serialize behind the writer lock.</li>
+                        <li><strong>Readers see a stable snapshot.</strong> A reader does not block the writer, and the writer does not rewrite the reader's view underneath it.</li>
+                        <li><strong>Auto-commit writes are the easiest way to scale in-process write work.</strong> Independent tasks can issue writes concurrently and let the engine serialize commit order.</li>
+                    </ul>
+                    <p>Since v2.9.0, CSharpDB also ships initial multi-writer support: explicit <code>WriteTransaction</code> with conflict-detected retry, shared auto-commit non-insert isolation, and opt-in <code>ConcurrentWriteTransactions</code> for shared implicit inserts. The physical WAL commit path is still serialized at the storage boundary, but the engine can now overlap write preparation across multiple transactions.</p>
+                    <p>In one process, the recommended topology is a single long-lived <code>Database</code> instance for writes plus <code>ReaderSession</code> instances for concurrent snapshot reads.</p>
+
+                    <h2>Recommended Pattern: One Shared Database</h2>
+                    <p>If you are using the direct engine API, prefer one warm <code>Database</code> instance shared by your application service or host. Route concurrent work through that owner instead of opening the same file multiple times in the same process.</p>
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code>using CSharpDB.Engine;
+
+await using var db = await Database.OpenAsync("app.db");
+
+await db.ExecuteAsync("""
+    CREATE TABLE IF NOT EXISTS jobs (
+        id      INTEGER PRIMARY KEY,
+        worker  INTEGER NOT NULL,
+        payload TEXT NOT NULL
+    )
+    """);
+
+Task[] writers = Enumerable.Range(0, 4)
+    .Select(workerId => Task.Run(async () =>
+    {
+        for (int i = 0; i &lt; 100; i++)
+        {
+            int id = workerId * 1000 + i;
+            await db.ExecuteAsync(
+                $"INSERT INTO jobs VALUES ({id}, {workerId}, 'item-{id}')");
+        }
+    }))
+    .ToArray();
+
+await Task.WhenAll(writers);</code></pre>
+                    </div>
+                    <p>This is the simplest and most efficient in-process write pattern. Each task can submit work independently, and the engine coordinates the actual write transaction lifecycle.</p>
+
+                    <h2>Snapshot Reads: One ReaderSession Per Concurrent Reader</h2>
+                    <p>For concurrent reads, create a separate <code>ReaderSession</code> for each live reader. Each session sees a point-in-time snapshot and can run while writes continue in the main database.</p>
+                    <div class="code-block" data-title="Program.cs - Concurrent Readers">
+                        <pre><code>Task[] readers = Enumerable.Range(0, 8)
+    .Select(_ => Task.Run(async () =>
+    {
+        using var reader = db.CreateReaderSession();
+        await using var result = await reader.ExecuteReadAsync(
+            "SELECT COUNT(*) FROM jobs");
+
+        var rows = await result.ToListAsync();
+        Console.WriteLine(rows[0][0].AsInteger);
+    }))
+    .ToArray();
+
+await Task.WhenAll(readers);</code></pre>
+                    </div>
+                    <p>Do not share one <code>ReaderSession</code> across multiple concurrent queries. A reader session is reusable for sequential reads, but it only allows one active query result at a time.</p>
+
+                    <h2>Concurrent Writes: Let Auto-Commit Serialize</h2>
+                    <p>When each write is logically independent, let each task issue its own auto-commit statement. That is usually better than wrapping all concurrent work in one big shared explicit transaction.</p>
+                    <div class="code-block" data-title="Program.cs - Mixed Read/Write Work">
+                        <pre><code>Task[] writers = Enumerable.Range(0, 4)
+    .Select(workerId => Task.Run(async () =>
+    {
+        for (int i = 0; i &lt; 50; i++)
+        {
+            int id = workerId * 100 + i;
+            await db.ExecuteAsync(
+                $"INSERT INTO jobs VALUES ({id}, {workerId}, 'payload-{id}')");
+        }
+    }))
+    .ToArray();
+
+Task[] readers = Enumerable.Range(0, 2)
+    .Select(_ => Task.Run(async () =>
+    {
+        using var reader = db.CreateReaderSession();
+        await using var result = await reader.ExecuteReadAsync(
+            "SELECT COUNT(*) FROM jobs");
+        var rows = await result.ToListAsync();
+        Console.WriteLine(rows[0][0].AsInteger);
+    }))
+    .ToArray();
+
+await Task.WhenAll(writers.Concat(readers));</code></pre>
+                    </div>
+                    <p>Readers may observe an older snapshot while writers continue to commit. That is expected. Snapshot isolation favors consistency per reader rather than forcing all readers to chase the newest row count mid-query.</p>
+
+                    <h2>Explicit Transactions: Keep Them on One Task</h2>
+                    <p>Explicit transactions are still useful when several statements must succeed or fail together. The important rule is ownership: one task should own the entire explicit transaction from begin to commit or rollback.</p>
+                    <div class="code-block" data-title="Program.cs - Explicit Transaction">
+                        <pre><code>await Task.Run(async () =>
+{
+    await db.BeginTransactionAsync();
+    try
+    {
+        await db.ExecuteAsync(
+            "INSERT INTO jobs VALUES (9001, 99, 'step-a')");
+        await db.ExecuteAsync(
+            "INSERT INTO jobs VALUES (9002, 99, 'step-b')");
+
+        await db.CommitAsync();
+    }
+    catch
+    {
+        await db.RollbackAsync();
+        throw;
+    }
+});</code></pre>
+                    </div>
+                    <p>Do not have several unrelated threads participate in the same explicit transaction. Transaction state lives on the shared <code>Database</code> instance, so spreading one transaction across multiple concurrent callers makes coordination harder, not easier.</p>
+
+                    <h2>ADO.NET Pattern: One Connection Per Worker</h2>
+                    <p>If you are using <code>CSharpDbConnection</code> and <code>CSharpDbCommand</code>, the safer pattern changes slightly: use one connection per worker or request, and enable pooling when opens are frequent.</p>
+                    <div class="code-block" data-title="Program.cs - ADO.NET">
+                        <pre><code>using CSharpDB.Data;
+
+string cs = "Data Source=app.db;Pooling=true;Max Pool Size=16";
+
+await Parallel.ForEachAsync(Enumerable.Range(0, 100), async (i, ct) =>
+{
+    await using var conn = new CSharpDbConnection(cs);
+    await conn.OpenAsync(ct);
+
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText =
+        "INSERT INTO jobs VALUES (@id, @worker, @payload)";
+    cmd.Parameters.AddWithValue("@id", i);
+    cmd.Parameters.AddWithValue("@worker", 1);
+    cmd.Parameters.AddWithValue("@payload", $"item-{i}");
+
+    await cmd.ExecuteNonQueryAsync(ct);
+});</code></pre>
+                    </div>
+                    <p>Avoid sharing the same <code>CSharpDbConnection</code>, <code>CSharpDbCommand</code>, or active transaction object across concurrent threads. Connection state and transaction ownership are per connection.</p>
+
+                    <h2>Shared In-Memory Connections</h2>
+                    <p>The ADO.NET provider also supports named shared in-memory databases:</p>
+                    <div class="code-block" data-title="Connection String">
+                        <pre><code>Data Source=:memory:shared-cache</code></pre>
+                    </div>
+                    <p>Multiple live connections can attach to the same named in-memory host. One connection may own an explicit transaction at a time, while other connections continue reading from the last committed snapshot. That makes shared in-memory useful for tests, local caches, and host-owned transient databases.</p>
+
+                    <h2>Common Mistakes to Avoid</h2>
+                    <ul>
+                        <li><strong>Do not open the same database file twice in one process just to split reads and writes.</strong> Prefer one shared <code>Database</code> instance and create <code>ReaderSession</code> objects from it.</li>
+                        <li><strong>Do not share one <code>ReaderSession</code> across concurrent queries.</strong> Create one reader session per live reader.</li>
+                        <li><strong>Do not spread one explicit transaction across many threads.</strong> Keep transaction ownership on one task.</li>
+                        <li><strong>Do not share one ADO.NET connection across concurrent workers.</strong> Use one connection per worker and enable pooling.</li>
+                        <li><strong>Do not treat snapshot reads as stale bugs.</strong> A snapshot reader is intentionally isolated from later commits.</li>
+                    </ul>
+
+                    <h2>Which Pattern Should You Choose?</h2>
+                    <p>Use the direct <code>Database</code> API when you want one in-process owner, very fast reads, and simple control over snapshot sessions. Use <code>CSharpDbConnection</code> when you want standard ADO.NET patterns, parameterized commands, and connection-per-request integration with existing .NET code.</p>
+                    <p>If you keep that split in mind, CSharpDB is straightforward to use from multiple threads: one writer at a time, many readers at once, and clear ownership for explicit transactions.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="getting-started-with-csharpdb.html">Next: Getting Started &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/components.js"></script>
+    <script src="../js/app.js"></script>
+    <script src="../js/csharpdb.bundle.js"></script>
+</body>
+</html>
