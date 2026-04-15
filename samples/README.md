@@ -14,6 +14,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 | `platform-showcase/` | Broad relational feature tour + optional API demo | `schema.sql`, `procedures.json`, `queries.sql`, `.csproj`, `Program.cs` |
+| `csv-bulk-import/` | Runnable CSV-to-table bulk ingest walkthrough | `.csproj`, `Program.cs`, `README.md`, `events.csv` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 
@@ -76,6 +77,15 @@ Root-level helpers:
 - Demo: [PlatformShowcaseSample.csproj](platform-showcase/PlatformShowcaseSample.csproj)
 - Domain: subscriptions, orders, support operations, inventory, knowledge articles, and dashboard presets
 - Good for: foreign keys, collations, unique + composite indexes, views, triggers, `IDENTITY` audit rows, joins, CTEs, subqueries, set operations, `TEXT(...)`, `ANALYZE`, full-text search, and `Collection<T>`
+
+### Bulk Import / CSV To Table
+
+- Project: [CsvBulkImportSample.csproj](csv-bulk-import/CsvBulkImportSample.csproj)
+- Code: [Program.cs](csv-bulk-import/Program.cs)
+- Input: [events.csv](csv-bulk-import/events.csv)
+- Docs: [CSV Bulk Import Tutorial](https://csharpdb.com/docs/tutorials/csv-bulk-import.html)
+- Domain: fixed-schema operational event rows loaded into a relational table
+- Good for: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, header validation, row conversion into `DbValue[]`, and post-load secondary-index creation
 
 ### Collection Indexing Walkthrough
 
@@ -175,7 +185,15 @@ dotnet run --project samples/generated-collections/GeneratedCollectionsSample.cs
 
 This sample is the quickest way to see the source-generated collection API, generated descriptors, and trim/AOT-friendly collection access with real seed data and console output.
 
-### Option 6: Run the Platform Showcase Demo
+### Option 6: Run the CSV Bulk Import Sample
+
+```bash
+dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj
+```
+
+This sample demonstrates the current best-practice SQL bulk-ingest path on the public API: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, and index creation after the load. Inspect the generated database with `CSharpDB.Cli` after the import completes.
+
+### Option 7: Run the Platform Showcase Demo
 
 ```bash
 dotnet run --project samples/platform-showcase/PlatformShowcaseSample.csproj

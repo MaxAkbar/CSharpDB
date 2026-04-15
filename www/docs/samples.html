@@ -40,6 +40,30 @@
                 <h1>Samples &amp; Tutorials</h1>
                 <p class="lead">Practical, end-to-end examples showing CSharpDB in real-world scenarios.</p>
 
+                <h2>CSV Bulk Import via the Public API</h2>
+                <p>If you want a practical relational bulk-ingest example today, start with the runnable CSV bulk import sample. It demonstrates the current best-practice path on the public engine API: <code>UseWriteOptimizedPreset()</code>, <code>PrepareInsertBatch(...)</code>, explicit transaction batching, and secondary indexes created after the load.</p>
+
+                <div class="callout callout-info">
+                    <strong>Why this sample matters:</strong> CSharpDB does not currently expose a first-class table-import CLI command or SQL <code>BULK INSERT</code> / <code>COPY</code> surface. The supported relational bulk-load story today lives on top of the public API.
+                </div>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj</code></pre>
+                </div>
+
+                <p>The sample creates a fixed-schema <code>events</code> table, validates a bundled CSV header case-insensitively, converts rows into <code>DbValue[]</code>, flushes each batch inside an explicit transaction, then creates indexes after the import completes.</p>
+
+                <div class="next-steps-grid" style="margin-bottom: 40px;">
+                    <a href="tutorials/csv-bulk-import.html" class="next-step-card">
+                        <h4>CSV Bulk Import Tutorial</h4>
+                        <p>Step-by-step walkthrough of the API-first ingest pattern</p>
+                    </a>
+                    <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/csv-bulk-import" class="next-step-card">
+                        <h4>Sample Source</h4>
+                        <p>Runnable project with bundled CSV input and CLI follow-up commands</p>
+                    </a>
+                </div>
+
                 <!-- ═══════════════════════════════════════════════════════════
                      SAMPLE 1: In-Memory Cache in ASP.NET
                      ═══════════════════════════════════════════════════════════ -->

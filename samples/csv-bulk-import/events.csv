@@ -1,0 +1,17 @@
+id,timestamp_utc,source,severity,category,payload_size,ingest_ms
+1,2026-04-12T08:15:00Z,api-gateway,info,auth,512,3.4
+2,2026-04-12T08:15:01Z,worker-east,warn,imports,4096,18.2
+3,2026-04-12T08:15:02Z,billing-service,error,payments,2048,42.9
+4,2026-04-12T08:15:03Z,api-gateway,info,auth,768,4.1
+5,2026-04-12T08:15:05Z,etl-loader,info,imports,16384,95.6
+6,2026-04-12T08:15:06Z,worker-west,warn,imports,8192,21.7
+7,2026-04-12T08:15:08Z,search-indexer,info,search,3072,15.0
+8,2026-04-12T08:15:10Z,billing-service,warn,payments,1536,19.8
+9,2026-04-12T08:15:13Z,notification-hub,info,messaging,640,6.3
+10,2026-04-12T08:15:15Z,etl-loader,error,imports,24576,118.4
+11,2026-04-12T08:15:18Z,api-gateway,warn,auth,896,7.1
+12,2026-04-12T08:15:20Z,warehouse-sync,info,inventory,5120,27.5
+13,2026-04-12T08:15:22Z,warehouse-sync,error,inventory,9216,63.2
+14,2026-04-12T08:15:24Z,notification-hub,info,messaging,704,5.5
+15,2026-04-12T08:15:26Z,worker-east,info,imports,3584,16.4
+16,2026-04-12T08:15:29Z,search-indexer,warn,search,2816,13.9
