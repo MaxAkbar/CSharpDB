@@ -38,9 +38,20 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Tutorials</h1>
-                <p class="lead">Hands-on, step-by-step guides that walk you through CSharpDB internals with real code.</p>
+                <p class="lead">Hands-on, step-by-step guides that explain how CSharpDB features and subsystems work.</p>
+
+                <div class="callout callout-info">
+                    <strong>Need runnable projects instead?</strong> Start with <a href="../samples.html">Samples</a> for complete example apps and code you can run locally. Tutorials are explanation-first walkthroughs.
+                </div>
 
                 <div class="hub-grid">
+                    <a href="multi-writer-daemon-grpc.html" class="hub-card">
+                        <div class="hub-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M8 10v4"/><path d="M16 10v4"/></svg>
+                        </div>
+                        <h3>Multi-Writer gRPC Daemon</h3>
+                        <p>How the daemon-hosted runtime provides current multi-writer behavior over gRPC, how to configure it, and how apps should use it through <code>CSharpDB.Client</code> and ADO.NET.</p>
+                    </a>
                     <a href="csv-bulk-import.html" class="hub-card">
                         <div class="hub-icon">
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>

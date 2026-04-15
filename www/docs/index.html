@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>Documentation — CSharpDB</title>
-    <meta name="description" content="CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.">
+    <meta name="description" content="CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
     <link rel="canonical" href="https://csharpdb.com/docs/">
     <meta property="og:title" content="Documentation — CSharpDB">
-    <meta property="og:description" content="CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.">
+    <meta property="og:description" content="CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
     <meta property="og:url" content="https://csharpdb.com/docs/">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Documentation",
-        "description": "CSharpDB documentation hub — guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.",
+        "description": "CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.",
         "url": "https://csharpdb.com/docs/",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
         window.currentPage = 'docs'; window.pagePathPrefix = '../';
         window.pageConfig = {
             title: 'Documentation',
-            description: 'CSharpDB documentation hub \u2014 guides on SQL, Collections, storage engine, database modes, ETL pipelines, ecosystem tools, and code samples.',
-            keywords: 'CSharpDB documentation, database docs, SQL guide, Collection API docs, tutorials',
+            description: 'CSharpDB documentation hub \u2014 reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.',
+            keywords: 'CSharpDB documentation, database docs, SQL guide, Collection API docs, tutorials, samples',
             canonicalPath: 'docs/',
             ogType: 'article',
         };
@@ -45,7 +45,23 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Documentation</h1>
-                <p class="lead">Everything you need to build with CSharpDB — from core concepts to ETL pipelines.</p>
+                <p class="lead">Everything you need to build with CSharpDB — reference docs, runnable samples, and guided tutorials.</p>
+
+                <div class="callout callout-info">
+                    <strong>Choose the right path:</strong> use <a href="samples.html">Runnable Samples</a> when you want complete projects and working example code. Use <a href="tutorials/index.html">Guided Tutorials</a> when you want an explanation-first walkthrough of a feature, pattern, or subsystem.
+                </div>
+
+                <h2>Start Here</h2>
+                <div class="next-steps-grid" style="margin-bottom: 40px;">
+                    <a href="samples.html" class="next-step-card">
+                        <h4>Runnable Samples</h4>
+                        <p>Complete example apps and practical code you can run locally and adapt to your own project.</p>
+                    </a>
+                    <a href="tutorials/index.html" class="next-step-card">
+                        <h4>Guided Tutorials</h4>
+                        <p>Step-by-step explanation-first walkthroughs for bulk import, daemon hosting, storage internals, and other focused topics.</p>
+                    </a>
+                </div>
 
                 <div class="hub-grid">
                     <a href="core-concepts.html" class="hub-card">
@@ -104,13 +120,6 @@
                         <h3>Architecture Deep Dive</h3>
                         <p>Pager, WAL, B+tree, SchemaCatalog — how the storage engine components collaborate.</p>
                     </a>
-                    <a href="samples.html" class="hub-card">
-                        <div class="hub-icon">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
-                        </div>
-                        <h3>Samples &amp; Tutorials</h3>
-                        <p>End-to-end examples: in-memory cache in ASP.NET, storage tutorials, graph databases, and more.</p>
-                    </a>
                     <a href="ecosystem.html" class="hub-card">
                         <div class="hub-icon">
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -131,13 +140,6 @@
                         </div>
                         <h3>Reports</h3>
                         <p>Visual report designer with banded layouts, grouping, sorting, expressions, aggregates, and printable preview.</p>
-                    </a>
-                    <a href="tutorials/index.html" class="hub-card">
-                        <div class="hub-icon">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                        </div>
-                        <h3>Tutorials</h3>
-                        <p>Hands-on walkthroughs — storage engine internals, B+trees, WAL, indexing, serialization, and file storage.</p>
                     </a>
                     <a href="cli.html" class="hub-card">
                         <div class="hub-icon">

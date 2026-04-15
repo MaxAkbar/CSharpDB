@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Multi-Writer gRPC Daemon Tutorial",
+        "description": "How CSharpDB multi-writer behavior works behind the gRPC daemon, how to configure the host, and how applications should use it through CSharpDB.Client and ADO.NET.",
+        "url": "https://csharpdb.com/docs/tutorials/multi-writer-daemon-grpc.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'Multi-Writer gRPC Daemon Tutorial',
+            description: 'How CSharpDB multi-writer behavior works behind the gRPC daemon, how to configure the host, and how applications should use it through CSharpDB.Client and ADO.NET.',
+            keywords: 'CSharpDB daemon, gRPC tutorial, multi-writer database, CSharpDB.Client grpc, ADO.NET grpc, hybrid incremental durable',
+            canonicalPath: 'docs/tutorials/multi-writer-daemon-grpc.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>Multi-Writer gRPC Daemon Tutorial</h1>
+                <p class="lead">Host one CSharpDB database behind <code>CSharpDB.Daemon</code>, let multiple app clients talk to it over gRPC, and understand what the current multi-writer model does and does not guarantee.</p>
+
+                <div class="callout callout-info">
+                    <strong>Important boundary:</strong> gRPC is only the transport. The multi-writer behavior lives inside the daemon-hosted database/runtime. Putting CSharpDB behind gRPC does not turn it into a distributed write coordinator or a multi-tenant database server.
+                </div>
+
+                <nav class="toc">
+                    <h2>Contents</h2>
+                    <ol>
+                        <li><a href="#when-to-use">What this pattern is for</a></li>
+                        <li><a href="#how-it-works">How the daemon works</a></li>
+                        <li><a href="#multi-writer-today">What multi-writer means today</a></li>
+                        <li><a href="#configuration">Recommended daemon configuration</a></li>
+                        <li><a href="#client-sdk">Use it from CSharpDB.Client</a></li>
+                        <li><a href="#adonet">Use it from ADO.NET</a></li>
+                        <li><a href="#operations">Operational guidance</a></li>
+                        <li><a href="#limits">Limits and expectations</a></li>
+                        <li><a href="#tooling">CLI inspection and querying</a></li>
+                    </ol>
+                </nav>
+
+                <h2 id="when-to-use">What this pattern is for</h2>
+                <p>This is the current remote-host pattern when you want one long-running CSharpDB process to own the database file and serve multiple application clients through a stable gRPC endpoint.</p>
+                <ul>
+                    <li>Use it when backend services or local tools should not open the database file directly.</li>
+                    <li>Use it when you want one authoritative <code>ICSharpDbClient</code> contract across app processes.</li>
+                    <li>Use it for sidecar-style deployment, internal networks, local development, or service-to-service communication.</li>
+                    <li>Prefer direct embedded access only when the caller can safely own the database file in-process and does not need process isolation.</li>
+                </ul>
+
+                <h2 id="how-it-works">How the daemon works</h2>
+                <p><code>CSharpDB.Daemon</code> is a thin gRPC host over <code>CSharpDB.Client</code>. One daemon process manages one database file, opens it during startup, and exposes explicit gRPC methods that map to the public client operations.</p>
+
+                <div class="code-block" data-title="Runtime model">
+                    <pre><code>app client(s)
+    └── gRPC
+        └── CSharpDB.Daemon
+            └── ICSharpDbClient (direct transport inside the host)
+                └── one daemon-hosted Database instance
+                    └── one .db / .wal durable state</code></pre>
+                </div>
+
+                <p>Today the daemon host:</p>
+                <ul>
+                    <li>starts an ASP.NET Core host with gRPC enabled</li>
+                    <li>binds one direct <code>ICSharpDbClient</code> from configuration</li>
+                    <li>opens and validates the configured database during startup</li>
+                    <li>maps gRPC methods to explicit client operations such as <code>GetInfo</code>, <code>ExecuteSql</code>, <code>BeginTransaction</code>, and maintenance commands</li>
+                </ul>
+
+                <p>All remote clients talk to the same daemon-hosted database runtime. That is why write concurrency behavior is shared: the overlap happens inside that one host process.</p>
+
+                <h2 id="multi-writer-today">What multi-writer means today</h2>
+                <p>CSharpDB ships initial multi-writer support, but it is important to describe it precisely.</p>
+                <ul>
+                    <li>Auto-commit <code>UPDATE</code>, <code>DELETE</code>, and DDL already run through isolated write-transaction state internally on a shared database handle.</li>
+                    <li>Shared auto-commit <code>INSERT</code> can also use isolated write transactions when <code>ImplicitInsertExecutionMode = ConcurrentWriteTransactions</code>.</li>
+                    <li>The daemon defaults already enable that insert mode, so the recommended gRPC host shape is multi-writer-capable out of the box.</li>
+                    <li>The physical WAL publish and durable flush path is still serialized at the storage boundary, so this is not unlimited write parallelism.</li>
+                </ul>
+
+                <div class="callout callout-warning">
+                    <strong>Expectation setting:</strong> current gains depend on conflict shape. Lower-conflict write workloads benefit more than hot right-edge insert loops. Hot insert fan-in remains the most workload-sensitive part of the shipped model.
+                </div>
+
+                <p>The practical meaning is: the daemon can overlap write preparation and use conflict-managed commit flow for more shapes than the old single-owner path, but durable commit finalization is still not a free-for-all.</p>
+
+                <h2 id="configuration">Recommended daemon configuration</h2>
+                <p>The current recommended daemon shape is already the default in <code>src/CSharpDB.Daemon/appsettings.json</code>:</p>
+
+                <div class="code-block" data-title="appsettings.json">
+                    <pre><code>{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=csharpdb.db"
+  },
+  "CSharpDB": {
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
+  }
+}</code></pre>
+                </div>
+
+                <p>Why these defaults exist:</p>
+                <ul>
+                    <li><code>HybridIncrementalDurable</code> keeps the durable file as the source of truth while letting the daemon hold touched pages resident in memory.</li>
+                    <li><code>ConcurrentWriteTransactions</code> moves shared auto-commit inserts onto the isolated write-transaction path instead of the older serialized insert path.</li>
+                    <li><code>UseWriteOptimizedPreset = true</code> gives the daemon a sensible starting point for durable remote write workloads.</li>
+                </ul>
+
+                <p>Use environment variables when deploying the daemon as a service:</p>
+
+                <div class="code-block" data-title="PowerShell">
+                    <pre><code>$env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
+$env:CSharpDB__HostDatabase__OpenMode = "HybridIncrementalDurable"
+$env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "ConcurrentWriteTransactions"
+$env:CSharpDB__HostDatabase__UseWriteOptimizedPreset = "true"
+$env:ASPNETCORE_URLS = "http://0.0.0.0:5820"</code></pre>
+                </div>
+
+                <p>When to keep the defaults:</p>
+                <ul>
+                    <li>Keep <code>HybridIncrementalDurable</code> for the normal long-running daemon shape.</li>
+                    <li>Keep <code>ConcurrentWriteTransactions</code> when you want the current recommended shared-insert path and you have not benchmarked a reason to turn it off.</li>
+                    <li>Keep <code>UseWriteOptimizedPreset</code> on unless you are deliberately measuring a different host tuning shape.</li>
+                </ul>
+
+                <p>When to override them:</p>
+                <ul>
+                    <li>Switch <code>OpenMode</code> to <code>Direct</code> only when you explicitly do not want the hybrid lazy-resident cache behavior.</li>
+                    <li>Switch <code>ImplicitInsertExecutionMode</code> to <code>Serialized</code> if your own hot insert benchmark shows the legacy serialized insert path is a better fit for that workload.</li>
+                </ul>
+
+                <h2 id="client-sdk">Use it from CSharpDB.Client</h2>
+                <p>The primary app-facing abstraction is <code>CSharpDB.Client</code>. Your application talks to the daemon through the same client contract used by the direct and HTTP transports.</p>
+
+                <div class="code-block" data-title="C# — gRPC client">
+                    <pre><code>using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://localhost:5820",
+});
+
+var info = await client.GetInfoAsync();
+var tables = await client.GetTableNamesAsync();
+
+var create = await client.ExecuteSqlAsync("""
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY,
+        customer_id INTEGER NOT NULL,
+        status TEXT NOT NULL
+    );
+    """);
+
+var rows = await client.ExecuteSqlAsync(
+    "SELECT id, customer_id, status FROM orders ORDER BY id LIMIT 20;");</code></pre>
+                </div>
+
+                <p>When one caller needs a multi-step atomic unit, use a client-managed transaction session rather than assuming separate remote calls are automatically grouped together:</p>
+
+                <div class="code-block" data-title="C# — explicit transaction session">
+                    <pre><code>using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://localhost:5820",
+});
+
+var tx = await client.BeginTransactionAsync();
+
+try
+{
+    await client.ExecuteInTransactionAsync(
+        tx.TransactionId,
+        "INSERT INTO orders (id, customer_id, status) VALUES (101, 42, 'Pending');");
+
+    await client.ExecuteInTransactionAsync(
+        tx.TransactionId,
+        "UPDATE customers SET last_order_id = 101 WHERE id = 42;");
+
+    await client.CommitTransactionAsync(tx.TransactionId);
+}
+catch
+{
+    await client.RollbackTransactionAsync(tx.TransactionId);
+    throw;
+}</code></pre>
+                </div>
+
+                <p>That example is still using the daemon-hosted runtime under the hood. The transaction session is remote, but the real write coordination and durability work still happen inside the daemon process.</p>
+
+                <p>Practical guidance:</p>
+                <ul>
+                    <li>Keep <code>ICSharpDbClient</code> instances alive instead of reconnecting per operation.</li>
+                    <li>Reuse the same gRPC channel/client for many requests.</li>
+                    <li>Use one transaction session per caller-owned atomic unit; do not try to share one transaction session across unrelated callers.</li>
+                </ul>
+
+                <h2 id="adonet">Use it from ADO.NET</h2>
+                <p>If your app already uses <code>DbConnection</code>, <code>DbCommand</code>, and <code>DbTransaction</code>, point <code>CSharpDB.Data</code> at the daemon with a gRPC transport connection string:</p>
+
+                <div class="code-block" data-title="C# — ADO.NET over gRPC">
+                    <pre><code>using CSharpDB.Data;
+
+await using var connection = new CSharpDbConnection(
+    "Transport=Grpc;Endpoint=http://localhost:5820");
+
+await connection.OpenAsync();
+
+await using var command = connection.CreateCommand();
+command.CommandText = "SELECT COUNT(*) FROM orders";
+
+var count = (long)(await command.ExecuteScalarAsync() ?? 0L);</code></pre>
+                </div>
+
+                <p>ADO.NET transactions work against the daemon-managed database as well:</p>
+
+                <div class="code-block" data-title="C# — ADO.NET transaction">
+                    <pre><code>await using var connection = new CSharpDbConnection(
+    "Transport=Grpc;Endpoint=http://localhost:5820");
+
+await connection.OpenAsync();
+
+await using var tx = await connection.BeginTransactionAsync();
+await using var command = connection.CreateCommand();
+command.Transaction = (CSharpDbTransaction)tx;
+
+command.CommandText = "INSERT INTO orders (id, customer_id, status) VALUES (102, 42, 'Queued')";
+await command.ExecuteNonQueryAsync();
+
+command.CommandText = "UPDATE customers SET last_order_id = 102 WHERE id = 42";
+await command.ExecuteNonQueryAsync();
+
+await tx.CommitAsync();</code></pre>
+                </div>
+
+                <p>Keep remote ADO.NET connections open for bursts of work instead of reconnecting for every command.</p>
+
+                <h2 id="operations">Operational guidance</h2>
+                <ul>
+                    <li>Run one daemon process per database file.</li>
+                    <li>Treat the database directory as durable application state and keep the daemon responsible for those files while it is running.</li>
+                    <li>Do not let unrelated processes mutate the same <code>.db</code> / <code>.wal</code> files directly while the daemon owns them.</li>
+                    <li>Prefer private networking and front-end TLS termination because built-in auth and authorization are not shipped in the daemon yet.</li>
+                    <li>Make sure the full network path supports HTTP/2 correctly if the daemon sits behind infrastructure.</li>
+                    <li>Reuse clients and connections so the app spends time doing useful work instead of rebuilding transport state.</li>
+                </ul>
+
+                <h2 id="limits">Limits and expectations</h2>
+                <ul>
+                    <li>This is not a multi-tenant database server.</li>
+                    <li>This is not a public-internet-ready database endpoint with built-in auth, authorization, or service hardening.</li>
+                    <li>This is not cross-process distributed write coordination across multiple daemon processes.</li>
+                    <li>This does not guarantee that every write-heavy workload scales linearly with client count.</li>
+                    <li>Hot insert workloads can still see limited fan-in depending on key pattern, row-id pressure, and right-edge page growth.</li>
+                </ul>
+
+                <h2 id="tooling">CLI inspection and querying</h2>
+                <p>The CLI is useful for inspecting and querying the daemon-managed database over gRPC. It is not the tool that changes the daemon’s concurrency model.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>csharpdb -- --endpoint http://localhost:5820 --transport grpc
+
+csharpdb&gt; .info
+csharpdb&gt; .tables
+csharpdb&gt; SELECT COUNT(*) FROM orders;
+csharpdb&gt; SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status;</code></pre>
+                </div>
+
+                <p>For broader CLI coverage, use the <a href="../cli.html">CLI Reference</a>. For the surrounding host/tooling picture, see <a href="../ecosystem.html">Tools &amp; Ecosystem</a>.</p>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="../ecosystem.html" class="next-step-card">
+                            <h4>Tools &amp; Ecosystem</h4>
+                            <p>See how the daemon fits with the client SDK, Admin UI, and REST host</p>
+                        </a>
+                        <a href="../cli.html" class="next-step-card">
+                            <h4>CLI Reference</h4>
+                            <p>Inspect and query the daemon-managed database over gRPC</p>
+                        </a>
+                        <a href="../../performance.html#s6-multi-writer" class="next-step-card">
+                            <h4>Performance Guide</h4>
+                            <p>Read the current multi-writer tuning and expectation guidance</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
