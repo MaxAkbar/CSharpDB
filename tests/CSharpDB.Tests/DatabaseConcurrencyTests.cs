@@ -1814,6 +1814,73 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task ActiveExplicitWriteTransaction_DoesNotLetDeferredBackgroundCheckpointSpinAndBlockConcurrentAutoCommitWrites()
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(20));
+        CancellationToken ct = linkedCts.Token;
+
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_checkpoint_retention_liveness_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
+        {
+            builder.UsePagerOptions(new PagerOptions
+            {
+                CheckpointPolicy = new FrameCountCheckpointPolicy(64),
+                AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+                AutoCheckpointMaxPagesPerStep = 64,
+            });
+            builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25));
+        });
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE checkpoint_retention_liveness (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)", ct);
+
+            await using var blocker = await db.BeginWriteTransactionAsync(ct);
+            await using (var blockerRead = await blocker.ExecuteSnapshotReadAsync("SELECT COUNT(*) FROM checkpoint_retention_liveness", ct))
+            {
+                await blockerRead.ToListAsync(ct);
+            }
+
+            int nextId = 0;
+            TimeSpan loadDuration = TimeSpan.FromSeconds(2);
+            var loadSw = System.Diagnostics.Stopwatch.StartNew();
+
+            await RunConcurrentWritersAsync(
+                writerCount: 8,
+                async writerId =>
+                {
+                    while (loadSw.Elapsed < loadDuration)
+                    {
+                        int id = Interlocked.Increment(ref nextId);
+                        await db.ExecuteAsync(
+                            $"INSERT INTO checkpoint_retention_liveness (id, value, text_col, category) VALUES ({id}, {writerId}, 'checkpoint_liveness', 'Alpha')",
+                            ct);
+                    }
+                },
+                ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+            Assert.True(nextId > 0, "Expected concurrent auto-commit writers to make progress while checkpoint finalization was deferred.");
+
+            await blocker.DisposeAsync();
+            await db.CheckpointAsync(ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
+
+            long committedRowCount = await ScalarIntAsync(db, "SELECT COUNT(*) FROM checkpoint_retention_liveness", ct);
+            Assert.Equal(nextId, committedRowCount);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath, walPath);
+        }
+    }
+
     private static async Task RunConcurrentWritersAsync(
         int writerCount,
         Func<int, Task> writerAction,

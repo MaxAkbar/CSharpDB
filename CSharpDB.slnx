@@ -5,6 +5,7 @@
   <Folder Name="/samples/">
     <Project Path="samples/collection-indexing/CollectionIndexingSample.csproj" />
     <Project Path="samples/csv-bulk-import/CsvBulkImportSample.csproj" />
+    <Project Path="samples/efcore-provider/EfCoreProviderSample.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/CSharpDB/CSharpDB.csproj" />
@@ -19,6 +20,7 @@
     <Project Path="src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj" />
     <Project Path="src/CSharpDB.Cli/CSharpDB.Cli.csproj" />
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
+    <Project Path="src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
     <Project Path="src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj" />
     <Project Path="src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj" />
@@ -30,6 +32,7 @@
     <Project Path="tests/CSharpDB.Tests/CSharpDB.Tests.csproj" />
     <Project Path="tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj" />
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
+    <Project Path="tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj" />

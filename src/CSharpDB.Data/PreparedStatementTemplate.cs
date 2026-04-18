@@ -763,6 +763,9 @@ internal sealed class PreparedStatementTemplate
             case TokenType.StringLiteral when literal.Value is string textValue:
                 value = DbValue.FromText(textValue);
                 return true;
+            case TokenType.BlobLiteral when literal.Value is byte[] blobValue:
+                value = DbValue.FromBlob(blobValue);
+                return true;
             default:
                 value = default;
                 return false;
@@ -778,7 +781,7 @@ internal sealed class PreparedStatementTemplate
             DbType.Integer => new LiteralExpression { Value = dbValue.AsInteger, LiteralType = TokenType.IntegerLiteral },
             DbType.Real => new LiteralExpression { Value = dbValue.AsReal, LiteralType = TokenType.RealLiteral },
             DbType.Text => new LiteralExpression { Value = dbValue.AsText, LiteralType = TokenType.StringLiteral },
-            DbType.Blob => throw new NotSupportedException("Blob parameters are not supported."),
+            DbType.Blob => new LiteralExpression { Value = dbValue.AsBlob, LiteralType = TokenType.BlobLiteral },
             _ => throw new NotSupportedException($"Unsupported parameter type '{dbValue.Type}'."),
         };
     }
@@ -805,7 +808,8 @@ internal sealed class PreparedStatementTemplate
             string sv => DbValue.FromText(sv),
             DateTime dt => DbValue.FromText(dt.ToString("O", CultureInfo.InvariantCulture)),
             Guid g => DbValue.FromText(g.ToString()),
-            byte[] => throw new NotSupportedException("Blob parameters are not supported."),
+            byte[] blob => DbValue.FromBlob(blob),
+            ReadOnlyMemory<byte> blob => DbValue.FromBlob(blob.ToArray()),
             _ => DbValue.FromText(value.ToString()!),
         };
     }

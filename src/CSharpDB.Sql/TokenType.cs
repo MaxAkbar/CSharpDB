@@ -6,6 +6,7 @@ public enum TokenType
     IntegerLiteral,
     RealLiteral,
     StringLiteral,
+    BlobLiteral,
 
     // Identifier
     Identifier,

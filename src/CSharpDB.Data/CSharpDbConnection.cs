@@ -338,20 +338,19 @@ public sealed class CSharpDbConnection : DbConnection
             return new RemoteDatabaseSession(pooledClient, pool.ReturnAsync);
         }
 
-        ICSharpDbClient client = await OpenDirectClientAsync($"Data Source={normalizedPath}", cancellationToken);
-        return new RemoteDatabaseSession(client);
+        Engine.Database database = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
+        return new DirectDatabaseSession(database);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPrivateMemorySessionAsync(
         string? loadFromPath,
         CancellationToken cancellationToken)
     {
-        string connectionString = string.IsNullOrWhiteSpace(loadFromPath)
-            ? "Data Source=:memory:"
-            : $"Data Source=:memory:;Load From={NormalizeDataSourcePath(loadFromPath)}";
+        Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
+            ? await Engine.Database.OpenInMemoryAsync(cancellationToken)
+            : await Engine.Database.LoadIntoMemoryAsync(NormalizeDataSourcePath(loadFromPath), cancellationToken);
 
-        ICSharpDbClient client = await OpenDirectClientAsync(connectionString, cancellationToken);
-        return new RemoteDatabaseSession(client);
+        return new DirectDatabaseSession(database);
     }
 
     private async ValueTask<ICSharpDbSession> OpenRemoteSessionAsync(

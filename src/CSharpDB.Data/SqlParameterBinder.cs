@@ -106,7 +106,8 @@ internal static class SqlParameterBinder
             string sv => $"'{sv.Replace("'", "''")}'",
             DateTime dt => $"'{dt.ToString("O", CultureInfo.InvariantCulture)}'",
             Guid g => $"'{g}'",
-            byte[] => throw new NotSupportedException("Blob parameters are not supported."),
+            byte[] blob => FormatBlob(blob),
+            ReadOnlyMemory<byte> blob => FormatBlob(blob.Span),
             _ => $"'{value.ToString()!.Replace("'", "''")}'",
         };
     }
@@ -121,6 +122,9 @@ internal static class SqlParameterBinder
             s += ".0";
         return s;
     }
+
+    private static string FormatBlob(ReadOnlySpan<byte> value)
+        => $"X'{Convert.ToHexString(value)}'";
 
     private static bool IsIdentStart(char c) => char.IsLetter(c) || c == '_';
     private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_';

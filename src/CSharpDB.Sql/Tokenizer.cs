@@ -121,7 +121,13 @@ public sealed class Tokenizer
                 continue;
             }
 
-            if (char.IsLetter(c) || c == '_')
+            if ((c == 'X' || c == 'x') &&
+                _pos + 1 < _input.Length &&
+                _input[_pos + 1] == '\'')
+            {
+                tokens.Add(ReadBlobLiteral());
+            }
+            else if (char.IsLetter(c) || c == '_')
             {
                 tokens.Add(ReadIdentifierOrKeyword());
             }
@@ -231,6 +237,41 @@ public sealed class Tokenizer
         throw new CSharpDbException(ErrorCode.SyntaxError, $"Unterminated string literal at position {start}.");
     }
 
+    private Token ReadBlobLiteral()
+    {
+        int start = _pos;
+        _pos++; // skip X/x
+        _pos++; // skip opening quote
+
+        int hexStart = _pos;
+        while (_pos < _input.Length && _input[_pos] != '\'')
+        {
+            if (!IsHexDigit(_input[_pos]))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"Invalid blob literal at position {start}. Expected hexadecimal characters.");
+            }
+
+            _pos++;
+        }
+
+        if (_pos >= _input.Length)
+            throw new CSharpDbException(ErrorCode.SyntaxError, $"Unterminated blob literal at position {start}.");
+
+        int hexLength = _pos - hexStart;
+        if ((hexLength & 1) != 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Blob literal at position {start} must contain an even number of hexadecimal characters.");
+        }
+
+        string hex = _input[hexStart.._pos];
+        _pos++; // skip closing quote
+        return new Token(TokenType.BlobLiteral, hex, start);
+    }
+
     private Token ReadOperatorOrPunctuation()
     {
         int start = _pos;
@@ -267,4 +308,9 @@ public sealed class Tokenizer
                 throw new CSharpDbException(ErrorCode.SyntaxError, $"Unexpected character '{c}' at position {start}.");
         }
     }
+
+    private static bool IsHexDigit(char c)
+        => c is >= '0' and <= '9'
+        or >= 'a' and <= 'f'
+        or >= 'A' and <= 'F';
 }
