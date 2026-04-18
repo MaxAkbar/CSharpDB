@@ -4,6 +4,7 @@ obj/
 publish/
 temp/
 tmp/
+.tmp
 
 ## User-specific files
 *.user
@@ -92,8 +93,7 @@ Desktop.ini
 *.wal
 
 ## Local sample-only stray files
-docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.Primitives.csproj
-docs/tutorials/storage/examples/CSharpDB.VirtualFS/.github/copilot-instructions.md
+
 
 ## Node.js
 node_modules/

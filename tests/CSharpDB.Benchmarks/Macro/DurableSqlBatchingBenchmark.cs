@@ -34,6 +34,20 @@ public static class DurableSqlBatchingBenchmark
         return results;
     }
 
+    public static Task<BenchmarkResult> RunNamedScenarioAsync(string scenarioName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+
+        SqlBatchScenario? scenario = s_scenarios.FirstOrDefault(
+            scenario => scenario.Name.Equals(scenarioName, StringComparison.OrdinalIgnoreCase));
+        if (scenario is null)
+            throw new ArgumentException(
+                $"Unknown durable SQL batching scenario '{scenarioName}'.",
+                nameof(scenarioName));
+
+        return RunScenarioAsync(scenario);
+    }
+
     private static async Task<BenchmarkResult> RunScenarioAsync(SqlBatchScenario scenario)
     {
         _nextId = 0;

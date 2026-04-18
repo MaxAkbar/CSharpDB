@@ -954,12 +954,6 @@ public sealed class SystemCatalogTests : IAsyncLifetime
 
         public bool AllowsWriteConcurrencyDuringCommitFlush => true;
 
-        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.CompletedTask;
-        }
-
         public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

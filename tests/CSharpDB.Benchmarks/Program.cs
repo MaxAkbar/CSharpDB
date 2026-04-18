@@ -67,6 +67,14 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount);
                 return;
 
+            case "--durable-sql-batching-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"durable-sql-batching-scenario-{GetRequiredOptionValue(args, "--durable-sql-batching-scenario")}",
+                    () => RunDurableSqlBatchingScenarioOnceAsync(GetRequiredOptionValue(args, "--durable-sql-batching-scenario")),
+                    repeatCount);
+                return;
+
             case "--write-transaction-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
@@ -544,6 +552,12 @@ public static class Program
         return await DurableSqlBatchingBenchmark.RunAsync();
     }
 
+    private static async Task<List<BenchmarkResult>> RunDurableSqlBatchingScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Durable SQL Batching Scenario: {scenarioName} ---");
+        return [await DurableSqlBatchingBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
     private static async Task<List<BenchmarkResult>> RunWriteTransactionDiagnosticsOnceAsync()
     {
         Console.WriteLine("--- Explicit WriteTransaction Benchmark ---");
@@ -985,6 +999,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
         Console.WriteLine("  dotnet run -- --durable-sql-batching  Run focused durable SQL batching benchmark");
+        Console.WriteLine("  dotnet run -- --durable-sql-batching-scenario TxBatch10_LowLatency  Run one durable SQL batching scenario");
         Console.WriteLine("  dotnet run -- --write-transaction-diagnostics  Run focused explicit WriteTransaction diagnostics");
         Console.WriteLine("  dotnet run -- --commit-fan-in-diagnostics  Compare shared auto-commit vs explicit WriteTransaction fan-in");
         Console.WriteLine("  dotnet run -- --commit-fan-in-scenario ExplicitTx_DisjointUpdate_W8_Batch250us  Run one commit fan-in scenario");
