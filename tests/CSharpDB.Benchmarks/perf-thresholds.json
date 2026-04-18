@@ -330,7 +330,7 @@
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
-      "baselineSnapshot": "focused-validation/20260330-122507",
+      "baselineSnapshot": "focused-validation/20260418-185724",
       "keyColumns": [
         "Method",
         "RowCount"

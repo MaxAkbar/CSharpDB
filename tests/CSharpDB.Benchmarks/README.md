@@ -86,6 +86,8 @@ As of April 13, 2026, the release threshold file also points the `write-transact
 
 As of April 13, 2026, the release threshold file also points the `InsertBenchmarks` and `CollectionIndexBenchmarks` checks at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260413-050945`. That refresh carries full clean-HEAD reruns for those two micro benchmark classes after same-runner replays showed the older March 30 rows were no longer reproducible locally across more than the initially suspected rows.
 
+As of April 18, 2026, the release threshold file also points the `ScalarAggregateLookupBenchmarks` check at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724`. That refresh is intentionally narrow and captures the same-runner rerun taken after the lookup-plan allocation fix, because the older March 30 scalar-lookup timing snapshot no longer reproduces on this runner even from a detached replay of the old code.
+
 A focused concurrent-read rerun was also completed on April 13, 2026 after the benchmark harness stopped retaining every reused-session burst latency sample:
 
 ```powershell

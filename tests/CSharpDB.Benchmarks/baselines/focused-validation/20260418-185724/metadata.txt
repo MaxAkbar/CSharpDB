@@ -1,0 +1,11 @@
+UTC Timestamp: 20260418-185724
+Purpose: Focused validation scalar aggregate lookup baseline refresh
+Commit: 8d78c41caf4205eabf529b0697aad4a8c072dd2c
+Repository: C:\Users\maxim\source\Code\CSharpDB
+Source micro CSV: BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv
+Source benchmark command: dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *ScalarAggregateLookupBenchmarks*
+Source detached same-runner replay: C:\Users\maxim\AppData\Local\Temp\csharpdb-regression-baseline at commit b59a8d1327137699f4c687d22fafbe6f255da876
+Stable staged micro CSV: micro-results/CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv
+Machine fingerprint: machine.json
+
+git status --short:
