@@ -1284,7 +1284,6 @@ public class WalTests : IAsyncLifetime
 
             await (await wal.CommitAsync(newDbPageCount: 1, ct)).WaitAsync(ct);
 
-            Assert.Equal(0, policy.BufferedFlushCount);
             Assert.Equal(1, policy.CommitFlushCount);
         }
         finally
@@ -1307,7 +1306,12 @@ public class WalTests : IAsyncLifetime
 
         try
         {
-            wal = new WriteAheadLog(dbPath, new WalIndex(), checksumProvider: null, flushPolicy: policy);
+            wal = new WriteAheadLog(
+                dbPath,
+                new WalIndex(),
+                checksumProvider: null,
+                flushPolicy: policy,
+                durableCommitBatchWindow: TimeSpan.FromMilliseconds(5));
             await wal.OpenAsync(currentDbPageCount: 1, ct);
 
             wal.BeginTransaction();
@@ -1955,8 +1959,19 @@ public class WalTests : IAsyncLifetime
                 wal.BeginTransaction();
                 await wal.AppendFrameAsync(0, CreateFilledPage(0xB1), ct);
 
-                WalCommitResult commit = await wal.CommitAsync(newDbPageCount: 1, ct);
-                await Assert.ThrowsAsync<CSharpDbException>(() => commit.WaitAsync(ct).AsTask());
+                CSharpDbException? commitFailure = null;
+                try
+                {
+                    WalCommitResult commit = await wal.CommitAsync(newDbPageCount: 1, ct);
+                    await commit.WaitAsync(ct);
+                }
+                catch (CSharpDbException ex)
+                {
+                    commitFailure = ex;
+                }
+
+                Assert.NotNull(commitFailure);
+                Assert.Equal(ErrorCode.WalError, commitFailure.Code);
             }
 
             await using var reopened = new WriteAheadLog(dbPath, new WalIndex());
@@ -2312,12 +2327,6 @@ public class WalTests : IAsyncLifetime
         public int FlushCount => Volatile.Read(ref _flushCount);
         public bool AllowsWriteConcurrencyDuringCommitFlush => false;
 
-        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.CompletedTask;
-        }
-
         public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2329,7 +2338,6 @@ public class WalTests : IAsyncLifetime
     private sealed class CountingWalFlushPolicy : IWalFlushPolicy
     {
         private readonly bool _allowsWriteConcurrencyDuringCommitFlush;
-        private int _bufferedFlushCount;
         private int _commitFlushCount;
 
         public CountingWalFlushPolicy(bool allowsWriteConcurrencyDuringCommitFlush)
@@ -2337,21 +2345,12 @@ public class WalTests : IAsyncLifetime
             _allowsWriteConcurrencyDuringCommitFlush = allowsWriteConcurrencyDuringCommitFlush;
         }
 
-        public int BufferedFlushCount => Volatile.Read(ref _bufferedFlushCount);
         public int CommitFlushCount => Volatile.Read(ref _commitFlushCount);
         public bool AllowsWriteConcurrencyDuringCommitFlush => _allowsWriteConcurrencyDuringCommitFlush;
 
         public void Reset()
         {
-            Volatile.Write(ref _bufferedFlushCount, 0);
             Volatile.Write(ref _commitFlushCount, 0);
-        }
-
-        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Increment(ref _bufferedFlushCount);
-            return ValueTask.CompletedTask;
         }
 
         public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
@@ -2383,12 +2382,6 @@ public class WalTests : IAsyncLifetime
             _allowCommitFlush.TrySetResult(true);
         }
 
-        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.CompletedTask;
-        }
-
         public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2405,12 +2398,6 @@ public class WalTests : IAsyncLifetime
     {
         private int _flushCount;
         public bool AllowsWriteConcurrencyDuringCommitFlush => true;
-
-        public ValueTask FlushBufferedWritesAsync(SafeFileHandle handle, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.CompletedTask;
-        }
 
         public ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken)
         {
