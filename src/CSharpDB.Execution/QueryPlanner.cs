@@ -5127,49 +5127,46 @@ public sealed class QueryPlanner
 
         IOperator? indexedSource = null;
         Expression? indexedRemainingWhere = null;
+        LookupPlan indexedLookupPlan = default;
+        bool hasIndexedLookupPlan = false;
 
         if (!isCountStar && columnIndex >= 0)
         {
-            indexedSource = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
-            if (indexedSource != null && indexedRemainingWhere == null)
+            hasIndexedLookupPlan = TryBuildIndexScanPlan(
+                simpleRef.TableName,
+                stmt.Where,
+                schema,
+                out indexedLookupPlan,
+                out indexedRemainingWhere);
+            if (hasIndexedLookupPlan && indexedRemainingWhere == null)
             {
-                result = indexedSource switch
-                {
-                    PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
-                        pk.TableTree,
-                        pk.SeekKey,
+                var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
+                var serializer = GetReadSerializer(schema);
+                result = indexedLookupPlan.IsPrimaryKey
+                    ? new QueryResult(new ScalarAggregateLookupOperator(
+                        tableTree,
+                        indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
-                        idx.IndexStore,
-                        idx.TableTree,
-                        idx.SeekValue,
+                        recordSerializer: serializer))
+                    : new QueryResult(new ScalarAggregateLookupOperator(
+                        _catalog.GetIndexStore(indexedLookupPlan.Index!.IndexName, _pager),
+                        tableTree,
+                        indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
-                        uniq.IndexStore,
-                        uniq.TableTree,
-                        uniq.SeekValue,
-                        columnIndex,
-                        func.FunctionName,
-                        outputSchema,
-                        isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    _ => null!,
-                };
-
-                if (result != null)
-                    return true;
+                        recordSerializer: serializer));
+                return true;
             }
         }
 
-        indexedSource ??= TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
+        indexedSource ??= hasIndexedLookupPlan
+            ? BuildLookupOperator(simpleRef.TableName, schema, indexedLookupPlan)
+            : TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
         if (indexedSource == null)
         {
             indexedSource = TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere)
@@ -8504,6 +8501,21 @@ public sealed class QueryPlanner
     /// </summary>
     private IOperator? TryBuildIndexScan(string tableName, Expression where, TableSchema schema, out Expression? remaining)
     {
+        if (!TryBuildIndexScanPlan(tableName, where, schema, out var lookupPlan, out remaining))
+            return null;
+
+        return BuildLookupOperator(tableName, schema, lookupPlan);
+    }
+
+    private bool TryBuildIndexScanPlan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out LookupPlan lookupPlan,
+        out Expression? remaining)
+    {
+        lookupPlan = default;
+
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPk = pkIdx >= 0 &&
             pkIdx < schema.Columns.Count &&
@@ -8554,21 +8566,18 @@ public sealed class QueryPlanner
                 schema,
                 compositeColumnIndices!,
                 compositeKeyComponents!);
-            return BuildLookupOperator(
-                tableName,
-                schema,
-                isPrimaryKey: false,
-                compositeIndex,
-                compositeLookupKey,
-                compositeColumnIndices,
-                compositeKeyComponents);
+            lookupPlan = new LookupPlan(
+                IsPrimaryKey: false,
+                Index: compositeIndex,
+                LookupValue: compositeLookupKey,
+                KeyColumnIndices: compositeColumnIndices,
+                KeyComponents: compositeKeyComponents);
+            return true;
         }
 
         if (!hasSelectedCandidate || selectedConjunctIndex < 0)
-            return null;
-        IOperator lookupOp = BuildLookupOperator(
-            tableName,
-            schema,
+            return false;
+        lookupPlan = new LookupPlan(
             selectedCandidate.IsPrimaryKey,
             selectedCandidate.Index,
             selectedCandidate.LookupValue,
@@ -8578,13 +8587,13 @@ public sealed class QueryPlanner
         if (selectedCandidate.RequiresResidualPredicate)
         {
             remaining = where;
-            return lookupOp;
+            return true;
         }
 
         if (conjuncts.Count == 1)
         {
             remaining = null;
-            return lookupOp;
+            return true;
         }
 
         var residualTerms = new List<Expression>(conjuncts.Count - 1);
@@ -8597,7 +8606,7 @@ public sealed class QueryPlanner
         }
 
         remaining = CombineConjuncts(residualTerms);
-        return lookupOp;
+        return true;
     }
 
     private readonly record struct LookupCandidate(
@@ -8608,6 +8617,13 @@ public sealed class QueryPlanner
         bool RequiresResidualPredicate,
         long? EstimatedRows,
         long? TableRowCount,
+        int[]? KeyColumnIndices,
+        DbValue[]? KeyComponents);
+
+    private readonly record struct LookupPlan(
+        bool IsPrimaryKey,
+        IndexSchema? Index,
+        long LookupValue,
         int[]? KeyColumnIndices,
         DbValue[]? KeyComponents);
 
@@ -8908,6 +8924,21 @@ public sealed class QueryPlanner
         }
 
         return false;
+    }
+
+    private IOperator BuildLookupOperator(
+        string tableName,
+        TableSchema schema,
+        LookupPlan lookupPlan)
+    {
+        return BuildLookupOperator(
+            tableName,
+            schema,
+            lookupPlan.IsPrimaryKey,
+            lookupPlan.Index,
+            lookupPlan.LookupValue,
+            lookupPlan.KeyColumnIndices,
+            lookupPlan.KeyComponents);
     }
 
     private IOperator BuildLookupOperator(
