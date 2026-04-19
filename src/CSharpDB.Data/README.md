@@ -183,6 +183,7 @@ dotnet add package CSharpDB
 | [CSharpDB](https://www.nuget.org/packages/CSharpDB) | All-in-one package for application development |
 | [CSharpDB.Engine](https://www.nuget.org/packages/CSharpDB.Engine) | Underlying embedded database engine |
 | [CSharpDB.Client](https://www.nuget.org/packages/CSharpDB.Client) | Authoritative client SDK for direct and daemon-backed database access |
+| [CSharpDB.EntityFrameworkCore](https://www.nuget.org/packages/CSharpDB.EntityFrameworkCore) | EF Core provider built on top of `CSharpDB.Data` |
 
 ## License
 

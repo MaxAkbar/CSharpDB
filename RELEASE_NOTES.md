@@ -17,6 +17,9 @@ benchmark guardrails, and new guidance for programmatic insert performance.
 - Added provider docs and a runnable `samples/efcore-provider` sample covering
   `EnsureCreatedAsync()`, design-time context creation, migrations, navigation
   loading, and the supported embedded runtime shapes.
+- Added package-local NuGet README and release/CI pack wiring so
+  `CSharpDB.EntityFrameworkCore` ships through the same package flow as the
+  existing provider/runtime packages.
 - Expanded the underlying ADO.NET command, parameter binding, and
   prepared-statement plumbing needed by the provider foundation and added
   focused data/provider tests.
