@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Paging;
 
@@ -52,7 +53,7 @@ internal static class CrashHarness
         await using var db = await Database.OpenAsync(dbPath);
         await db.ExecuteAsync("INSERT INTO t VALUES (1, 101)");
         File.WriteAllText(markerPath, "commit-returned");
-        Environment.FailFast("Crash harness: commit returned, then process terminated immediately.");
+        TerminateProcessNow();
     }
 
     private static async Task CrashDuringCheckpointStartAsync(string dbPath, string markerPath)
@@ -61,7 +62,7 @@ internal static class CrashHarness
         {
             builder.UsePagerOptions(new PagerOptions
             {
-                Interceptors = [new FailFastOnCheckpointStartInterceptor(markerPath)],
+                Interceptors = [new CrashOnCheckpointStartInterceptor(markerPath)],
             });
         });
 
@@ -97,12 +98,26 @@ internal static class CrashHarness
             $"Checkpoint crash harness completed without terminating the process at '{crashPoint}'.");
     }
 
-    private sealed class FailFastOnCheckpointStartInterceptor : IPageOperationInterceptor
+    private static void TerminateProcessNow()
+    {
+        try
+        {
+            Process.GetCurrentProcess().Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            Environment.FailFast("Crash harness: failed to terminate the current process.");
+        }
+
+        Thread.Sleep(Timeout.Infinite);
+    }
+
+    private sealed class CrashOnCheckpointStartInterceptor : IPageOperationInterceptor
     {
         private readonly string _markerPath;
         private int _fired;
 
-        public FailFastOnCheckpointStartInterceptor(string markerPath)
+        public CrashOnCheckpointStartInterceptor(string markerPath)
         {
             _markerPath = markerPath;
         }
@@ -125,7 +140,7 @@ internal static class CrashHarness
                 return ValueTask.CompletedTask;
 
             File.WriteAllText(_markerPath, "checkpoint-started");
-            Environment.FailFast("Crash harness: process terminated during checkpoint.");
+            TerminateProcessNow();
             return ValueTask.CompletedTask;
         }
 

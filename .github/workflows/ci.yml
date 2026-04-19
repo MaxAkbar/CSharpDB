@@ -42,8 +42,52 @@ jobs:
       - name: Build
         run: dotnet build CSharpDB.slnx -c Release --no-restore
 
-      - name: Test
-        run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
+      - name: Test smaller suites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          projects=(
+            tests/CSharpDB.Admin.Reports.Tests/CSharpDB.Admin.Reports.Tests.csproj
+            tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj
+            tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj
+            tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+            tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj
+            tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
+            tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
+            tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
+          )
+
+          for project in "${projects[@]}"; do
+            echo "::group::dotnet test ${project}"
+            dotnet test "${project}" -c Release --no-build --logger "console;verbosity=minimal"
+            echo "::endgroup::"
+          done
+
+      - name: Test CSharpDB.Tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
+              -c Release \
+              --no-build \
+              --logger "console;verbosity=normal" \
+              --blame-hang \
+              --blame-hang-timeout 5m \
+              -- \
+              xUnit.ReporterSwitch=verbose \
+              xUnit.DiagnosticMessages=true \
+              xUnit.LongRunningTestSeconds=60
+          else
+            dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
+              -c Release \
+              --no-build \
+              --logger "console;verbosity=normal" \
+              -- \
+              xUnit.ReporterSwitch=verbose
+          fi
 
   native-aot:
     name: NativeAOT (${{ matrix.os }} ${{ matrix.rid }})
