@@ -140,6 +140,32 @@ public static class Program
                     repeatCount);
                 return;
 
+            case "--concurrent-sqlite-capi-compare":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("concurrent-sqlite-capi-compare", RunConcurrentSqliteCApiComparisonOnceAsync, repeatCount);
+                return;
+
+            case "--concurrent-sqlite-capi-compare-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"concurrent-sqlite-capi-compare-scenario-{GetRequiredOptionValue(args, "--concurrent-sqlite-capi-compare-scenario")}",
+                    () => RunConcurrentSqliteCApiComparisonScenarioOnceAsync(GetRequiredOptionValue(args, "--concurrent-sqlite-capi-compare-scenario")),
+                    repeatCount);
+                return;
+
+            case "--concurrent-adonet-compare":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("concurrent-adonet-compare", RunConcurrentAdoNetComparisonOnceAsync, repeatCount);
+                return;
+
+            case "--concurrent-adonet-compare-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"concurrent-adonet-compare-scenario-{GetRequiredOptionValue(args, "--concurrent-adonet-compare-scenario")}",
+                    () => RunConcurrentAdoNetComparisonScenarioOnceAsync(GetRequiredOptionValue(args, "--concurrent-adonet-compare-scenario")),
+                    repeatCount);
+                return;
+
             case "--direct-file-cache-transport":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount);
@@ -168,6 +194,11 @@ public static class Program
             case "--native-aot-insert-compare":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("native-aot-insert-compare", RunNativeAotInsertComparisonOnceAsync, repeatCount);
+                return;
+
+            case "--efcore-compare":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("efcore-compare", RunEfCoreComparisonOnceAsync, repeatCount);
                 return;
 
             case "--hybrid-cold-open":
@@ -312,6 +343,14 @@ public static class Program
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
             await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--concurrent-sqlite-capi-compare"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("concurrent-sqlite-capi-compare", RunConcurrentSqliteCApiComparisonOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -618,6 +657,30 @@ public static class Program
         return [await ConcurrentDurableWriteBenchmark.RunNamedScenarioAsync(scenarioName)];
     }
 
+    private static async Task<List<BenchmarkResult>> RunConcurrentSqliteCApiComparisonOnceAsync()
+    {
+        Console.WriteLine("--- Concurrent SQLite C-API Comparison Benchmark ---");
+        return await ConcurrentSqliteCApiComparisonBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentSqliteCApiComparisonScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Concurrent SQLite C-API Comparison Scenario: {scenarioName} ---");
+        return [await ConcurrentSqliteCApiComparisonBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentAdoNetComparisonOnceAsync()
+    {
+        Console.WriteLine("--- Concurrent ADO.NET Comparison Benchmark ---");
+        return await ConcurrentAdoNetComparisonBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunConcurrentAdoNetComparisonScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Concurrent ADO.NET Comparison Scenario: {scenarioName} ---");
+        return [await ConcurrentAdoNetComparisonBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
     private static async Task<List<BenchmarkResult>> RunDirectFileCacheTransportOnceAsync()
     {
         Console.WriteLine("--- Direct File-Cache Transport Benchmark ---");
@@ -652,6 +715,12 @@ public static class Program
     {
         Console.WriteLine("--- NativeAOT Insert Comparison Benchmark ---");
         return await NativeAotInsertComparisonBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunEfCoreComparisonOnceAsync()
+    {
+        Console.WriteLine("--- EF Core Comparison Benchmark ---");
+        return await EfCoreComparisonBenchmark.RunAsync();
     }
 
     private static async Task<List<BenchmarkResult>> RunHybridColdOpenOnceAsync()
@@ -714,12 +783,15 @@ public static class Program
             "insert-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount),
             "checkpoint-retention-diagnostics" => RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount),
             "concurrent-write-diagnostics" => RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount),
+            "concurrent-sqlite-capi-compare" => RunSuiteWithRepeatsAsync("concurrent-sqlite-capi-compare", RunConcurrentSqliteCApiComparisonOnceAsync, repeatCount),
+            "concurrent-adonet-compare" => RunSuiteWithRepeatsAsync("concurrent-adonet-compare", RunConcurrentAdoNetComparisonOnceAsync, repeatCount),
             "direct-file-cache-transport" => RunSuiteWithRepeatsAsync("direct-file-cache-transport", RunDirectFileCacheTransportOnceAsync, repeatCount),
             "hybrid-storage-mode" => RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount),
             "master-table" => RunSuiteWithRepeatsAsync("master-table", RunMasterComparisonOnceAsync, repeatCount),
             "sqlite-compare" => RunSuiteWithRepeatsAsync("sqlite-compare", RunSqliteComparisonOnceAsync, repeatCount),
             "strict-insert-compare" => RunSuiteWithRepeatsAsync("strict-insert-compare", RunStrictInsertComparisonOnceAsync, repeatCount),
             "native-aot-insert-compare" => RunSuiteWithRepeatsAsync("native-aot-insert-compare", RunNativeAotInsertComparisonOnceAsync, repeatCount),
+            "efcore-compare" => RunSuiteWithRepeatsAsync("efcore-compare", RunEfCoreComparisonOnceAsync, repeatCount),
             "hybrid-cold-open" => RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount),
             "hybrid-hot-set-read" => RunSuiteWithRepeatsAsync("hybrid-hot-set-read", RunHybridHotSetReadOnceAsync, repeatCount),
             "hybrid-post-checkpoint" => RunSuiteWithRepeatsAsync("hybrid-post-checkpoint", RunHybridPostCheckpointOnceAsync, repeatCount),
@@ -1010,12 +1082,17 @@ public static class Program
         Console.WriteLine("  dotnet run -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB  Run one explicit WriteTransaction scenario");
         Console.WriteLine("  dotnet run -- --concurrent-write-diagnostics  Run focused multi-writer durable commit diagnostics");
         Console.WriteLine("  dotnet run -- --concurrent-write-scenario W8_Batch250us_Prealloc1MiB  Run one concurrent durable-write scenario");
+        Console.WriteLine("  dotnet run -- --concurrent-sqlite-capi-compare  Run concurrent engine-vs-SQLite C-API auto-commit insert comparisons");
+        Console.WriteLine("  dotnet run -- --concurrent-sqlite-capi-compare-scenario SQLite_W8  Run one concurrent engine-vs-SQLite C-API scenario");
+        Console.WriteLine("  dotnet run -- --concurrent-adonet-compare  Run concurrent prepared ADO.NET insert comparisons for CSharpDB and SQLite");
+        Console.WriteLine("  dotnet run -- --concurrent-adonet-compare-scenario SQLite_AdoNet_Disjoint_W8  Run one concurrent ADO.NET comparison scenario");
         Console.WriteLine("  dotnet run -- --direct-file-cache-transport  Run focused direct default-vs-tuned file-cache benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused storage-mode coverage plus the Plan 2 bulk insert durability/residency matrix");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");
         Console.WriteLine("  dotnet run -- --sqlite-compare  Run local SQLite WAL+FULL apples-to-apples SQL comparison rows");
         Console.WriteLine("  dotnet run -- --strict-insert-compare  Run strict ADO.NET raw-vs-prepared insert comparison for CSharpDB and SQLite");
         Console.WriteLine("  dotnet run -- --native-aot-insert-compare  Run raw+prepared insert comparison for CSharpDB ADO.NET, CSharpDB NativeAOT FFI, and SQLite");
+        Console.WriteLine("  dotnet run -- --efcore-compare  Run EF Core insert comparisons for CSharpDB and SQLite");
         Console.WriteLine("  dotnet run -- --hybrid-cold-open  Run focused engine-cold open + first read benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-hot-set-read  Run focused post-open hot-set read benchmark including hybrid warm-set mode");
         Console.WriteLine("  dotnet run -- --hybrid-post-checkpoint  Run focused post-checkpoint hot reread benchmark");
@@ -1023,7 +1100,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");
