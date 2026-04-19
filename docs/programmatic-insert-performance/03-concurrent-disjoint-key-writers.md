@@ -141,13 +141,13 @@ This plan should be read through commit-path diagnostics, not throughput alone.
 
 ## Next Version Tasks
 
-- [ ] Reuse `InsertFanInDiagnosticsBenchmark` naming and structure instead of
+- [x] Reuse `InsertFanInDiagnosticsBenchmark` naming and structure instead of
       creating a second concurrency benchmark family.
-- [ ] Refresh the `1/2/4/8` writer matrix with `0` and `250us` batch windows.
-- [ ] Keep serialized auto-commit rows as explicit controls.
-- [ ] Keep disjoint explicit-key rows as the primary success case.
-- [ ] Keep hot right-edge rows as the primary failure-boundary case.
-- [ ] Record `commitsPerFlush`, retries, and duplicate-key failures alongside
+- [x] Refresh the `1/2/4/8` writer matrix with `0` and `250us` batch windows.
+- [x] Keep serialized auto-commit rows as explicit controls.
+- [x] Keep disjoint explicit-key rows as the primary success case.
+- [x] Keep hot right-edge rows as the primary failure-boundary case.
+- [x] Record `commitsPerFlush`, retries, and duplicate-key failures alongside
       throughput.
-- [ ] Update `tests/CSharpDB.Benchmarks/README.md` with a concurrency section
+- [x] Update `tests/CSharpDB.Benchmarks/README.md` with a concurrency section
       that does not get mixed into the single-writer bulk narrative.

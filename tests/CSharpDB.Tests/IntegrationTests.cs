@@ -3,6 +3,7 @@ using System.Text;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Indexing;
 
@@ -279,6 +280,96 @@ public class IntegrationTests : IAsyncLifetime
         var ex = Assert.Throws<InvalidOperationException>(
             () => batch.AddRow(DbValue.FromInteger(1), DbValue.FromInteger(2)));
         Assert.Contains("schema changed", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_SpillsDuplicateHeavySqlIndexBuckets_ToOverflowPages()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string tableName = "batch_idx_overflow";
+        const string category = "Alpha";
+        const string text = "durable_batch";
+        const int totalRows = 2048;
+        const int batchSize = 256;
+
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {tableName} (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)",
+            ct);
+        await _db.ExecuteAsync($"CREATE INDEX idx_{tableName}_value ON {tableName}(value)", ct);
+        await _db.ExecuteAsync($"CREATE INDEX idx_{tableName}_category ON {tableName}(category)", ct);
+        await _db.ExecuteAsync($"CREATE INDEX idx_{tableName}_text_col ON {tableName}(text_col)", ct);
+        await _db.ExecuteAsync($"CREATE INDEX idx_{tableName}_category_value ON {tableName}(category, value)", ct);
+
+        var batch = _db.PrepareInsertBatch(tableName, initialCapacity: batchSize);
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            for (int rowId = 1; rowId <= totalRows; rowId++)
+            {
+                batch.AddRow(
+                    DbValue.FromInteger(rowId),
+                    DbValue.FromInteger(rowId),
+                    DbValue.FromText(text),
+                    DbValue.FromText(category));
+
+                if (batch.Count == batchSize)
+                {
+                    int rowsInBatch = batch.Count;
+                    Assert.Equal(rowsInBatch, await batch.ExecuteAsync(ct));
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                int rowsInBatch = batch.Count;
+                Assert.Equal(rowsInBatch, await batch.ExecuteAsync(ct));
+            }
+
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+
+        SchemaCatalog catalog = GetCatalog();
+        var categoryStore = Assert.IsType<OverflowingIndexStore>(catalog.GetIndexStore($"idx_{tableName}_category"));
+        Assert.IsType<OverflowingIndexStore>(catalog.GetIndexStore($"idx_{tableName}_text_col"));
+        Assert.IsType<OverflowingIndexStore>(catalog.GetIndexStore($"idx_{tableName}_category_value"));
+
+        IIndexStore innerCategoryStore = GetPrivateField<IIndexStore>(categoryStore, "_inner")
+            ?? throw new InvalidOperationException("Overflowing index store did not expose its inner store.");
+        long categoryIndexKey = IndexMaintenanceHelper.ComputeIndexKey(new[] { DbValue.FromText(category) });
+        byte[] rawCategoryPayload = await innerCategoryStore.FindAsync(categoryIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected category index payload.");
+        Assert.True(AppendableHashedIndexPayloadCodec.IsEncoded(rawCategoryPayload));
+
+        byte[] categoryPayload = await categoryStore.FindAsync(categoryIndexKey, ct)
+            ?? throw new InvalidOperationException("Expected decoded category index payload.");
+        Assert.True(HashedIndexPayloadCodec.IsEncoded(categoryPayload));
+
+        await using var categoryResult = await _db.ExecuteAsync(
+            $"SELECT COUNT(*) FROM {tableName} WHERE category = '{category}'",
+            ct);
+        var categoryRows = await categoryResult.ToListAsync(ct);
+        Assert.Single(categoryRows);
+        Assert.Equal((long)totalRows, categoryRows[0][0].AsInteger);
+
+        await using var textResult = await _db.ExecuteAsync(
+            $"SELECT COUNT(*) FROM {tableName} WHERE text_col = '{text}'",
+            ct);
+        var textRows = await textResult.ToListAsync(ct);
+        Assert.Single(textRows);
+        Assert.Equal((long)totalRows, textRows[0][0].AsInteger);
+
+        await using var pointLookup = await _db.ExecuteAsync(
+            $"SELECT id FROM {tableName} WHERE category = '{category}' AND value = 1024",
+            ct);
+        var pointLookupRows = await pointLookup.ToListAsync(ct);
+        Assert.Single(pointLookupRows);
+        Assert.Equal(1024, pointLookupRows[0][0].AsInteger);
     }
 
     [Fact]
@@ -7639,6 +7730,10 @@ public class IntegrationTests : IAsyncLifetime
         return (QueryPlanner?)plannerField.GetValue(_db)
             ?? throw new InvalidOperationException("Database planner was not initialized.");
     }
+
+    private SchemaCatalog GetCatalog()
+        => GetPrivateField<SchemaCatalog>(_db, "_catalog")
+            ?? throw new InvalidOperationException("Database catalog was not initialized.");
 
     private static IOperator GetStoredOperator(QueryResult result)
     {

@@ -1531,12 +1531,7 @@ internal sealed class CatalogService
 
     private static bool ShouldUseOverflowingIndexStore(IndexSchema schema)
     {
-        if (schema.Kind == IndexKind.Collection)
-            return true;
-
-        return schema.Kind == IndexKind.Sql &&
-               schema.Columns.Count == 1 &&
-               schema.OptionsJson?.IndexOf("\"storage\":\"ordered_text\"", StringComparison.Ordinal) >= 0;
+        return schema.Kind is IndexKind.Collection or IndexKind.Sql;
     }
 
     // ============ VIEW operations ============

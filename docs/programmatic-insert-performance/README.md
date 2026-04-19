@@ -1,6 +1,6 @@
 # Programmatic Insert Performance Plans
 
-This folder splits the earlier programmatic insert investigation into three
+This folder splits the earlier programmatic insert investigation into five
 independent plans aligned to the current public API and the benchmark harnesses
 already checked into the repo.
 
@@ -9,6 +9,9 @@ The split is intentional:
 - Plan 1 measures the fastest single-writer bulk path.
 - Plan 2 measures what changes when durability or residency changes.
 - Plan 3 measures when concurrent disjoint-key writers help.
+- Plan 4 measures what remains of the hot right-edge conflict-recovery problem.
+- Plan 5 measures the remaining raw rows/sec gap against a matched SQLite
+  baseline.
 
 Do not compare raw numbers across these plans as if they are one ranking. Each
 plan holds a different workload family constant.
@@ -24,6 +27,14 @@ plan holds a different workload family constant.
 3. Finish with [03-concurrent-disjoint-key-writers.md](03-concurrent-disjoint-key-writers.md).
    That answers the separate multi-writer question without pretending it is the
    same workload as the single-writer bulk path.
+4. If the remaining problem is still hot right-edge structural recovery, move
+   to [04-hot-right-edge-conflict-recovery.md](04-hot-right-edge-conflict-recovery.md).
+   That is the branch for `MissingTraversal`, `SplitFallbackShape`, and related
+   committed-split recovery gaps.
+5. If the goal is the remaining durable throughput gap versus SQLite, move to
+   [05-raw-rows-per-sec-vs-sqlite.md](05-raw-rows-per-sec-vs-sqlite.md). That
+   is the branch for row encoding, index maintenance, locality, and flush
+   amortization.
 
 ## Shared Scope
 
@@ -61,6 +72,8 @@ code instead of creating a parallel benchmark universe with new naming:
 - `tests/CSharpDB.Benchmarks/Macro/InsertFanInDiagnosticsBenchmark.cs`
 - `tests/CSharpDB.Benchmarks/Macro/ConcurrentDurableWriteBenchmark.cs`
 - `tests/CSharpDB.Benchmarks/Macro/WriteTransactionDiagnosticsBenchmark.cs`
+- `tests/CSharpDB.Benchmarks/Macro/SqliteComparisonBenchmark.cs`
+- `tests/CSharpDB.Benchmarks/Macro/MasterComparisonBenchmark.cs`
 - `tests/CSharpDB.Benchmarks/README.md`
 
 ## Plans
@@ -68,3 +81,5 @@ code instead of creating a parallel benchmark universe with new naming:
 - [01-single-writer-bulk-path.md](01-single-writer-bulk-path.md)
 - [02-durability-and-residency-tradeoffs.md](02-durability-and-residency-tradeoffs.md)
 - [03-concurrent-disjoint-key-writers.md](03-concurrent-disjoint-key-writers.md)
+- [04-hot-right-edge-conflict-recovery.md](04-hot-right-edge-conflict-recovery.md)
+- [05-raw-rows-per-sec-vs-sqlite.md](05-raw-rows-per-sec-vs-sqlite.md)

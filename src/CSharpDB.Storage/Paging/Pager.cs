@@ -2818,6 +2818,23 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         tx.ResolvedWriteConflictVersions[conflictPageId] = resolvedVersion;
         tx.ResolvedWriteConflictVersions[parentPageId] = resolvedVersion;
 
+        InsertOnlyRebaseResult insertedCellsResult = LeafInsertRebaseHelper.TryCollectInsertedLeafCellsFromPages(
+            conflictPageId,
+            basePage,
+            transactionPage,
+            out List<byte[]>? transactionInsertedCells,
+            out _);
+        if (insertedCellsResult == InsertOnlyRebaseResult.Success &&
+            TryClassifyInsertedLeafTargetPage(
+                transactionInsertedCells!,
+                splitPlan.SplitKey,
+                conflictPageId,
+                newPageId,
+                out uint targetLeafPageId))
+        {
+            RetargetExplicitLeafInsertTraversal(tx, traversal, conflictPageId, targetLeafPageId);
+        }
+
         RecordBTreeLeafSplit(splitPlan.RightEdgeSplit);
         RecordBTreeInteriorInsert(rightBoundaryChild == PageConstants.NullPageId);
         return true;
@@ -2855,6 +2872,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             return await TryResolveExplicitCommittedLeafSplitConflictWithDirtyParentAsync(
                 tx,
+                traversal,
                 conflictPageId,
                 conflictVersion,
                 parentPageId,
@@ -2911,11 +2929,30 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             conflictVersion,
             rebasedLeftPage!,
             rebasedRightPage!);
+        InsertOnlyRebaseResult insertedCellsResult = LeafInsertRebaseHelper.TryCollectInsertedLeafCellsFromPages(
+            conflictPageId,
+            basePage,
+            transactionPage,
+            out List<byte[]>? transactionInsertedCells,
+            out _);
+        if (insertedCellsResult == InsertOnlyRebaseResult.Success &&
+            LeafInsertRebaseHelper.TryReadFirstLeafKey(splitRightPageId, splitRightPage.Memory, out long splitKey) &&
+            TryClassifyInsertedLeafTargetPage(
+                transactionInsertedCells!,
+                splitKey,
+                conflictPageId,
+                splitRightPageId,
+                out uint targetLeafPageId))
+        {
+            RetargetExplicitLeafInsertTraversal(tx, traversal, conflictPageId, targetLeafPageId);
+        }
+
         return (true, ExplicitLeafSplitFallbackRejectReason.None);
     }
 
     private async ValueTask<(bool Success, ExplicitLeafSplitFallbackRejectReason RejectReason)> TryResolveExplicitCommittedLeafSplitConflictWithDirtyParentAsync(
         PagerTransactionState tx,
+        ExplicitLeafInsertPath traversal,
         uint conflictPageId,
         long conflictVersion,
         uint parentPageId,
@@ -2998,6 +3035,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return (false, ExplicitLeafSplitFallbackRejectReason.InvalidCommittedShape);
         }
 
+        InsertOnlyRebaseResult describedInsertionResult = InteriorInsertRebaseHelper.TryDescribeSingleInsertedInteriorEntry(
+            parentPageId,
+            baseParentPage.Memory,
+            transactionParentPage,
+            out InteriorInsertRebaseHelper.InteriorInsertion describedInsertion);
+        bool canDiscardLocalSplitParentUpdate =
+            describedInsertionResult == InsertOnlyRebaseResult.Success &&
+            describedInsertion.LeftChild == conflictPageId &&
+            describedInsertion.RightBoundaryChild == originalRightBoundaryChild &&
+            describedInsertion.Key == transactionSplitKey &&
+            describedInsertion.NewChild == transactionSplitRightPageId;
         bool matchesBaseParentShape =
             baseParentPlanResult == InsertOnlyRebaseResult.Success &&
             expectedTransactionParentPageFromBase is not null &&
@@ -3016,27 +3064,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 committedParentPlanResult == InsertOnlyRebaseResult.Success &&
                 expectedTransactionParentPageFromCommitted is not null &&
                 transactionParentPage.AsSpan().SequenceEqual(expectedTransactionParentPageFromCommitted);
-            bool canDiscardSimpleLeafSplitParent =
-                tx.ExplicitLeafInsertPaths.Count == 1 &&
-                tx.DirtyPages.Count == 3 &&
-                tx.ModifiedPages.ContainsKey(conflictPageId) &&
-                tx.ModifiedPages.ContainsKey(parentPageId) &&
-                tx.ModifiedPages.ContainsKey(transactionSplitRightPageId);
-            if (!matchesCommittedParentShape && !canDiscardSimpleLeafSplitParent)
+            if (!matchesCommittedParentShape && !canDiscardLocalSplitParentUpdate)
             {
-                InsertOnlyRebaseResult describedInsertionResult = InteriorInsertRebaseHelper.TryDescribeSingleInsertedInteriorEntry(
-                    parentPageId,
-                    baseParentPage.Memory,
-                    transactionParentPage,
-                    out InteriorInsertRebaseHelper.InteriorInsertion describedInsertion);
-                if (describedInsertionResult == InsertOnlyRebaseResult.Success &&
-                    describedInsertion.LeftChild == conflictPageId &&
-                    describedInsertion.Key == transactionSplitKey &&
-                    describedInsertion.NewChild == transactionSplitRightPageId)
-                {
-                    Interlocked.Increment(ref _explicitLeafRebaseRejectDirtyParentDescribedInsertionMatchCount);
-                }
-
                 RecordDirtyParentLeafSplitRecoveryRejectReason(
                     baseParentPlanResult != InsertOnlyRebaseResult.Success &&
                     committedParentPlanResult != InsertOnlyRebaseResult.Success
@@ -3073,6 +3102,41 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             out LeafInsertRebaseRejectReason splitRejectReason);
         if (splitRebaseResult != InsertOnlyRebaseResult.Success)
         {
+            if (splitRebaseResult == InsertOnlyRebaseResult.CapacityReject &&
+                canDiscardLocalSplitParentUpdate &&
+                TryResolveExplicitCommittedRightLeafSplitConflictWithDirtyParent(
+                    tx,
+                    traversal,
+                    conflictPageId,
+                    conflictVersion,
+                    parentPageId,
+                    splitRightPageId,
+                    transactionSplitRightPageId,
+                    committedParentPage.Memory,
+                    splitRightPage.Memory,
+                    transactionInsertedCells!))
+            {
+                return (true, ExplicitLeafSplitFallbackRejectReason.None);
+            }
+
+            if (splitRebaseResult == InsertOnlyRebaseResult.CapacityReject &&
+                canDiscardLocalSplitParentUpdate &&
+                TryResolveExplicitCommittedThreeLeafSplitConflictWithDirtyParent(
+                    tx,
+                    traversal,
+                    conflictPageId,
+                    conflictVersion,
+                    parentPageId,
+                    splitRightPageId,
+                    transactionSplitRightPageId,
+                    committedParentPage.Memory,
+                    committedPage,
+                    splitRightPage.Memory,
+                    transactionInsertedCells!))
+            {
+                return (true, ExplicitLeafSplitFallbackRejectReason.None);
+            }
+
             RecordDirtyParentLeafSplitRecoveryRejectReason(DirtyParentLeafSplitRecoveryRejectReason.RebaseFailure);
             ExplicitLeafSplitFallbackRejectReason splitFallbackRejectReason =
                 splitRejectReason == LeafInsertRebaseRejectReason.InvalidCommittedSplitShape
@@ -3093,7 +3157,209 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             conflictVersion,
             rebasedLeftPage!,
             rebasedRightPage!);
+        if (LeafInsertRebaseHelper.TryReadFirstLeafKey(splitRightPageId, splitRightPage.Memory, out long splitKey) &&
+            TryClassifyInsertedLeafTargetPage(
+                transactionInsertedCells!,
+                splitKey,
+                conflictPageId,
+                splitRightPageId,
+                out uint targetLeafPageId))
+        {
+            RetargetExplicitLeafInsertTraversal(tx, traversal, conflictPageId, targetLeafPageId);
+        }
+
         return (true, ExplicitLeafSplitFallbackRejectReason.None);
+    }
+
+    private bool TryResolveExplicitCommittedRightLeafSplitConflictWithDirtyParent(
+        PagerTransactionState tx,
+        ExplicitLeafInsertPath traversal,
+        uint conflictPageId,
+        long conflictVersion,
+        uint parentPageId,
+        uint committedRightPageId,
+        uint transactionSplitRightPageId,
+        ReadOnlyMemory<byte> committedParentPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        IReadOnlyList<byte[]> transactionInsertedCells)
+    {
+        if (_transactions is null ||
+            transactionInsertedCells.Count == 0 ||
+            !LeafInsertRebaseHelper.TryReadFirstLeafKey(
+                committedRightPageId,
+                committedRightPage,
+                out long committedRightFirstKey) ||
+            LeafInsertRebaseHelper.GetLeafCellKey(transactionInsertedCells[0]) < committedRightFirstKey)
+        {
+            return false;
+        }
+
+        var committedParent = new ReadOnlySlottedPage(committedParentPage, parentPageId);
+        if (!TryFindInteriorChildBoundary(committedParent, committedRightPageId, out uint rightBoundaryChild))
+            return false;
+
+        InsertOnlyRebaseResult splitPlanResult = LeafInsertRebaseHelper.TryPlanSplitCommittedLeafPageWithInsertedCells(
+            committedRightPageId,
+            committedRightPage,
+            transactionInsertedCells,
+            out LeafInsertSplitPlan? splitPlan,
+            out _);
+        if (splitPlanResult != InsertOnlyRebaseResult.Success || splitPlan is null)
+            return false;
+
+        InsertOnlyRebaseResult parentApplyResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorInsertion(
+            parentPageId,
+            committedParentPage,
+            committedRightPageId,
+            rightBoundaryChild,
+            splitPlan.SplitKey,
+            transactionSplitRightPageId,
+            out byte[]? rebasedParentPage);
+        if (parentApplyResult != InsertOnlyRebaseResult.Success || rebasedParentPage is null)
+            return false;
+
+        byte[] rebasedCommittedRightPage = LeafInsertRebaseHelper.BuildLeafPage(
+            committedRightPageId,
+            splitPlan.LeftCells,
+            transactionSplitRightPageId);
+        byte[] rebasedTransactionRightPage = LeafInsertRebaseHelper.BuildLeafPage(
+            transactionSplitRightPageId,
+            splitPlan.RightCells,
+            splitPlan.OriginalNextLeafPageId);
+
+        tx.ModifiedPages.Remove(conflictPageId);
+        tx.DirtyPages.Remove(conflictPageId);
+        tx.ResolvedWriteConflictVersions.Remove(conflictPageId);
+
+        tx.ModifiedPages[parentPageId] = rebasedParentPage;
+        tx.ModifiedPages[committedRightPageId] = rebasedCommittedRightPage;
+        tx.ModifiedPages[transactionSplitRightPageId] = rebasedTransactionRightPage;
+        tx.DirtyPages.Add(parentPageId);
+        tx.DirtyPages.Add(committedRightPageId);
+        tx.DirtyPages.Add(transactionSplitRightPageId);
+
+        long resolvedVersion = Math.Max(conflictVersion, _transactions.CurrentCommitVersion);
+        tx.ResolvedWriteConflictVersions[parentPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[committedRightPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[transactionSplitRightPageId] = resolvedVersion;
+
+        if (traversal.PageIds.Length > 0 &&
+            traversal.PageIds[^1] == conflictPageId)
+        {
+            uint[] retargetedPageIds = (uint[])traversal.PageIds.Clone();
+            retargetedPageIds[^1] = committedRightPageId;
+            tx.ExplicitLeafInsertPaths.Remove(conflictPageId);
+            tx.ExplicitLeafInsertPaths[committedRightPageId] = new ExplicitLeafInsertPath(
+                traversal.RootPageId,
+                retargetedPageIds);
+        }
+
+        RecordBTreeLeafSplit(splitPlan.RightEdgeSplit);
+        RecordBTreeInteriorInsert(rightBoundaryChild == PageConstants.NullPageId);
+        return true;
+    }
+
+    private bool TryResolveExplicitCommittedThreeLeafSplitConflictWithDirtyParent(
+        PagerTransactionState tx,
+        ExplicitLeafInsertPath traversal,
+        uint conflictPageId,
+        long conflictVersion,
+        uint parentPageId,
+        uint committedRightPageId,
+        uint transactionSplitRightPageId,
+        ReadOnlyMemory<byte> committedParentPage,
+        ReadOnlyMemory<byte> committedLeftPage,
+        ReadOnlyMemory<byte> committedRightPage,
+        IReadOnlyList<byte[]> transactionInsertedCells)
+    {
+        if (_transactions is null ||
+            transactionInsertedCells.Count == 0)
+        {
+            return false;
+        }
+
+        InsertOnlyRebaseResult splitPlanResult = LeafInsertRebaseHelper.TryPlanRepartitionCommittedSplitLeafPagesWithInsertedCells(
+            conflictPageId,
+            committedRightPageId,
+            committedLeftPage,
+            committedRightPage,
+            transactionInsertedCells,
+            out LeafInsertThreeWaySplitPlan? splitPlan,
+            out _);
+        if (splitPlanResult != InsertOnlyRebaseResult.Success || splitPlan is null)
+            return false;
+
+        var committedParent = new ReadOnlySlottedPage(committedParentPage, parentPageId);
+        if (!TryFindInteriorChildBoundary(committedParent, committedRightPageId, out uint rightBoundaryChild))
+            return false;
+
+        InsertOnlyRebaseResult parentApplyResult = InteriorInsertRebaseHelper.TryApplyCommittedInteriorChildSplit(
+            parentPageId,
+            committedParentPage,
+            conflictPageId,
+            committedRightPageId,
+            rightBoundaryChild,
+            splitPlan.MiddleSplitKey,
+            splitPlan.RightSplitKey,
+            transactionSplitRightPageId,
+            out byte[]? rebasedParentPage);
+        if (parentApplyResult != InsertOnlyRebaseResult.Success || rebasedParentPage is null)
+            return false;
+
+        byte[] rebasedLeftPage = LeafInsertRebaseHelper.BuildLeafPage(
+            conflictPageId,
+            splitPlan.LeftCells,
+            committedRightPageId);
+        byte[] rebasedCommittedRightPage = LeafInsertRebaseHelper.BuildLeafPage(
+            committedRightPageId,
+            splitPlan.MiddleCells,
+            transactionSplitRightPageId);
+        byte[] rebasedTransactionRightPage = LeafInsertRebaseHelper.BuildLeafPage(
+            transactionSplitRightPageId,
+            splitPlan.RightCells,
+            splitPlan.OriginalNextLeafPageId);
+
+        if (!TryClassifyInsertedLeafTargetPage(
+                transactionInsertedCells,
+                splitPlan.MiddleSplitKey,
+                splitPlan.RightSplitKey,
+                conflictPageId,
+                committedRightPageId,
+                transactionSplitRightPageId,
+                out uint targetLeafPageId))
+        {
+            return false;
+        }
+
+        tx.ModifiedPages[conflictPageId] = rebasedLeftPage;
+        tx.ModifiedPages[parentPageId] = rebasedParentPage;
+        tx.ModifiedPages[committedRightPageId] = rebasedCommittedRightPage;
+        tx.ModifiedPages[transactionSplitRightPageId] = rebasedTransactionRightPage;
+        tx.DirtyPages.Add(conflictPageId);
+        tx.DirtyPages.Add(parentPageId);
+        tx.DirtyPages.Add(committedRightPageId);
+        tx.DirtyPages.Add(transactionSplitRightPageId);
+
+        long resolvedVersion = Math.Max(conflictVersion, _transactions.CurrentCommitVersion);
+        tx.ResolvedWriteConflictVersions[conflictPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[parentPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[committedRightPageId] = resolvedVersion;
+        tx.ResolvedWriteConflictVersions[transactionSplitRightPageId] = resolvedVersion;
+
+        if (traversal.PageIds.Length > 0 &&
+            traversal.PageIds[^1] == conflictPageId)
+        {
+            uint[] retargetedPageIds = (uint[])traversal.PageIds.Clone();
+            retargetedPageIds[^1] = targetLeafPageId;
+            tx.ExplicitLeafInsertPaths.Remove(conflictPageId);
+            tx.ExplicitLeafInsertPaths[targetLeafPageId] = new ExplicitLeafInsertPath(
+                traversal.RootPageId,
+                retargetedPageIds);
+        }
+
+        RecordBTreeLeafSplit(splitPlan.RightEdgeSplit);
+        RecordBTreeInteriorInsert(rightBoundaryChild == PageConstants.NullPageId);
+        return true;
     }
 
     private void ApplyResolvedCommittedLeafSplitPages(
@@ -3132,6 +3398,89 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             },
             _ => ExplicitLeafStructuralRejectReason.Other,
         };
+
+    private static bool TryClassifyInsertedLeafTargetPage(
+        IReadOnlyList<byte[]> transactionInsertedCells,
+        long splitKey,
+        uint leftPageId,
+        uint rightPageId,
+        out uint targetPageId)
+    {
+        targetPageId = PageConstants.NullPageId;
+        for (int i = 0; i < transactionInsertedCells.Count; i++)
+        {
+            long insertedKey = LeafInsertRebaseHelper.GetLeafCellKey(transactionInsertedCells[i]);
+            uint classifiedPageId = insertedKey < splitKey ? leftPageId : rightPageId;
+            if (targetPageId == PageConstants.NullPageId)
+            {
+                targetPageId = classifiedPageId;
+                continue;
+            }
+
+            if (targetPageId != classifiedPageId)
+            {
+                targetPageId = PageConstants.NullPageId;
+                return false;
+            }
+        }
+
+        return targetPageId != PageConstants.NullPageId;
+    }
+
+    private static bool TryClassifyInsertedLeafTargetPage(
+        IReadOnlyList<byte[]> transactionInsertedCells,
+        long middleSplitKey,
+        long rightSplitKey,
+        uint leftPageId,
+        uint middlePageId,
+        uint rightPageId,
+        out uint targetPageId)
+    {
+        targetPageId = PageConstants.NullPageId;
+        for (int i = 0; i < transactionInsertedCells.Count; i++)
+        {
+            long insertedKey = LeafInsertRebaseHelper.GetLeafCellKey(transactionInsertedCells[i]);
+            uint classifiedPageId = insertedKey < middleSplitKey
+                ? leftPageId
+                : insertedKey < rightSplitKey
+                    ? middlePageId
+                    : rightPageId;
+            if (targetPageId == PageConstants.NullPageId)
+            {
+                targetPageId = classifiedPageId;
+                continue;
+            }
+
+            if (targetPageId != classifiedPageId)
+            {
+                targetPageId = PageConstants.NullPageId;
+                return false;
+            }
+        }
+
+        return targetPageId != PageConstants.NullPageId;
+    }
+
+    private static void RetargetExplicitLeafInsertTraversal(
+        PagerTransactionState tx,
+        ExplicitLeafInsertPath traversal,
+        uint originalLeafPageId,
+        uint targetLeafPageId)
+    {
+        if (targetLeafPageId == originalLeafPageId ||
+            traversal.PageIds.Length == 0 ||
+            traversal.PageIds[^1] != originalLeafPageId)
+        {
+            return;
+        }
+
+        uint[] retargetedPageIds = (uint[])traversal.PageIds.Clone();
+        retargetedPageIds[^1] = targetLeafPageId;
+        tx.ExplicitLeafInsertPaths.Remove(originalLeafPageId);
+        tx.ExplicitLeafInsertPaths[targetLeafPageId] = new ExplicitLeafInsertPath(
+            traversal.RootPageId,
+            retargetedPageIds);
+    }
 
     private static bool TryFindInteriorChildBoundary(
         ReadOnlySlottedPage interior,

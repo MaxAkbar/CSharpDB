@@ -180,7 +180,7 @@ internal static class RowIdPayloadCodec
         return low;
     }
 
-    private static bool IsSortedAscending(ReadOnlySpan<byte> payload)
+    internal static bool IsSortedAscending(ReadOnlySpan<byte> payload)
     {
         int count = GetCount(payload);
         for (int i = 1; i < count; i++)

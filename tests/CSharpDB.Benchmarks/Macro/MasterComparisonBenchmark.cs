@@ -9,8 +9,13 @@ public static class MasterComparisonBenchmark
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
         var results = new List<BenchmarkResult>();
+        List<BenchmarkResult> hybridStorageResults = await HybridStorageModeBenchmark.RunAsync();
 
-        results.AddRange(Remap(await HybridStorageModeBenchmark.RunAsync(), MapHybridStorageResult));
+        results.AddRange(Remap(
+            hybridStorageResults
+                .Where(static result => result.Name.StartsWith("Storage_", StringComparison.Ordinal))
+                .ToList(),
+            MapHybridStorageResult));
         results.AddRange(Remap(await DirectFileCacheTransportBenchmark.RunMasterComparisonSubsetAsync(), MapDirectClientResult));
         results.Sort(static (left, right) =>
         {

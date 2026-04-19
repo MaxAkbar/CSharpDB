@@ -169,6 +169,22 @@ A rebuilt April 12, 2026 spot-check of the previously lagging explicit auto-id s
 | Explicit `WriteTransaction` auto-id `W8` spot-check | `441-445 commits/sec`, `extraAttempts = 0`, `dirtyParentRecoveries = 0` |
 | Spot-check note | `The earlier retry-tail signal did not reproduce after rebuilding the benchmark binaries and rerunning the targeted scenario on the current storage path.` |
 
+A focused concurrent-insert rerun was also completed on April 19, 2026 to close out the wider Plan 3 disjoint-key matrix:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --insert-fan-in-diagnostics --repro
+```
+
+| Item | Result |
+|------|--------|
+| Concurrent insert artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260419-140845.csv` |
+| Zero-window disjoint explicit-key control | All `Batch0` disjoint explicit-key rows stayed in a flat `244-273 commits/sec` band with `commitsPerFlush = 1.00` |
+| Disjoint explicit-key `W4` crossover | Serialized auto-commit `255.2 commits/sec`; shared concurrent auto-commit `505.8`; explicit `WriteTransaction` `494.3`; `commitsPerFlush` moved from `1.00` to `1.99` / `2.00` |
+| Disjoint explicit-key `W8` crossover | Serialized auto-commit `258.3 commits/sec`; shared concurrent auto-commit `834.5`; explicit `WriteTransaction` `883.6`; `commitsPerFlush` moved from `1.00` to `3.28` / `3.41` |
+| Hot right-edge boundary | `W8 Batch250us` shared concurrent and explicit explicit-id rows stayed at `255.6` / `257.0 commits/sec` with `commitsPerFlush = 1.00` |
+| Auto-id validation | `W8 Batch250us` shared concurrent and explicit auto-id rows stayed at `252.1` / `261.5 commits/sec`; `duplicateKeys = 0` in both cases |
+| Closeout note | `Concurrent inserts now show real fan-in on this runner, but only for disjoint explicit key ranges and only once writer count is high enough to fill the 250us durable batch window.` |
+
 A focused composite-index rerun was also completed on April 6, 2026 after the covered composite lookup fix:
 
 ```powershell
@@ -894,6 +910,68 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 
 ### File-Backed Durable Write Tuning Takeaways
 
+#### Plan 1: Single-Writer Bulk Path Closeout
+
+The current single-writer bulk-insert recommendation now comes from the April 19, 2026 focused Plan 1 scenario reruns under `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/`, plus the matched local SQLite comparison in `sqlite-compare-20260419-053217.csv`.
+
+| Question | Result | Interpretation |
+|----------|--------|----------------|
+| Fastest embedded bulk API at `B1000` | `InsertBatch`: `184,782 rows/sec`; multi-row SQL: `175,084`; per-row SQL in one explicit transaction: `157,768` | `Database.PrepareInsertBatch(...)` remains the recommended embedded bulk path. |
+| Best starting batch band | `B1`: `271 rows/sec`; `B10`: `2,599`; `B100`: `24,813`; `B1000`: `185,524`; `B10000`: `492,859` | Start at `B1000`. `B10000` is a valid pure-throughput mode, but it materially increases commit latency and tail risk (`P50 13.167 ms`, `P99 218.139 ms`). |
+| Row-width sensitivity at `InsertBatch B1000` | Baseline: `182,692 rows/sec`; medium: `156,056`; wide: `75,209` | Row encoding and payload width are real tuning levers once batching is already in place. |
+| Secondary-index sensitivity at `InsertBatch B1000` | PK-only: `185,524 rows/sec`; `+1` secondary: `130,999`; `+2`: `102,686`; `+4`: `68,567` | Secondary-index maintenance is the main remaining durable single-writer cost after batching. |
+| Key-pattern sensitivity at `InsertBatch B1000` | Monotonic key: `183,191 rows/sec`; random key: `16,816` | Right-edge append behavior dominates random-key split-heavy behavior on this storage path. |
+| SQLite parity check | SQLite matched durable SQL baseline: `201,126 rows/sec` at `B1000`, `563,851` at `B10000` | Current CSharpDB lands in the same general band: about `92%` of the SQLite `B1000` row and about `87%` of the SQLite `B10000` row on this runner. |
+
+- Recommended embedded single-writer bulk path: `Database.PrepareInsertBatch(...)` with an explicit transaction and `builder.UseWriteOptimizedPreset()`.
+- Recommended default batch size: `1000` rows per commit. Use `10000` for dedicated ingest jobs that can absorb larger commit latency and larger checkpoint/WAL bursts.
+- Treat `INSERT ... VALUES (...), (...)` as a parity-check path, not the main recommendation. It is close enough to be useful, but it was still slower than `InsertBatch` on the same durable file-backed setup.
+- Treat batch size, row width, secondary indexes, and key locality as the real tuning levers. API shape matters less than those once the path is already on `InsertBatch`.
+- The April 19, 2026 duplicate-bucket follow-up also closed the previous secondary-index correctness hole: duplicate-heavy SQL index rows no longer crash the `Idx2` / `Idx4` scenarios, and those rows recovered to `102.7K` / `68.6K rows/sec` instead of failing outright.
+
+#### Plan 2: Durability And Residency Trade-Offs
+
+The current storage-semantics insert recommendation now comes from the focused Plan 2 rerun in `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260419-063026.csv`. These rows reuse the Plan 1 winner instead of the older per-row SQL path: one writer, `Database.PrepareInsertBatch("bench", 1000)`, one explicit transaction per commit, schema `bench(id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)`, monotonic keys, and a shared `20K`-row seeded starting state.
+
+| Mode | Commits/sec | Rows/sec | P50 | P95 | P99 | Durability / Residency Semantics | Use When |
+|------|-------------|----------|-----|-----|-----|----------------------------------|----------|
+| File-backed durable + `UseWriteOptimizedPreset()` | `182.1` | `182,075` | `4.431 ms` | `5.052 ms` | `7.804 ms` | Fully durable file-backed commits; acknowledged commits force backing-file visibility and pages remain file-backed with normal caching. | Default durable embedded ingest baseline. |
+| File-backed durable + `UseLowLatencyDurableWritePreset()` | `181.3` | `181,326` | `4.421 ms` | `5.093 ms` | `8.625 ms` | Same durability as the baseline, but planner-stat persistence is deferred. | Measure-first only; it was effectively flat-to-slightly-worse here, not a new default. |
+| File-backed buffered + `UseWriteOptimizedPreset()` | `558.6` | `558,600` | `0.801 ms` | `1.285 ms` | `3.789 ms` | Buffered file-backed commits; managed buffers are flushed but recent commits remain more exposed on OS crash or power loss. | High-throughput ingest when that durability trade-off is intentional. |
+| `OpenInMemoryAsync(...)` | `1,314.1` | `1,314,099` | `0.672 ms` | `1.170 ms` | `2.071 ms` | No crash durability; the database exists only in private process memory. | Ephemeral ingest, cache-like workloads, or explicit later snapshotting. |
+| `LoadIntoMemoryAsync(...)` | `1,314.2` | `1,314,198` | `0.666 ms` | `1.165 ms` | `2.199 ms` | Existing file + committed WAL state are loaded once, then subsequent inserts run entirely in memory until an explicit save. | "Load once, then ingest in RAM" workflows on an existing durable dataset. |
+| `OpenHybridAsync(...)` + `IncrementalDurable` | `179.7` | `179,737` | `4.452 ms` | `5.185 ms` | `11.231 ms` | Fully durable hybrid WAL/checkpoint path; the backing file stays authoritative while touched pages remain resident by cache policy. | Residency/layout choice when file-backed durability must remain, not as an ingest-speed shortcut. |
+
+- Buffered file-backed mode is the major write-throughput lever inside the durable/file-backed family on this runner: about `3.1x` the fully durable baseline at the same `InsertBatch B1000` path.
+- Fresh in-memory and load-into-memory were effectively identical on steady-state insert throughput here: both landed at about `1.31M rows/sec`, or about `7.2x` the durable file-backed baseline.
+- Hybrid incremental-durable was effectively the same as ordinary durable file-backed ingest on this path. Treat it as a residency/design choice, not a generic insert-speed substitute for in-memory mode.
+
+#### Plan 3: Concurrent Disjoint-Key Writers Closeout
+
+The current concurrent-insert recommendation now comes from `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260419-140845.csv`. These rows keep one shared durable file-backed `Database`, one row per commit, and compare serialized auto-commit, shared auto-commit concurrent insert execution, and explicit `WriteTransaction` ownership under disjoint explicit-key, hot right-edge, and auto-generated-id shapes.
+
+Disjoint explicit-key crossover at `250us` durable group commit (`commits/sec / commitsPerFlush`):
+
+| Path | `W1` | `W2` | `W4` | `W8` | Interpretation |
+|------|------|------|------|------|----------------|
+| Serialized auto-commit control | `277.4 / 1.00` | `270.5 / 1.00` | `255.2 / 1.00` | `258.3 / 1.00` | Control path stays flat; inserts do not fan in by themselves |
+| Shared auto-commit concurrent | `250.2 / 1.00` | `254.7 / 1.00` | `505.8 / 1.99` | `834.5 / 3.28` | Real crossover starts at `W4` and becomes large at `W8` |
+| Explicit `WriteTransaction` | `247.1 / 1.00` | `249.8 / 1.00` | `494.3 / 2.00` | `883.6 / 3.41` | Same band as shared concurrent; only modestly ahead at the winning `W8` row |
+
+Failure-boundary rows at `W8`, `250us`:
+
+| Shape | Commits/sec | `P50` | `P95` | `P99` | `commitsPerFlush` | Note |
+|-------|-------------|-------|-------|-------|-------------------|------|
+| Shared auto-commit concurrent, hot right-edge explicit ID | `255.6` | `30.173 ms` | `57.348 ms` | `84.233 ms` | `1.00` | Still the primary insert-side failure boundary |
+| Explicit `WriteTransaction`, hot right-edge explicit ID | `257.0` | `27.238 ms` | `73.117 ms` | `99.365 ms` | `1.00` | Explicit transaction ownership does not unlock fan-in here |
+| Shared auto-commit concurrent, auto-generated ID | `252.1` | `30.830 ms` | `61.916 ms` | `86.468 ms` | `1.00` | Correctness clean; `duplicateKeys = 0` |
+| Explicit `WriteTransaction`, auto-generated ID | `261.5` | `26.529 ms` | `74.863 ms` | `105.511 ms` | `1.00` | Correctness clean; `duplicateKeys = 0`, `extraAttempts = 84` |
+
+- With `Batch0`, all disjoint explicit-key rows stayed in the same `244-273 commits/sec` band and `commitsPerFlush = 1.00`. The queue only helps once commits overlap inside the batch window.
+- The crossover on this runner is `W4/W8` plus `250us`, not `W1/W2`.
+- The gain requires explicit disjoint key ranges. Hot right-edge inserts and auto-generated IDs remain separate shapes and should not be used as the best-case concurrent insert story.
+- Recommended concurrent-insert guidance: if the workload naturally shards keys across writers, benchmark shared auto-commit concurrent inserts first with a small batch window. If the workload is hot right-edge or auto-id dominated, keep application-level batching as the first lever and treat concurrency as secondary.
+
 - Do not compare the durable write harnesses directly. `durable-sql-batching` answers explicit-transaction and analyzed-table SQL questions, `write-diagnostics` answers single-row checkpoint/WAL policy questions, and `concurrent-write-diagnostics` answers shared-engine in-process writer contention questions.
 - The April 7, 2026 `durable-sql-batching-20260407-071043.csv` run again showed that application-level batching is the largest lever. Auto-commit single-row SQL stayed around `281.6 ops/sec`, but explicit transactions scaled to about `2906 rows/sec` at `10` rows/commit, `27911 rows/sec` at `100` rows/commit, and `220172 rows/sec` at `1000` rows/commit.
 - The same batching run showed that analyzed `UseLowLatencyDurableWritePreset()` was clearly ahead of the analyzed `UseWriteOptimizedPreset()` row on this runner: `295.3 ops/sec` vs `281.2 ops/sec`. Treat the low-latency preset as measure-first rather than a blanket default change.
@@ -905,10 +983,10 @@ These runs use a 200K-row working set with `MaxCachedPages = 16` and randomized 
 - The same April 10 concurrent closeout showed no win from `1 MiB` WAL preallocation on this runner: `W8_Batch0_Prealloc1MiB` dropped to `420.0 commits/sec` and `W8_Batch250us_Prealloc1MiB` landed at `420.9`.
 - A fresh April 11, 2026 focused fan-in rerun in `commit-fan-in-diagnostics-20260411-141949.csv` now shows shared auto-commit disjoint updates actually coalescing commits on one shared engine: the `W4` row reached `525 commits/sec` with `commitsPerFlush = 1.99`, and the `W8` row reached `743 commits/sec` with `commitsPerFlush = 3.37`. On the same run, the explicit `WriteTransaction` `W8` disjoint-update row landed at `765 commits/sec` with `commitsPerFlush = 3.38`, so the shared non-insert auto-commit path is now effectively in the same commit-fan-in band on this runner.
 - That April 11 phase-4 result is intentionally narrower than "all auto-commit writes now coalesce." The targeted hot-insert sanity rerun in `concurrent-write-scenario-W8_Batch250us-20260411-142023.csv` still measured `428 commits/sec` with `commitsPerFlush = 1.00`, so hot single-row auto-commit inserts should still be treated as insert-specific contention rather than assumed to benefit from the new shared non-insert path.
-- The dedicated April 11 insert fan-in rerun in `insert-fan-in-diagnostics-20260411-165557.csv` makes that insert-side boundary much clearer. Shared auto-commit inserts stayed in a tight `449-458 commits/sec` band with `commitsPerFlush = 1.00` regardless of whether the key was explicit or auto-generated. Switching to explicit `WriteTransaction` still did not unlock the update-style fan-in: explicit-id inserts stayed at about `438 commits/sec` with only `maxPendingCommits = 2`, and the auto-generated-id explicit row stayed lower at about `413 commits/sec`. The shared row-id reservation follow-up did remove the earlier duplicate-key failures from that explicit auto-id path, but it did not change the structural no-fan-in result.
+- The expanded April 19, 2026 insert fan-in rerun in `insert-fan-in-diagnostics-20260419-140845.csv` gives the cleaner insert-side rule. Disjoint explicit-key inserts still stayed flat at `W1/W2` and with `Batch0`, but they crossed over sharply at `W4/W8` with `250us`: shared auto-commit concurrent reached `505.8` / `834.5 commits/sec`, and explicit `WriteTransaction` reached `494.3` / `883.6`, both with `commitsPerFlush` near `2.00` and `3.3-3.4`.
 - The April 10 stress closeout in `stress-20260410-140205-median-of-3.csv` still shows the intended logical-conflict separation: overlapping read transactions fell to `96.5 ops/sec` with a `63.1%` conflict rate, while disjoint read transactions reached `261.5 ops/sec` with `0.0%` conflicts. Disjoint write transactions held `156.0 ops/sec` with only `1.5%` conflicts.
-- Commit-path diagnostics across the April 10 and April 11 multi-writer reruns still point at the durable flush as the dominant fixed cost once the queue is available. The main phase-4 change is that shared non-insert auto-commit can now reach that queue; the insert hot loop still cannot, and explicit insert transactions do not solve that by themselves.
-- Recommended interpretation after the latest reruns: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, benchmark application-level batching first, then benchmark the explicit `WriteTransaction` API on your actual conflict shape. If your shared workload is mostly low-conflict `UPDATE` / `DELETE` traffic, the new shared auto-commit path means `UseDurableGroupCommit(...)` is now worth measuring directly. If your workload is a hot single-row insert loop, still treat batching or explicit transactions as the first lever rather than assuming phase-4 fan-in changed that path. If insert-side fan-in is revisited later, it likely needs an explicit row-id reservation / uniqueness design rather than more batch-window tuning.
+- Commit-path diagnostics across the April 10 through April 19 multi-writer reruns still point at the durable flush as the dominant fixed cost once the queue is available. The insert-side update to the story is narrower than a blanket "inserts now fan in": only disjoint explicit-key inserts reached the queue effectively, while hot right-edge and auto-generated-id shapes stayed pinned near one commit per flush.
+- Recommended interpretation after the April 19 rerun: keep defaults at `0`, start with `builder.UseWriteOptimizedPreset()`, benchmark application-level batching first, then benchmark `UseDurableGroupCommit(...)` on your actual conflict shape. If your shared workload naturally shards explicit keys across writers, shared auto-commit concurrent inserts are now worth measuring directly. If the workload is a hot single-row insert loop or depends on auto-generated IDs, keep batching as the first lever and treat concurrency as secondary.
 - Recommended file-backed write-heavy preset: `builder.UseWriteOptimizedPreset()`. This is opt-in and does not change the engine default checkpoint policy.
 
 ## CSharpDB Storage Mode Comparison

@@ -9,6 +9,8 @@ public static class SqliteComparisonBenchmark
 {
     private const int SeedCount = 20_000;
     private const int BatchSize = 100;
+    private const int MatchedBulkBatchSize1000 = 1000;
+    private const int MatchedBulkBatchSize10000 = 10000;
     private const int SeedBatchSize = 500;
     private const int WarmupCount = 128;
     private const int ConcurrentReaderCount = 8;
@@ -25,6 +27,8 @@ public static class SqliteComparisonBenchmark
         [
             await RunSqlSingleInsertAsync(),
             await RunSqlBatchInsertAsync(),
+            await RunMatchedBulkInsertPreparedAsync(MatchedBulkBatchSize1000),
+            await RunMatchedBulkInsertPreparedAsync(MatchedBulkBatchSize10000),
             await RunSqlPointLookupAsync(),
             await RunSqlConcurrentReadsAsync(reuseSessionBurstReads: false),
             await RunSqlConcurrentReadsAsync(reuseSessionBurstReads: true),
@@ -102,6 +106,79 @@ public static class SqliteComparisonBenchmark
                 $"batch-size={BatchSize}",
                 "throughput-unit=rows/sec from 100-row transactions",
                 "workload=raw SQL statements inside one explicit transaction"));
+    }
+
+    private static async Task<BenchmarkResult> RunMatchedBulkInsertPreparedAsync(int batchSize)
+    {
+        await using var context = await SqliteBenchmarkContext.CreateWritableAsync(
+            $"sqlite-compare-bulk4col-b{batchSize}",
+            "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT);");
+        int nextId = SeedCount + 3_000_000 + batchSize;
+
+        using var command = context.KeeperConnection.CreateCommand();
+        command.CommandText = "INSERT INTO bench VALUES (@id, @value, @text_col, @category);";
+        SqliteParameter idParam = AddParameter(command, "@id", 0);
+        SqliteParameter valueParam = AddParameter(command, "@value", 0);
+        SqliteParameter textParam = AddParameter(command, "@text_col", "durable_batch");
+        SqliteParameter categoryParam = AddParameter(command, "@category", "Alpha");
+        command.Prepare();
+
+        BenchmarkResult transactionResult = await MacroBenchmarkRunner.RunForDurationAsync(
+            $"SQLite_WalFull_Sql_PreparedBulk4Col_B{batchSize}_5s",
+            WarmupDuration,
+            MeasuredDuration,
+            async () =>
+            {
+                using var transaction = context.KeeperConnection.BeginTransaction();
+                command.Transaction = transaction;
+                try
+                {
+                    for (int i = 0; i < batchSize; i++)
+                    {
+                        int id = nextId++;
+                        idParam.Value = id;
+                        valueParam.Value = id;
+                        textParam.Value = "durable_batch";
+                        categoryParam.Value = "Alpha";
+
+                        int rowsAffected = await command.ExecuteNonQueryAsync();
+                        if (rowsAffected != 1)
+                        {
+                            throw new InvalidOperationException(
+                                $"Expected one inserted row for id={id}, observed {rowsAffected}.");
+                        }
+                    }
+
+                    transaction.Commit();
+                }
+                catch
+                {
+                    try
+                    {
+                        transaction.Rollback();
+                    }
+                    catch
+                    {
+                        // Preserve the original benchmark failure.
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    command.Transaction = null;
+                }
+            });
+
+        return CloneResult(
+            transactionResult,
+            totalOps: transactionResult.TotalOps * batchSize,
+            extraInfo: context.WithNotes(
+                $"batch-size={batchSize}",
+                "schema=id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT",
+                "throughput-unit=rows/sec from explicit prepared transactions",
+                "workload=prepared statement reuse inside one explicit transaction",
+                "surface=sqlite-adonet"));
     }
 
     private static async Task<BenchmarkResult> RunSqlPointLookupAsync()
@@ -276,6 +353,15 @@ public static class SqliteComparisonBenchmark
         return await command.ExecuteNonQueryAsync(ct);
     }
 
+    private static SqliteParameter AddParameter(SqliteCommand command, string name, object? value)
+    {
+        SqliteParameter parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
+        return parameter;
+    }
+
     private static async Task<long> ExecuteScalarInt64Async(
         SqliteConnection connection,
         string sql,
@@ -386,6 +472,14 @@ public static class SqliteComparisonBenchmark
             return new SqliteBenchmarkContext(filePath, keeperConnection);
         }
 
+        internal static async Task<SqliteBenchmarkContext> CreateWritableAsync(string prefix, string createTableSql)
+        {
+            string filePath = NewTempDbPath(prefix);
+            SqliteConnection keeperConnection = await OpenWritableConnectionAsync(filePath);
+            await CreateSchemaAsync(keeperConnection, createTableSql);
+            return new SqliteBenchmarkContext(filePath, keeperConnection);
+        }
+
         internal static async Task<SqliteBenchmarkContext> CreateReadSeededAsync(string prefix)
         {
             string filePath = NewTempDbPath(prefix);
@@ -443,9 +537,20 @@ public static class SqliteComparisonBenchmark
 
         private static async Task CreateSchemaAsync(SqliteConnection connection, CancellationToken ct = default)
         {
-            await ExecuteNonQueryAsync(
+            await CreateSchemaAsync(
                 connection,
                 "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, category TEXT);",
+                ct);
+        }
+
+        private static async Task CreateSchemaAsync(
+            SqliteConnection connection,
+            string createTableSql,
+            CancellationToken ct = default)
+        {
+            await ExecuteNonQueryAsync(
+                connection,
+                createTableSql,
                 ct: ct);
         }
 

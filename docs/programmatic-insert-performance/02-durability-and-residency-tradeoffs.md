@@ -131,12 +131,12 @@ rows differ.
 
 ## Next Version Tasks
 
-- [ ] Reuse the Plan 1 winning bulk path for every row in this matrix.
-- [ ] Refresh the storage-mode insert numbers under one standardized harness.
-- [ ] Add a dedicated buffered row to the same matrix instead of leaving it as a
+- [x] Reuse the Plan 1 winning bulk path for every row in this matrix.
+- [x] Refresh the storage-mode insert numbers under one standardized harness.
+- [x] Add a dedicated buffered row to the same matrix instead of leaving it as a
       separate side snapshot.
-- [ ] Keep `OpenInMemoryAsync(...)` and `LoadIntoMemoryAsync(...)` as separate
+- [x] Keep `OpenInMemoryAsync(...)` and `LoadIntoMemoryAsync(...)` as separate
       rows.
-- [ ] Use the correct `HybridPersistenceMode` naming in the write-up.
-- [ ] Update `tests/CSharpDB.Benchmarks/README.md` with one durable-versus-
+- [x] Use the correct `HybridPersistenceMode` naming in the write-up.
+- [x] Update `tests/CSharpDB.Benchmarks/README.md` with one durable-versus-
       buffered-versus-memory decision table.

@@ -73,6 +73,69 @@ internal static class InteriorInsertRebaseHelper
         return result;
     }
 
+    public static InsertOnlyRebaseResult TryApplyCommittedInteriorChildSplit(
+        uint pageId,
+        ReadOnlyMemory<byte> committedPage,
+        uint leftChild,
+        uint currentRightChild,
+        uint rightBoundaryChild,
+        long currentRightChildKey,
+        long newChildKey,
+        uint newChild,
+        out byte[]? rebasedPage)
+    {
+        var committedInterior = new ReadOnlySlottedPage(committedPage, pageId);
+
+        rebasedPage = null;
+        if (committedInterior.PageType != PageConstants.PageTypeInterior)
+            return InsertOnlyRebaseResult.NotApplicable;
+
+        var keys = new List<long>(committedInterior.CellCount + 1);
+        var children = new List<uint>(committedInterior.CellCount + 2);
+        ReadInteriorNode(committedInterior, keys, children);
+
+        int leftChildIndex = children.IndexOf(leftChild);
+        if (leftChildIndex < 0 ||
+            leftChildIndex + 1 >= children.Count ||
+            children[leftChildIndex + 1] != currentRightChild ||
+            children.Contains(newChild))
+        {
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        if (rightBoundaryChild == PageConstants.NullPageId)
+        {
+            if (leftChildIndex + 1 != children.Count - 1)
+                return InsertOnlyRebaseResult.StructuralReject;
+        }
+        else if (leftChildIndex + 2 >= children.Count || children[leftChildIndex + 2] != rightBoundaryChild)
+        {
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        int currentRightKeyIndex = leftChildIndex;
+        if (currentRightKeyIndex >= keys.Count ||
+            currentRightChildKey >= newChildKey ||
+            (currentRightKeyIndex > 0 && keys[currentRightKeyIndex - 1] >= currentRightChildKey) ||
+            (currentRightKeyIndex + 1 < keys.Count && newChildKey >= keys[currentRightKeyIndex + 1]))
+        {
+            return InsertOnlyRebaseResult.StructuralReject;
+        }
+
+        keys[currentRightKeyIndex] = currentRightChildKey;
+        keys.Insert(currentRightKeyIndex + 1, newChildKey);
+        children.Insert(leftChildIndex + 2, newChild);
+
+        byte[] merged = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
+        committedPage.Span.CopyTo(merged);
+        var mergedInterior = new SlottedPage(merged, pageId);
+        if (!TryWriteInteriorNode(ref mergedInterior, keys, children))
+            return InsertOnlyRebaseResult.CapacityReject;
+
+        rebasedPage = merged;
+        return InsertOnlyRebaseResult.Success;
+    }
+
     public static InsertOnlyRebaseResult TryDescribeSingleInsertedInteriorEntry(
         uint pageId,
         ReadOnlyMemory<byte> basePage,

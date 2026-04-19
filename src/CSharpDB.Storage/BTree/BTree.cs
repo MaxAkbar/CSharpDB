@@ -524,7 +524,7 @@ public sealed class BTree
         traversalPath.Clear();
         traversalSet.Clear();
 
-        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, ct))
+        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, traversalPath, traversalSet, ct))
         {
             _cachedEntryCount = null;
             return;
@@ -813,6 +813,8 @@ public sealed class BTree
     private async ValueTask<bool> TryInsertIntoRightEdgeLeafAsync(
         long key,
         ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
         CancellationToken ct)
     {
         if (!_rightEdgeLeafHintValid || key <= _rightEdgeLeafMaxKey)
@@ -838,8 +840,60 @@ public sealed class BTree
         if (!await TryInsertIntoLeafWithoutSplitAsync(_rightEdgeLeafPageId, sp, sp.CellCount, key, payload, ct))
             return false;
 
+        await RecordExplicitRightEdgeLeafInsertTraversalAsync(
+            _rightEdgeLeafPageId,
+            sp,
+            key,
+            traversalPath,
+            traversalSet,
+            ct);
         UpdateRightEdgeLeafHint(_rightEdgeLeafPageId, sp);
         return true;
+    }
+
+    private async ValueTask RecordExplicitRightEdgeLeafInsertTraversalAsync(
+        uint targetLeafPageId,
+        SlottedPage targetLeaf,
+        long key,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct)
+    {
+        if (!_pager.IsExplicitWriteTransactionActive ||
+            targetLeaf.PageType != PageConstants.PageTypeLeaf)
+        {
+            return;
+        }
+
+        traversalPath.Clear();
+        traversalSet.Clear();
+        try
+        {
+            uint pageId = _rootPageId;
+            while (true)
+            {
+                EnterTraversal(pageId, key, traversalPath, traversalSet);
+                if (pageId == targetLeafPageId)
+                {
+                    _pager.RecordExplicitLeafInsertTraversal(_rootPageId, traversalPath);
+                    return;
+                }
+
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType != PageConstants.PageTypeInterior)
+                    return;
+
+                pageId = sp.RightChildOrNextLeaf;
+                if (pageId == PageConstants.NullPageId)
+                    return;
+            }
+        }
+        finally
+        {
+            traversalPath.Clear();
+            traversalSet.Clear();
+        }
     }
 
     private async ValueTask<bool> TryInsertIntoLeafWithoutSplitAsync(

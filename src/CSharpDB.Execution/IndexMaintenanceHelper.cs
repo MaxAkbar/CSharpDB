@@ -1,4 +1,5 @@
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Execution;
@@ -225,6 +226,30 @@ internal static class IndexMaintenanceHelper
         SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         CancellationToken ct = default)
     {
+        if (storageMode == SqlIndexStorageMode.Hashed &&
+            keyComponents is { Length: > 0 } &&
+            indexStore is IAppendOptimizedIndexStore appendOptimizedStore)
+        {
+            AppendRowIdResult appendResult = await appendOptimizedStore.TryAppendHashedRowIdAsync(
+                indexKey,
+                keyComponents,
+                rowId,
+                ct);
+            switch (appendResult)
+            {
+                case AppendRowIdResult.Appended:
+                    pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                    return;
+                case AppendRowIdResult.AlreadyExists:
+                    return;
+                case AppendRowIdResult.Missing:
+                case AppendRowIdResult.NotApplicable:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(appendResult), appendResult, "Unknown append result.");
+            }
+        }
+
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
         {

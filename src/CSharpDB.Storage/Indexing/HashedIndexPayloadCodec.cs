@@ -23,6 +23,9 @@ internal static class HashedIndexPayloadCodec
     public static byte[] CreateSingle(ReadOnlySpan<DbValue> keyComponents, long rowId)
         => EncodeGroups(keyComponents.Length, [new BucketGroup(keyComponents.ToArray(), RowIdPayloadCodec.CreateSingle(rowId))]);
 
+    public static byte[] CreateSingleGroup(ReadOnlySpan<DbValue> keyComponents, ReadOnlySpan<byte> rowIdPayload)
+        => EncodeGroups(keyComponents.Length, [new BucketGroup(keyComponents.ToArray(), rowIdPayload.ToArray())]);
+
     public static bool TryGetMatchingRowIds(
         ReadOnlySpan<byte> payload,
         ReadOnlySpan<DbValue> keyComponents,
@@ -321,6 +324,21 @@ internal static class HashedIndexPayloadCodec
 
         changed = false;
         return null;
+    }
+
+    public static bool TryDecodeSingleGroup(
+        ReadOnlySpan<byte> payload,
+        out DbValue[]? keyComponents,
+        out byte[]? rowIdPayload)
+    {
+        keyComponents = null;
+        rowIdPayload = null;
+        if (!TryDecodeGroups(payload, out _, out List<BucketGroup>? groups) || groups.Count != 1)
+            return false;
+
+        keyComponents = groups[0].KeyComponents;
+        rowIdPayload = groups[0].RowIdPayload;
+        return true;
     }
 
     internal static bool TryDecodeGroups(
