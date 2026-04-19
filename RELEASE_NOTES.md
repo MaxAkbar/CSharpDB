@@ -1,38 +1,63 @@
 # What's New
 
-## v3.1.0
+## v3.2.0
 
-This release carries forward the full `version3.1.0` branch from the April 8, 2026
-phase-1 multi-writer base through the current head, combining substantial
-durable-write/runtime work with new samples, tutorials, and refreshed docs.
+This release carries forward the `version3.2.0` branch from the April 15, 2026
+`v3.1.2` base through the current head, centering on the first embedded EF Core
+provider foundation, scalar aggregate lookup planning improvements, refreshed
+benchmark guardrails, and new guidance for programmatic insert performance.
 
-### Multi-Writer and Durable Write Progress
+### Entity Framework Core and ADO.NET Foundation
 
-- Built out the post-phase-1 multi-writer engine work from the initial `WriteTransaction` base, including stronger explicit transaction handling, richer logical conflict tracking, range and disjunctive predicate conflict validation, and broader concurrency coverage.
-- Added phase-3 snapshot checkpoint retention tuning and phase-4 shared auto-commit fan-in work so overlapping durable writes can build a real pending commit queue in more shapes than the original single-writer path allowed.
-- Added the opt-in `ImplicitInsertExecutionMode = ConcurrentWriteTransactions` path for shared auto-commit inserts, plus focused insert fan-in diagnostics, split-aware conflict recovery, and right-edge/leaf rebase hardening around hot insert workloads.
-- Added commit-path and insert-fan-in diagnostics so durable-write behavior is easier to measure, explain, and regress-test.
+- Added `CSharpDB.EntityFrameworkCore`, an embedded-only EF Core 10 provider
+  built on top of `CSharpDB.Data`, including `UseCSharpDb(...)`, provider
+  options, design-time services, migrations/history/locking infrastructure,
+  relational connection services, query SQL generation, type mappings, and
+  update batching.
+- Added provider docs and a runnable `samples/efcore-provider` sample covering
+  `EnsureCreatedAsync()`, design-time context creation, migrations, navigation
+  loading, and the supported embedded runtime shapes.
+- Expanded the underlying ADO.NET command, parameter binding, and
+  prepared-statement plumbing needed by the provider foundation and added
+  focused data/provider tests.
 
-### Insert, Collection, and Query Performance
+### Query Planning and Runtime Work
 
-- Optimized insert commit allocation paths, single-insert hot-path work, and related WAL/commit plumbing to reduce fixed per-commit cost on hot ingest paths.
-- Improved collection secondary-index maintenance and related collection/runtime bookkeeping.
-- Added a fast path for reader-session `COUNT(*)` behavior.
-- Refreshed focused benchmarks, baselines, and benchmark documentation around concurrent durable writes, insert fan-in, checkpoint retention, and storage-mode behavior.
+- Optimized scalar aggregate lookup planning so simple indexed and
+  primary-key-backed `COUNT(...)` / `SUM(...)` lookup shapes can reuse
+  lightweight lookup plans instead of first materializing fuller operator
+  pipelines, reducing allocations and improving targeted microbenchmark rows.
+- Extended parser, tokenizer, query-result, and execution-planning support so
+  the embedded engine can handle the SQL and query shapes emitted by the new EF
+  Core surface.
+- Simplified WAL flush policy abstractions by removing
+  `FlushBufferedWritesAsync` from `IWalFlushPolicy` and aligning WAL test
+  assertions around the current commit/flush contract.
 
-### Transport and Hosting
+### Benchmarks, Guardrails, and Guidance
 
-- Routed the ADO.NET provider through `CSharpDB.Client`, adding the supporting remote session and connection plumbing needed for the newer transport model.
-- Defaulted the daemon host to hybrid multi-writer mode and updated daemon configuration/docs to match the current runtime recommendations.
+- Refreshed the focused `ScalarAggregateLookupBenchmarks` baseline and perf
+  thresholds using the April 18, 2026 validation capture checked into
+  `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724`.
+- Stabilized the benchmark guardrail workflow and scenario entry points,
+  including durable SQL batching coverage and the release compare script used
+  for targeted performance verification.
+- Added a benchmark-driven CSharpDB-versus-SQLite comparison guide to the
+  website and updated the sitemap to publish it.
 
-### Samples, Tutorials, and Docs
+### Docs, Samples, and Planning
 
-- Added the Atlas Platform Showcase sample with schema, workbook queries, procedures, and a runnable sample app.
-- Added the CSV bulk import sample and tutorial showing the current best-practice relational bulk-ingest path on the public API: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, and post-load index creation.
-- Added the multi-writer follow-up plan document and linked it from the roadmap.
-- Refreshed the README, architecture/configuration/FAQ/internals docs, ecosystem docs, benchmark docs, and website pages to reflect the current multi-writer, transport, and tooling story.
+- Added the new `docs/programmatic-insert-performance` plan set, splitting the
+  earlier insert investigation into separate single-writer,
+  durability/residency, and concurrent disjoint-key writer plans aligned to the
+  current public API and benchmark harnesses.
+- Refreshed benchmark documentation, sample index content, and README badges to
+  reflect the current provider, benchmarking, and documentation surface.
 
 ### Validation
 
-- Validated the CSV bulk import sample with `dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj -- --database-path artifacts/sample-verification/csv-import-demo.db`.
-- Validated sample smoke coverage with `dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj --filter "FullyQualifiedName~SampleSmokeTests" -nologo`.
+- Added EF Core foundation coverage across `tests/CSharpDB.Data.Tests`,
+  `tests/CSharpDB.EntityFrameworkCore.Tests`, `tests/CSharpDB.Tests`, and the
+  focused benchmark baseline/guardrail docs used by this branch.
+- Checked in the focused scalar aggregate benchmark baseline capture used by the
+  current perf threshold update.

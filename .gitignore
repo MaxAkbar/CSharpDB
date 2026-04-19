@@ -11,6 +11,7 @@ tmp/
 *.suo
 *.userosscache
 *.sln.docstates
+.dotnet-cli/
 
 ## VS / Rider IDE
 .vs/
