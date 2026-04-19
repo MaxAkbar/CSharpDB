@@ -1162,6 +1162,9 @@ internal static class BatchPlanCompiler
             case TokenType.StringLiteral:
                 value = DbValue.FromText((string)literal.Value);
                 return true;
+            case TokenType.BlobLiteral:
+                value = DbValue.FromBlob((byte[])literal.Value);
+                return true;
             default:
                 return false;
         }

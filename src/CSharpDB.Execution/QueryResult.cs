@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Execution;
@@ -6,6 +7,7 @@ public sealed class QueryResult : IAsyncDisposable
 {
     private static readonly QueryResult ZeroRowsAffectedResult = new(0);
     private static readonly QueryResult OneRowAffectedResult = new(1);
+    private static readonly ConditionalWeakTable<QueryResult, GeneratedIntegerKeyMetadata> s_generatedIntegerKeys = new();
 
     private readonly IOperator? _operator;
     private readonly IBatchOperator? _batchOperator;
@@ -129,6 +131,35 @@ public sealed class QueryResult : IAsyncDisposable
             1 => OneRowAffectedResult,
             _ => new QueryResult(rowsAffected),
         };
+
+    internal static QueryResult FromRowsAffected(int rowsAffected, long? generatedIntegerKey)
+    {
+        if (generatedIntegerKey.HasValue)
+        {
+            var result = new QueryResult(rowsAffected);
+            s_generatedIntegerKeys.Add(result, new GeneratedIntegerKeyMetadata(generatedIntegerKey.Value));
+            return result;
+        }
+
+        return FromRowsAffected(rowsAffected);
+    }
+
+    internal bool TryGetGeneratedIntegerKey(out long generatedIntegerKey)
+    {
+        if (s_generatedIntegerKeys.TryGetValue(this, out GeneratedIntegerKeyMetadata? metadata))
+        {
+            generatedIntegerKey = metadata.Value;
+            return true;
+        }
+
+        generatedIntegerKey = default;
+        return false;
+    }
+
+    private sealed class GeneratedIntegerKeyMetadata(long value)
+    {
+        internal long Value { get; } = value;
+    }
 
     public static QueryResult FromMaterializedRows(ColumnDefinition[] schema, List<DbValue[]> rows)
         => new QueryResult(new MaterializedRowsOperator(schema, rows));

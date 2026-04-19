@@ -96,6 +96,7 @@ public readonly record struct SimpleInsertSql
             DbType.Integer => new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = value.AsInteger },
             DbType.Real => new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = value.AsReal },
             DbType.Text => new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = value.AsText },
+            DbType.Blob => new LiteralExpression { LiteralType = TokenType.BlobLiteral, Value = value.AsBlob },
             _ => throw new CSharpDbException(ErrorCode.SyntaxError, $"Unsupported fast INSERT literal type: {value.Type}."),
         };
     }
@@ -334,6 +335,9 @@ public sealed class Parser
             if (_text[_pos] == '\'')
                 return TryReadStringLiteral(out literal);
 
+            if (TryReadBlobLiteral(out literal))
+                return true;
+
             if (TryReadKeyword("NULL"))
             {
                 literal = new LiteralExpression
@@ -378,6 +382,55 @@ public sealed class Parser
             }
 
             return false;
+        }
+
+        private bool TryReadBlobLiteral(out LiteralExpression literal)
+        {
+            literal = null!;
+            SkipWhitespace();
+
+            int start = _pos;
+            if (_pos + 1 >= _text.Length ||
+                (_text[_pos] != 'X' && _text[_pos] != 'x') ||
+                _text[_pos + 1] != '\'')
+            {
+                return false;
+            }
+
+            _pos += 2;
+            int hexStart = _pos;
+            while (_pos < _text.Length && _text[_pos] != '\'')
+            {
+                if (!IsHexDigit(_text[_pos]))
+                {
+                    _pos = start;
+                    return false;
+                }
+
+                _pos++;
+            }
+
+            if (_pos >= _text.Length)
+            {
+                _pos = start;
+                return false;
+            }
+
+            int hexLength = _pos - hexStart;
+            if ((hexLength & 1) != 0)
+            {
+                _pos = start;
+                return false;
+            }
+
+            byte[] blob = Convert.FromHexString(_text.Slice(hexStart, hexLength));
+            _pos++; // consume closing quote
+            literal = new LiteralExpression
+            {
+                LiteralType = TokenType.BlobLiteral,
+                Value = blob,
+            };
+            return true;
         }
 
         private bool TryReadNumericLiteral(out LiteralExpression literal)
@@ -520,6 +573,10 @@ public sealed class Parser
 
         private static bool IsIdentifierStart(char c) => char.IsLetter(c) || c == '_';
         private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+        private static bool IsHexDigit(char c)
+            => c is >= '0' and <= '9'
+            or >= 'a' and <= 'f'
+            or >= 'A' and <= 'F';
     }
 
     private ref struct FastPrimaryKeyLookupParser
@@ -649,6 +706,12 @@ public sealed class Parser
                 return true;
             }
 
+            if (TryReadBlobLiteral(out byte[] blob))
+            {
+                literal = DbValue.FromBlob(blob);
+                return true;
+            }
+
             if (TryReadKeyword("NULL"))
             {
                 literal = DbValue.Null;
@@ -715,6 +778,50 @@ public sealed class Parser
                 NumberStyles.Integer,
                 CultureInfo.InvariantCulture,
                 out value);
+        }
+
+        private bool TryReadBlobLiteral(out byte[] value)
+        {
+            value = Array.Empty<byte>();
+            SkipWhitespace();
+
+            int start = _pos;
+            if (_pos + 1 >= _text.Length ||
+                (_text[_pos] != 'X' && _text[_pos] != 'x') ||
+                _text[_pos + 1] != '\'')
+            {
+                return false;
+            }
+
+            _pos += 2;
+            int hexStart = _pos;
+            while (_pos < _text.Length && _text[_pos] != '\'')
+            {
+                if (!IsHexDigit(_text[_pos]))
+                {
+                    _pos = start;
+                    return false;
+                }
+
+                _pos++;
+            }
+
+            if (_pos >= _text.Length)
+            {
+                _pos = start;
+                return false;
+            }
+
+            int hexLength = _pos - hexStart;
+            if ((hexLength & 1) != 0)
+            {
+                _pos = start;
+                return false;
+            }
+
+            value = Convert.FromHexString(_text.Slice(hexStart, hexLength));
+            _pos++; // consume closing quote
+            return true;
         }
 
         private bool TryReadKeyword(string keyword)
@@ -800,6 +907,10 @@ public sealed class Parser
 
         private static bool IsIdentifierStart(char c) => char.IsLetter(c) || c == '_';
         private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+        private static bool IsHexDigit(char c)
+            => c is >= '0' and <= '9'
+            or >= 'a' and <= 'f'
+            or >= 'A' and <= 'F';
     }
 
     private ref struct FastSimpleInsertParser
@@ -913,6 +1024,12 @@ public sealed class Parser
                 return true;
             }
 
+            if (TryReadBlobLiteral(out byte[] blob))
+            {
+                literal = DbValue.FromBlob(blob);
+                return true;
+            }
+
             if (TryReadKeyword("NULL"))
             {
                 literal = DbValue.Null;
@@ -959,6 +1076,50 @@ public sealed class Parser
             }
 
             return false;
+        }
+
+        private bool TryReadBlobLiteral(out byte[] value)
+        {
+            value = Array.Empty<byte>();
+            SkipWhitespace();
+
+            int start = _pos;
+            if (_pos + 1 >= _text.Length ||
+                (_text[_pos] != 'X' && _text[_pos] != 'x') ||
+                _text[_pos + 1] != '\'')
+            {
+                return false;
+            }
+
+            _pos += 2;
+            int hexStart = _pos;
+            while (_pos < _text.Length && _text[_pos] != '\'')
+            {
+                if (!IsHexDigit(_text[_pos]))
+                {
+                    _pos = start;
+                    return false;
+                }
+
+                _pos++;
+            }
+
+            if (_pos >= _text.Length)
+            {
+                _pos = start;
+                return false;
+            }
+
+            int hexLength = _pos - hexStart;
+            if ((hexLength & 1) != 0)
+            {
+                _pos = start;
+                return false;
+            }
+
+            value = Convert.FromHexString(_text.Slice(hexStart, hexLength));
+            _pos++; // consume closing quote
+            return true;
         }
 
         private bool TryReadNumericLiteral(out DbValue literal)
@@ -1095,6 +1256,10 @@ public sealed class Parser
 
         private static bool IsIdentifierStart(char c) => char.IsLetter(c) || c == '_';
         private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+        private static bool IsHexDigit(char c)
+            => c is >= '0' and <= '9'
+            or >= 'a' and <= 'f'
+            or >= 'A' and <= 'F';
     }
 
     #region DDL
@@ -2301,6 +2466,9 @@ public sealed class Parser
             case TokenType.StringLiteral:
                 Advance();
                 return new LiteralExpression { Value = token.Value, LiteralType = TokenType.StringLiteral };
+            case TokenType.BlobLiteral:
+                Advance();
+                return new LiteralExpression { Value = Convert.FromHexString(token.Value), LiteralType = TokenType.BlobLiteral };
             case TokenType.Null:
                 Advance();
                 return new LiteralExpression { Value = null, LiteralType = TokenType.Null };

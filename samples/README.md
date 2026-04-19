@@ -17,6 +17,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `csv-bulk-import/` | Runnable CSV-to-table bulk ingest walkthrough | `.csproj`, `Program.cs`, `README.md`, `events.csv` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
+| `efcore-provider/` | Runnable EF Core 10 embedded-provider sample | `.csproj`, `Program.cs`, `README.md` |
 
 ## Tutorials
 
@@ -102,6 +103,14 @@ Root-level helpers:
 - Docs: [README.md](generated-collections/README.md)
 - Domain: generated customer documents with nested address, tags, and orders
 - Good for: `GetGeneratedCollectionAsync<T>()`, generated `CollectionField<,>` descriptors, `JsonPropertyName` payload compatibility, and trim/AOT-friendly collection access
+
+### EF Core Embedded Provider
+
+- Project: [EfCoreProviderSample.csproj](efcore-provider/EfCoreProviderSample.csproj)
+- Code: [Program.cs](efcore-provider/Program.cs)
+- Docs: [README.md](efcore-provider/README.md)
+- Domain: simple blog/posts model over the embedded EF Core provider
+- Good for: `UseCSharpDb(...)`, `EnsureCreatedAsync()`, `Include(...)`, and `dotnet ef` design-time flows
 
 ## Running a Sample
 
@@ -200,6 +209,14 @@ dotnet run --project samples/platform-showcase/PlatformShowcaseSample.csproj
 ```
 
 This demo loads the broad SQL showcase schema, adds a full-text index over the knowledge-base articles, seeds a typed collection of dashboard filters, and prints a few representative queries.
+
+### Option 8: Run The EF Core Provider Sample
+
+```bash
+dotnet run --project samples/efcore-provider/EfCoreProviderSample.csproj
+```
+
+This sample is the quickest way to validate the embedded EF Core provider, `UseCSharpDb(...)`, navigation loading, and the design-time context setup used by `dotnet ef`.
 
 ## v2.2.0 API Examples
 

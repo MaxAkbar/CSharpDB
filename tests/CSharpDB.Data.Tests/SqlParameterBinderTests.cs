@@ -128,9 +128,8 @@ public class SqlParameterBinderTests
     }
 
     [Fact]
-    public void EscapeValue_Blob_ThrowsNotSupported()
+    public void EscapeValue_Blob_FormatsAsBlobLiteral()
     {
-        Assert.Throws<NotSupportedException>(() =>
-            SqlParameterBinder.EscapeValue(new byte[] { 1, 2, 3 }));
+        Assert.Equal("X'010203'", SqlParameterBinder.EscapeValue(new byte[] { 1, 2, 3 }));
     }
 }

@@ -4,6 +4,65 @@ Performance benchmarks for the CSharpDB embedded database engine.
 
 The current top-level snapshot in this README still centers on the April 7, 2026 broad validation refresh, but it now also includes the April 13, 2026 focused `hybrid-storage-mode` and durable `master-table` median-of-3 reruns after the burst concurrent-read benchmark harness fix. The dedicated multi-writer sections in this README also include the April 10, 2026 Phase 3 closeout reruns for explicit `WriteTransaction`, concurrent durable auto-commit, and `--stress`, plus the April 11, 2026 focused checkpoint-retention, commit-fan-in, and insert-fan-in reruns for the split checkpoint/fan-in phase-4 work, including the later same-day insert-side reservation follow-up.
 
+## April 17, 2026 Regression Investigation
+
+An additional full `--all --repro` rerun completed on April 17, 2026 at 8:34:11 PM PT. That rerun is being kept as an active regression-investigation snapshot and does not replace the published April 7/10/11/13 validation set below.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --all --repro
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
+  -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json `
+  -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-20260417-rerun2.md
+```
+
+| Item | Result |
+|------|--------|
+| Full rerun status | `tests/CSharpDB.Benchmarks/results/codex-bench-20260417-180306/monitor.status.json` |
+| Full rerun completion | `Friday, April 17, 2026 8:34:11 PM PT` |
+| Compare report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-20260417-rerun2.md` |
+| Compare result | `Compared 185 rows against baseline. PASS=33, WARN=0, SKIP=152, FAIL=0` |
+| Compare note | `The 152 skipped rows were skipped because the current machine fingerprint differed materially from the baseline fingerprint; skip does not mean the suite failed to run.` |
+| Broad rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/macro-20260418-031350.csv` |
+| Direct transport rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/direct-file-cache-transport-20260418-031948.csv` |
+| Concurrent durable write rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260418-032123.csv` |
+| Durable SQL batching rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260418-032300.csv` |
+| Explicit `WriteTransaction` rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/write-transaction-diagnostics-20260418-032413.csv` |
+| Commit fan-in rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/commit-fan-in-diagnostics-20260418-032652.csv` |
+| Insert fan-in rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260418-032721.csv` |
+| Checkpoint-retention rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/checkpoint-retention-diagnostics-20260418-032901.csv` |
+| Hybrid storage rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260418-032907.csv` |
+| Hybrid hot-set rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260418-033207.csv` |
+| Hybrid post-checkpoint rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-post-checkpoint-20260418-033218.csv` |
+| Stress rerun artifact | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/stress-20260418-033319.csv` |
+
+The biggest deltas in the April 17 rerun versus the currently published README snapshot are:
+
+- `concurrent-write-diagnostics`: down roughly `37%` to `49%`; for example, `W8_Batch250us_10s` moved from `467.3` to `276.9 commits/sec` and `W8_Batch0_10s` moved from `466.7` to `238.4 commits/sec`.
+- `commit-fan-in-diagnostics`: down roughly `29%` to `33%`; `AutoCommit_DisjointUpdate_W8_Batch250us_5s` moved from `743` to `530.6 commits/sec` and `ExplicitTx_DisjointUpdate_W8_Batch250us_5s` moved from `765` to `522.0 commits/sec`.
+- `insert-fan-in-diagnostics`: down roughly `39%` to `46%`; `duplicateKeys` remained `0`, so this rerun did not reopen the earlier explicit auto-id correctness issue.
+- `write-transaction-diagnostics`: the published April 10 artifact still shows many headline hot-insert rows down roughly `20%` to `36%`, while `UpdateDisjoint_W8_Rows10_Batch250us_Prealloc1MiB_10s` was slightly up (`86.2` to `92.0 commits/sec`).
+- `checkpoint-retention-diagnostics`: down roughly `34%` to `42%`; `W8_Blocker3s_Batch250us` moved from `391.8` to `257.2 commits/sec`, and the post-release manual checkpoint tail moved from `5.425 ms` to `40.231 ms`.
+
+The explicit `WriteTransaction` deltas need extra caution because the published April 10 snapshot is not fully reproducible on the current runner anymore. A detached clean-worktree replay of the April 11 `8be6912` benchmark/storage snapshot on this same machine measured `W1_Rows1_Batch0` at about `239.8 tx/sec` and `W8_Rows10_Batch250us_Prealloc1MiB` at about `249.7 tx/sec`, versus the April 17 current-tree rerun at `209.4` and `241.0 tx/sec` respectively. That same-machine replay shows the large README-level gap is mostly baseline drift for the explicit suite, while the remaining current-code miss is much smaller and concentrated in a subset of zero-window rows.
+
+The shared checkpoint-path investigation completed on April 18, 2026 for the pathological retention row. Focused same-machine reruns plus code inspection showed that the real current-code checkpoint regression came from a blanket `HasActiveExplicitTransactions` guard in `Pager.TryFinalizeCheckpointAsync`. In the `W8_Blocker3s_Batch250us` scenario, the explicit blocker transaction opens its snapshot read before any WAL frames exist, so it does not actually retain a WAL floor. The blanket guard therefore deferred checkpoint finalization unnecessarily and let the broken April 17 current-tree run swell to `backgroundCheckpointStarts=759`, `walBeforeCheckpointKiB=9499.4`, and `postReleaseCheckpointMs=40.231`.
+
+After removing that blanket finalization guard and leaving finalization governed by the actual retained-offset checks, the April 18, 2026 focused reruns landed back in the expected band: `checkpoint-retention-scenario-W8_Blocker3s_Batch250us-20260418-055755.csv` measured `209 commits/sec`, `backgroundCheckpointStarts=29`, `walBeforeCheckpointKiB=96.6`, and `postReleaseCheckpointMs=12.954`, while `checkpoint-retention-scenario-W8_NoBlocker_Batch250us-20260418-055853.csv` measured `237 commits/sec`, `backgroundCheckpointStarts=33`, `walBeforeCheckpointKiB=60.4`, and `postReleaseCheckpointMs=9.307`. Later April 18 spot checks stayed in the same order-of-magnitude band even though absolute throughput continued to drift by runner state.
+
+A separate April 18, 2026 same-session A/B also confirmed that the broader inline pending-commit fast path in `WriteAheadLog` should remain for zero-window commits. With that path enabled, `W1_Rows1_Batch0` measured about `219 tx/sec` versus `171 tx/sec` without it, and `ConcurrentDurableWrite_W8_Batch0` measured about `270-272 commits/sec` versus `178 commits/sec` without it. That keeps the remaining zero-window tuning discussion separate from the checkpoint-retention fix rather than incorrectly blaming the WAL inline path for the retained-WAL regression.
+
+An additional April 18, 2026 same-machine scalar-lookup A/B also confirmed that the March 30 focused `ScalarAggregateLookupBenchmarks` timing CSV is no longer directly reproducible on the current runner, even when replayed from a detached clean `b59a8d1` worktree. Both the detached baseline replay and the current-tree rerun now land around `~2.1 us` for the PK rows, so the historical `~0.9 us` March 30 timing snapshot should be treated as runner drift rather than a fresh current-code regression. The same-runner comparison is still useful, and after changing `TryBuildSimpleLookupScalarAggregateColumnQuery` to consume a lightweight lookup plan instead of first materializing and discarding a full lookup operator, the current tree measured the indexed rows materially faster with much lower allocation: `Index lookup scalar COUNT(text_col)` improved by about `28%` to `41%` and `Index lookup scalar SUM(id)` improved by about `20%` to `33%`, while both indexed rows dropped by roughly `8.15 KB` per operation (`18.42-18.54 KB` down to `10.27-10.39 KB`). The PK rows stayed within a small same-runner band and still shed about `0.04 KB` per operation.
+
+The benchmark harness supports scenario-level isolation for the write-path suites used by this investigation:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-write-scenario W8_Batch250us_Prealloc1MiB --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --commit-fan-in-scenario ExplicitTx_DisjointUpdate_W8_Batch250us --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --insert-fan-in-scenario ExplicitTx_AutoId_W8_Batch250us --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-transaction-scenario W8_Rows10_Batch250us_Prealloc1MiB --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --checkpoint-retention-scenario W8_Blocker3s_Batch250us --repro
+```
+
 ## Latest Validation Snapshot
 
 The latest release guardrail rerun completed on April 7, 2026 with a clean compare report:
@@ -26,6 +85,8 @@ As of April 12, 2026, the release guardrail surface has been updated to match th
 As of April 13, 2026, the release threshold file also points the `write-transaction-diagnostics` check at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260413-033723`. That refresh only updates the required `WriteTransactionDiagnostics_W1_Rows100_Batch0_10s` row after a same-runner comparison showed the older March 30 row was no longer reproducible locally, even when replayed against pre-`90615fa` WAL code.
 
 As of April 13, 2026, the release threshold file also points the `InsertBenchmarks` and `CollectionIndexBenchmarks` checks at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260413-050945`. That refresh carries full clean-HEAD reruns for those two micro benchmark classes after same-runner replays showed the older March 30 rows were no longer reproducible locally across more than the initially suspected rows.
+
+As of April 18, 2026, the release threshold file also points the `ScalarAggregateLookupBenchmarks` check at `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724`. That refresh is intentionally narrow and captures the same-runner rerun taken after the lookup-plan allocation fix, because the older March 30 scalar-lookup timing snapshot no longer reproduces on this runner even from a detached replay of the old code.
 
 A focused concurrent-read rerun was also completed on April 13, 2026 after the benchmark harness stopped retaining every reused-session burst latency sample:
 

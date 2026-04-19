@@ -80,6 +80,7 @@ internal static class ExpressionCompiler
                 TokenType.IntegerLiteral => DbValue.FromInteger((long)lit.Value),
                 TokenType.RealLiteral => DbValue.FromReal((double)lit.Value),
                 TokenType.StringLiteral => DbValue.FromText((string)lit.Value),
+                TokenType.BlobLiteral => DbValue.FromBlob((byte[])lit.Value),
                 TokenType.Null => DbValue.Null,
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown literal type: {lit.LiteralType}"),
             };

@@ -582,8 +582,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                     cancellationToken);
                 ClearBufferedUncommittedFrames();
 
-                if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush &&
-                    TryBeginInlinePendingCommitFlush())
+                if (TryBeginInlinePendingCommitFlush())
                 {
                     bool inlineFlushSucceeded = false;
                     try
@@ -649,8 +648,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
                 cancellationToken);
             _writePosition = lastOffset + PageConstants.WalFrameSize;
 
-            if (!_flushPolicy.AllowsWriteConcurrencyDuringCommitFlush &&
-                TryBeginInlinePendingCommitFlush())
+            if (TryBeginInlinePendingCommitFlush())
             {
                 bool inlineFlushSucceeded = false;
                 try

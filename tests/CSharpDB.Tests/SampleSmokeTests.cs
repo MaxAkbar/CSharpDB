@@ -140,6 +140,57 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task EfCoreProviderSample_RunsAndCreatesExpectedTables()
+    {
+        string repoRoot = GetRepoPath();
+        string projectPath = GetRepoPath("samples", "efcore-provider", "EfCoreProviderSample.csproj");
+        string outputDir = Path.Combine(Path.GetTempPath(), $"csharpdb_efcore_sample_{Guid.NewGuid():N}");
+        string dbPath = Path.Combine(outputDir, "efcore-provider.db");
+
+        Directory.CreateDirectory(outputDir);
+
+        try
+        {
+            ProcessResult result = await RunDotNetAsync(
+                [
+                    "run",
+                    "--project",
+                    projectPath,
+                    "--verbosity",
+                    "quiet",
+                    "--",
+                    "--database-path",
+                    dbPath,
+                ],
+                repoRoot,
+                Ct);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(dbPath), "The EF Core sample did not produce the expected database file.");
+            Assert.Contains("Blogs: 2", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Posts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+
+            await using var db = await Database.OpenAsync(dbPath, Ct);
+
+            await using (var blogCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Blogs;", Ct))
+            {
+                var rows = await blogCountQuery.ToListAsync(Ct);
+                Assert.Equal(2L, rows[0][0].AsInteger);
+            }
+
+            await using (var postCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Posts;", Ct))
+            {
+                var rows = await postCountQuery.ToListAsync(Ct);
+                Assert.Equal(3L, rows[0][0].AsInteger);
+            }
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(outputDir);
+        }
+    }
+
     private static IReadOnlyList<ClientModels.ProcedureDefinition> LoadProcedures(string proceduresPath)
     {
         var options = new JsonSerializerOptions

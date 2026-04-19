@@ -787,13 +787,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 _changeCounter,
                 () =>
                 {
+                    bool drained = false;
                     try
                     {
-                        ReleaseReaderSnapshot(snapshot);
+                        drained = ReleaseReaderSnapshotCore(snapshot);
                     }
                     finally
                     {
                         _transactions?.UnregisterExplicitTransaction(transactionId);
+                        if (drained)
+                            ScheduleBackgroundCheckpointIfNeeded();
                     }
                 });
             state.LogicalReadKeys.Add(SchemaConflictKey);
@@ -2252,8 +2255,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     frameCount,
                     async innerCt =>
                     {
-                        checkpointRan = true;
-                        await RunCheckpointStepCoreAsync(innerCt);
+                        checkpointRan = await RunCheckpointStepCoreAsync(innerCt);
                     },
                     ct);
                 if (await TryFinalizeCheckpointAsync(ct))
@@ -2271,8 +2273,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 frameCount,
                 async innerCt =>
                 {
-                    checkpointRan = true;
-                    await RunCheckpointStepCoreAsync(innerCt);
+                    checkpointRan = await RunCheckpointStepCoreAsync(innerCt);
                 },
                 ct);
             if (await TryFinalizeCheckpointAsync(ct))
@@ -2296,24 +2297,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private async ValueTask RunCheckpointStepCoreAsync(CancellationToken ct)
+    private async ValueTask<bool> RunCheckpointStepCoreAsync(CancellationToken ct)
     {
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
-            return;
+            return false;
 
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
-        if (!wasCopyComplete)
-        {
-            bool completed = await _wal.CheckpointStepAsync(
-                _device,
-                PageCount,
-                _options.AutoCheckpointMaxPagesPerStep,
-                ct,
-                allowFinalize: false);
+        if (wasCopyComplete)
+            return false;
 
-            if (completed || _wal.IsCheckpointCopyComplete)
-                await RefreshStateAfterCheckpointCompletionAsync(ct);
-        }
+        bool completed = await _wal.CheckpointStepAsync(
+            _device,
+            PageCount,
+            _options.AutoCheckpointMaxPagesPerStep,
+            ct,
+            allowFinalize: false);
+
+        if (completed || _wal.IsCheckpointCopyComplete)
+            await RefreshStateAfterCheckpointCompletionAsync(ct);
+
+        return true;
     }
 
     private async ValueTask<bool> TryFinalizeCheckpointAsync(CancellationToken ct)
@@ -2332,9 +2335,6 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         try
         {
-            if (_transactions?.HasActiveExplicitTransactions == true)
-                return false;
-
             bool finalized = false;
             int frameCount = _walIndex.FrameCount;
             await _checkpoints.RunCheckpointAsync(
@@ -2402,11 +2402,15 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public void ReleaseReaderSnapshot(WalSnapshot snapshot)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
-
-        bool drained = _checkpoints?.ReleaseReaderSnapshot(snapshot) == true;
+        bool drained = ReleaseReaderSnapshotCore(snapshot);
         if (drained)
             ScheduleBackgroundCheckpointIfNeeded();
+    }
+
+    private bool ReleaseReaderSnapshotCore(WalSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        return _checkpoints?.ReleaseReaderSnapshot(snapshot) == true;
     }
 
     private long? GetMinimumWalOffsetForNewSnapshot()

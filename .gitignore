@@ -4,12 +4,14 @@ obj/
 publish/
 temp/
 tmp/
+.tmp
 
 ## User-specific files
 *.user
 *.suo
 *.userosscache
 *.sln.docstates
+.dotnet-cli/
 
 ## VS / Rider IDE
 .vs/
@@ -92,8 +94,7 @@ Desktop.ini
 *.wal
 
 ## Local sample-only stray files
-docs/tutorials/storage/examples/CSharpDB.GraphDB/CSharpDB.Primitives.csproj
-docs/tutorials/storage/examples/CSharpDB.VirtualFS/.github/copilot-instructions.md
+
 
 ## Node.js
 node_modules/

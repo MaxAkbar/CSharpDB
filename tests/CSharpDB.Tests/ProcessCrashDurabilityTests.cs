@@ -137,6 +137,8 @@ public sealed class ProcessCrashDurabilityTests
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(benchmarksProjectPath);
+        if (HasBenchmarksBuildOutput(benchmarksProjectPath))
+            startInfo.ArgumentList.Add("--no-build");
         startInfo.ArgumentList.Add("--no-launch-profile");
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(BuildConfiguration);
@@ -177,6 +179,19 @@ public sealed class ProcessCrashDurabilityTests
         }
 
         throw new DirectoryNotFoundException("Could not locate tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj.");
+    }
+
+    private static bool HasBenchmarksBuildOutput(string benchmarksProjectPath)
+    {
+        string benchmarksProjectDirectory = Path.GetDirectoryName(benchmarksProjectPath)!;
+        string benchmarksAssemblyPath = Path.Combine(
+            benchmarksProjectDirectory,
+            "bin",
+            BuildConfiguration,
+            "net10.0",
+            "CSharpDB.Benchmarks.dll");
+
+        return File.Exists(benchmarksAssemblyPath);
     }
 
     private static string StripAnsi(string value)

@@ -1044,6 +1044,7 @@ public sealed class QueryPlanner
     private static string ExprToSql(Expression expr) => expr switch
     {
         LiteralExpression lit => lit.Value == null ? "NULL"
+            : lit.LiteralType == TokenType.BlobLiteral ? $"X'{Convert.ToHexString((byte[])lit.Value)}'"
             : lit.LiteralType == TokenType.StringLiteral ? $"'{lit.Value.ToString()!.Replace("'", "''")}'"
             : lit.Value.ToString()!,
         ParameterExpression param => $"@{param.Name}",
@@ -2665,6 +2666,7 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         int inserted = 0;
+        long? generatedIntegerKey = null;
         ForeignKeyMutationContext? mutationContext =
             _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
                 ? new ForeignKeyMutationContext()
@@ -2674,7 +2676,7 @@ public sealed class QueryPlanner
             foreach (var valueRow in stmt.ValueRows)
             {
                 var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
-                await ExecuteResolvedInsertRowAsync(
+                InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     stmt.TableName,
                     schema,
                     tree,
@@ -2683,6 +2685,8 @@ public sealed class QueryPlanner
                     mutationContext,
                     adjustTableRowCount: false,
                     ct);
+                if (stmt.ValueRows.Count == 1)
+                    generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
                 inserted++;
             }
         }
@@ -2699,7 +2703,7 @@ public sealed class QueryPlanner
 
         await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
 
-        return QueryResult.FromRowsAffected(inserted);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
     }
 
     private async ValueTask<QueryResult> ExecuteCompoundSelectAsync(CompoundSelectStatement stmt, CancellationToken ct)
@@ -4388,6 +4392,7 @@ public sealed class QueryPlanner
             return await ExecuteBareSimpleInsertAsync(insert, schema, tree, persistRootChanges, ct);
 
         int inserted = 0;
+        long? generatedIntegerKey = null;
         ForeignKeyMutationContext? mutationContext =
             foreignKeys.Count > 0
                 ? new ForeignKeyMutationContext()
@@ -4404,7 +4409,7 @@ public sealed class QueryPlanner
                         $"Expected {schema.Columns.Count} values, got {row.Length}.");
                 }
 
-                await ExecuteResolvedInsertRowAsync(
+                InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     insert.TableName,
                     schema,
                     tree,
@@ -4413,6 +4418,8 @@ public sealed class QueryPlanner
                     mutationContext,
                     adjustTableRowCount: false,
                     ct);
+                if (insert.RowCount == 1)
+                    generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
                 inserted++;
             }
         }
@@ -4428,7 +4435,7 @@ public sealed class QueryPlanner
         }
 
         await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
-        return QueryResult.FromRowsAffected(inserted);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
     }
 
     private async ValueTask<QueryResult> ExecuteBareSimpleInsertAsync(
@@ -4439,6 +4446,7 @@ public sealed class QueryPlanner
         CancellationToken ct)
     {
         int inserted = 0;
+        long? generatedIntegerKey = null;
         List<uint>? insertTraversalPath = null;
         HashSet<uint>? insertTraversalSet = null;
         if (insert.RowCount > 1)
@@ -4461,7 +4469,7 @@ public sealed class QueryPlanner
                         $"Expected {schema.Columns.Count} values, got {row.Length}.");
                 }
 
-                await ExecuteBareInsertRowAsync(
+                InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
                     insert.TableName,
                     schema,
                     tree,
@@ -4469,6 +4477,8 @@ public sealed class QueryPlanner
                     insertTraversalPath,
                     insertTraversalSet,
                     ct);
+                if (insert.RowCount == 1)
+                    generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
                 inserted++;
             }
         }
@@ -4489,7 +4499,7 @@ public sealed class QueryPlanner
             inserted,
             persistRootChanges,
             ct);
-        return QueryResult.FromRowsAffected(inserted);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
     }
 
     private async ValueTask FinalizeInsertStatementAsync(
@@ -4511,7 +4521,7 @@ public sealed class QueryPlanner
             ct);
     }
 
-    private async ValueTask<long> ExecuteBareInsertRowAsync(
+    private async ValueTask<InsertRowResult> ExecuteBareInsertRowAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
@@ -4521,6 +4531,12 @@ public sealed class QueryPlanner
         CancellationToken ct)
     {
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        long? generatedIntegerIdentity = autoGeneratedRowId &&
+            schema.PrimaryKeyColumnIndex >= 0 &&
+            schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
+            schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+                ? rowId
+                : null;
         while (true)
         {
             try
@@ -4531,12 +4547,18 @@ public sealed class QueryPlanner
                 else
                     await tree.InsertAsync(rowId, encodedRow, ct);
                 RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
-                return rowId;
+                return new InsertRowResult(rowId, generatedIntegerIdentity);
             }
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
             {
                 InvalidateRowIdCache(tableName);
                 (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+                generatedIntegerIdentity = autoGeneratedRowId &&
+                    schema.PrimaryKeyColumnIndex >= 0 &&
+                    schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
+                    schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+                        ? rowId
+                        : null;
             }
         }
     }
@@ -5105,49 +5127,46 @@ public sealed class QueryPlanner
 
         IOperator? indexedSource = null;
         Expression? indexedRemainingWhere = null;
+        LookupPlan indexedLookupPlan = default;
+        bool hasIndexedLookupPlan = false;
 
         if (!isCountStar && columnIndex >= 0)
         {
-            indexedSource = TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
-            if (indexedSource != null && indexedRemainingWhere == null)
+            hasIndexedLookupPlan = TryBuildIndexScanPlan(
+                simpleRef.TableName,
+                stmt.Where,
+                schema,
+                out indexedLookupPlan,
+                out indexedRemainingWhere);
+            if (hasIndexedLookupPlan && indexedRemainingWhere == null)
             {
-                result = indexedSource switch
-                {
-                    PrimaryKeyLookupOperator pk => new QueryResult(new ScalarAggregateLookupOperator(
-                        pk.TableTree,
-                        pk.SeekKey,
+                var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
+                var serializer = GetReadSerializer(schema);
+                result = indexedLookupPlan.IsPrimaryKey
+                    ? new QueryResult(new ScalarAggregateLookupOperator(
+                        tableTree,
+                        indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    IndexScanOperator idx => new QueryResult(new ScalarAggregateLookupOperator(
-                        idx.IndexStore,
-                        idx.TableTree,
-                        idx.SeekValue,
+                        recordSerializer: serializer))
+                    : new QueryResult(new ScalarAggregateLookupOperator(
+                        _catalog.GetIndexStore(indexedLookupPlan.Index!.IndexName, _pager),
+                        tableTree,
+                        indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    UniqueIndexLookupOperator uniq => new QueryResult(new ScalarAggregateLookupOperator(
-                        uniq.IndexStore,
-                        uniq.TableTree,
-                        uniq.SeekValue,
-                        columnIndex,
-                        func.FunctionName,
-                        outputSchema,
-                        isDistinct: func.IsDistinct,
-                        recordSerializer: GetReadSerializer(schema))),
-                    _ => null!,
-                };
-
-                if (result != null)
-                    return true;
+                        recordSerializer: serializer));
+                return true;
             }
         }
 
-        indexedSource ??= TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
+        indexedSource ??= hasIndexedLookupPlan
+            ? BuildLookupOperator(simpleRef.TableName, schema, indexedLookupPlan)
+            : TryBuildIndexScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
         if (indexedSource == null)
         {
             indexedSource = TryBuildIntegerIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere)
@@ -8482,6 +8501,21 @@ public sealed class QueryPlanner
     /// </summary>
     private IOperator? TryBuildIndexScan(string tableName, Expression where, TableSchema schema, out Expression? remaining)
     {
+        if (!TryBuildIndexScanPlan(tableName, where, schema, out var lookupPlan, out remaining))
+            return null;
+
+        return BuildLookupOperator(tableName, schema, lookupPlan);
+    }
+
+    private bool TryBuildIndexScanPlan(
+        string tableName,
+        Expression where,
+        TableSchema schema,
+        out LookupPlan lookupPlan,
+        out Expression? remaining)
+    {
+        lookupPlan = default;
+
         int pkIdx = schema.PrimaryKeyColumnIndex;
         bool hasIntegerPk = pkIdx >= 0 &&
             pkIdx < schema.Columns.Count &&
@@ -8532,21 +8566,18 @@ public sealed class QueryPlanner
                 schema,
                 compositeColumnIndices!,
                 compositeKeyComponents!);
-            return BuildLookupOperator(
-                tableName,
-                schema,
-                isPrimaryKey: false,
-                compositeIndex,
-                compositeLookupKey,
-                compositeColumnIndices,
-                compositeKeyComponents);
+            lookupPlan = new LookupPlan(
+                IsPrimaryKey: false,
+                Index: compositeIndex,
+                LookupValue: compositeLookupKey,
+                KeyColumnIndices: compositeColumnIndices,
+                KeyComponents: compositeKeyComponents);
+            return true;
         }
 
         if (!hasSelectedCandidate || selectedConjunctIndex < 0)
-            return null;
-        IOperator lookupOp = BuildLookupOperator(
-            tableName,
-            schema,
+            return false;
+        lookupPlan = new LookupPlan(
             selectedCandidate.IsPrimaryKey,
             selectedCandidate.Index,
             selectedCandidate.LookupValue,
@@ -8556,13 +8587,13 @@ public sealed class QueryPlanner
         if (selectedCandidate.RequiresResidualPredicate)
         {
             remaining = where;
-            return lookupOp;
+            return true;
         }
 
         if (conjuncts.Count == 1)
         {
             remaining = null;
-            return lookupOp;
+            return true;
         }
 
         var residualTerms = new List<Expression>(conjuncts.Count - 1);
@@ -8575,7 +8606,7 @@ public sealed class QueryPlanner
         }
 
         remaining = CombineConjuncts(residualTerms);
-        return lookupOp;
+        return true;
     }
 
     private readonly record struct LookupCandidate(
@@ -8586,6 +8617,13 @@ public sealed class QueryPlanner
         bool RequiresResidualPredicate,
         long? EstimatedRows,
         long? TableRowCount,
+        int[]? KeyColumnIndices,
+        DbValue[]? KeyComponents);
+
+    private readonly record struct LookupPlan(
+        bool IsPrimaryKey,
+        IndexSchema? Index,
+        long LookupValue,
         int[]? KeyColumnIndices,
         DbValue[]? KeyComponents);
 
@@ -8886,6 +8924,21 @@ public sealed class QueryPlanner
         }
 
         return false;
+    }
+
+    private IOperator BuildLookupOperator(
+        string tableName,
+        TableSchema schema,
+        LookupPlan lookupPlan)
+    {
+        return BuildLookupOperator(
+            tableName,
+            schema,
+            lookupPlan.IsPrimaryKey,
+            lookupPlan.Index,
+            lookupPlan.LookupValue,
+            lookupPlan.KeyColumnIndices,
+            lookupPlan.KeyComponents);
     }
 
     private IOperator BuildLookupOperator(
@@ -11409,6 +11462,9 @@ public sealed class QueryPlanner
             case TokenType.StringLiteral when lit.Value is string stringValue:
                 value = DbValue.FromText(stringValue);
                 return true;
+            case TokenType.BlobLiteral when lit.Value is byte[] blobValue:
+                value = DbValue.FromBlob(blobValue);
+                return true;
             default:
                 value = DbValue.Null;
                 return false;
@@ -13931,10 +13987,13 @@ public sealed class QueryPlanner
             TokenType.IntegerLiteral => DbValue.FromInteger((long)literal.Value),
             TokenType.RealLiteral => DbValue.FromReal((double)literal.Value),
             TokenType.StringLiteral => DbValue.FromText((string)literal.Value),
+            TokenType.BlobLiteral => DbValue.FromBlob((byte[])literal.Value),
             TokenType.Null => DbValue.Null,
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown literal type: {literal.LiteralType}"),
         };
     }
+
+    private readonly record struct InsertRowResult(long RowId, long? GeneratedIntegerIdentity);
 
     private async ValueTask PersistForeignKeyMutationContextAsync(
         ForeignKeyMutationContext? mutationContext,
@@ -14481,7 +14540,7 @@ public sealed class QueryPlanner
         }
     }
 
-    private async ValueTask<long> ExecuteResolvedInsertRowAsync(
+    private async ValueTask<InsertRowResult> ExecuteResolvedInsertRowAsync(
         string tableName,
         TableSchema schema,
         BTree tree,
@@ -14495,6 +14554,12 @@ public sealed class QueryPlanner
         await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Insert, null, row, schema, ct);
 
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        long? generatedIntegerIdentity = autoGeneratedRowId &&
+            schema.PrimaryKeyColumnIndex >= 0 &&
+            schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
+            schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+                ? rowId
+                : null;
         if (mutationContext is not null)
             await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow: null, row, ct);
         while (true)
@@ -14510,6 +14575,12 @@ public sealed class QueryPlanner
                 // Another writer may have advanced rowids; reload the high-water mark once and retry.
                 InvalidateRowIdCache(tableName);
                 (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+                generatedIntegerIdentity = autoGeneratedRowId &&
+                    schema.PrimaryKeyColumnIndex >= 0 &&
+                    schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
+                    schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer
+                        ? rowId
+                        : null;
             }
         }
 
@@ -14526,7 +14597,7 @@ public sealed class QueryPlanner
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);
 
-        return rowId;
+        return new InsertRowResult(rowId, generatedIntegerIdentity);
     }
 
     private async ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(

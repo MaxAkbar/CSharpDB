@@ -178,6 +178,49 @@ function Get-ConfiguredSuiteDefinitions
     return @($suiteDefinitions.Values | Sort-Object Key)
 }
 
+function Get-MicroBenchmarkDefinitions
+{
+    param([Parameter(Mandatory = $true)][object[]]$Checks)
+
+    $definitions = @{}
+
+    foreach ($check in $Checks)
+    {
+        $suiteArgs = Convert-ToStringArray (Get-OptionalProperty -Object $check -Name "suiteArgs" -DefaultValue $null)
+        if ($suiteArgs.Count -gt 0)
+        {
+            continue
+        }
+
+        $filter = Get-BenchmarkFilterFromCheck -Check $check
+        if ([string]::IsNullOrWhiteSpace($filter))
+        {
+            continue
+        }
+
+        $csvName = [string](Get-OptionalProperty -Object $check -Name "csv" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($csvName))
+        {
+            continue
+        }
+
+        if (-not $definitions.ContainsKey($filter))
+        {
+            $definitions[$filter] = [pscustomobject]@{
+                Filter = $filter
+                Csvs = New-Object System.Collections.Generic.List[string]
+            }
+        }
+
+        if (-not ($definitions[$filter].Csvs -contains $csvName))
+        {
+            $definitions[$filter].Csvs.Add($csvName) | Out-Null
+        }
+    }
+
+    return @($definitions.Values | Sort-Object Filter)
+}
+
 function Get-LatestGeneratedArtifact
 {
     param(
@@ -195,6 +238,51 @@ function Get-LatestGeneratedArtifact
         Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc } |
         Sort-Object LastWriteTimeUtc, Name |
         Select-Object -Last 1
+}
+
+function Get-LatestGeneratedArtifactFromDirectories
+{
+    param(
+        [Parameter(Mandatory = $true)][string[]]$SourceDirs,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][datetime]$NotBeforeUtc
+    )
+
+    $matches = New-Object System.Collections.Generic.List[object]
+    foreach ($sourceDir in ($SourceDirs | Select-Object -Unique))
+    {
+        if (-not (Test-Path $sourceDir))
+        {
+            continue
+        }
+
+        foreach ($file in (Get-ChildItem -Path $sourceDir -File -Filter $Pattern | Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc }))
+        {
+            $matches.Add($file) | Out-Null
+        }
+    }
+
+    return $matches |
+        Sort-Object LastWriteTimeUtc, FullName |
+        Select-Object -Last 1
+}
+
+function Resolve-MicroArtifactResultsDirectories
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$BenchDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    $candidateDirs = @(
+        (Join-Path $RepoRoot "BenchmarkDotNet.Artifacts\\results"),
+        (Join-Path $BenchDir "BenchmarkDotNet.Artifacts\\results")
+    )
+
+    return @(
+        $candidateDirs |
+        Select-Object -Unique
+    )
 }
 
 function Add-SelectPlanDiagnosticsToReport
@@ -256,6 +344,7 @@ $benchResultsDir = Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configurat
 $compareScript = Join-Path $scriptDir "Compare-Baseline.ps1"
 $reportPath = Join-Path $benchDir "results\\perf-guardrails-last.md"
 $runLogsDir = Join-Path $benchDir "results\\perf-guardrails-run-logs"
+$microResultsStagingDir = Join-Path $benchDir "results\\.tmp-current-micro-run"
 
 $script:SelectPlanStatsPattern =
     'Select plan cache stats:\s*hits=(?<hits>\d+),\s*misses=(?<misses>\d+),\s*reclassifications=(?<reclass>\d+),\s*stores=(?<stores>\d+),\s*entries=(?<entries>\d+)'
@@ -294,7 +383,18 @@ if (-not (Test-Path $resolvedThresholdsPath))
 }
 
 $thresholdConfig = Get-Content -Path $resolvedThresholdsPath -Raw | ConvertFrom-Json
+$microBenchmarks = Get-MicroBenchmarkDefinitions -Checks @($thresholdConfig.checks)
 $configuredSuites = Get-ConfiguredSuiteDefinitions -Checks @($thresholdConfig.checks) -RepoRoot $repoRoot
+$microArtifactResultsDirs = Resolve-MicroArtifactResultsDirectories -BenchDir $benchDir -RepoRoot $repoRoot
+
+if (Test-Path $microResultsStagingDir)
+{
+    Get-ChildItem -Path $microResultsStagingDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
+}
+else
+{
+    New-Item -ItemType Directory -Path $microResultsStagingDir -Force | Out-Null
+}
 
 function Invoke-BenchmarkRun
 {
@@ -349,25 +449,32 @@ function Invoke-BenchmarkRun
 
 if (-not $SkipMicroRun)
 {
-    $filters = @()
-
-    foreach ($check in @($thresholdConfig.checks))
+    if (@($microBenchmarks).Count -eq 0)
     {
-        $filter = Get-BenchmarkFilterFromCheck -Check $check
-        if (-not [string]::IsNullOrWhiteSpace($filter) -and -not ($filters -contains $filter))
+        throw "No micro benchmark filters resolved from $resolvedThresholdsPath."
+    }
+
+    foreach ($definition in $microBenchmarks)
+    {
+        $runStartUtc = (Get-Date).ToUniversalTime()
+        Invoke-BenchmarkRun -Label "Micro ($($definition.Filter))" -Arguments @("--micro", "--filter", $definition.Filter)
+
+        foreach ($csvName in @($definition.Csvs))
         {
-            $filters += $filter
+            $artifact = Get-LatestGeneratedArtifactFromDirectories `
+                -SourceDirs $microArtifactResultsDirs `
+                -Pattern $csvName `
+                -NotBeforeUtc $runStartUtc
+
+            if ($null -eq $artifact)
+            {
+                throw "No micro benchmark artifact matching '$csvName' was produced for filter '$($definition.Filter)'."
+            }
+
+            $destinationPath = Join-Path $microResultsStagingDir $csvName
+            Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+            Write-Host "Staged $($artifact.Name) -> $destinationPath"
         }
-    }
-
-    if (@($filters).Count -eq 0)
-    {
-        throw "No benchmark filters resolved from $resolvedThresholdsPath."
-    }
-
-    foreach ($filter in ($filters | Sort-Object))
-    {
-        Invoke-BenchmarkRun -Label "Micro ($filter)" -Arguments @("--micro", "--filter", $filter)
     }
 }
 
@@ -407,6 +514,11 @@ if ($NoFailOnRegression.IsPresent)
 if (-not [string]::IsNullOrWhiteSpace($BaselineSnapshot))
 {
     $compareParams.BaselineSnapshot = $BaselineSnapshot
+}
+
+if (-not $SkipMicroRun -and @($microBenchmarks).Count -gt 0)
+{
+    $compareParams.CurrentMicroResultsDir = $microResultsStagingDir
 }
 
 Write-Host ""
