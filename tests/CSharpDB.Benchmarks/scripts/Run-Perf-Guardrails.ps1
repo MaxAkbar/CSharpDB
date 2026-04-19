@@ -281,8 +281,6 @@ function Resolve-MicroArtifactResultsDirectories
 
     return @(
         $candidateDirs |
-        Where-Object { Test-Path $_ } |
-        ForEach-Object { (Resolve-Path $_).Path } |
         Select-Object -Unique
     )
 }
@@ -454,11 +452,6 @@ if (-not $SkipMicroRun)
     if (@($microBenchmarks).Count -eq 0)
     {
         throw "No micro benchmark filters resolved from $resolvedThresholdsPath."
-    }
-
-    if (@($microArtifactResultsDirs).Count -eq 0)
-    {
-        throw "No BenchmarkDotNet artifact directories were found for micro benchmark staging."
     }
 
     foreach ($definition in $microBenchmarks)
