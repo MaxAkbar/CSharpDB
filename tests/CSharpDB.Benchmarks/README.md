@@ -394,11 +394,22 @@ dotnet run -c Release -- --sqlite-compare --repeat 3 --repro
 # Strict ADO.NET insert apples-to-apples comparison for CSharpDB vs SQLite
 dotnet run -c Release -- --strict-insert-compare --repeat 3 --repro
 
+# Direct engine vs SQLite C API concurrent comparison on one durable file-backed database per run
+dotnet run -c Release -- --concurrent-sqlite-capi-compare --repeat 3 --repro
+dotnet run -c Release -- --concurrent-sqlite-capi-compare-scenario CSharpDB_InsertBatch_DisjointConcurrent_W8_Batch250us --repro
+
+# Concurrent ADO.NET provider comparison on shared-memory, non-durable targets
+dotnet run -c Release -- --concurrent-adonet-compare --repeat 3 --repro
+dotnet run -c Release -- --concurrent-adonet-compare-scenario SQLite_AdoNet_Disjoint_W8 --repro
+
 # Publish the NativeAOT shared library for the current RID before running the native mix
 dotnet publish .\src\CSharpDB.Native\CSharpDB.Native.csproj -c Release -r win-x64
 
 # Raw insert comparison including CSharpDB NativeAOT FFI
 dotnet run -c Release -- --native-aot-insert-compare --repeat 3 --repro
+
+# EF Core insert comparison for CSharpDB vs SQLite
+dotnet run -c Release -- --efcore-compare --repeat 3 --repro
 
 # Focused engine-cold open + first read comparison for file-backed vs in-memory vs lazy-resident incremental-durable hybrid
 dotnet run -c Release -- --hybrid-cold-open --repeat 3 --repro
@@ -425,6 +436,76 @@ Results are written to `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/` 
 The standalone SQLite comparison suite writes `sqlite-compare-*.csv` with only local SQLite `WAL + FULL` SQL rows. It does not feed the CSharpDB `--master-table` refresh path.
 
 Unless `CSHARPDB_BENCH_DURABILITY=Buffered` is set, the macro and master-table harnesses run in durable mode. `Buffered` is the less-durable CSharpDB-only mode, analogous to SQLite WAL `synchronous=NORMAL`.
+
+### Cross-Provider Comparison Guide
+
+The benchmark suite now has several distinct comparison harnesses. They are not interchangeable. Each one isolates a different layer of the stack, and the README tables should be read in that context.
+
+| Command | Surface being compared | Storage and durability | Writer shape | Primary use |
+|---------|------------------------|------------------------|--------------|-------------|
+| `--sqlite-compare` | Local SQLite only through `Microsoft.Data.Sqlite` | File-backed, `journal_mode=WAL`, `synchronous=FULL` | Single writer for insert rows, `8` readers for read rows | Durable local SQLite reference rows used alongside the CSharpDB single-writer write tables |
+| `--strict-insert-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | File-backed, default durable for CSharpDB; SQLite `WAL + FULL` | Single writer | Apples-to-apples provider comparison for raw SQL vs prepared SQL and single-row vs `Batch100` |
+| `--concurrent-sqlite-capi-compare` | CSharpDB engine API vs direct SQLite C API | File-backed, durable; CSharpDB default durable, SQLite `WAL + FULL` | `4` or `8` concurrent writer tasks | Closest direct engine-vs-SQLite write-contention comparison |
+| `--concurrent-adonet-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | Shared-memory, non-durable | `4` or `8` concurrent writer tasks | Provider-host overhead comparison without file durability costs |
+| `--efcore-compare` | CSharpDB EF Core vs SQLite EF Core | File-backed, default durable for CSharpDB; SQLite `WAL + FULL` | Single writer | ORM-layer insert comparison |
+| `--native-aot-insert-compare` | CSharpDB ADO.NET vs CSharpDB NativeAOT FFI vs SQLite ADO.NET | File-backed, durable | Single writer | Isolates managed-provider overhead versus direct native FFI on the CSharpDB side |
+
+### Single Writer vs Multi Writer
+
+- `Single writer` means one active write loop for the timed phase.
+- `Multi writer` means the harness launches an array of `Task`s and releases them together through a start gate.
+- In the CSharpDB engine benchmarks, multi-writer rows usually mean multiple concurrent callers sharing one `Database` instance.
+- In the SQLite C API and ADO.NET benchmarks, multi-writer rows mean one connection per writer task. The connections target the same database identity for that benchmark run.
+- Concurrent throughput rows report total successful commits across all writers combined, not per-writer throughput.
+- Batch rows report rows/sec, not transactions/sec. Single-row auto-commit rows report commits/sec or ops/sec depending on the harness.
+
+### SQLite Concurrency Interpretation
+
+- The direct SQLite C API benchmark follows SQLite's documented multi-thread usage model: one connection and one prepared statement per writer task, with no sharing of a `sqlite3*` or derived statement object across threads.
+- The C API benchmark opens each SQLite writer with `SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_PRIVATECACHE`, applies `busy_timeout`, and runs file-backed `journal_mode=WAL` plus `synchronous=FULL`.
+- That means the SQLite C API benchmark is measuring multiple independent writer connections contending for SQLite's WAL writer slot. It is not a "parallel writers all committing at once" benchmark because SQLite WAL still allows only one active writer at a time.
+- The concurrent ADO.NET comparison is intentionally different. It uses shared-memory targets for both providers and configures SQLite with `journal_mode=MEMORY`, `cache=shared`, and `busy_timeout`. Those rows are useful for provider-layer concurrency overhead, but they are not durable WAL comparisons.
+- The EF Core comparison is currently single-writer only. It is a `SaveChangesAsync` insert benchmark, not a concurrent writer benchmark.
+
+### CSharpDB Engine Semantics In These Comparisons
+
+- The CSharpDB engine does not carry an explicit writer-count mode on the `Database` handle. The harness creates the single-writer or multi-writer shape.
+- For implicit SQL insert execution, the key engine switch is `DatabaseOptions.ImplicitInsertExecutionMode`.
+- `Serialized` keeps implicit inserts on the shared write-gate path and behaves like a single effective writer even if multiple callers arrive.
+- `ConcurrentWriteTransactions` routes implicit inserts through isolated write transactions so multiple callers can overlap, conflict, and retry under the shared engine.
+- The `concurrent-sqlite-capi-compare` harness uses `ConcurrentWriteTransactions` for the CSharpDB concurrent rows because that is the engine mode intended for disjoint-key insert fan-in.
+- The `InsertBatch` rows inside that same harness are still one row per commit. The batch object is reused to avoid parse/object churn, but the benchmark is not converting the concurrent test into a multi-row transaction benchmark.
+
+### What Each Comparison Proves
+
+- `--sqlite-compare` answers "what does matched local SQLite WAL+FULL look like on this runner?" for single-writer durable SQL.
+- `--strict-insert-compare` answers "how much of the gap is provider and SQL preparation overhead?" for file-backed ADO.NET.
+- `--concurrent-sqlite-capi-compare` answers "how does shared-engine CSharpDB auto-commit compare to direct SQLite C API under actual durable writer contention?"
+- `--concurrent-adonet-compare` answers "how much concurrency overhead comes from the provider layer itself when durability is removed?"
+- `--efcore-compare` answers "what is the ORM-layer delta for `SaveChangesAsync` inserts on the two providers?"
+- `--native-aot-insert-compare` answers "how much managed ADO.NET overhead remains versus a native CSharpDB call surface?"
+
+### Validation Coverage
+
+The comparison benchmarks are backed by smoke tests, but not every benchmark layer has a dedicated unit-test twin.
+
+- `tests/CSharpDB.Data.Tests/ComparativeAdoNetSmokeTests.cs` validates prepared insert/query round-trip for both providers on file-backed databases and a `4`-writer disjoint-key shared-memory row-count check for both providers.
+- `tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs` validates `EnsureCreated`, CRUD round-trip, and batch insert counts for both EF Core providers on file-backed databases.
+- There is currently no separate xUnit project dedicated to the raw SQLite C API benchmark harness. That surface is covered by the benchmark implementation itself plus the broader SQLite ADO.NET and EF Core smoke coverage.
+
+Recommended validation commands:
+
+```powershell
+dotnet test .\tests\CSharpDB.Data.Tests\CSharpDB.Data.Tests.csproj -c Release --filter ComparativeAdoNetSmokeTests
+dotnet test .\tests\CSharpDB.EntityFrameworkCore.Tests\CSharpDB.EntityFrameworkCore.Tests.csproj -c Release --filter ComparativeEfCoreSmokeTests
+```
+
+### Reading Results Correctly
+
+- Do not compare `--concurrent-adonet-compare` directly against `--concurrent-sqlite-capi-compare` and treat the numbers as equivalent. One is shared-memory and non-durable; the other is file-backed and durable.
+- Do not compare the shared multi-writer rows directly to the single-writer durable bulk tables and call that "insert throughput" without checking the unit. Shared multi-writer rows are usually total commits/sec across multiple tasks.
+- For SQLite, interpret concurrent writer rows as contention among independent writer connections inside SQLite's one-writer WAL model.
+- For CSharpDB, interpret concurrent writer rows as contention and possible fan-in through one shared engine instance, subject to key shape and the selected implicit insert execution mode.
 
 ### Concurrent Durable Write Methodology
 
