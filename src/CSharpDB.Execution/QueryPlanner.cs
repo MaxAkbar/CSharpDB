@@ -333,6 +333,7 @@ public sealed class QueryPlanner
         public required bool UsesDirectIntegerKey { get; init; }
         public DbValue[]? ReusableKeyComponents { get; init; }
         public byte[]? ReusableDirectRowIdPayload { get; init; }
+        public OptimisticInsertSequenceContext? OptimisticDirectIntegerInsertContext { get; init; }
         public AppendOptimizedIndexMutationContext? AppendContext { get; init; }
     }
 
@@ -4443,6 +4444,7 @@ public sealed class QueryPlanner
             foreignKeys.Count == 0 &&
             triggers.Count == 0;
         SetDeferredAppendAmortization(resolvedIndexPlans, useDeferredAppendAmortization);
+        ResetOptimisticInsertContexts(resolvedIndexPlans, enabled: insert.RowCount > 1);
         try
         {
             for (int i = 0; i < insert.RowCount; i++)
@@ -4485,6 +4487,7 @@ public sealed class QueryPlanner
         }
         finally
         {
+            ResetOptimisticInsertContexts(resolvedIndexPlans, enabled: false);
             SetDeferredAppendAmortization(resolvedIndexPlans, enabled: false);
         }
 
@@ -11583,6 +11586,7 @@ public sealed class QueryPlanner
                     UsesDirectIntegerKey = usesDirectIntegerKey,
                     ReusableKeyComponents = usesDirectIntegerKey ? null : new DbValue[columnIndices.Length],
                     ReusableDirectRowIdPayload = usesDirectIntegerKey ? new byte[RowIdPayloadCodec.RowIdSize] : null,
+                    OptimisticDirectIntegerInsertContext = usesDirectIntegerKey ? new OptimisticInsertSequenceContext() : null,
                     AppendContext = !usesDirectIntegerKey && IndexMaintenanceHelper.UsesHashedPayloadStorage(storageMode)
                         ? new AppendOptimizedIndexMutationContext()
                         : null,
@@ -11675,7 +11679,8 @@ public sealed class QueryPlanner
                         plan.StorageMode,
                         ct,
                         plan.AppendContext,
-                        plan.ReusableDirectRowIdPayload);
+                        plan.ReusableDirectRowIdPayload,
+                        plan.OptimisticDirectIntegerInsertContext);
                 }
             }
             else
@@ -11690,7 +11695,8 @@ public sealed class QueryPlanner
                     plan.StorageMode,
                     ct,
                     plan.AppendContext,
-                    plan.ReusableDirectRowIdPayload);
+                    plan.ReusableDirectRowIdPayload,
+                    plan.OptimisticDirectIntegerInsertContext);
             }
         }
     }
@@ -11707,6 +11713,26 @@ public sealed class QueryPlanner
             AppendOptimizedIndexMutationContext? appendContext = resolvedIndexPlans.SqlIndexes[i].AppendContext;
             if (appendContext is not null)
                 appendContext.AllowDeferredExternalAppends = enabled;
+        }
+    }
+
+    private static void ResetOptimisticInsertContexts(
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
+        bool enabled)
+    {
+        if (resolvedIndexPlans is null)
+            return;
+
+        for (int i = 0; i < resolvedIndexPlans.SqlIndexes.Length; i++)
+        {
+            OptimisticInsertSequenceContext? directIntegerContext =
+                resolvedIndexPlans.SqlIndexes[i].OptimisticDirectIntegerInsertContext;
+            if (directIntegerContext is not null)
+                directIntegerContext.Reset(enabled);
+
+            AppendOptimizedIndexMutationContext? appendContext = resolvedIndexPlans.SqlIndexes[i].AppendContext;
+            if (appendContext is not null)
+                appendContext.ResetOptimisticInsertState(enabled);
         }
     }
 

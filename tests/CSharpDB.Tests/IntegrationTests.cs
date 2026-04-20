@@ -284,6 +284,78 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PreparedInsertBatch_MaintainsDirectIntegerSecondaryIndexAcrossMonotonicAndDuplicateRows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE batch_direct_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL, text_col TEXT)",
+            ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_direct_idx_val ON batch_direct_idx(val)", ct);
+
+        var batch = _db.PrepareInsertBatch("batch_direct_idx", initialCapacity: 4);
+
+        batch.AddRow(DbValue.FromInteger(1), DbValue.FromInteger(10), DbValue.FromText("one"));
+        batch.AddRow(DbValue.FromInteger(2), DbValue.FromInteger(20), DbValue.FromText("two"));
+        batch.AddRow(DbValue.FromInteger(3), DbValue.FromInteger(30), DbValue.FromText("three"));
+        Assert.Equal(3, await batch.ExecuteAsync(ct));
+
+        batch.AddRow(DbValue.FromInteger(4), DbValue.FromInteger(20), DbValue.FromText("two-again"));
+        batch.AddRow(DbValue.FromInteger(5), DbValue.FromInteger(40), DbValue.FromText("four"));
+        Assert.Equal(2, await batch.ExecuteAsync(ct));
+
+        await using var duplicateResult = await _db.ExecuteAsync(
+            "SELECT id FROM batch_direct_idx WHERE val = 20 ORDER BY id",
+            ct);
+        var duplicateRows = await duplicateResult.ToListAsync(ct);
+        Assert.Equal(2, duplicateRows.Count);
+        Assert.Equal(2, duplicateRows[0][0].AsInteger);
+        Assert.Equal(4, duplicateRows[1][0].AsInteger);
+
+        await using var totalResult = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM batch_direct_idx WHERE val >= 10",
+            ct);
+        var totalRows = await totalResult.ToListAsync(ct);
+        Assert.Single(totalRows);
+        Assert.Equal(5, totalRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_MaintainsCompositeTrailingIntegerIndexAcrossMonotonicAndDuplicateRows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE batch_composite_idx (id INTEGER PRIMARY KEY, val INTEGER NOT NULL, category TEXT NOT NULL)",
+            ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_batch_composite_idx_category_val ON batch_composite_idx(category, val)", ct);
+
+        var batch = _db.PrepareInsertBatch("batch_composite_idx", initialCapacity: 4);
+
+        batch.AddRow(DbValue.FromInteger(1), DbValue.FromInteger(10), DbValue.FromText("alpha"));
+        batch.AddRow(DbValue.FromInteger(2), DbValue.FromInteger(20), DbValue.FromText("alpha"));
+        batch.AddRow(DbValue.FromInteger(3), DbValue.FromInteger(30), DbValue.FromText("alpha"));
+        Assert.Equal(3, await batch.ExecuteAsync(ct));
+
+        batch.AddRow(DbValue.FromInteger(4), DbValue.FromInteger(20), DbValue.FromText("alpha"));
+        batch.AddRow(DbValue.FromInteger(5), DbValue.FromInteger(40), DbValue.FromText("alpha"));
+        Assert.Equal(2, await batch.ExecuteAsync(ct));
+
+        await using var duplicateResult = await _db.ExecuteAsync(
+            "SELECT id FROM batch_composite_idx WHERE category = 'alpha' AND val = 20 ORDER BY id",
+            ct);
+        var duplicateRows = await duplicateResult.ToListAsync(ct);
+        Assert.Equal(2, duplicateRows.Count);
+        Assert.Equal(2, duplicateRows[0][0].AsInteger);
+        Assert.Equal(4, duplicateRows[1][0].AsInteger);
+
+        await using var totalResult = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM batch_composite_idx WHERE category = 'alpha' AND val >= 10",
+            ct);
+        var totalRows = await totalResult.ToListAsync(ct);
+        Assert.Single(totalRows);
+        Assert.Equal(5, totalRows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task PreparedInsertBatch_SpillsDuplicateHeavySqlIndexBuckets_ToOverflowPages()
     {
         var ct = TestContext.Current.CancellationToken;

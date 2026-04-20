@@ -6,6 +6,10 @@ public sealed class AppendOptimizedIndexMutationContext
 {
     private long[]? _pendingExternalRowIds;
     private int _pendingExternalRowCount;
+    private bool _optimisticInsertEnabled;
+    private bool _allowOptimisticInsert;
+    private bool _hasLastOptimisticInsertKey;
+    private long _lastOptimisticInsertKey;
 
     internal long Key { get; private set; }
 
@@ -89,6 +93,41 @@ public sealed class AppendOptimizedIndexMutationContext
         FlushedMetadata = flushedMetadata;
         Metadata = flushedMetadata;
         _pendingExternalRowCount = 0;
+    }
+
+    internal void ResetOptimisticInsertState(bool enabled)
+    {
+        _optimisticInsertEnabled = enabled;
+        _allowOptimisticInsert = enabled;
+        _hasLastOptimisticInsertKey = false;
+        _lastOptimisticInsertKey = 0;
+    }
+
+    internal bool TryBeginOptimisticInsert(long key)
+    {
+        if (!_optimisticInsertEnabled || !_allowOptimisticInsert)
+            return false;
+
+        if (_hasLastOptimisticInsertKey && key <= _lastOptimisticInsertKey)
+        {
+            _allowOptimisticInsert = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    internal void RecordOptimisticInsertSuccess(long key)
+    {
+        _hasLastOptimisticInsertKey = true;
+        _lastOptimisticInsertKey = key;
+    }
+
+    internal void RecordOptimisticInsertFallback(long key)
+    {
+        _hasLastOptimisticInsertKey = true;
+        _lastOptimisticInsertKey = key;
+        _allowOptimisticInsert = false;
     }
 
     internal void Clear()

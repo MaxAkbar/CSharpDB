@@ -230,8 +230,47 @@ internal static class IndexMaintenanceHelper
         SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         CancellationToken ct = default,
         AppendOptimizedIndexMutationContext? appendContext = null,
-        byte[]? reusableSingleRowIdPayload = null)
+        byte[]? reusableSingleRowIdPayload = null,
+        OptimisticInsertSequenceContext? optimisticDirectIntegerInsertContext = null)
     {
+        if (keyComponents is null &&
+            optimisticDirectIntegerInsertContext?.TryBeginInsert(indexKey) == true)
+        {
+            try
+            {
+                byte[] optimisticPayload = CreateSingleRowIdPayload(rowId, reusableSingleRowIdPayload);
+                await indexStore.InsertAsync(indexKey, optimisticPayload, ct);
+                pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                optimisticDirectIntegerInsertContext.RecordInsertSuccess(indexKey);
+                return;
+            }
+            catch (CSharpDbException ex) when (ex.Code == ErrorCode.DuplicateKey)
+            {
+                optimisticDirectIntegerInsertContext.RecordInsertFallback(indexKey);
+            }
+        }
+
+        if (UsesHashedPayloadStorage(storageMode) &&
+            keyComponents is { Length: > 0 } &&
+            appendContext?.TryBeginOptimisticInsert(indexKey) == true)
+        {
+            try
+            {
+                byte[] optimisticPayload = HashedIndexPayloadCodec.CreateSingle(
+                    keyComponents,
+                    rowId,
+                    omitTrailingInteger: storageMode == SqlIndexStorageMode.HashedTrailingInteger);
+                await indexStore.InsertAsync(indexKey, optimisticPayload, ct);
+                pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                appendContext.RecordOptimisticInsertSuccess(indexKey);
+                return;
+            }
+            catch (CSharpDbException ex) when (ex.Code == ErrorCode.DuplicateKey)
+            {
+                appendContext.RecordOptimisticInsertFallback(indexKey);
+            }
+        }
+
         if (UsesHashedPayloadStorage(storageMode) &&
             keyComponents is { Length: > 0 } &&
             indexStore is IAppendOptimizedIndexStore appendOptimizedStore)

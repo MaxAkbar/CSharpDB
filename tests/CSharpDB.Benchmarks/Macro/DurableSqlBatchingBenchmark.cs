@@ -14,6 +14,11 @@ namespace CSharpDB.Benchmarks.Macro;
 /// </summary>
 public static class DurableSqlBatchingBenchmark
 {
+    private const string CreateValueIndexSql = "CREATE INDEX idx_bench_value ON bench(value)";
+    private const string CreateCategoryIndexSql = "CREATE INDEX idx_bench_category ON bench(category)";
+    private const string CreateTextColIndexSql = "CREATE INDEX idx_bench_text_col ON bench(text_col)";
+    private const string CreateCategoryValueIndexSql = "CREATE INDEX idx_bench_category_value ON bench(category, value)";
+
     private static readonly RowProfile s_baselineRow = new("Baseline", "durable_batch", "Alpha");
     private static readonly RowProfile s_mediumRow = new("Medium", new string('m', 64), "CategoryMedium");
     private static readonly RowProfile s_wideRow = new("Wide", new string('w', 512), "CategoryWide");
@@ -21,23 +26,41 @@ public static class DurableSqlBatchingBenchmark
     private static readonly IndexLayout s_pkOnlyIndexes = new("PkOnly", []);
     private static readonly IndexLayout s_secondary1Indexes = new(
         "Idx1",
-        ["CREATE INDEX idx_bench_value ON bench(value)"]);
+        [CreateValueIndexSql]);
     private static readonly IndexLayout s_secondary2Indexes = new(
         "Idx2",
         [
-            "CREATE INDEX idx_bench_value ON bench(value)",
-            "CREATE INDEX idx_bench_category ON bench(category)",
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
         ]);
+    private static readonly IndexLayout s_categoryOnlyIndexes = new(
+        "IdxCategory",
+        [CreateCategoryIndexSql]);
+    private static readonly IndexLayout s_textOnlyIndexes = new(
+        "IdxTextCol",
+        [CreateTextColIndexSql]);
     private static readonly IndexLayout s_compositeCategoryValueIndex = new(
         "IdxCompositeCategoryValue",
-        ["CREATE INDEX idx_bench_category_value ON bench(category, value)"]);
+        [CreateCategoryValueIndexSql]);
+    private static readonly IndexLayout s_valueAndCategoryIndexes = new(
+        "IdxValueCategory",
+        [
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
+        ]);
+    private static readonly IndexLayout s_valueAndCompositeCategoryValueIndexes = new(
+        "IdxValueCompositeCategoryValue",
+        [
+            CreateValueIndexSql,
+            CreateCategoryValueIndexSql,
+        ]);
     private static readonly IndexLayout s_secondary4Indexes = new(
         "Idx4",
         [
-            "CREATE INDEX idx_bench_value ON bench(value)",
-            "CREATE INDEX idx_bench_category ON bench(category)",
-            "CREATE INDEX idx_bench_text_col ON bench(text_col)",
-            "CREATE INDEX idx_bench_category_value ON bench(category, value)",
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
+            CreateTextColIndexSql,
+            CreateCategoryValueIndexSql,
         ]);
 
     private static readonly SqlBatchScenario[] s_scenarios = CreateScenarios();
@@ -259,6 +282,43 @@ public static class DurableSqlBatchingBenchmark
                 Indexes: s_secondary4Indexes,
                 KeyPattern: KeyPattern.Monotonic),
 
+            // Plan 6: per-index-family attribution rows for realistic indexed ingest.
+            // Existing continuity rows already cover:
+            // - value only: IndexSweep_*_Idx1_*
+            // - composite category+value only: IndexSweep_*_IdxCompositeCategoryValue_*
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxCategory_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_categoryOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxTextCol_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_textOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxValueCategory_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_valueAndCategoryIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxValueCompositeCategoryValue_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_valueAndCompositeCategoryValueIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
             new(
                 "KeySweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic",
                 OperationPath.InsertBatch,
@@ -462,7 +522,7 @@ public static class DurableSqlBatchingBenchmark
             MeanMs = histogram.Mean,
             StdDevMs = histogram.StdDev,
             ExtraInfo =
-                $"path={scenario.Path}, preset={scenario.Preset}, analyzed={scenario.AnalyzeBeforeRun}, rowsPerCommit={scenario.RowsPerCommit}, rowShape={scenario.RowProfile.Name}, secondaryIndexes={scenario.Indexes.SecondaryIndexCount}, keyPattern={scenario.KeyPattern}, rowsPerSec={rowsPerSecond:F1}, flushes={walDiagnostics.FlushCount}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, {commitSummary}",
+                $"path={scenario.Path}, preset={scenario.Preset}, analyzed={scenario.AnalyzeBeforeRun}, rowsPerCommit={scenario.RowsPerCommit}, rowShape={scenario.RowProfile.Name}, indexLayout={scenario.Indexes.Name}, secondaryIndexes={scenario.Indexes.SecondaryIndexCount}, keyPattern={scenario.KeyPattern}, rowsPerSec={rowsPerSecond:F1}, flushes={walDiagnostics.FlushCount}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, {commitSummary}",
         };
 
         Console.WriteLine(
