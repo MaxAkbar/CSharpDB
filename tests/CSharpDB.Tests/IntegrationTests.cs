@@ -6,6 +6,7 @@ using CSharpDB.Execution;
 using CSharpDB.Storage.Catalog;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Indexing;
+using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Tests;
 
@@ -345,6 +346,18 @@ public class IntegrationTests : IAsyncLifetime
         byte[] rawCategoryPayload = await innerCategoryStore.FindAsync(categoryIndexKey, ct)
             ?? throw new InvalidOperationException("Expected category index payload.");
         Assert.True(AppendableHashedIndexPayloadCodec.IsEncoded(rawCategoryPayload));
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.TryDecodeMetadata(
+                rawCategoryPayload,
+                out AppendableHashedIndexPayloadMetadata categoryMetadata));
+        Assert.Equal(AppendableHashedIndexPayloadFormat.ExternalChainState, categoryMetadata.Format);
+        AppendOnlyRowIdChainStore.AppendableChainMetadata categoryChainMetadata =
+            await AppendOnlyRowIdChainStore.ReadAppendableMetadataAsync(
+                GetPrivateField<Pager>(_db, "_pager")
+                    ?? throw new InvalidOperationException("Database pager was not initialized."),
+                categoryMetadata.FirstPageId,
+                ct);
+        Assert.Equal(AppendableChainEncoding.DeltaVarint, categoryChainMetadata.Encoding);
 
         byte[] categoryPayload = await categoryStore.FindAsync(categoryIndexKey, ct)
             ?? throw new InvalidOperationException("Expected decoded category index payload.");
@@ -370,6 +383,71 @@ public class IntegrationTests : IAsyncLifetime
         var pointLookupRows = await pointLookup.ToListAsync(ct);
         Assert.Single(pointLookupRows);
         Assert.Equal(1024, pointLookupRows[0][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task PreparedInsertBatch_FlushesDeferredDuplicateBucketAppends_BetweenExecutions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string tableName = "batch_idx_flush";
+        const string category = "Alpha";
+        const string text = "durable_batch";
+        const int batchSize = 256;
+        const int totalRows = batchSize * 2;
+
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {tableName} (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)",
+            ct);
+        await _db.ExecuteAsync($"CREATE INDEX idx_{tableName}_category ON {tableName}(category)", ct);
+
+        var batch = _db.PrepareInsertBatch(tableName, initialCapacity: batchSize);
+        SchemaCatalog catalog = GetCatalog();
+        var categoryStore = Assert.IsType<OverflowingIndexStore>(catalog.GetIndexStore($"idx_{tableName}_category"));
+        long categoryIndexKey = IndexMaintenanceHelper.ComputeIndexKey([DbValue.FromText(category)]);
+
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            for (int batchNumber = 0; batchNumber < totalRows / batchSize; batchNumber++)
+            {
+                int firstRowId = (batchNumber * batchSize) + 1;
+                int lastRowId = firstRowId + batchSize - 1;
+                for (int rowId = firstRowId; rowId <= lastRowId; rowId++)
+                {
+                    batch.AddRow(
+                        DbValue.FromInteger(rowId),
+                        DbValue.FromInteger(rowId),
+                        DbValue.FromText(text),
+                        DbValue.FromText(category));
+                }
+
+                Assert.Equal(batchSize, await batch.ExecuteAsync(ct));
+
+                byte[] categoryPayload = await categoryStore.FindAsync(categoryIndexKey, ct)
+                    ?? throw new InvalidOperationException("Expected decoded category index payload.");
+                Assert.True(
+                    HashedIndexPayloadCodec.TryDecodeSingleGroup(
+                        categoryPayload,
+                        out DbValue[]? keyComponents,
+                        out byte[]? rowIdPayload));
+                Assert.Equal(category, keyComponents![0].AsText);
+                Assert.Equal((batchNumber + 1) * batchSize, RowIdPayloadCodec.GetCount(rowIdPayload!));
+
+                await using var countResult = await _db.ExecuteAsync(
+                    $"SELECT COUNT(*) FROM {tableName} WHERE category = '{category}'",
+                    ct);
+                var countRows = await countResult.ToListAsync(ct);
+                Assert.Single(countRows);
+                Assert.Equal((long)((batchNumber + 1) * batchSize), countRows[0][0].AsInteger);
+            }
+
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
     }
 
     [Fact]
@@ -5427,6 +5505,44 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InnerJoin_OnRightCompositeTrailingIntegerIndex_UsesTrailingIntegerLookupPath()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE left_comp_int_lookup (id INTEGER PRIMARY KEY, category TEXT NOT NULL, value INTEGER NOT NULL, label TEXT)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_int_lookup VALUES (1, 'A', 10, 'L1')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_int_lookup VALUES (2, 'B', 10, 'L2')", ct);
+        await _db.ExecuteAsync("INSERT INTO left_comp_int_lookup VALUES (3, 'C', 20, 'L3')", ct);
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE right_comp_int_lookup (id INTEGER PRIMARY KEY, category TEXT NOT NULL, value INTEGER NOT NULL, amount INTEGER)",
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_right_comp_int_lookup_category_value ON right_comp_int_lookup(category, value)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_int_lookup VALUES (10, 'A', 10, 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_int_lookup VALUES (11, 'B', 10, 200)", ct);
+        await _db.ExecuteAsync("INSERT INTO right_comp_int_lookup VALUES (12, 'C', 20, 300)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT l.label, r.amount FROM left_comp_int_lookup l JOIN right_comp_int_lookup r ON l.category = r.category AND l.value = r.value") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = Assert.IsType<HashedIndexNestedLoopJoinOperator>(GetRootOperator(result));
+        Assert.Equal("HashedTrailingInteger", GetPrivateField<object>(rootOperator, "_storageMode")?.ToString());
+
+        var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.Equal("L1", rows[0][0].AsText);
+        Assert.Equal(100L, rows[0][1].AsInteger);
+        Assert.Equal("L2", rows[1][0].AsText);
+        Assert.Equal(200L, rows[1][1].AsInteger);
+        Assert.Equal("L3", rows[2][0].AsText);
+        Assert.Equal(300L, rows[2][1].AsInteger);
+    }
+
+    [Fact]
     public async Task LeftJoin_OnRightTextIndex_UsesHashedLookupPath()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -6729,6 +6845,35 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(2, rows.Count);
         Assert.Equal(1, rows[0][0].AsInteger);
         Assert.Equal(4, rows[1][0].AsInteger);
+    }
+
+    [Fact]
+    public async Task Index_MultiColumn_TrailingIntegerStorage_CoveredProjection_UsesTrailingIntegerSeekValue()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        _db.PreferSyncPointLookups = false;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, category TEXT NOT NULL, value INTEGER NOT NULL, payload TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'A', 20, 'keep-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (2, 'B', 20, 'skip-collision')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (3, 'A', 21, 'skip-other')", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (4, 'A', 20, 'keep-2')", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_category_value ON t (category, value)", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT id, category, value FROM t WHERE category = 'A' AND value = 20") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        var rootOperator = Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(result));
+        long seekValue = GetPrivateField<long>(rootOperator, "_seekValue");
+        Assert.Equal(20L, seekValue);
+
+        var rows = await result.ToListAsync(ct);
+        var projected = rows
+            .Select(row => (Id: row[0].AsInteger, Category: row[1].AsText, Value: row[2].AsInteger))
+            .OrderBy(row => row.Id)
+            .ToArray();
+        Assert.Equal([(1L, "A", 20L), (4L, "A", 20L)], projected);
     }
 
     [Fact]

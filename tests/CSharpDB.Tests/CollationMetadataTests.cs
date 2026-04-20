@@ -96,6 +96,21 @@ public sealed class CollationMetadataTests
     }
 
     [Fact]
+    public async Task CreateIndex_OnCompositeTrailingInteger_PersistsTrailingIntegerStorageMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, category TEXT, score INTEGER)", Ct);
+
+        await db.ExecuteAsync("CREATE INDEX idx_users_category_score ON users (category, score)", Ct);
+
+        var index = Assert.Single(
+            db.GetIndexes(),
+            static item => string.Equals(item.IndexName, "idx_users_category_score", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(index.OptionsJson);
+        Assert.Contains("hashed_trailing_integer", index.OptionsJson!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CreateIndex_WithNoCaseAiColumnCollation_PersistsIndexMetadata()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);

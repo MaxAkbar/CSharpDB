@@ -24,6 +24,14 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
 
     public byte[] Encode(ReadOnlySpan<DbValue> values) => _inner.Encode(values);
 
+    public int GetEncodedLength(ReadOnlySpan<DbValue> values) => _inner.GetEncodedLength(values);
+
+    public int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination, int encodedLength) =>
+        _inner.EncodeInto(values, destination, encodedLength);
+
+    public int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination) =>
+        _inner.EncodeInto(values, destination);
+
     public DbValue[] Decode(ReadOnlySpan<byte> buffer)
     {
         if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))

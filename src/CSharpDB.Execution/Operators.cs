@@ -9424,6 +9424,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private readonly int[] _outerKeyIndices;
     private readonly int[] _rightKeyColumnIndices;
     private readonly string?[] _rightKeyCollations;
+    private readonly SqlIndexStorageMode _storageMode;
     private readonly bool _usesOrderedTextPayload;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
@@ -9461,7 +9462,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
-    public HashedIndexNestedLoopJoinOperator(
+    internal HashedIndexNestedLoopJoinOperator(
         IOperator outer,
         BTree innerTableTree,
         IIndexStore innerIndexStore,
@@ -9474,6 +9475,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         int rightPrimaryKeyColumnIndex,
         Expression? residualCondition,
         TableSchema compositeSchema,
+        SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         bool usesOrderedTextPayload = false,
         IRecordSerializer? recordSerializer = null,
         int? estimatedOutputRowCount = null)
@@ -9485,6 +9487,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _outerKeyIndices = outerKeyIndices.ToArray();
         _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
         _rightKeyCollations = rightKeyCollations.ToArray();
+        _storageMode = storageMode;
         _usesOrderedTextPayload = usesOrderedTextPayload;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
@@ -9860,7 +9863,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             return true;
         }
 
-        lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+        lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents, _storageMode);
         return true;
     }
 

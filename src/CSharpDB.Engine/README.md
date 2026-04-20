@@ -71,6 +71,90 @@ that `Database` handle. If you want overlapping task-per-writer work on one
 shared `Database`, use the concurrent writer patterns below instead of starting
 one of these legacy explicit transactions per task.
 
+### High-Throughput Inserts
+
+If you want the most insert throughput from the embedded engine API, start with
+these rules:
+
+- Use `Database.PrepareInsertBatch(...)` instead of building one `INSERT ...`
+  SQL string per row.
+- Group many inserted rows into one explicit transaction instead of committing
+  every row individually.
+- For file-backed durable ingest, start with
+  `new DatabaseOptions().ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset())`.
+- Keep primary keys monotonic when possible. Right-edge append is materially
+  cheaper than random-key split-heavy inserts.
+- Avoid maintaining unnecessary secondary indexes during the hot ingest path.
+  Every extra index adds per-row write work.
+
+Single-writer bulk ingest example:
+
+```csharp
+using CSharpDB.Engine;
+using CSharpDB.Primitives;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+await using var db = await Database.OpenAsync("ingest.db", options);
+
+await db.ExecuteAsync("""
+    CREATE TABLE IF NOT EXISTS bench (
+        id INTEGER PRIMARY KEY,
+        value INTEGER,
+        text_col TEXT,
+        category TEXT
+    )
+    """);
+
+var batch = db.PrepareInsertBatch("bench", initialCapacity: 1000);
+
+await db.BeginTransactionAsync();
+try
+{
+    for (int block = 0; block < 100; block++)
+    {
+        for (int i = 0; i < 1000; i++)
+        {
+            int id = (block * 1000) + i;
+            batch.AddRow(
+                DbValue.FromInteger(id),
+                DbValue.FromInteger(id * 10L),
+                DbValue.FromText($"row-{id}"),
+                DbValue.FromText("A"));
+        }
+
+        await batch.ExecuteAsync();
+    }
+
+    await db.CommitAsync();
+}
+catch
+{
+    await db.RollbackAsync();
+    throw;
+}
+```
+
+For most durable file-backed workloads, `1000` rows per commit is the right
+starting point. Move higher only for dedicated ingest jobs that can tolerate
+larger commit latency and larger WAL/checkpoint bursts.
+
+For shared multi-task insert workloads, use the concurrent writer APIs only
+when the writers are mostly disjoint-key. The current engine guidance is:
+
+- Keep the default `ImplicitInsertExecutionMode.Serialized` for hot right-edge
+  insert loops.
+- Measure `ImplicitInsertExecutionMode.ConcurrentWriteTransactions` when
+  multiple tasks are inserting into disjoint explicit key ranges on one shared
+  `Database`.
+- Use `RunWriteTransactionAsync(...)` when each writer task needs several
+  writes to commit atomically.
+
+The current engine-level reusable insert surface is `PrepareInsertBatch(...)`.
+If you need a parameterized prepared-command API that binds new values on each
+execution, that surface lives today in `CSharpDB.Data` via `DbCommand.Prepare()`.
+
 ### In-Memory Open, Load, and Save
 
 ```csharp

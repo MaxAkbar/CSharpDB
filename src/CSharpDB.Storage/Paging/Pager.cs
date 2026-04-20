@@ -17,6 +17,19 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private static readonly ConcurrentDictionary<string, string> LogicalIndexResourceNames = new();
     private static readonly ConcurrentDictionary<string, string> LogicalTableRowResourceNames = new();
     private static readonly ConcurrentDictionary<(string TableName, string ColumnName), string> LogicalTableColumnResourceNames = new();
+    private sealed class BTreeResourceDiagnosticsCounter(string resourceName)
+    {
+        public string ResourceName { get; } = resourceName;
+
+        public long LeafSplitCount;
+        public long RightEdgeLeafSplitCount;
+        public long InteriorInsertCount;
+        public long RightEdgeInteriorInsertCount;
+        public long InteriorSplitCount;
+        public long RightEdgeInteriorSplitCount;
+        public long RootSplitCount;
+    }
+
     private readonly IStorageDevice _device;
     private readonly IPageReadProvider _pageReads;
     private readonly IPageReadProvider _speculativePageReads;
@@ -91,6 +104,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _btreeInteriorSplitCount;
     private long _btreeRightEdgeInteriorSplitCount;
     private long _btreeRootSplitCount;
+    private long _hashedIndexAppendContextHitCount;
+    private long _hashedIndexAppendContextMissCount;
+    private long _hashedIndexAppendExternalMetadataReadCount;
+    private long _hashedIndexAppendPromotionCount;
+    private long _hashedIndexAppendNotApplicableCount;
+    private long _hashedIndexDeferredAppendCount;
+    private long _hashedIndexDeferredFlushCount;
+    private readonly ConcurrentDictionary<string, BTreeResourceDiagnosticsCounter> _btreeResourceDiagnostics = new();
     private readonly object _explicitCommitStateGate = new();
     private uint _scheduledExplicitPageCount;
     private uint _scheduledExplicitSchemaRootPage;
@@ -172,6 +193,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
 
     internal bool IsExplicitWriteTransactionActive => GetCurrentTransaction() is not null;
+
+    internal bool RequiresLogicalWriteConflictTracking =>
+        GetCurrentTransaction() is not null ||
+        _transactions?.HasActiveExplicitTransactions == true;
 
     internal WalFlushDiagnosticsSnapshot GetWalFlushDiagnosticsSnapshot()
     {
@@ -257,8 +282,16 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             BTreeInteriorSplitCount: Interlocked.Read(ref _btreeInteriorSplitCount),
             BTreeRightEdgeInteriorSplitCount: Interlocked.Read(ref _btreeRightEdgeInteriorSplitCount),
             BTreeRootSplitCount: Interlocked.Read(ref _btreeRootSplitCount),
+            HashedIndexAppendContextHitCount: Interlocked.Read(ref _hashedIndexAppendContextHitCount),
+            HashedIndexAppendContextMissCount: Interlocked.Read(ref _hashedIndexAppendContextMissCount),
+            HashedIndexAppendExternalMetadataReadCount: Interlocked.Read(ref _hashedIndexAppendExternalMetadataReadCount),
+            HashedIndexAppendPromotionCount: Interlocked.Read(ref _hashedIndexAppendPromotionCount),
+            HashedIndexAppendNotApplicableCount: Interlocked.Read(ref _hashedIndexAppendNotApplicableCount),
+            HashedIndexDeferredAppendCount: Interlocked.Read(ref _hashedIndexDeferredAppendCount),
+            HashedIndexDeferredFlushCount: Interlocked.Read(ref _hashedIndexDeferredFlushCount),
             MaxPendingCommitCount: walDiagnostics.MaxPendingCommitCount,
-            MaxPendingCommitBytes: walDiagnostics.MaxPendingCommitBytes);
+            MaxPendingCommitBytes: walDiagnostics.MaxPendingCommitBytes,
+            BTreeResourceDiagnostics: GetBTreeResourceDiagnosticsSnapshot());
     }
 
     internal void ResetCommitPathDiagnostics()
@@ -318,6 +351,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _btreeInteriorSplitCount, 0);
         Interlocked.Exchange(ref _btreeRightEdgeInteriorSplitCount, 0);
         Interlocked.Exchange(ref _btreeRootSplitCount, 0);
+        Interlocked.Exchange(ref _hashedIndexAppendContextHitCount, 0);
+        Interlocked.Exchange(ref _hashedIndexAppendContextMissCount, 0);
+        Interlocked.Exchange(ref _hashedIndexAppendExternalMetadataReadCount, 0);
+        Interlocked.Exchange(ref _hashedIndexAppendPromotionCount, 0);
+        Interlocked.Exchange(ref _hashedIndexAppendNotApplicableCount, 0);
+        Interlocked.Exchange(ref _hashedIndexDeferredAppendCount, 0);
+        Interlocked.Exchange(ref _hashedIndexDeferredFlushCount, 0);
+        _btreeResourceDiagnostics.Clear();
     }
 
     // Configurable behavior
@@ -852,28 +893,92 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         => RecordLogicalWrite(resourceName, key);
 
     internal void RecordBTreeLeafSplit(bool rightEdge)
+        => RecordBTreeLeafSplit(resourceName: null, rightEdge);
+
+    internal void RecordBTreeLeafSplit(string? resourceName, bool rightEdge)
     {
         Interlocked.Increment(ref _btreeLeafSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref _btreeRightEdgeLeafSplitCount);
+
+        if (string.IsNullOrEmpty(resourceName))
+            return;
+
+        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        Interlocked.Increment(ref diagnostics.LeafSplitCount);
+        if (rightEdge)
+            Interlocked.Increment(ref diagnostics.RightEdgeLeafSplitCount);
     }
 
     internal void RecordBTreeInteriorInsert(bool rightEdge)
+        => RecordBTreeInteriorInsert(resourceName: null, rightEdge);
+
+    internal void RecordBTreeInteriorInsert(string? resourceName, bool rightEdge)
     {
         Interlocked.Increment(ref _btreeInteriorInsertCount);
         if (rightEdge)
             Interlocked.Increment(ref _btreeRightEdgeInteriorInsertCount);
+
+        if (string.IsNullOrEmpty(resourceName))
+            return;
+
+        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        Interlocked.Increment(ref diagnostics.InteriorInsertCount);
+        if (rightEdge)
+            Interlocked.Increment(ref diagnostics.RightEdgeInteriorInsertCount);
     }
 
     internal void RecordBTreeInteriorSplit(bool rightEdge)
+        => RecordBTreeInteriorSplit(resourceName: null, rightEdge);
+
+    internal void RecordBTreeInteriorSplit(string? resourceName, bool rightEdge)
     {
         Interlocked.Increment(ref _btreeInteriorSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref _btreeRightEdgeInteriorSplitCount);
+
+        if (string.IsNullOrEmpty(resourceName))
+            return;
+
+        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        Interlocked.Increment(ref diagnostics.InteriorSplitCount);
+        if (rightEdge)
+            Interlocked.Increment(ref diagnostics.RightEdgeInteriorSplitCount);
     }
 
     internal void RecordBTreeRootSplit()
-        => Interlocked.Increment(ref _btreeRootSplitCount);
+        => RecordBTreeRootSplit(resourceName: null);
+
+    internal void RecordBTreeRootSplit(string? resourceName)
+    {
+        Interlocked.Increment(ref _btreeRootSplitCount);
+        if (string.IsNullOrEmpty(resourceName))
+            return;
+
+        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        Interlocked.Increment(ref diagnostics.RootSplitCount);
+    }
+
+    internal void RecordHashedIndexAppendContextHit()
+        => Interlocked.Increment(ref _hashedIndexAppendContextHitCount);
+
+    internal void RecordHashedIndexAppendContextMiss()
+        => Interlocked.Increment(ref _hashedIndexAppendContextMissCount);
+
+    internal void RecordHashedIndexAppendExternalMetadataRead()
+        => Interlocked.Increment(ref _hashedIndexAppendExternalMetadataReadCount);
+
+    internal void RecordHashedIndexAppendPromotion()
+        => Interlocked.Increment(ref _hashedIndexAppendPromotionCount);
+
+    internal void RecordHashedIndexAppendNotApplicable()
+        => Interlocked.Increment(ref _hashedIndexAppendNotApplicableCount);
+
+    internal void RecordHashedIndexDeferredAppend()
+        => Interlocked.Increment(ref _hashedIndexDeferredAppendCount);
+
+    internal void RecordHashedIndexDeferredFlush()
+        => Interlocked.Increment(ref _hashedIndexDeferredFlushCount);
 
     internal void RecordExplicitLeafInsertTraversal(uint rootPageId, List<uint> traversalPath)
     {
@@ -3781,7 +3886,50 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             $"WAL growth limit exceeded while snapshot readers are active (activeReaders={activeReaders}, projectedWalBytes={projectedBytes}, limitBytes={limitBytes.Value}).");
     }
 
-    private static string BuildLogicalIndexResourceName(string indexName)
+    private BTreeResourceDiagnosticsCounter GetOrAddBTreeResourceDiagnostics(string resourceName)
+        => _btreeResourceDiagnostics.GetOrAdd(resourceName, static name => new BTreeResourceDiagnosticsCounter(name));
+
+    private CommitPathBTreeResourceDiagnosticsSnapshot[] GetBTreeResourceDiagnosticsSnapshot()
+    {
+        if (_btreeResourceDiagnostics.IsEmpty)
+            return [];
+
+        CommitPathBTreeResourceDiagnosticsSnapshot[] snapshot =
+            new CommitPathBTreeResourceDiagnosticsSnapshot[_btreeResourceDiagnostics.Count];
+        int count = 0;
+        foreach ((_, BTreeResourceDiagnosticsCounter entry) in _btreeResourceDiagnostics)
+        {
+            snapshot[count++] = new CommitPathBTreeResourceDiagnosticsSnapshot(
+                entry.ResourceName,
+                Interlocked.Read(ref entry.LeafSplitCount),
+                Interlocked.Read(ref entry.RightEdgeLeafSplitCount),
+                Interlocked.Read(ref entry.InteriorInsertCount),
+                Interlocked.Read(ref entry.RightEdgeInteriorInsertCount),
+                Interlocked.Read(ref entry.InteriorSplitCount),
+                Interlocked.Read(ref entry.RightEdgeInteriorSplitCount),
+                Interlocked.Read(ref entry.RootSplitCount));
+        }
+
+        if (count != snapshot.Length)
+            Array.Resize(ref snapshot, count);
+
+        Array.Sort(snapshot, static (left, right) =>
+        {
+            int result = right.NonRightEdgeStructuralEventCount.CompareTo(left.NonRightEdgeStructuralEventCount);
+            if (result != 0)
+                return result;
+
+            result = right.StructuralEventCount.CompareTo(left.StructuralEventCount);
+            if (result != 0)
+                return result;
+
+            return string.CompareOrdinal(left.ResourceName, right.ResourceName);
+        });
+
+        return snapshot;
+    }
+
+    internal static string BuildLogicalIndexResourceName(string indexName)
         => LogicalIndexResourceNames.GetOrAdd(indexName, static name => $"index:{name}");
 
     internal static string BuildLogicalTableRowResourceName(string tableName)

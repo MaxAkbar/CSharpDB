@@ -47,6 +47,60 @@ public class RecordEncoderTests
     }
 
     [Fact]
+    public void GetEncodedLength_MatchesEncodedPayloadSize()
+    {
+        var values = new DbValue[]
+        {
+            DbValue.FromInteger(7),
+            DbValue.FromText("Alpha"),
+            DbValue.FromBlob(new byte[] { 1, 2, 3, 4 }),
+        };
+
+        byte[] encoded = RecordEncoder.Encode(values);
+        Assert.Equal(encoded.Length, RecordEncoder.GetEncodedLength(values));
+    }
+
+    [Fact]
+    public void EncodeInto_WritesSameBytesAsEncode()
+    {
+        var values = new DbValue[]
+        {
+            DbValue.FromInteger(11),
+            DbValue.FromReal(2.5),
+            DbValue.FromText("cached_text"),
+            DbValue.FromText("Alpha"),
+        };
+
+        byte[] encoded = RecordEncoder.Encode(values);
+        byte[] destination = GC.AllocateUninitializedArray<byte>(encoded.Length + 8);
+
+        int written = RecordEncoder.EncodeInto(values, destination);
+
+        Assert.Equal(encoded.Length, written);
+        Assert.True(encoded.AsSpan().SequenceEqual(destination.AsSpan(0, written)));
+    }
+
+    [Fact]
+    public void EncodeInto_WithKnownEncodedLength_WritesSameBytesAsEncode()
+    {
+        var values = new DbValue[]
+        {
+            DbValue.FromInteger(17),
+            DbValue.FromText("baseline"),
+            DbValue.FromBlob(new byte[] { 5, 4, 3, 2, 1 }),
+        };
+
+        byte[] encoded = RecordEncoder.Encode(values);
+        int encodedLength = RecordEncoder.GetEncodedLength(values);
+        byte[] destination = GC.AllocateUninitializedArray<byte>(encodedLength);
+
+        int written = RecordEncoder.EncodeInto(values, destination, encodedLength);
+
+        Assert.Equal(encoded.Length, written);
+        Assert.True(encoded.AsSpan().SequenceEqual(destination));
+    }
+
+    [Fact]
     public void DecodeUpTo_Prefix()
     {
         var values = new DbValue[]

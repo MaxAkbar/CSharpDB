@@ -91,7 +91,6 @@ public struct SlottedPage
         }
     }
 
-    /// <summary>
     /// Insert a cell into the page. The cell data should NOT include a size prefix — we add it.
     /// Returns true if it fit, false if the page is full.
     /// </summary>

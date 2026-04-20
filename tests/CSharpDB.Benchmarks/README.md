@@ -1002,13 +1002,116 @@ The current single-writer bulk-insert recommendation now comes from the April 19
 | Row-width sensitivity at `InsertBatch B1000` | Baseline: `182,692 rows/sec`; medium: `156,056`; wide: `75,209` | Row encoding and payload width are real tuning levers once batching is already in place. |
 | Secondary-index sensitivity at `InsertBatch B1000` | PK-only: `185,524 rows/sec`; `+1` secondary: `130,999`; `+2`: `102,686`; `+4`: `68,567` | Secondary-index maintenance is the main remaining durable single-writer cost after batching. |
 | Key-pattern sensitivity at `InsertBatch B1000` | Monotonic key: `183,191 rows/sec`; random key: `16,816` | Right-edge append behavior dominates random-key split-heavy behavior on this storage path. |
-| SQLite parity check | SQLite matched durable SQL baseline: `201,126 rows/sec` at `B1000`, `563,851` at `B10000` | Current CSharpDB lands in the same general band: about `92%` of the SQLite `B1000` row and about `87%` of the SQLite `B10000` row on this runner. |
+| SQLite parity check | SQLite matched durable SQL baseline: `206,936 rows/sec` at `B1000`, `580,289` at `B10000` | Current CSharpDB is now ahead on the same branch at `218,029 rows/sec` and `820,459 rows/sec`, about `105.4%` and `141.4%` of the matched SQLite rows on this runner. |
 
 - Recommended embedded single-writer bulk path: `Database.PrepareInsertBatch(...)` with an explicit transaction and `builder.UseWriteOptimizedPreset()`.
 - Recommended default batch size: `1000` rows per commit. Use `10000` for dedicated ingest jobs that can absorb larger commit latency and larger checkpoint/WAL bursts.
 - Treat `INSERT ... VALUES (...), (...)` as a parity-check path, not the main recommendation. It is close enough to be useful, but it was still slower than `InsertBatch` on the same durable file-backed setup.
 - Treat batch size, row width, secondary indexes, and key locality as the real tuning levers. API shape matters less than those once the path is already on `InsertBatch`.
 - The April 19, 2026 duplicate-bucket follow-up also closed the previous secondary-index correctness hole: duplicate-heavy SQL index rows no longer crash the `Idx2` / `Idx4` scenarios, and those rows recovered to `102.7K` / `68.6K rows/sec` instead of failing outright.
+
+### April 19, 2026 Plan 5 Refresh
+
+The earlier table above remains the historical Plan 1 closeout snapshot. A
+separate same-runner Plan 5 follow-up was captured on April 19, 2026 after
+removing unnecessary logical conflict-key generation from the single-writer bulk
+path when no explicit conflict-tracked transaction is active.
+
+Artifacts:
+
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic-20260419-154730-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic-20260419-154824-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260419-154948-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx0_Monotonic-20260419-164915-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx1_Monotonic-20260419-165524-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx2_Monotonic-20260419-165623-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx4_Monotonic-20260419-165721-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx0_Monotonic-20260419-171446-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx1_Monotonic-20260419-171147-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx2_Monotonic-20260419-171248-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-IndexSweep_InsertBatch_B1000_Baseline_Idx4_Monotonic-20260419-171347-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic-20260419-190840-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic-20260419-190839-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260419-191101-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic-20260419-193041-median-of-3.csv`
+- `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-scenario-BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic-20260419-193138-median-of-3.csv`
+
+| Shape | CSharpDB | SQLite | Interpretation |
+|-------|----------|--------|----------------|
+| Matched durable bulk `B1000` | `218,029 rows/sec` | `206,936 rows/sec` | CSharpDB is now about `105.4%` of SQLite on the same runner. |
+| Matched durable bulk `B10000` | `820,459 rows/sec` | `580,289 rows/sec` | CSharpDB is now about `141.4%` of SQLite on the same runner. |
+
+- A later row-table amortization follow-up reused one encoded-record buffer per
+  multi-row insert statement instead of allocating a fresh encoded payload for
+  every inserted row. The April 19, 2026 reproducible rerun on that version
+  landed at:
+  `B1000 = 185,289 rows/sec`,
+  `B10000 = 707,265 rows/sec`,
+  matched SQLite `B1000 = 206,936 rows/sec`,
+  matched SQLite `B10000 = 580,289 rows/sec`.
+- That moved the parity story again:
+  on the latest same-session rerun CSharpDB is about `89.5%` of SQLite at
+  `B1000`, but about `121.9%` at `B10000`.
+- The interpretation matters more than the headline:
+  reusing the encoded-row buffer is a real primary-row win, especially once the
+  durable flush is amortized, but it did not remove the remaining small-batch
+  SQLite miss. That makes the next likely Plan 5 win a deeper row-table
+  right-edge leaf fast path rather than more duplicate-bucket work.
+- A later same-day row-table follow-up then removed one more piece of duplicate
+  encode work from the same matched bulk path: the planner now passes the known
+  encoded row length through to the serializer instead of having the encoder
+  recompute it. That version also kept the right-edge leaf-split shortcut in
+  place on the monotonic PK row. The reproducible rerun landed at
+  `B1000 = 218,029 rows/sec` and `B10000 = 820,459 rows/sec`, while the latest
+  matched SQLite rerun on the same branch remained `206,936` and `580,289`.
+- That changed the headline answer again:
+  CSharpDB is now about `105.4%` of SQLite at `B1000` and about `141.4%` at
+  `B10000` on the matched durable monotonic bulk row.
+
+- The refreshed post-fix attribution rows on the same branch landed at:
+  `RowWidth baseline/medium/wide = 180.8K / 156.6K / 72.6K rows/sec`,
+  `KeySweep monotonic/random = 179.6K / 15.8K rows/sec`.
+- A later same-runner indexed-insert follow-up, after caching resolved insert
+  plans and reusing key-component buffers, moved the index rows to:
+  `Idx1 = 142.6K`, `Idx2 = 125.4K`, `Idx4 = 74.1K rows/sec`.
+- A later reproducible duplicate-bucket follow-up added a validated append
+  context for repeated same-key appendable hashed-index updates. That landed at
+  `Idx0 = 184.1K`, `Idx1 = 139.7K`, `Idx2 = 126.4K`, `Idx4 = 74.8K rows/sec`.
+- A deeper duplicate-bucket follow-up then changed the storage shape for new
+  appendable hashed buckets so mutable append state lives in the overflow
+  chain's first page instead of the B-tree payload. The latest reproducible
+  rerun landed at `Idx0 = 213.1K`, `Idx1 = 163.0K`, `Idx2 = 149.1K`,
+  `Idx4 = 83.2K rows/sec`.
+- A later statement-level append-header amortization pass then staged repeated
+  external-chain appends across each safe multi-row insert statement and
+  flushed once at statement end. The reproducible rerun landed at
+  `Idx0 = 211.1K`, `Idx1 = 158.2K`, `Idx2 = 148.2K`, `Idx4 = 86.4K rows/sec`.
+- A deeper duplicate-bucket storage follow-up then delta-packed monotonic row
+  ids inside the external duplicate-bucket chains instead of storing fixed
+  `8`-byte row ids. The reproducible rerun landed at `Idx0 = 215.9K`,
+  `Idx1 = 157.6K`, `Idx2 = 158.3K`, `Idx4 = 96.2K rows/sec`.
+- A later row-table amortization follow-up then reused one caller-owned
+  encoded-record buffer across each multi-row insert statement instead of
+  allocating a fresh encoded row payload on every insert. The reproducible
+  rerun landed at `B1000 = 185.3K`, `B10000 = 707.3K rows/sec`, while the
+  matched SQLite rerun on the same branch landed at `206.9K` and `580.3K`.
+- The immediate Plan 5 conclusion changed again after that later row-table
+  follow-up: the matched durable monotonic bulk row is now ahead of SQLite on
+  this runner at both `B1000` and `B10000`.
+- The remaining Plan 5 priority is no longer durable flush amortization on the
+  matched monotonic row. The external-chain-state follow-up removes a real
+  duplicate-bucket B-tree rewrite, but the same-session `Idx0` control also
+  moved up, so the indexed slope is still substantial. The later
+  append-header-amortization rerun was basically a wash on this matrix, which
+  is useful: repeated header rewrites were not the main blocker. The next
+  insert-side win did come from a deeper secondary-index write-amplification
+  cut: the unique-only `Idx1` row stayed flat while the duplicate-heavy
+  `Idx2` / `Idx4` rows improved and their WAL bytes per flush dropped. Wide
+  rows still matter. The later reusable-encode and known-length-encode
+  follow-ups showed that row-table work still mattered on the matched baseline,
+  but that path is no longer behind SQLite on this runner. The larger remaining
+  Plan 5 slopes are now indexed maintenance on realistic schemas and the
+  random-key locality cliff rather than primary monotonic-row parity.
 
 #### Plan 2: Durability And Residency Trade-Offs
 

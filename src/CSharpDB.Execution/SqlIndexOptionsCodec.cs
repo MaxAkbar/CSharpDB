@@ -8,6 +8,7 @@ internal enum SqlIndexStorageMode
 {
     Hashed = 0,
     OrderedText = 1,
+    HashedTrailingInteger = 2,
 }
 
 internal sealed class SqlIndexOptions
@@ -18,6 +19,7 @@ internal sealed class SqlIndexOptions
 internal static class SqlIndexOptionsCodec
 {
     private const string OrderedTextStorage = "ordered_text";
+    private const string HashedTrailingIntegerStorage = "hashed_trailing_integer";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -32,28 +34,43 @@ internal static class SqlIndexOptionsCodec
         ReadOnlySpan<string?> indexColumnCollations = default)
         => ShouldDefaultToOrderedTextStorage(schema, indexColumnIndices, indexColumnCollations)
             ? Serialize(new SqlIndexOptions { Storage = OrderedTextStorage })
-            : null;
+            : ShouldDefaultToTrailingIntegerHashedStorage(schema, indexColumnIndices)
+                ? Serialize(new SqlIndexOptions { Storage = HashedTrailingIntegerStorage })
+                : null;
 
     public static SqlIndexStorageMode Resolve(IndexSchema index, TableSchema schema)
     {
-        if (index.Kind != IndexKind.Sql ||
-            index.Columns.Count != 1)
-        {
+        if (index.Kind != IndexKind.Sql)
             return SqlIndexStorageMode.Hashed;
-        }
-
-        int columnIndex = schema.GetColumnIndex(index.Columns[0]);
-        if (columnIndex < 0 ||
-            columnIndex >= schema.Columns.Count ||
-            schema.Columns[columnIndex].Type != DbType.Text)
-        {
-            return SqlIndexStorageMode.Hashed;
-        }
 
         SqlIndexOptions options = Deserialize(index.OptionsJson);
-        return string.Equals(options.Storage, OrderedTextStorage, StringComparison.Ordinal)
-            ? SqlIndexStorageMode.OrderedText
-            : SqlIndexStorageMode.Hashed;
+        if (string.Equals(options.Storage, OrderedTextStorage, StringComparison.Ordinal))
+        {
+            if (index.Columns.Count != 1)
+                return SqlIndexStorageMode.Hashed;
+
+            int columnIndex = schema.GetColumnIndex(index.Columns[0]);
+            return columnIndex >= 0 &&
+                   columnIndex < schema.Columns.Count &&
+                   schema.Columns[columnIndex].Type == DbType.Text
+                ? SqlIndexStorageMode.OrderedText
+                : SqlIndexStorageMode.Hashed;
+        }
+
+        if (string.Equals(options.Storage, HashedTrailingIntegerStorage, StringComparison.Ordinal))
+        {
+            if (index.Columns.Count <= 1)
+                return SqlIndexStorageMode.Hashed;
+
+            int trailingColumnIndex = schema.GetColumnIndex(index.Columns[^1]);
+            return trailingColumnIndex >= 0 &&
+                   trailingColumnIndex < schema.Columns.Count &&
+                   schema.Columns[trailingColumnIndex].Type == DbType.Integer
+                ? SqlIndexStorageMode.HashedTrailingInteger
+                : SqlIndexStorageMode.Hashed;
+        }
+
+        return SqlIndexStorageMode.Hashed;
     }
 
     private static string Serialize(SqlIndexOptions options)
@@ -79,6 +96,19 @@ internal static class SqlIndexOptionsCodec
             ? schema.Columns[columnIndex].Collation
             : indexColumnCollations[0];
         return !CollationSupport.IsBinaryOrDefault(effectiveCollation);
+    }
+
+    private static bool ShouldDefaultToTrailingIntegerHashedStorage(
+        TableSchema schema,
+        ReadOnlySpan<int> indexColumnIndices)
+    {
+        if (indexColumnIndices.Length <= 1)
+            return false;
+
+        int trailingColumnIndex = indexColumnIndices[^1];
+        return trailingColumnIndex >= 0 &&
+               trailingColumnIndex < schema.Columns.Count &&
+               schema.Columns[trailingColumnIndex].Type == DbType.Integer;
     }
 
     private static SqlIndexOptions Deserialize(string? payload)

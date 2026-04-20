@@ -36,7 +36,10 @@ public sealed class SqlIndexCompatibilityTests
             throwOnError: true)!;
         MethodInfo method = helperType.GetMethod(
             "ComputeIndexKey",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)!;
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(ReadOnlySpan<DbValue>)],
+            modifiers: null)!;
         return (ComputeIndexKeyDelegate)method.CreateDelegate(typeof(ComputeIndexKeyDelegate));
     }
 

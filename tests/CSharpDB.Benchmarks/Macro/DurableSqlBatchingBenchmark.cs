@@ -28,6 +28,9 @@ public static class DurableSqlBatchingBenchmark
             "CREATE INDEX idx_bench_value ON bench(value)",
             "CREATE INDEX idx_bench_category ON bench(category)",
         ]);
+    private static readonly IndexLayout s_compositeCategoryValueIndex = new(
+        "IdxCompositeCategoryValue",
+        ["CREATE INDEX idx_bench_category_value ON bench(category, value)"]);
     private static readonly IndexLayout s_secondary4Indexes = new(
         "Idx4",
         [
@@ -238,6 +241,14 @@ public static class DurableSqlBatchingBenchmark
                 Preset: StoragePreset.WriteOptimized,
                 RowProfile: s_baselineRow,
                 Indexes: s_secondary2Indexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_IdxCompositeCategoryValue_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_compositeCategoryValueIndex,
                 KeyPattern: KeyPattern.Monotonic),
             new(
                 "IndexSweep_InsertBatch_B1000_Baseline_Idx4_Monotonic",

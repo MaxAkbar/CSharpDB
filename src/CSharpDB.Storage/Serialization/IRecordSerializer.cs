@@ -8,6 +8,23 @@ namespace CSharpDB.Storage.Serialization;
 public interface IRecordSerializer
 {
     byte[] Encode(ReadOnlySpan<DbValue> values);
+    int GetEncodedLength(ReadOnlySpan<DbValue> values) => Encode(values).Length;
+    int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination, int encodedLength) =>
+        EncodeInto(values, destination);
+    int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination)
+    {
+        byte[] encoded = Encode(values);
+        if (encoded.Length > destination.Length)
+        {
+            throw new ArgumentException(
+                "Destination buffer is too small for the encoded record.",
+                nameof(destination));
+        }
+
+        encoded.CopyTo(destination);
+        return encoded.Length;
+    }
+
     DbValue[] Decode(ReadOnlySpan<byte> buffer);
     int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination);
     void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices);

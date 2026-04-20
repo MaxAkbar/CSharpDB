@@ -124,59 +124,79 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
         long key,
         DbValue[] keyComponents,
         long rowId,
+        AppendOptimizedIndexMutationContext? context = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keyComponents);
 
-        byte[]? storedPayload = await _inner.FindAsync(key, ct);
+        byte[]? storedPayload;
+        if (_inner is ICacheAwareIndexStore cacheAware &&
+            cacheAware.TryFindCached(key, out byte[]? cachedPayload))
+        {
+            storedPayload = cachedPayload;
+        }
+        else
+        {
+            storedPayload = await _inner.FindAsync(key, ct);
+        }
+
+        AppendOptimizedIndexMutationContext? matchedContext = null;
+        if (context is { HasCapturedState: true } activeContext)
+        {
+            if (storedPayload is not null &&
+                activeContext.Matches(key, keyComponents, storedPayload))
+            {
+                matchedContext = activeContext;
+                _pager.RecordHashedIndexAppendContextHit();
+            }
+            else
+            {
+                _pager.RecordHashedIndexAppendContextMiss();
+                if (activeContext.HasPendingExternalAppends)
+                    await FlushPendingHashedRowIdsAsync(activeContext, ct);
+            }
+        }
+
         if (storedPayload == null)
+        {
+            context?.Clear();
             return AppendRowIdResult.Missing;
+        }
+
+        if (matchedContext is not null)
+        {
+            return await TryAppendKnownAppendablePayloadAsync(
+                key,
+                storedPayload,
+                keyComponents,
+                rowId,
+                matchedContext.Metadata,
+                matchedContext,
+                ct);
+        }
 
         if (AppendableHashedIndexPayloadCodec.IsEncoded(storedPayload))
         {
-            if (!AppendableHashedIndexPayloadCodec.TryDecode(storedPayload, out AppendableHashedIndexPayload appendable) ||
-                !ComponentsEqual(appendable.KeyComponents, keyComponents))
+            if (!AppendableHashedIndexPayloadCodec.TryDecodeMetadata(
+                    storedPayload,
+                    out AppendableHashedIndexPayloadMetadata metadata) ||
+                !AppendableHashedIndexPayloadCodec.EncodedKeyComponentsEqual(
+                    storedPayload.AsSpan(metadata.KeyComponentsOffset),
+                    keyComponents))
             {
+                _pager.RecordHashedIndexAppendNotApplicable();
                 return AppendRowIdResult.NotApplicable;
             }
 
-            if (appendable.IsSortedAscending)
-            {
-                if (rowId == appendable.LastRowId)
-                    return AppendRowIdResult.AlreadyExists;
-
-                if (rowId > appendable.LastRowId)
-                {
-                    uint newLastPageId = await AppendOnlyRowIdChainStore.AppendAsync(_pager, appendable.LastPageId, rowId, ct);
-                    byte[] updatedPayload = AppendableHashedIndexPayloadCodec.Encode(
-                        appendable.KeyComponents,
-                        appendable.FirstPageId,
-                        newLastPageId,
-                        appendable.RowCount + 1,
-                        rowId,
-                        isSortedAscending: true);
-                    if (!await _inner.ReplaceAsync(key, updatedPayload, ct))
-                        throw new InvalidOperationException($"Failed to update appendable hashed payload for index key {key}.");
-
-                    return AppendRowIdResult.Appended;
-                }
-            }
-
-            if (await AppendOnlyRowIdChainStore.ContainsAsync(_pager, appendable.FirstPageId, appendable.RowCount, rowId, ct))
-                return AppendRowIdResult.AlreadyExists;
-
-            uint appendedLastPageId = await AppendOnlyRowIdChainStore.AppendAsync(_pager, appendable.LastPageId, rowId, ct);
-            byte[] appendedPayload = AppendableHashedIndexPayloadCodec.Encode(
-                appendable.KeyComponents,
-                appendable.FirstPageId,
-                appendedLastPageId,
-                appendable.RowCount + 1,
+            metadata = await PopulateAppendableMetadataAsync(metadata, ct);
+            return await TryAppendKnownAppendablePayloadAsync(
+                key,
+                storedPayload,
+                keyComponents,
                 rowId,
-                isSortedAscending: false);
-            if (!await _inner.ReplaceAsync(key, appendedPayload, ct))
-                throw new InvalidOperationException($"Failed to update appendable hashed payload for index key {key}.");
-
-            return AppendRowIdResult.Appended;
+                metadata,
+                context,
+                ct);
         }
 
         bool storedAsGenericOverflow = IndexOverflowReferenceCodec.IsEncoded(storedPayload);
@@ -185,10 +205,11 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
             : storedPayload;
 
         if (!HashedIndexPayloadCodec.TryDecodeSingleGroup(logicalPayload, out DbValue[]? decodedKeyComponents, out byte[]? rowIdPayload) ||
-            !ComponentsEqual(decodedKeyComponents, keyComponents) ||
+            !HashedIndexPayloadCodec.KeyComponentsEqualStored(decodedKeyComponents, keyComponents) ||
             rowIdPayload == null ||
             rowIdPayload.Length < AppendableHashedPromotionRowIdBytes)
         {
+            _pager.RecordHashedIndexAppendNotApplicable();
             return AppendRowIdResult.NotApplicable;
         }
 
@@ -221,17 +242,26 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
             isSortedAscending = false;
         }
 
-        (uint firstPageId, uint lastPageId) = await AppendOnlyRowIdChainStore.WriteAsync(_pager, rowIdPayload, ct);
+        (uint firstPageId, AppendOnlyRowIdChainStore.AppendableChainMetadata appendableChainMetadata) =
+            await AppendOnlyRowIdChainStore.WriteAppendableAsync(
+                _pager,
+                rowIdPayload,
+                isSortedAscending,
+                lastRowId,
+                ct);
         try
         {
-            uint appendedLastPageId = await AppendOnlyRowIdChainStore.AppendAsync(_pager, lastPageId, rowId, ct);
-            byte[] appendablePayload = AppendableHashedIndexPayloadCodec.Encode(
+            AppendOnlyRowIdChainStore.AppendableChainMetadata updatedChainMetadata =
+                await AppendOnlyRowIdChainStore.AppendAsync(
+                    _pager,
+                    firstPageId,
+                    appendableChainMetadata,
+                    rowId,
+                    isSortedAscending,
+                    ct);
+            byte[] appendablePayload = AppendableHashedIndexPayloadCodec.EncodeExternal(
                 decodedKeyComponents!,
-                firstPageId,
-                appendedLastPageId,
-                rowCount + 1,
-                rowId,
-                isSortedAscending);
+                firstPageId);
 
             if (!await _inner.ReplaceAsync(key, appendablePayload, ct))
             {
@@ -242,6 +272,18 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
             if (storedAsGenericOverflow)
                 await IndexOverflowPageStore.ReclaimAsync(_pager, storedPayload, ct);
 
+            _pager.RecordHashedIndexAppendPromotion();
+
+            if (context is not null &&
+                AppendableHashedIndexPayloadCodec.TryDecodeMetadata(appendablePayload, out AppendableHashedIndexPayloadMetadata metadata))
+            {
+                context.Capture(
+                    key,
+                    keyComponents,
+                    appendablePayload,
+                    CombineAppendableMetadata(metadata, updatedChainMetadata));
+            }
+
             return AppendRowIdResult.Appended;
         }
         catch
@@ -249,6 +291,32 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
             await SafeReclaimAppendableHashedPayloadAsync(firstPageId, ct);
             throw;
         }
+    }
+
+    public async ValueTask FlushPendingHashedRowIdsAsync(
+        AppendOptimizedIndexMutationContext? context,
+        CancellationToken ct = default)
+    {
+        if (context is not { HasPendingExternalAppends: true })
+            return;
+
+        AppendableHashedIndexPayloadMetadata flushedMetadata = context.FlushedMetadata;
+        if (flushedMetadata.Format != AppendableHashedIndexPayloadFormat.ExternalChainState)
+        {
+            throw new InvalidOperationException(
+                "Deferred append flushing is only supported for external appendable hashed payloads.");
+        }
+
+        AppendOnlyRowIdChainStore.AppendableChainMetadata updated =
+            await AppendOnlyRowIdChainStore.AppendBatchAsync(
+                _pager,
+                flushedMetadata.FirstPageId,
+                CreateAppendableChainMetadata(flushedMetadata),
+                context.PendingExternalRowIds,
+                context.Metadata.IsSortedAscending,
+                ct);
+        _pager.RecordHashedIndexDeferredFlush();
+        context.CompleteDeferredExternalFlush(CombineAppendableMetadata(flushedMetadata, updated));
     }
 
     public async ValueTask ReclaimAsync(CancellationToken ct = default)
@@ -300,17 +368,245 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
     {
         if (AppendableHashedIndexPayloadCodec.IsEncoded(storedPayload))
         {
-            if (!AppendableHashedIndexPayloadCodec.TryDecode(storedPayload, out AppendableHashedIndexPayload appendable))
+            if (!AppendableHashedIndexPayloadCodec.TryDecodeReference(
+                    storedPayload,
+                    out AppendableHashedIndexPayloadReference appendableReference))
+            {
                 throw new InvalidOperationException("Stored appendable hashed payload is invalid.");
+            }
 
-            byte[] rowIdPayload = await AppendOnlyRowIdChainStore.ReadAsync(_pager, appendable.FirstPageId, appendable.RowCount, ct);
-            return HashedIndexPayloadCodec.CreateSingleGroup(appendable.KeyComponents, rowIdPayload);
+            AppendableHashedIndexPayloadMetadata metadata =
+                await PopulateAppendableMetadataAsync(appendableReference.Metadata, ct);
+            byte[] rowIdPayload = metadata.Format == AppendableHashedIndexPayloadFormat.ExternalChainState
+                ? await AppendOnlyRowIdChainStore.ReadAsync(
+                    _pager,
+                    metadata.FirstPageId,
+                    CreateAppendableChainMetadata(metadata),
+                    ct)
+                : await AppendOnlyRowIdChainStore.ReadAsync(_pager, metadata.FirstPageId, metadata.RowCount, ct);
+            return HashedIndexPayloadCodec.CreateSingleGroup(appendableReference.KeyComponents, rowIdPayload);
         }
 
         if (IndexOverflowReferenceCodec.IsEncoded(storedPayload))
             return await IndexOverflowPageStore.ReadAsync(_pager, storedPayload, ct);
 
         return storedPayload;
+    }
+
+    private async ValueTask<AppendableHashedIndexPayloadMetadata> PopulateAppendableMetadataAsync(
+        AppendableHashedIndexPayloadMetadata metadata,
+        CancellationToken ct)
+    {
+        if (metadata.Format != AppendableHashedIndexPayloadFormat.ExternalChainState)
+            return metadata;
+
+        _pager.RecordHashedIndexAppendExternalMetadataRead();
+        AppendOnlyRowIdChainStore.AppendableChainMetadata chainMetadata =
+            await AppendOnlyRowIdChainStore.ReadAppendableMetadataAsync(_pager, metadata.FirstPageId, ct);
+        return CombineAppendableMetadata(metadata, chainMetadata);
+    }
+
+    private async ValueTask<AppendRowIdResult> TryAppendKnownAppendablePayloadAsync(
+        long key,
+        byte[] storedPayload,
+        DbValue[] keyComponents,
+        long rowId,
+        AppendableHashedIndexPayloadMetadata appendable,
+        AppendOptimizedIndexMutationContext? context,
+        CancellationToken ct)
+    {
+        switch (appendable.Format)
+        {
+            case AppendableHashedIndexPayloadFormat.InlineMutableState:
+                return await TryAppendInlineAppendablePayloadAsync(
+                    key,
+                    storedPayload,
+                    keyComponents,
+                    rowId,
+                    appendable,
+                    context,
+                    ct);
+
+            case AppendableHashedIndexPayloadFormat.ExternalChainState:
+                return await TryAppendExternalAppendablePayloadAsync(
+                    key,
+                    storedPayload,
+                    keyComponents,
+                    rowId,
+                    appendable,
+                    context,
+                    ct);
+
+            default:
+                throw new InvalidOperationException($"Unknown appendable payload format '{appendable.Format}'.");
+        }
+    }
+
+    private async ValueTask<AppendRowIdResult> TryAppendInlineAppendablePayloadAsync(
+        long key,
+        byte[] storedPayload,
+        DbValue[] keyComponents,
+        long rowId,
+        AppendableHashedIndexPayloadMetadata appendable,
+        AppendOptimizedIndexMutationContext? context,
+        CancellationToken ct)
+    {
+        if (appendable.IsSortedAscending)
+        {
+            if (rowId == appendable.LastRowId)
+            {
+                context?.Capture(key, keyComponents, storedPayload, appendable);
+                return AppendRowIdResult.AlreadyExists;
+            }
+
+            if (rowId > appendable.LastRowId)
+            {
+                uint newLastPageId = await AppendOnlyRowIdChainStore.AppendAsync(_pager, appendable.LastPageId, rowId, ct);
+                byte[] updatedPayload = AppendableHashedIndexPayloadCodec.Encode(
+                    storedPayload.AsSpan(appendable.KeyComponentsOffset),
+                    appendable.FirstPageId,
+                    newLastPageId,
+                    appendable.RowCount + 1,
+                    rowId,
+                    isSortedAscending: true);
+                if (!await _inner.ReplaceAsync(key, updatedPayload, ct))
+                    throw new InvalidOperationException($"Failed to update appendable hashed payload for index key {key}.");
+
+                context?.Capture(
+                    key,
+                    keyComponents,
+                    updatedPayload,
+                    appendable with
+                    {
+                        LastPageId = newLastPageId,
+                        RowCount = appendable.RowCount + 1,
+                        LastRowId = rowId,
+                    });
+                return AppendRowIdResult.Appended;
+            }
+        }
+
+        if (await AppendOnlyRowIdChainStore.ContainsAsync(_pager, appendable.FirstPageId, appendable.RowCount, rowId, ct))
+        {
+            context?.Capture(key, keyComponents, storedPayload, appendable);
+            return AppendRowIdResult.AlreadyExists;
+        }
+
+        uint appendedLastPageId = await AppendOnlyRowIdChainStore.AppendAsync(_pager, appendable.LastPageId, rowId, ct);
+        byte[] appendedPayload = AppendableHashedIndexPayloadCodec.Encode(
+            storedPayload.AsSpan(appendable.KeyComponentsOffset),
+            appendable.FirstPageId,
+            appendedLastPageId,
+            appendable.RowCount + 1,
+            rowId,
+            isSortedAscending: false);
+        if (!await _inner.ReplaceAsync(key, appendedPayload, ct))
+            throw new InvalidOperationException($"Failed to update appendable hashed payload for index key {key}.");
+
+        context?.Capture(
+            key,
+            keyComponents,
+            appendedPayload,
+            appendable with
+            {
+                LastPageId = appendedLastPageId,
+                RowCount = appendable.RowCount + 1,
+                LastRowId = rowId,
+                IsSortedAscending = false,
+            });
+        return AppendRowIdResult.Appended;
+    }
+
+    private async ValueTask<AppendRowIdResult> TryAppendExternalAppendablePayloadAsync(
+        long key,
+        byte[] storedPayload,
+        DbValue[] keyComponents,
+        long rowId,
+        AppendableHashedIndexPayloadMetadata appendable,
+        AppendOptimizedIndexMutationContext? context,
+        CancellationToken ct)
+    {
+        if (context is { HasPendingExternalAppends: true } pendingContext)
+        {
+            bool canContinueDeferredAppend =
+                pendingContext.AllowDeferredExternalAppends &&
+                appendable.IsSortedAscending &&
+                rowId > appendable.LastRowId;
+            if (!canContinueDeferredAppend)
+            {
+                await FlushPendingHashedRowIdsAsync(pendingContext, ct);
+                appendable = pendingContext.Metadata;
+            }
+        }
+
+        AppendOnlyRowIdChainStore.AppendableChainMetadata chainMetadata =
+            CreateAppendableChainMetadata(appendable);
+        if (appendable.IsSortedAscending)
+        {
+            if (rowId == appendable.LastRowId)
+            {
+                if (context is not { HasPendingExternalAppends: true })
+                    context?.Capture(key, keyComponents, storedPayload, appendable);
+                return AppendRowIdResult.AlreadyExists;
+            }
+
+            if (rowId > appendable.LastRowId)
+            {
+                if (context?.AllowDeferredExternalAppends == true)
+                {
+                    if (!context.Matches(key, keyComponents, storedPayload) ||
+                        context.Metadata.Format != AppendableHashedIndexPayloadFormat.ExternalChainState)
+                    {
+                        context.Capture(key, keyComponents, storedPayload, appendable);
+                    }
+
+                    _pager.RecordHashedIndexDeferredAppend();
+                    context.StageDeferredExternalAppend(
+                        rowId,
+                        appendable with
+                        {
+                            RowCount = appendable.RowCount + 1,
+                            LastRowId = rowId,
+                            IsSortedAscending = true,
+                        });
+                    return AppendRowIdResult.Appended;
+                }
+
+                AppendOnlyRowIdChainStore.AppendableChainMetadata updated =
+                    await AppendOnlyRowIdChainStore.AppendAsync(
+                        _pager,
+                        appendable.FirstPageId,
+                        chainMetadata,
+                        rowId,
+                        isSortedAscending: true,
+                        ct);
+                context?.Capture(key, keyComponents, storedPayload, CombineAppendableMetadata(appendable, updated));
+                return AppendRowIdResult.Appended;
+            }
+        }
+
+        if (appendable.ChainEncoding == AppendableChainEncoding.DeltaVarint)
+        {
+            _pager.RecordHashedIndexAppendNotApplicable();
+            return AppendRowIdResult.NotApplicable;
+        }
+
+        if (await AppendOnlyRowIdChainStore.ContainsAsync(_pager, appendable.FirstPageId, chainMetadata, rowId, ct))
+        {
+            context?.Capture(key, keyComponents, storedPayload, appendable);
+            return AppendRowIdResult.AlreadyExists;
+        }
+
+        AppendOnlyRowIdChainStore.AppendableChainMetadata appended =
+            await AppendOnlyRowIdChainStore.AppendAsync(
+                _pager,
+                appendable.FirstPageId,
+                chainMetadata,
+                rowId,
+                isSortedAscending: false,
+                ct);
+        context?.Capture(key, keyComponents, storedPayload, CombineAppendableMetadata(appendable, appended));
+        return AppendRowIdResult.Appended;
     }
 
     private async ValueTask ReclaimStoredPayloadAsync(ReadOnlyMemory<byte> storedPayload, CancellationToken ct)
@@ -324,8 +620,12 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
         if (!AppendableHashedIndexPayloadCodec.IsEncoded(storedPayload.Span))
             return;
 
-        if (!AppendableHashedIndexPayloadCodec.TryDecode(storedPayload.Span, out AppendableHashedIndexPayload appendable))
+        if (!AppendableHashedIndexPayloadCodec.TryDecodeMetadata(
+                storedPayload.Span,
+                out AppendableHashedIndexPayloadMetadata appendable))
+        {
             throw new InvalidOperationException("Stored appendable hashed payload is invalid.");
+        }
 
         await AppendOnlyRowIdChainStore.ReclaimAsync(_pager, appendable.FirstPageId, ct);
     }
@@ -346,6 +646,31 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
         }
 
         return true;
+    }
+
+    private static AppendOnlyRowIdChainStore.AppendableChainMetadata CreateAppendableChainMetadata(
+        AppendableHashedIndexPayloadMetadata metadata)
+    {
+        return new AppendOnlyRowIdChainStore.AppendableChainMetadata(
+            metadata.LastPageId,
+            metadata.RowCount,
+            metadata.LastRowId,
+            metadata.IsSortedAscending,
+            metadata.ChainEncoding);
+    }
+
+    private static AppendableHashedIndexPayloadMetadata CombineAppendableMetadata(
+        AppendableHashedIndexPayloadMetadata metadata,
+        AppendOnlyRowIdChainStore.AppendableChainMetadata chainMetadata)
+    {
+        return metadata with
+        {
+            LastPageId = chainMetadata.LastPageId,
+            RowCount = chainMetadata.RowCount,
+            LastRowId = chainMetadata.LastRowId,
+            IsSortedAscending = chainMetadata.IsSortedAscending,
+            ChainEncoding = chainMetadata.Encoding,
+        };
     }
 
     private async ValueTask SafeReclaimOverflowAsync(ReadOnlyMemory<byte> overflowReference, CancellationToken ct)
@@ -405,16 +730,57 @@ public sealed class OverflowingIndexStore : IIndexStore, ICacheAwareIndexStore, 
 
             if (AppendableHashedIndexPayloadCodec.IsEncoded(storedPayload.Span))
             {
-                if (!AppendableHashedIndexPayloadCodec.TryDecode(storedPayload.Span, out AppendableHashedIndexPayload appendable))
+                if (!AppendableHashedIndexPayloadCodec.TryDecodeReference(
+                        storedPayload.Span,
+                        out AppendableHashedIndexPayloadReference appendableReference))
+                {
                     throw new InvalidOperationException("Stored appendable hashed payload is invalid.");
+                }
 
-                byte[] rowIdPayload = await AppendOnlyRowIdChainStore.ReadAsync(_pager, appendable.FirstPageId, appendable.RowCount, ct);
-                CurrentValue = HashedIndexPayloadCodec.CreateSingleGroup(appendable.KeyComponents, rowIdPayload);
+                AppendableHashedIndexPayloadMetadata metadata =
+                    appendableReference.Metadata.Format == AppendableHashedIndexPayloadFormat.ExternalChainState
+                        ? CombineAppendableMetadata(
+                            appendableReference.Metadata,
+                            await AppendOnlyRowIdChainStore.ReadAppendableMetadataAsync(_pager, appendableReference.Metadata.FirstPageId, ct))
+                        : appendableReference.Metadata;
+                byte[] rowIdPayload = metadata.Format == AppendableHashedIndexPayloadFormat.ExternalChainState
+                    ? await AppendOnlyRowIdChainStore.ReadAsync(
+                        _pager,
+                        metadata.FirstPageId,
+                        CreateAppendableChainMetadata(metadata),
+                        ct)
+                    : await AppendOnlyRowIdChainStore.ReadAsync(_pager, metadata.FirstPageId, metadata.RowCount, ct);
+                CurrentValue = HashedIndexPayloadCodec.CreateSingleGroup(appendableReference.KeyComponents, rowIdPayload);
                 return true;
             }
 
             CurrentValue = await IndexOverflowPageStore.ReadAsync(_pager, storedPayload, ct);
             return true;
+        }
+
+        private static AppendOnlyRowIdChainStore.AppendableChainMetadata CreateAppendableChainMetadata(
+            AppendableHashedIndexPayloadMetadata metadata)
+        {
+            return new AppendOnlyRowIdChainStore.AppendableChainMetadata(
+                metadata.LastPageId,
+                metadata.RowCount,
+                metadata.LastRowId,
+                metadata.IsSortedAscending,
+                metadata.ChainEncoding);
+        }
+
+        private static AppendableHashedIndexPayloadMetadata CombineAppendableMetadata(
+            AppendableHashedIndexPayloadMetadata metadata,
+            AppendOnlyRowIdChainStore.AppendableChainMetadata chainMetadata)
+        {
+            return metadata with
+            {
+                LastPageId = chainMetadata.LastPageId,
+                RowCount = chainMetadata.RowCount,
+                LastRowId = chainMetadata.LastRowId,
+                IsSortedAscending = chainMetadata.IsSortedAscending,
+                ChainEncoding = chainMetadata.Encoding,
+            };
         }
 
         public ValueTask DisposeAsync() => _inner.DisposeAsync();
