@@ -5770,13 +5770,16 @@ public sealed class QueryPlanner
         }
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        bool trailingIntegerStoredInCursorKey =
+            IndexMaintenanceHelper.ResolveSqlIndexStorageMode(matchingIndex, schema) == SqlIndexStorageMode.HashedTrailingInteger;
         result = new QueryResult(new CompositeIndexGroupedAggregateOperator(
             _catalog.GetIndexStore(matchingIndex.IndexName, _pager),
             _catalog.GetTableTree(simpleRef.TableName, _pager),
             GetReadSerializer(schema),
             groupColumnIndices,
             outputSchema,
-            projectionKinds));
+            projectionKinds,
+            trailingIntegerStoredInCursorKey));
         return true;
     }
 
