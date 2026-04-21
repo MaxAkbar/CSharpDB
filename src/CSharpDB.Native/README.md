@@ -20,6 +20,7 @@ A NativeAOT-compiled shared library that exposes the CSharpDB embedded database 
   - [Result Navigation](#result-navigation)
   - [Value Access](#value-access)
   - [Transactions](#transactions)
+  - [Diagnostics, Maintenance, and Strings](#diagnostics-maintenance-and-strings)
   - [Error Handling](#error-handling)
 - [Type Codes](#type-codes)
 - [Usage Examples](#usage-examples)
@@ -430,6 +431,94 @@ Rollback the current transaction. Returns `0` on success, `-1` on error.
 
 ---
 
+### Diagnostics, Maintenance, and Strings
+
+These functions expose storage diagnostics and maintenance operations as UTF-8
+JSON strings. On success they return a library-owned string pointer. Release
+that pointer with `csharpdb_string_free`.
+
+#### `csharpdb_inspect_storage_json`
+
+```c
+const char* csharpdb_inspect_storage_json(const char* path, int include_pages);
+```
+
+Inspect a database file and return a JSON `DatabaseInspectReport`.
+`include_pages` controls whether per-page details are included.
+
+#### `csharpdb_inspect_wal_json`
+
+```c
+const char* csharpdb_inspect_wal_json(const char* path);
+```
+
+Inspect the WAL associated with a database path and return a JSON
+`WalInspectReport`.
+
+#### `csharpdb_inspect_page_json`
+
+```c
+const char* csharpdb_inspect_page_json(const char* path, uint32_t page_id, int include_hex);
+```
+
+Inspect one database page and return a JSON `PageInspectReport`. Set
+`include_hex` to include a hex dump.
+
+#### `csharpdb_check_indexes_json`
+
+```c
+const char* csharpdb_check_indexes_json(const char* path, const char* index_name, int sample_size);
+```
+
+Check all indexes, or one named index when `index_name` is not `NULL`. Use
+`sample_size` to limit sampled entries when supported.
+
+#### `csharpdb_get_maintenance_report_json`
+
+```c
+const char* csharpdb_get_maintenance_report_json(const char* path);
+```
+
+Return a JSON maintenance and space-usage report for a database file.
+
+#### `csharpdb_reindex_json`
+
+```c
+const char* csharpdb_reindex_json(const char* path, int scope, const char* name);
+```
+
+Rebuild indexes and return the JSON reindex result. Scope values are defined by
+the native API contract in `csharpdb.h`.
+
+#### `csharpdb_vacuum_json`
+
+```c
+const char* csharpdb_vacuum_json(const char* path);
+```
+
+Rewrite the database file to reclaim free pages and return the JSON vacuum
+result.
+
+#### `csharpdb_string_free`
+
+```c
+void csharpdb_string_free(const char* value);
+```
+
+Free a library-owned string returned by a JSON diagnostics or maintenance
+function.
+
+#### `csharpdb_string_length`
+
+```c
+int csharpdb_string_length(const char* value);
+```
+
+Return the UTF-8 byte length of a library-owned string. Returns `0` for
+`NULL`.
+
+---
+
 ### Error Handling
 
 Errors follow the `errno` pattern. After any function returns an error indicator (`NULL`, `-1`), call `csharpdb_last_error` to get the message.
@@ -467,6 +556,7 @@ Returns the last error code. `0` = no error, `-1` = generic error. Positive valu
 | 12 | TriggerAlreadyExists |
 | 13 | WalError |
 | 14 | Busy |
+| 15 | TransactionConflict |
 
 #### `csharpdb_clear_error`
 
@@ -1677,10 +1767,12 @@ Pre-built client packages that wrap the native library with idiomatic APIs:
 2. Every `csharpdb_execute` must be paired with `csharpdb_result_free`.
 3. Every `csharpdb_prepare` must be paired with `csharpdb_stmt_free`.
 4. Every `csharpdb_stmt_execute` must be paired with `csharpdb_result_free`.
-5. String pointers from `csharpdb_result_get_text` and `csharpdb_result_column_name` are owned by the library. **Do not free them.**
-6. Blob pointers from `csharpdb_result_get_blob` are owned by the library. **Do not free them.**
-7. Text and blob pointers from row values are valid only until the next `csharpdb_result_next` call or `csharpdb_result_free`. Copy the data if you need it longer.
-8. Column name pointers are valid until `csharpdb_result_free`.
+5. Every JSON string returned by diagnostics or maintenance functions must be
+   paired with `csharpdb_string_free`.
+6. String pointers from `csharpdb_result_get_text` and `csharpdb_result_column_name` are owned by the library. **Do not free them.**
+7. Blob pointers from `csharpdb_result_get_blob` are owned by the library. **Do not free them.**
+8. Text and blob pointers from row values are valid only until the next `csharpdb_result_next` call or `csharpdb_result_free`. Copy the data if you need it longer.
+9. Column name pointers are valid until `csharpdb_result_free`.
 
 ---
 

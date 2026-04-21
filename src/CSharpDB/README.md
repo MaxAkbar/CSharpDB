@@ -184,8 +184,8 @@ Built-in pipeline runtime with CSV/JSON connectors, transforms, validation, chec
 ```csharp
 var orchestrator = new PipelineOrchestrator(
     new DefaultPipelineComponentFactory(),
-    NullPipelineCheckpointStore.Instance,
-    NullPipelineRunLogger.Instance);
+    new NullPipelineCheckpointStore(),
+    new NullPipelineRunLogger());
 
 await orchestrator.ExecuteAsync(new PipelineRunRequest
 {
