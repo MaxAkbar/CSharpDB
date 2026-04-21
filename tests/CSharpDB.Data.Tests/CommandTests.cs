@@ -178,6 +178,40 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_ParameterizedColumnListInsert_WithIdentityAndSubset_ReusesAcrossValues()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY IDENTITY, name TEXT, age INTEGER);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO t (name, age) VALUES (@name, @age);";
+        var name = cmd.Parameters.AddWithValue("@name", "Alice");
+        var age = cmd.Parameters.AddWithValue("@age", 30);
+        cmd.Prepare();
+
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        name.Value = "Bob";
+        age.Value = 31;
+        Assert.Equal(1, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT id, name, age FROM t ORDER BY id;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(1L, reader.GetInt64(0));
+        Assert.Equal("Alice", reader.GetString(1));
+        Assert.Equal(30, reader.GetInt32(2));
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(2L, reader.GetInt64(0));
+        Assert.Equal("Bob", reader.GetString(1));
+        Assert.Equal(31, reader.GetInt32(2));
+        Assert.False(await reader.ReadAsync(Ct));
+    }
+
+    [Fact]
     public async Task Prepare_ConstantIdentityInsert_ReusesTemplateWithoutReusingGeneratedIds()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

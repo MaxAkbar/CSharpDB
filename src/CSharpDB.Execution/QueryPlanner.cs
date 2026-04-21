@@ -4418,6 +4418,9 @@ public sealed class QueryPlanner
         CancellationToken ct = default)
     {
         var schema = GetSchema(insert.TableName);
+        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+            ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
+            : null;
         var tree = _catalog.GetTableTree(insert.TableName);
         var indexes = _catalog.GetIndexesForTable(insert.TableName);
         ResolvedInsertIndexPlanSet? resolvedIndexPlans = indexes.Count > 0
@@ -4427,7 +4430,7 @@ public sealed class QueryPlanner
         IReadOnlyList<TriggerSchema> triggers = _catalog.GetTriggersForTable(insert.TableName);
 
         if (indexes.Count == 0 && foreignKeys.Count == 0 && triggers.Count == 0)
-            return await ExecuteBareSimpleInsertAsync(insert, schema, tree, persistRootChanges, ct);
+            return await ExecuteBareSimpleInsertAsync(insert, schema, explicitColumnIndices, tree, persistRootChanges, ct);
 
         int inserted = 0;
         long? generatedIntegerKey = null;
@@ -4449,13 +4452,7 @@ public sealed class QueryPlanner
         {
             for (int i = 0; i < insert.RowCount; i++)
             {
-                var row = insert.ValueRows[i];
-                if (row.Length != schema.Columns.Count)
-                {
-                    throw new CSharpDbException(
-                        ErrorCode.SyntaxError,
-                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
-                }
+                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
 
                 InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     insert.TableName,
@@ -4498,6 +4495,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteBareSimpleInsertAsync(
         SimpleInsertSql insert,
         TableSchema schema,
+        int[]? explicitColumnIndices,
         BTree tree,
         bool persistRootChanges,
         CancellationToken ct)
@@ -4520,13 +4518,7 @@ public sealed class QueryPlanner
         {
             for (int i = 0; i < insert.RowCount; i++)
             {
-                DbValue[] row = insert.ValueRows[i];
-                if (row.Length != schema.Columns.Count)
-                {
-                    throw new CSharpDbException(
-                        ErrorCode.SyntaxError,
-                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
-                }
+                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
 
                 InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
                     insert.TableName,
@@ -14134,29 +14126,62 @@ public sealed class QueryPlanner
 
         if (columnNames != null)
         {
-            if (columnNames.Count != values.Count)
-                throw new CSharpDbException(ErrorCode.SyntaxError,
-                    $"Column count ({columnNames.Count}) doesn't match value count ({values.Count}).");
+            int[] columnIndices = ResolveInsertColumnIndices(schema, columnNames);
+            ValidateInsertValueCount(columnIndices.Length, values.Count);
 
-            for (int i = 0; i < columnNames.Count; i++)
-            {
-                int colIdx = schema.GetColumnIndex(columnNames[i]);
-                if (colIdx < 0)
-                    throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnNames[i]}' not found.");
-                row[colIdx] = ResolveInsertValue(values[i], schema);
-            }
+            for (int i = 0; i < columnIndices.Length; i++)
+                row[columnIndices[i]] = ResolveInsertValue(values[i], schema);
         }
         else
         {
-            if (values.Count != schema.Columns.Count)
-                throw new CSharpDbException(ErrorCode.SyntaxError,
-                    $"Expected {schema.Columns.Count} values, got {values.Count}.");
+            ValidateInsertValueCount(schema.Columns.Count, values.Count);
 
             for (int i = 0; i < values.Count; i++)
                 row[i] = ResolveInsertValue(values[i], schema);
         }
 
         return row;
+    }
+
+    private DbValue[] ResolveSimpleInsertRow(TableSchema schema, int[]? explicitColumnIndices, DbValue[] values)
+    {
+        if (explicitColumnIndices is null)
+        {
+            ValidateInsertValueCount(schema.Columns.Count, values.Length);
+            return values;
+        }
+
+        ValidateInsertValueCount(explicitColumnIndices.Length, values.Length);
+        var row = new DbValue[schema.Columns.Count];
+        for (int i = 0; i < explicitColumnIndices.Length; i++)
+            row[explicitColumnIndices[i]] = values[i];
+
+        return row;
+    }
+
+    private static int[] ResolveInsertColumnIndices(TableSchema schema, IReadOnlyList<string> columnNames)
+    {
+        var columnIndices = new int[columnNames.Count];
+        for (int i = 0; i < columnNames.Count; i++)
+        {
+            int columnIndex = schema.GetColumnIndex(columnNames[i]);
+            if (columnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnNames[i]}' not found.");
+
+            columnIndices[i] = columnIndex;
+        }
+
+        return columnIndices;
+    }
+
+    private static void ValidateInsertValueCount(int expectedCount, int actualCount)
+    {
+        if (expectedCount != actualCount)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Expected {expectedCount} values, got {actualCount}.");
+        }
     }
 
     private static DbValue ResolveInsertValue(Expression valueExpression, TableSchema schema)

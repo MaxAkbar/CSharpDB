@@ -26,6 +26,22 @@ public sealed class CSharpDbConnection : DbConnection
         _connectionString = connectionString;
     }
 
+    public CSharpDbConnection(string connectionString, DatabaseOptions directDatabaseOptions)
+        : this(connectionString)
+    {
+        DirectDatabaseOptions = directDatabaseOptions ?? throw new ArgumentNullException(nameof(directDatabaseOptions));
+    }
+
+    public CSharpDbConnection(
+        string connectionString,
+        DatabaseOptions? directDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions)
+        : this(connectionString)
+    {
+        DirectDatabaseOptions = directDatabaseOptions;
+        HybridDatabaseOptions = hybridDatabaseOptions;
+    }
+
     internal CSharpDbConnection(string connectionString, HttpClient? transportHttpClient)
     {
         _connectionString = connectionString;
@@ -52,6 +68,10 @@ public sealed class CSharpDbConnection : DbConnection
     }
     public override string ServerVersion => "1.0";
     public override ConnectionState State => _state;
+
+    public DatabaseOptions? DirectDatabaseOptions { get; set; }
+
+    public HybridDatabaseOptions? HybridDatabaseOptions { get; set; }
 
     public override DataTable GetSchema()
         => GetSchema(DbMetaDataCollectionNames.MetaDataCollections, null);
@@ -180,8 +200,9 @@ public sealed class CSharpDbConnection : DbConnection
         var target = ParseTarget(builder.DataSource);
         switch (target.Kind)
         {
-            case ConnectionTargetKind.File when builder.Pooling:
-                await CSharpDbConnectionPoolRegistry.ClearPoolAsync(new PoolKey(target.Key, builder.MaxPoolSize));
+            case ConnectionTargetKind.File:
+                await CSharpDbConnectionPoolRegistry.ClearPoolsAsync(
+                    key => string.Equals(key.DataSource, target.Key, StringComparison.Ordinal));
                 break;
             case ConnectionTargetKind.NamedSharedMemory:
                 await SharedMemoryDatabaseRegistry.ClearAsync(target.Key);
@@ -225,6 +246,12 @@ public sealed class CSharpDbConnection : DbConnection
     internal static int GetSharedMemoryHostCountForTest() => SharedMemoryDatabaseRegistry.GetHostCountForTest();
 
     internal static int GetIdlePoolSizeForTest(string connectionString)
+        => GetIdlePoolSizeForTest(connectionString, directDatabaseOptions: null, hybridDatabaseOptions: null);
+
+    internal static int GetIdlePoolSizeForTest(
+        string connectionString,
+        DatabaseOptions? directDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions)
     {
         var builder = new CSharpDbConnectionStringBuilder(connectionString);
         if (!builder.Pooling || string.IsNullOrWhiteSpace(builder.DataSource))
@@ -234,7 +261,13 @@ public sealed class CSharpDbConnection : DbConnection
         if (target.Kind != ConnectionTargetKind.File)
             return 0;
 
-        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(new PoolKey(target.Key, builder.MaxPoolSize));
+        ResolvedEmbeddedConfiguration configuration = CSharpDbEmbeddedConfigurationResolver.Resolve(
+            builder,
+            directDatabaseOptions,
+            hybridDatabaseOptions);
+
+        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(
+            CreatePoolKey(target.Key, builder.MaxPoolSize, configuration));
     }
 
     // ─── Schema introspection ─────────────────────────────────────
@@ -277,8 +310,19 @@ public sealed class CSharpDbConnection : DbConnection
         CancellationToken cancellationToken)
     {
         CSharpDbTransport? configuredTransport = ParseTransportOrNull(builder.Transport);
+        bool hasEmbeddedTuning = CSharpDbEmbeddedConfigurationResolver.HasRequestedTuning(
+            builder,
+            DirectDatabaseOptions,
+            HybridDatabaseOptions);
+
         if (!string.IsNullOrWhiteSpace(builder.Endpoint))
         {
+            if (hasEmbeddedTuning)
+            {
+                throw new InvalidOperationException(
+                    "Embedded storage tuning is only supported for direct embedded connections.");
+            }
+
             if (configuredTransport is null)
             {
                 throw new InvalidOperationException(
@@ -292,24 +336,42 @@ public sealed class CSharpDbConnection : DbConnection
         }
 
         if (configuredTransport is not null && configuredTransport != CSharpDbTransport.Direct)
+        {
+            if (hasEmbeddedTuning)
+            {
+                throw new InvalidOperationException(
+                    "Embedded storage tuning is only supported for direct embedded connections.");
+            }
+
             throw new InvalidOperationException("Endpoint is required for non-direct transports.");
+        }
 
         if (string.IsNullOrWhiteSpace(builder.DataSource))
             throw new InvalidOperationException("Data Source is required in the connection string.");
 
         var target = ParseTarget(builder.DataSource);
-        return await OpenSessionAsync(target, builder, cancellationToken);
+        ResolvedEmbeddedConfiguration configuration = CSharpDbEmbeddedConfigurationResolver.Resolve(
+            builder,
+            DirectDatabaseOptions,
+            HybridDatabaseOptions);
+
+        ValidateEmbeddedTuningSupport(target, configuration);
+        return await OpenSessionAsync(target, builder, configuration, cancellationToken);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenSessionAsync(
         ConnectionTarget target,
         CSharpDbConnectionStringBuilder builder,
+        ResolvedEmbeddedConfiguration configuration,
         CancellationToken cancellationToken)
     {
         return target.Kind switch
         {
-            ConnectionTargetKind.File => await OpenFileSessionAsync(target.Key, builder, cancellationToken),
-            ConnectionTargetKind.PrivateMemory => await OpenPrivateMemorySessionAsync(builder.LoadFrom, cancellationToken),
+            ConnectionTargetKind.File => await OpenFileSessionAsync(target.Key, builder, configuration, cancellationToken),
+            ConnectionTargetKind.PrivateMemory => await OpenPrivateMemorySessionAsync(
+                builder.LoadFrom,
+                configuration,
+                cancellationToken),
             ConnectionTargetKind.NamedSharedMemory => await SharedMemoryDatabaseRegistry.OpenSessionAsync(
                 target.Key,
                 NormalizeOptionalFilePath(builder.LoadFrom),
@@ -321,6 +383,7 @@ public sealed class CSharpDbConnection : DbConnection
     private static async ValueTask<ICSharpDbSession> OpenFileSessionAsync(
         string normalizedPath,
         CSharpDbConnectionStringBuilder builder,
+        ResolvedEmbeddedConfiguration configuration,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(builder.LoadFrom))
@@ -329,26 +392,46 @@ public sealed class CSharpDbConnection : DbConnection
         if (builder.Pooling)
         {
             string pooledConnectionString = $"Data Source={normalizedPath}";
-            var key = new PoolKey(normalizedPath, builder.MaxPoolSize);
+            PoolKey key = CreatePoolKey(normalizedPath, builder.MaxPoolSize, configuration);
             var pool = CSharpDbConnectionPoolRegistry.GetOrCreate(
                 key,
                 pooledConnectionString,
-                OpenDirectClientAsync);
+                (connectionString, ct) => OpenDirectClientAsync(
+                    connectionString,
+                    configuration.EffectiveDirectDatabaseOptions,
+                    configuration.EffectiveHybridDatabaseOptions,
+                    ct));
             ICSharpDbClient pooledClient = await pool.RentAsync(cancellationToken);
             return new RemoteDatabaseSession(pooledClient, pool.ReturnAsync);
         }
 
-        Engine.Database database = await Engine.Database.OpenAsync(normalizedPath, cancellationToken);
+        Engine.Database database = configuration.EffectiveHybridDatabaseOptions is null
+            ? await Engine.Database.OpenAsync(
+                normalizedPath,
+                configuration.EffectiveDirectDatabaseOptions,
+                cancellationToken)
+            : await Engine.Database.OpenHybridAsync(
+                normalizedPath,
+                configuration.EffectiveDirectDatabaseOptions,
+                configuration.EffectiveHybridDatabaseOptions,
+                cancellationToken);
+
         return new DirectDatabaseSession(database);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPrivateMemorySessionAsync(
         string? loadFromPath,
+        ResolvedEmbeddedConfiguration configuration,
         CancellationToken cancellationToken)
     {
         Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
-            ? await Engine.Database.OpenInMemoryAsync(cancellationToken)
-            : await Engine.Database.LoadIntoMemoryAsync(NormalizeDataSourcePath(loadFromPath), cancellationToken);
+            ? await Engine.Database.OpenInMemoryAsync(
+                configuration.EffectiveDirectDatabaseOptions,
+                cancellationToken)
+            : await Engine.Database.LoadIntoMemoryAsync(
+                NormalizeDataSourcePath(loadFromPath),
+                configuration.EffectiveDirectDatabaseOptions,
+                cancellationToken);
 
         return new DirectDatabaseSession(database);
     }
@@ -380,12 +463,54 @@ public sealed class CSharpDbConnection : DbConnection
 
     private static async ValueTask<ICSharpDbClient> OpenDirectClientAsync(
         string connectionString,
+        DatabaseOptions directDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions,
         CancellationToken cancellationToken)
         => await OpenClientAsync(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Direct,
             ConnectionString = connectionString,
+            DirectDatabaseOptions = directDatabaseOptions,
+            HybridDatabaseOptions = hybridDatabaseOptions,
         }, cancellationToken);
+
+    private static PoolKey CreatePoolKey(
+        string normalizedPath,
+        int maxPoolSize,
+        ResolvedEmbeddedConfiguration configuration)
+    {
+        return new PoolKey(
+            normalizedPath,
+            maxPoolSize,
+            configuration.EffectiveOpenMode,
+            configuration.EffectiveStoragePreset,
+            configuration.ExplicitDirectDatabaseOptions,
+            configuration.ExplicitHybridDatabaseOptions);
+    }
+
+    private static void ValidateEmbeddedTuningSupport(
+        ConnectionTarget target,
+        ResolvedEmbeddedConfiguration configuration)
+    {
+        if (!configuration.HasRequestedTuning)
+            return;
+
+        switch (target.Kind)
+        {
+            case ConnectionTargetKind.File:
+                return;
+            case ConnectionTargetKind.PrivateMemory when configuration.EffectiveHybridDatabaseOptions is not null:
+                throw new InvalidOperationException(
+                    "HybridDatabaseOptions and hybrid embedded open modes are only supported for file-backed direct connections.");
+            case ConnectionTargetKind.PrivateMemory:
+                return;
+            case ConnectionTargetKind.NamedSharedMemory:
+                throw new InvalidOperationException(
+                    "Embedded storage tuning is not supported for named shared-memory databases.");
+            default:
+                throw new InvalidOperationException("Unsupported connection target.");
+        }
+    }
 
     private static async ValueTask<ICSharpDbClient> OpenClientAsync(
         CSharpDbClientOptions options,

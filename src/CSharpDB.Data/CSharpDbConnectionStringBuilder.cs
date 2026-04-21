@@ -11,6 +11,8 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     private const string PoolingKey = "Pooling";
     private const string TransportKey = "Transport";
     private const string MaxPoolSizeKey = "Max Pool Size";
+    private const string StoragePresetKey = "Storage Preset";
+    private const string EmbeddedOpenModeKey = "Embedded Open Mode";
 
     internal const bool DefaultPooling = false;
     internal const int DefaultMaxPoolSize = 32;
@@ -56,6 +58,18 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
         }
     }
 
+    public CSharpDbStoragePreset? StoragePreset
+    {
+        get => GetNullableEnum<CSharpDbStoragePreset>(StoragePresetKey);
+        set => SetNullableEnum(StoragePresetKey, value);
+    }
+
+    public CSharpDbEmbeddedOpenMode? EmbeddedOpenMode
+    {
+        get => GetNullableEnum<CSharpDbEmbeddedOpenMode>(EmbeddedOpenModeKey);
+        set => SetNullableEnum(EmbeddedOpenModeKey, value);
+    }
+
     public CSharpDbConnectionStringBuilder() { }
 
     public CSharpDbConnectionStringBuilder(string connectionString)
@@ -95,5 +109,41 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
             throw new FormatException($"{key} must be greater than or equal to {minValue}.");
 
         return parsed;
+    }
+
+    private TEnum? GetNullableEnum<TEnum>(string key)
+        where TEnum : struct, Enum
+    {
+        if (!TryGetValue(key, out var value))
+            return null;
+
+        string? text = value switch
+        {
+            null => null,
+            string stringValue => stringValue,
+            TEnum enumValue => enumValue.ToString(),
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture),
+        };
+
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        if (Enum.TryParse<TEnum>(text.Trim(), ignoreCase: true, out var parsed))
+            return parsed;
+
+        throw new FormatException(
+            $"{key} must be one of: {string.Join(", ", Enum.GetNames<TEnum>())}.");
+    }
+
+    private void SetNullableEnum<TEnum>(string key, TEnum? value)
+        where TEnum : struct, Enum
+    {
+        if (value is null)
+        {
+            Remove(key);
+            return;
+        }
+
+        this[key] = value.Value.ToString();
     }
 }

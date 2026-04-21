@@ -411,6 +411,12 @@ dotnet run -c Release -- --native-aot-insert-compare --repeat 3 --repro
 # EF Core insert comparison for CSharpDB vs SQLite
 dotnet run -c Release -- --efcore-compare --repeat 3 --repro
 
+# EF Core insert comparison for CSharpDB vs SQLite with short-lived DbContexts over one shared open connection
+dotnet run -c Release -- --efcore-compare-hybrid-shared-connection --repeat 3 --repro
+
+# EF Core insert comparison for CSharpDB vs SQLite with EF-managed auto open/close per SaveChanges
+dotnet run -c Release -- --efcore-compare-auto-open-close --repeat 3 --repro
+
 # Focused engine-cold open + first read comparison for file-backed vs in-memory vs lazy-resident incremental-durable hybrid
 dotnet run -c Release -- --hybrid-cold-open --repeat 3 --repro
 
@@ -444,10 +450,12 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 | Command | Surface being compared | Storage and durability | Writer shape | Primary use |
 |---------|------------------------|------------------------|--------------|-------------|
 | `--sqlite-compare` | Local SQLite only through `Microsoft.Data.Sqlite` | File-backed, `journal_mode=WAL`, `synchronous=FULL` | Single writer for insert rows, `8` readers for read rows | Durable local SQLite reference rows used alongside the CSharpDB single-writer write tables |
-| `--strict-insert-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | File-backed, default durable for CSharpDB; SQLite `WAL + FULL` | Single writer | Apples-to-apples provider comparison for raw SQL vs prepared SQL and single-row vs `Batch100` |
+| `--strict-insert-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Apples-to-apples provider comparison for raw SQL vs prepared SQL and single-row vs `Batch100` |
 | `--concurrent-sqlite-capi-compare` | CSharpDB engine API vs direct SQLite C API | File-backed, durable; CSharpDB default durable, SQLite `WAL + FULL` | `4` or `8` concurrent writer tasks | Closest direct engine-vs-SQLite write-contention comparison |
 | `--concurrent-adonet-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | Shared-memory, non-durable | `4` or `8` concurrent writer tasks | Provider-host overhead comparison without file durability costs |
-| `--efcore-compare` | CSharpDB EF Core vs SQLite EF Core | File-backed, default durable for CSharpDB; SQLite `WAL + FULL` | Single writer | ORM-layer insert comparison |
+| `--efcore-compare` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Steady-state ORM-layer insert comparison with one open connection per timed run |
+| `--efcore-compare-hybrid-shared-connection` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Short-lived `DbContext` comparison with one externally-owned open connection reused for the timed run |
+| `--efcore-compare-auto-open-close` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | EF-managed connection-lifecycle comparison where each `SaveChangesAsync` can auto-open/close |
 | `--native-aot-insert-compare` | CSharpDB ADO.NET vs CSharpDB NativeAOT FFI vs SQLite ADO.NET | File-backed, durable | Single writer | Isolates managed-provider overhead versus direct native FFI on the CSharpDB side |
 
 ### Single Writer vs Multi Writer
@@ -464,8 +472,11 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - The direct SQLite C API benchmark follows SQLite's documented multi-thread usage model: one connection and one prepared statement per writer task, with no sharing of a `sqlite3*` or derived statement object across threads.
 - The C API benchmark opens each SQLite writer with `SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_PRIVATECACHE`, applies `busy_timeout`, and runs file-backed `journal_mode=WAL` plus `synchronous=FULL`.
 - That means the SQLite C API benchmark is measuring multiple independent writer connections contending for SQLite's WAL writer slot. It is not a "parallel writers all committing at once" benchmark because SQLite WAL still allows only one active writer at a time.
-- The concurrent ADO.NET comparison is intentionally different. It uses shared-memory targets for both providers and configures SQLite with `journal_mode=MEMORY`, `cache=shared`, and `busy_timeout`. Those rows are useful for provider-layer concurrency overhead, but they are not durable WAL comparisons.
+- The concurrent ADO.NET comparison is intentionally different. It uses shared-memory targets for both providers and configures SQLite with `journal_mode=MEMORY`, `cache=shared`, and `busy_timeout`. Those rows are useful for provider-layer concurrency overhead, but they are not durable WAL comparisons and they do not exercise the new CSharpDB embedded tuning surface.
 - The EF Core comparison is currently single-writer only. It is a `SaveChangesAsync` insert benchmark, not a concurrent writer benchmark.
+- The EF Core harness opens one connection per provider/context for the timed run so it measures steady-state `SaveChangesAsync` cost instead of repeated per-save connection open/close cost.
+- The separate `--efcore-compare-hybrid-shared-connection` harness keeps one externally-owned open connection alive for the timed run while creating a fresh `DbContext` for each save. That isolates `DbContext` lifetime cost from physical connection open cost.
+- The separate `--efcore-compare-auto-open-close` harness keeps the same single-writer durable workload but leaves connection lifetime under EF's default management so repeated auto-open/close cost stays in the measurement.
 
 ### CSharpDB Engine Semantics In These Comparisons
 
@@ -482,7 +493,9 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - `--strict-insert-compare` answers "how much of the gap is provider and SQL preparation overhead?" for file-backed ADO.NET.
 - `--concurrent-sqlite-capi-compare` answers "how does shared-engine CSharpDB auto-commit compare to direct SQLite C API under actual durable writer contention?"
 - `--concurrent-adonet-compare` answers "how much concurrency overhead comes from the provider layer itself when durability is removed?"
-- `--efcore-compare` answers "what is the ORM-layer delta for `SaveChangesAsync` inserts on the two providers?"
+- `--efcore-compare` answers "what is the steady-state ORM-layer delta for `SaveChangesAsync` inserts on the two providers when the connection is already open?"
+- `--efcore-compare-hybrid-shared-connection` answers "what is the ORM-layer delta when each unit of work gets a short-lived `DbContext`, but the underlying connection stays open?"
+- `--efcore-compare-auto-open-close` answers "what is the ORM-layer delta when EF owns the connection lifetime and each save may pay open/close cost?"
 - `--native-aot-insert-compare` answers "how much managed ADO.NET overhead remains versus a native CSharpDB call surface?"
 
 ### Validation Coverage

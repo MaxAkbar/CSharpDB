@@ -66,7 +66,7 @@ internal sealed class PreparedStatementTemplate
     {
         simpleInsertTemplate = null;
 
-        if (statement is not InsertStatement insert || insert.ColumnNames != null)
+        if (statement is not InsertStatement insert)
             return false;
 
         var valueRows = insert.ValueRows;
@@ -86,7 +86,10 @@ internal sealed class PreparedStatementTemplate
             compiledRows[rowIndex] = compiledRow;
         }
 
-        simpleInsertTemplate = new PreparedSimpleInsertTemplate(insert.TableName, compiledRows);
+        simpleInsertTemplate = new PreparedSimpleInsertTemplate(
+            insert.TableName,
+            insert.ColumnNames?.ToArray(),
+            compiledRows);
         return true;
     }
 
@@ -953,15 +956,22 @@ internal sealed class PreparedStatementTemplate
     private sealed class PreparedSimpleInsertTemplate
     {
         private readonly string _tableName;
+        private readonly string[]? _columnNames;
         private readonly PreparedInsertCell[][] _valueRows;
         private readonly SimpleInsertSql? _constantInsert;
 
-        internal PreparedSimpleInsertTemplate(string tableName, PreparedInsertCell[][] valueRows)
+        internal PreparedSimpleInsertTemplate(string tableName, string[]? columnNames, PreparedInsertCell[][] valueRows)
         {
             _tableName = tableName;
+            _columnNames = columnNames;
             _valueRows = valueRows;
             if (IsConstant(valueRows))
-                _constantInsert = new SimpleInsertSql(tableName, BindConstants(valueRows));
+            {
+                DbValue[][] boundConstants = BindConstants(valueRows);
+                _constantInsert = columnNames is null
+                    ? new SimpleInsertSql(tableName, boundConstants)
+                    : new SimpleInsertSql(tableName, columnNames, boundConstants);
+            }
         }
 
         internal SimpleInsertSql Bind(CSharpDbParameterCollection parameters)
@@ -980,7 +990,9 @@ internal sealed class PreparedStatementTemplate
                 boundRows[rowIndex] = boundRow;
             }
 
-            return new SimpleInsertSql(_tableName, boundRows);
+            return _columnNames is null
+                ? new SimpleInsertSql(_tableName, boundRows)
+                : new SimpleInsertSql(_tableName, _columnNames, boundRows);
         }
 
         private static SimpleInsertSql CloneInsert(SimpleInsertSql insert)
@@ -994,7 +1006,9 @@ internal sealed class PreparedStatementTemplate
                 clonedRows[rowIndex] = clonedRow;
             }
 
-            return new SimpleInsertSql(insert.TableName, clonedRows, insert.RowCount);
+            return insert.ColumnNames is null
+                ? new SimpleInsertSql(insert.TableName, clonedRows, insert.RowCount)
+                : new SimpleInsertSql(insert.TableName, insert.ColumnNames, clonedRows, insert.RowCount);
         }
 
         private static bool IsConstant(PreparedInsertCell[][] valueRows)

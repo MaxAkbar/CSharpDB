@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Reflection;
 using CSharpDB.Benchmarks.Infrastructure;
+using CSharpDB.Data;
 using CSharpDB.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -14,87 +15,167 @@ public static class EfCoreComparisonBenchmark
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
 
-    public static async Task<List<BenchmarkResult>> RunAsync()
+    public static Task<List<BenchmarkResult>> RunAsync()
+        => RunAsync(ConnectionLifetimeMode.OpenOncePerRun);
+
+    public static async Task<List<BenchmarkResult>> RunAsync(ConnectionLifetimeMode connectionLifetimeMode)
     {
         var results = new List<BenchmarkResult>(capacity: 4);
 
         foreach (ProviderKind provider in Enum.GetValues<ProviderKind>())
         {
-            results.Add(await RunSingleInsertAsync(provider));
-            results.Add(await RunBatchInsertAsync(provider));
+            results.Add(await RunSingleInsertAsync(provider, connectionLifetimeMode));
+            results.Add(await RunBatchInsertAsync(provider, connectionLifetimeMode));
         }
 
         return results;
     }
 
-    private static async Task<BenchmarkResult> RunSingleInsertAsync(ProviderKind provider)
+    private static async Task<BenchmarkResult> RunSingleInsertAsync(
+        ProviderKind provider,
+        ConnectionLifetimeMode connectionLifetimeMode)
     {
-        await using var context = await ComparisonContext.CreateAsync(provider, $"{provider}-ef-single");
-        await using var db = context.OpenDbContext();
+        await using var context = await ComparisonContext.CreateAsync(
+            provider,
+            $"{provider}-ef-single");
 
         int nextId = 1_000_000;
-        BenchmarkResult result = await MacroBenchmarkRunner.RunForDurationAsync(
-            GetSingleInsertName(provider),
-            WarmupDuration,
-            MeasuredDuration,
-            async () =>
-            {
-                int id = nextId++;
-                db.Rows.Add(new BenchRow
+        BenchmarkResult result;
+
+        if (connectionLifetimeMode == ConnectionLifetimeMode.HybridSharedConnectionPerRun)
+        {
+            result = await MacroBenchmarkRunner.RunForDurationAsync(
+                GetSingleInsertName(provider, connectionLifetimeMode),
+                WarmupDuration,
+                MeasuredDuration,
+                async () =>
                 {
-                    Id = id,
-                    Value = id * 10,
-                    TextCol = "durable",
-                    Category = GetCategory(id),
-                });
+                    await using BenchmarkDbContext db = await context.OpenDbContextAsync(connectionLifetimeMode).ConfigureAwait(false);
+                    await RunSingleInsertIterationAsync(db, nextId++, clearTrackedState: false).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+        }
+        else
+        {
+            await using BenchmarkDbContext db = await context.OpenDbContextAsync(connectionLifetimeMode).ConfigureAwait(false);
+            await OpenConnectionIfRequestedAsync(db, connectionLifetimeMode).ConfigureAwait(false);
 
-                int rowsAffected = await db.SaveChangesAsync().ConfigureAwait(false);
-                if (rowsAffected != 1)
-                    throw new InvalidOperationException($"Expected one inserted row for id={id}, observed {rowsAffected}.");
+            result = await MacroBenchmarkRunner.RunForDurationAsync(
+                GetSingleInsertName(provider, connectionLifetimeMode),
+                WarmupDuration,
+                MeasuredDuration,
+                async () =>
+                {
+                    await RunSingleInsertIterationAsync(db, nextId++, clearTrackedState: true).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+        }
 
-                db.ChangeTracker.Clear();
-            }).ConfigureAwait(false);
-
-        return CloneResult(result, extraInfo: context.BuildExtraInfo("workload=single-row SaveChanges"));
+        return CloneResult(
+            result,
+            extraInfo: context.BuildExtraInfo(
+                connectionLifetimeMode,
+                "workload=single-row SaveChanges"));
     }
 
-    private static async Task<BenchmarkResult> RunBatchInsertAsync(ProviderKind provider)
+    private static async Task<BenchmarkResult> RunBatchInsertAsync(
+        ProviderKind provider,
+        ConnectionLifetimeMode connectionLifetimeMode)
     {
-        await using var context = await ComparisonContext.CreateAsync(provider, $"{provider}-ef-batch");
-        await using var db = context.OpenDbContext();
+        await using var context = await ComparisonContext.CreateAsync(
+            provider,
+            $"{provider}-ef-batch");
 
         int nextId = 2_000_000;
-        BenchmarkResult result = await MacroBenchmarkRunner.RunForDurationAsync(
-            GetBatchInsertName(provider),
-            WarmupDuration,
-            MeasuredDuration,
-            async () =>
-            {
-                for (int i = 0; i < BatchSize; i++)
+        BenchmarkResult result;
+
+        if (connectionLifetimeMode == ConnectionLifetimeMode.HybridSharedConnectionPerRun)
+        {
+            result = await MacroBenchmarkRunner.RunForDurationAsync(
+                GetBatchInsertName(provider, connectionLifetimeMode),
+                WarmupDuration,
+                MeasuredDuration,
+                async () =>
                 {
-                    int id = nextId++;
-                    db.Rows.Add(new BenchRow
-                    {
-                        Id = id,
-                        Value = id * 10,
-                        TextCol = "durable",
-                        Category = GetCategory(id),
-                    });
-                }
+                    await using BenchmarkDbContext db = await context.OpenDbContextAsync(connectionLifetimeMode).ConfigureAwait(false);
+                    nextId = await RunBatchInsertIterationAsync(db, nextId, clearTrackedState: false).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+        }
+        else
+        {
+            await using BenchmarkDbContext db = await context.OpenDbContextAsync(connectionLifetimeMode).ConfigureAwait(false);
+            await OpenConnectionIfRequestedAsync(db, connectionLifetimeMode).ConfigureAwait(false);
 
-                int rowsAffected = await db.SaveChangesAsync().ConfigureAwait(false);
-                if (rowsAffected != BatchSize)
-                    throw new InvalidOperationException($"Expected {BatchSize} inserted rows, observed {rowsAffected}.");
-
-                db.ChangeTracker.Clear();
-            }).ConfigureAwait(false);
+            result = await MacroBenchmarkRunner.RunForDurationAsync(
+                GetBatchInsertName(provider, connectionLifetimeMode),
+                WarmupDuration,
+                MeasuredDuration,
+                async () =>
+                {
+                    nextId = await RunBatchInsertIterationAsync(db, nextId, clearTrackedState: true).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+        }
 
         return CloneResult(
             result,
             totalOps: result.TotalOps * BatchSize,
             extraInfo: context.BuildExtraInfo(
+                connectionLifetimeMode,
                 $"batch-size={BatchSize}",
                 "throughput-unit=rows/sec from 100-row SaveChanges batches"));
+    }
+
+    private static Task OpenConnectionIfRequestedAsync(
+        BenchmarkDbContext db,
+        ConnectionLifetimeMode connectionLifetimeMode)
+        => connectionLifetimeMode == ConnectionLifetimeMode.OpenOncePerRun
+            ? db.Database.OpenConnectionAsync()
+            : Task.CompletedTask;
+
+    private static async Task RunSingleInsertIterationAsync(
+        BenchmarkDbContext db,
+        int id,
+        bool clearTrackedState)
+    {
+        db.Rows.Add(new BenchRow
+        {
+            Id = id,
+            Value = id * 10,
+            TextCol = "durable",
+            Category = GetCategory(id),
+        });
+
+        int rowsAffected = await db.SaveChangesAsync().ConfigureAwait(false);
+        if (rowsAffected != 1)
+            throw new InvalidOperationException($"Expected one inserted row for id={id}, observed {rowsAffected}.");
+
+        if (clearTrackedState)
+            db.ChangeTracker.Clear();
+    }
+
+    private static async Task<int> RunBatchInsertIterationAsync(
+        BenchmarkDbContext db,
+        int nextId,
+        bool clearTrackedState)
+    {
+        for (int i = 0; i < BatchSize; i++)
+        {
+            int id = nextId++;
+            db.Rows.Add(new BenchRow
+            {
+                Id = id,
+                Value = id * 10,
+                TextCol = "durable",
+                Category = GetCategory(id),
+            });
+        }
+
+        int rowsAffected = await db.SaveChangesAsync().ConfigureAwait(false);
+        if (rowsAffected != BatchSize)
+            throw new InvalidOperationException($"Expected {BatchSize} inserted rows, observed {rowsAffected}.");
+
+        if (clearTrackedState)
+            db.ChangeTracker.Clear();
+
+        return nextId;
     }
 
     private static BenchmarkResult CloneResult(
@@ -129,20 +210,29 @@ public static class EfCoreComparisonBenchmark
             _ => "Delta",
         };
 
-    private static string GetSingleInsertName(ProviderKind provider)
+    private static string GetSingleInsertName(ProviderKind provider, ConnectionLifetimeMode connectionLifetimeMode)
         => provider switch
         {
-            ProviderKind.CSharpDb => "EfCompare_CSharpDB_SingleInsert_5s",
-            ProviderKind.Sqlite => "EfCompare_SQLite_SingleInsert_5s",
+            ProviderKind.CSharpDb => $"EfCompare_CSharpDB_WriteOptimized_{GetConnectionLifetimeName(connectionLifetimeMode)}_SingleInsert_5s",
+            ProviderKind.Sqlite => $"EfCompare_SQLite_{GetConnectionLifetimeName(connectionLifetimeMode)}_SingleInsert_5s",
             _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null),
         };
 
-    private static string GetBatchInsertName(ProviderKind provider)
+    private static string GetBatchInsertName(ProviderKind provider, ConnectionLifetimeMode connectionLifetimeMode)
         => provider switch
         {
-            ProviderKind.CSharpDb => "EfCompare_CSharpDB_Batch100_5s",
-            ProviderKind.Sqlite => "EfCompare_SQLite_Batch100_5s",
+            ProviderKind.CSharpDb => $"EfCompare_CSharpDB_WriteOptimized_{GetConnectionLifetimeName(connectionLifetimeMode)}_Batch100_5s",
+            ProviderKind.Sqlite => $"EfCompare_SQLite_{GetConnectionLifetimeName(connectionLifetimeMode)}_Batch100_5s",
             _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null),
+        };
+
+    private static string GetConnectionLifetimeName(ConnectionLifetimeMode connectionLifetimeMode)
+        => connectionLifetimeMode switch
+        {
+            ConnectionLifetimeMode.OpenOncePerRun => "OpenOnce",
+            ConnectionLifetimeMode.HybridSharedConnectionPerRun => "HybridSharedConnection",
+            ConnectionLifetimeMode.AutoOpenClosePerSaveChanges => "AutoOpenClose",
+            _ => throw new ArgumentOutOfRangeException(nameof(connectionLifetimeMode), connectionLifetimeMode, null),
         };
 
     private enum ProviderKind
@@ -151,8 +241,17 @@ public static class EfCoreComparisonBenchmark
         Sqlite,
     }
 
+    public enum ConnectionLifetimeMode
+    {
+        OpenOncePerRun,
+        HybridSharedConnectionPerRun,
+        AutoOpenClosePerSaveChanges,
+    }
+
     private sealed class ComparisonContext : IAsyncDisposable
     {
+        private DbConnection? _sharedConnection;
+
         private ComparisonContext(ProviderKind provider, string filePath)
         {
             Provider = provider;
@@ -163,25 +262,52 @@ public static class EfCoreComparisonBenchmark
 
         internal string FilePath { get; }
 
-        internal static async Task<ComparisonContext> CreateAsync(ProviderKind provider, string prefix)
+        internal static async Task<ComparisonContext> CreateAsync(
+            ProviderKind provider,
+            string prefix)
         {
             string filePath = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}.db");
             var context = new ComparisonContext(provider, filePath);
-            await using BenchmarkDbContext db = context.OpenDbContext();
+            await using BenchmarkDbContext db = new(provider, filePath);
             await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
             db.ChangeTracker.Clear();
             return context;
         }
 
-        internal BenchmarkDbContext OpenDbContext()
-            => new(Provider, FilePath);
-
-        internal string BuildExtraInfo(params string[] notes)
+        internal async Task<BenchmarkDbContext> OpenDbContextAsync(ConnectionLifetimeMode connectionLifetimeMode)
         {
+            if (connectionLifetimeMode != ConnectionLifetimeMode.HybridSharedConnectionPerRun)
+                return new BenchmarkDbContext(Provider, FilePath);
+
+            DbConnection sharedConnection = await GetOrCreateSharedConnectionAsync().ConfigureAwait(false);
+            return new BenchmarkDbContext(Provider, sharedConnection);
+        }
+
+        internal string BuildExtraInfo(
+            ConnectionLifetimeMode connectionLifetimeMode,
+            params string[] notes)
+        {
+            string connectionLifetime = connectionLifetimeMode switch
+            {
+                ConnectionLifetimeMode.OpenOncePerRun => "open-once-per-run",
+                ConnectionLifetimeMode.HybridSharedConnectionPerRun => "externally-owned-open-connection",
+                ConnectionLifetimeMode.AutoOpenClosePerSaveChanges => "ef-managed-auto-open-close",
+                _ => throw new ArgumentOutOfRangeException(nameof(connectionLifetimeMode), connectionLifetimeMode, null),
+            };
+
+            string dbContextLifetime = connectionLifetimeMode switch
+            {
+                ConnectionLifetimeMode.OpenOncePerRun => "single-context-per-run",
+                ConnectionLifetimeMode.HybridSharedConnectionPerRun => "short-lived-context-per-save",
+                ConnectionLifetimeMode.AutoOpenClosePerSaveChanges => "single-context-per-run",
+                _ => throw new ArgumentOutOfRangeException(nameof(connectionLifetimeMode), connectionLifetimeMode, null),
+            };
+
             string baseInfo = Provider switch
             {
-                ProviderKind.CSharpDb => $"provider=CSharpDB.EntityFrameworkCore/{GetCSharpDbProviderVersion()}, connectionPooling=false, surface=DbContext.SaveChangesAsync",
-                ProviderKind.Sqlite => $"provider=Microsoft.EntityFrameworkCore.Sqlite/{GetSqliteEfCoreProviderVersion()}, cache=private, pooling=false, journal_mode=wal, synchronous=full, busyTimeoutMs=1000, surface=DbContext.SaveChangesAsync",
+                ProviderKind.CSharpDb =>
+                    $"provider=CSharpDB.EntityFrameworkCore/{GetCSharpDbProviderVersion()}, connectionPooling=false, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, surface=DbContext.SaveChangesAsync, storage-preset=WriteOptimized, embedded-open-mode=direct",
+                ProviderKind.Sqlite => $"provider=Microsoft.EntityFrameworkCore.Sqlite/{GetSqliteEfCoreProviderVersion()}, cache=private, pooling=false, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, journal_mode=wal, synchronous=full, busyTimeoutMs=1000, surface=DbContext.SaveChangesAsync",
                 _ => throw new ArgumentOutOfRangeException(),
             };
 
@@ -190,10 +316,34 @@ public static class EfCoreComparisonBenchmark
                 : $"{baseInfo}, {string.Join(", ", notes)}";
         }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
+            if (_sharedConnection is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            else
+                _sharedConnection?.Dispose();
+
             DeleteFiles(Provider, FilePath);
-            return ValueTask.CompletedTask;
+        }
+
+        private async Task<DbConnection> GetOrCreateSharedConnectionAsync()
+        {
+            if (_sharedConnection is not null)
+                return _sharedConnection;
+
+            _sharedConnection = Provider switch
+            {
+                ProviderKind.CSharpDb => new CSharpDbConnection(GetCSharpDbConnectionString(FilePath)),
+                ProviderKind.Sqlite => new SqliteConnection(GetSqliteConnectionString(FilePath)),
+                _ => throw new ArgumentOutOfRangeException(),
+            };
+
+            await _sharedConnection.OpenAsync().ConfigureAwait(false);
+
+            if (_sharedConnection is SqliteConnection sqliteConnection)
+                await ConfigureSqliteConnectionAsync(sqliteConnection).ConfigureAwait(false);
+
+            return _sharedConnection;
         }
 
         private static void DeleteFiles(ProviderKind provider, string filePath)
@@ -216,24 +366,25 @@ public static class EfCoreComparisonBenchmark
     private sealed class BenchmarkDbContext : DbContext
     {
         private readonly ProviderKind _provider;
-        private readonly string _connectionString;
+        private readonly DbConnection? _connection;
+        private readonly string? _connectionString;
 
         internal BenchmarkDbContext(ProviderKind provider, string filePath)
         {
             _provider = provider;
             _connectionString = provider switch
             {
-                ProviderKind.CSharpDb => $"Data Source={filePath}",
-                ProviderKind.Sqlite => new SqliteConnectionStringBuilder
-                {
-                    DataSource = filePath,
-                    Mode = SqliteOpenMode.ReadWriteCreate,
-                    Cache = SqliteCacheMode.Private,
-                    Pooling = false,
-                    DefaultTimeout = 30,
-                }.ToString(),
+                ProviderKind.CSharpDb => GetCSharpDbConnectionString(filePath),
+                ProviderKind.Sqlite => GetSqliteConnectionString(filePath),
                 _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null),
             };
+        }
+
+        internal BenchmarkDbContext(ProviderKind provider, DbConnection connection)
+        {
+            _provider = provider;
+            _connection = connection;
+            _connectionString = connection.ConnectionString;
         }
 
         public DbSet<BenchRow> Rows => Set<BenchRow>();
@@ -242,13 +393,33 @@ public static class EfCoreComparisonBenchmark
         {
             if (_provider == ProviderKind.CSharpDb)
             {
-                optionsBuilder.UseCSharpDb(_connectionString);
+                if (_connection is not null)
+                {
+                    optionsBuilder.UseCSharpDb(_connection);
+                }
+                else
+                {
+                    optionsBuilder.UseCSharpDb(
+                        _connectionString!,
+                        csharpdb =>
+                        {
+                            csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized);
+                            csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.Direct);
+                        });
+                }
             }
             else
             {
-                optionsBuilder
-                    .UseSqlite(_connectionString)
-                    .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
+                if (_connection is SqliteConnection sqliteConnection)
+                {
+                    optionsBuilder.UseSqlite(sqliteConnection);
+                }
+                else
+                {
+                    optionsBuilder.UseSqlite(_connectionString!);
+                }
+
+                optionsBuilder.AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
             }
         }
 
@@ -289,20 +460,40 @@ public static class EfCoreComparisonBenchmark
             if (connection is not SqliteConnection sqliteConnection)
                 return;
 
-            await using var busyTimeout = sqliteConnection.CreateCommand();
-            busyTimeout.CommandText = "PRAGMA busy_timeout=1000;";
-            await busyTimeout.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-            await using var journal = sqliteConnection.CreateCommand();
-            journal.CommandText = "PRAGMA journal_mode=WAL;";
-            string journalMode = (Convert.ToString(await journal.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) ?? string.Empty).Trim();
-            if (!journalMode.Equals("wal", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"Expected SQLite journal_mode=wal, observed '{journalMode}'.");
-
-            await using var sync = sqliteConnection.CreateCommand();
-            sync.CommandText = "PRAGMA synchronous=FULL;";
-            await sync.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await ConfigureSqliteConnectionAsync(sqliteConnection, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static string GetCSharpDbConnectionString(string filePath)
+        => $"Data Source={filePath};Pooling=false;Storage Preset=WriteOptimized;Embedded Open Mode=Direct";
+
+    private static string GetSqliteConnectionString(string filePath)
+        => new SqliteConnectionStringBuilder
+        {
+            DataSource = filePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+            DefaultTimeout = 30,
+        }.ToString();
+
+    private static async Task ConfigureSqliteConnectionAsync(
+        SqliteConnection sqliteConnection,
+        CancellationToken cancellationToken = default)
+    {
+        await using var busyTimeout = sqliteConnection.CreateCommand();
+        busyTimeout.CommandText = "PRAGMA busy_timeout=1000;";
+        await busyTimeout.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var journal = sqliteConnection.CreateCommand();
+        journal.CommandText = "PRAGMA journal_mode=WAL;";
+        string journalMode = (Convert.ToString(await journal.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) ?? string.Empty).Trim();
+        if (!journalMode.Equals("wal", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Expected SQLite journal_mode=wal, observed '{journalMode}'.");
+
+        await using var sync = sqliteConnection.CreateCommand();
+        sync.CommandText = "PRAGMA synchronous=FULL;";
+        await sync.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static string GetCSharpDbProviderVersion()

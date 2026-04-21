@@ -72,6 +72,30 @@ public sealed class EfFoundationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteCommandAsync_ColumnListIdentityInsert_ExposesGeneratedIntegerKey()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using (var create = conn.CreateCommand())
+        {
+            create.CommandText = "CREATE TABLE items (id INTEGER PRIMARY KEY IDENTITY, name TEXT, age INTEGER);";
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using var insert = conn.CreateCommand();
+        insert.CommandText = "INSERT INTO items (name, age) VALUES (@name, @age);";
+        insert.Parameters.AddWithValue("@name", "alpha");
+        insert.Parameters.AddWithValue("@age", 42);
+
+        CSharpDbCommandExecutionResult execution = await insert.ExecuteCommandAsync(Ct);
+        await using var _ = execution.Result;
+
+        Assert.Equal(1, execution.Result.RowsAffected);
+        Assert.Equal(1L, execution.GeneratedIntegerKey);
+    }
+
+    [Fact]
     public async Task ExecuteNonQuery_WithBlobParameter_WorksForDirectStructuredExecution()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");

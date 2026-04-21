@@ -43,27 +43,44 @@ public readonly record struct SimplePrimaryKeyLookupSql
 public readonly record struct SimpleInsertSql
 {
     public string TableName { get; }
+    public string[]? ColumnNames { get; }
     public DbValue[][] ValueRows { get; }
     public DbValue[] Values => ValueRows[0];
     public int RowCount { get; }
 
     public SimpleInsertSql(string tableName, DbValue[] values)
-        : this(tableName, [values])
+        : this(tableName, columnNames: null, [values], rowCount: 1)
     {
     }
 
     public SimpleInsertSql(string tableName, DbValue[][] valueRows)
-        : this(tableName, valueRows, valueRows.Length)
+        : this(tableName, columnNames: null, valueRows, valueRows.Length)
     {
     }
 
     public SimpleInsertSql(string tableName, DbValue[][] valueRows, int rowCount)
+        : this(tableName, columnNames: null, valueRows, rowCount)
+    {
+    }
+
+    public SimpleInsertSql(string tableName, string[] columnNames, DbValue[] values)
+        : this(tableName, columnNames, [values])
+    {
+    }
+
+    public SimpleInsertSql(string tableName, string[] columnNames, DbValue[][] valueRows)
+        : this(tableName, columnNames, valueRows, valueRows.Length)
+    {
+    }
+
+    public SimpleInsertSql(string tableName, string[]? columnNames, DbValue[][] valueRows, int rowCount)
     {
         ArgumentNullException.ThrowIfNull(valueRows);
         if ((uint)rowCount > (uint)valueRows.Length)
             throw new ArgumentOutOfRangeException(nameof(rowCount));
 
         TableName = tableName;
+        ColumnNames = columnNames;
         ValueRows = valueRows;
         RowCount = rowCount;
     }
@@ -83,7 +100,7 @@ public readonly record struct SimpleInsertSql
         return new InsertStatement
         {
             TableName = TableName,
-            ColumnNames = null,
+            ColumnNames = ColumnNames?.ToList(),
             ValueRows = valueRows,
         };
     }

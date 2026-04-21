@@ -301,10 +301,12 @@ public static class StrictInsertComparisonBenchmark
             switch (provider)
             {
                 case ProviderKind.CSharpDb:
-                    connection = new CSharpDbConnection($"Data Source={filePath};Pooling=false");
+                    connection = new CSharpDbConnection(
+                        $"Data Source={filePath};Pooling=false;Storage Preset=WriteOptimized;Embedded Open Mode=Direct");
                     await connection.OpenAsync();
-                    namePrefix = "StrictCompare_CSharpDB_AdoNet_DefaultDurable";
-                    extraInfo = $"provider=CSharpDB.Data/{GetCSharpDbProviderVersion()}, pooling=false, durability=default-durable";
+                    namePrefix = "StrictCompare_CSharpDB_AdoNet_WriteOptimizedDurable";
+                    extraInfo =
+                        $"provider=CSharpDB.Data/{GetCSharpDbProviderVersion()}, pooling=false, durability=durable, storage-preset=WriteOptimized, embedded-open-mode=direct";
                     break;
                 case ProviderKind.Sqlite:
                     var sqliteConnection = new SqliteConnection(new SqliteConnectionStringBuilder

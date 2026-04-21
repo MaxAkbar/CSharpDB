@@ -339,7 +339,7 @@ public static class ConcurrentAdoNetComparisonBenchmark
             {
                 ProviderKind.CSharpDb => string.Create(
                     CultureInfo.InvariantCulture,
-                    $"provider=CSharpDB.Data/{GetCSharpDbProviderVersion()}, surface=DbCommand.Prepare+ExecuteNonQueryAsync, storage=shared-memory, durability=none, keyPattern={scenario.KeyPattern}, writers={scenario.WriterCount}"),
+                    $"provider=CSharpDB.Data/{GetCSharpDbProviderVersion()}, surface=DbCommand.Prepare+ExecuteNonQueryAsync, storage=shared-memory, durability=none, storage-tuning=n/a(named-shared-memory target), keyPattern={scenario.KeyPattern}, writers={scenario.WriterCount}"),
                 ProviderKind.Sqlite => string.Create(
                     CultureInfo.InvariantCulture,
                     $"provider=Microsoft.Data.Sqlite/{GetSqliteProviderVersion()}, surface=DbCommand.Prepare+ExecuteNonQueryAsync, storage=shared-memory, durability=none, cache=shared, pooling=false, journal_mode=memory, busyTimeoutMs={SqliteBusyTimeoutMs}, keyPattern={scenario.KeyPattern}, writers={scenario.WriterCount}"),

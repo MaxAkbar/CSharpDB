@@ -120,6 +120,58 @@ await using var db = new BloggingContext(options);
 await db.Database.EnsureCreatedAsync();
 ```
 
+## Embedded Storage Tuning
+
+The EF Core provider can now push the embedded engine tuning surface down into
+the `CSharpDbConnection` it creates.
+
+Use named presets and embedded open mode:
+
+```csharp
+using CSharpDB.Data;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+var options = new DbContextOptionsBuilder<BloggingContext>()
+    .UseCSharpDb(
+        "Data Source=blogging.db",
+        csharpdb =>
+        {
+            csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized);
+            csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.HybridIncrementalDurable);
+        })
+    .Options;
+```
+
+Use full direct or hybrid options when you want exact engine composition:
+
+```csharp
+using CSharpDB.Engine;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+var options = new DbContextOptionsBuilder<BloggingContext>()
+    .UseCSharpDb(
+        "Data Source=blogging.db",
+        csharpdb => csharpdb.UseDirectDatabaseOptions(directOptions))
+    .Options;
+```
+
+Provider builder methods:
+
+- `UseDirectDatabaseOptions(DatabaseOptions)`
+- `UseHybridDatabaseOptions(HybridDatabaseOptions)`
+- `UseStoragePreset(CSharpDbStoragePreset)`
+- `UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode)`
+
+Precedence rules:
+
+- explicit `DirectDatabaseOptions` override `Storage Preset`
+- explicit `HybridDatabaseOptions` override `Embedded Open Mode`
+- provider builder tuning is validated, not applied mutably, when EF Core is
+  given an existing `CSharpDbConnection`
+
 ## Migrations
 
 For file-backed databases, the normal EF Core workflow is supported:
