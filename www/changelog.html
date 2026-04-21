@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="../css/style.css">
-    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
-    <title>News — CSharpDB</title>
-    <meta name="description" content="CSharpDB news — release announcements, upcoming features, and project updates.">
-    <link rel="canonical" href="https://csharpdb.com/news/">
-    <meta property="og:title" content="News — CSharpDB">
-    <meta property="og:description" content="CSharpDB news — release announcements, upcoming features, and project updates.">
-    <meta property="og:url" content="https://csharpdb.com/news/">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
+    <title>Changelog — CSharpDB</title>
+    <meta name="description" content="CSharpDB changelog — release announcements and project updates.">
+    <link rel="canonical" href="https://csharpdb.com/changelog.html">
+    <meta property="og:title" content="Changelog — CSharpDB">
+    <meta property="og:description" content="CSharpDB changelog — release announcements and project updates.">
+    <meta property="og:url" content="https://csharpdb.com/changelog.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
-    <link rel="icon" type="image/png" href="../favicon.png">
+    <link rel="icon" type="image/png" href="favicon.png">
     <script type="application/ld+json">
     {
         "@context": "https://schema.org",
         "@type": "WebPage",
-        "name": "CSharpDB News",
-        "description": "Release announcements, upcoming features, and project updates.",
-        "url": "https://csharpdb.com/news/",
+        "name": "CSharpDB Changelog",
+        "description": "Release announcements and project updates.",
+        "url": "https://csharpdb.com/changelog.html",
         "isPartOf": {
             "@type": "WebSite",
             "name": "CSharpDB",
@@ -86,8 +86,6 @@
             border-radius: 100px;
         }
         .news-badge-release { background: rgba(34, 197, 94, 0.15); color: var(--success); }
-        .news-badge-upcoming { background: rgba(59, 130, 246, 0.15); color: var(--info); }
-        .news-badge-preview { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
         .news-entry h3 {
             margin: 0 0 10px;
             font-size: 1.1rem;
@@ -109,16 +107,6 @@
         }
         .news-entry li { margin-bottom: 4px; }
 
-        .news-section-label {
-            font-size: 0.78rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
-            margin-bottom: 24px;
-            padding-left: 32px;
-        }
-
         @media (max-width: 768px) {
             .news-timeline { padding-left: 24px; }
             .news-entry::before { left: -21px; width: 10px; height: 10px; }
@@ -127,12 +115,12 @@
 </head>
 <body>
     <script>
-    window.currentPage = 'news'; window.pagePathPrefix = '../';
+    window.currentPage = 'changelog';
     window.pageConfig = {
-        title: 'News',
-        description: 'CSharpDB news — release announcements, upcoming features, and project updates.',
-        keywords: 'CSharpDB news, releases, updates, upcoming features, changelog',
-        canonicalPath: 'news/',
+        title: 'Changelog',
+        description: 'CSharpDB changelog — release announcements and project updates.',
+        keywords: 'CSharpDB changelog, releases, updates, version history',
+        canonicalPath: 'changelog.html',
         ogType: 'website',
     };
     </script>
@@ -141,58 +129,9 @@
     <main class="page">
         <div class="container doc-container">
             <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
-                <h1>News</h1>
-                <p class="lead">Release announcements, upcoming features, and project updates.</p>
+                <h1>Changelog</h1>
+                <p class="lead">Release announcements and project updates. For planned work, see the <a href="roadmap.html">roadmap</a>.</p>
 
-                <!-- ════════ UPCOMING ════════ -->
-                <div class="news-section-label" style="margin-top: 40px;">Upcoming</div>
-                <div class="news-timeline">
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-upcoming">Upcoming</span>
-                            <span class="news-date">Q2 2026</span>
-                        </div>
-                        <h3>User-Defined Functions &amp; Window Functions</h3>
-                        <p>Planned for mid-2026, these features will expand SQL capabilities significantly:</p>
-                        <ul>
-                            <li><strong>User-defined functions</strong> — Register C# functions callable from SQL, plus native plugin extensions</li>
-                            <li><strong>Window functions</strong> — ROW_NUMBER(), RANK(), DENSE_RANK(), LEAD(), LAG() for analytical queries</li>
-                            <li><strong>DEFAULT &amp; CHECK constraints</strong> — Default column expressions and expression-based table constraints</li>
-                        </ul>
-                    </div>
-
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-upcoming">Upcoming</span>
-                            <span class="news-date">Q2 2026</span>
-                        </div>
-                        <h3>Remote Host Consolidation &amp; Security</h3>
-                        <p>Merging REST/HTTP into CSharpDB.Daemon for a single unified server host, plus built-in security:</p>
-                        <ul>
-                            <li><strong>Unified daemon</strong> — REST, gRPC, and future transports from one process with a shared warm Database instance</li>
-                            <li><strong>Authentication &amp; authorization</strong> — API keys, protected admin endpoints, and role-based access</li>
-                            <li><strong>TLS/mTLS support</strong> — Secure connections for production deployments</li>
-                        </ul>
-                    </div>
-
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-preview">Future</span>
-                            <span class="news-date">2026+</span>
-                        </div>
-                        <h3>On the Research Radar</h3>
-                        <p>Long-term research items being explored for future versions:</p>
-                        <ul>
-                            <li><strong>At-rest encryption</strong> — Encrypt database and WAL files with passphrase-based key management</li>
-                            <li><strong>Broader multi-writer optimization</strong> — Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path (initial multi-writer support shipped in v2.9.0)</li>
-                            <li><strong>Replication &amp; change feed</strong> — Stream committed changes for read replicas or event-driven architectures</li>
-                            <li><strong>WebAssembly sandboxed UDFs</strong> — Execute untrusted functions in a WASM sandbox via Wasmtime</li>
-                        </ul>
-                    </div>
-                </div>
-
-                <!-- ════════ RECENT RELEASES ════════ -->
-                <div class="news-section-label">Recent Releases</div>
                 <div class="news-timeline">
                     <div class="news-entry">
                         <div class="news-entry-header">
@@ -306,8 +245,6 @@
     </main>
 
     <div id="site-footer"></div>
-    <script src="../js/components.js"></script>
-    <script src="../js/app.js"></script>
-    <script src="../js/csharpdb.bundle.js"></script>
+    <script src="js/csharpdb.bundle.js" defer></script>
 </body>
 </html>

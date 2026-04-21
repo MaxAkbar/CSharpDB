@@ -31,15 +31,10 @@
                 </a>
                 <div class="nav-links" id="navLinks">
                     ${navLink('index.html', 'home', 'Home')}
-                    ${navLink('getting-started.html', 'getting-started', 'Getting Started')}
                     ${navLink('docs/index.html', 'docs', 'Docs')}
-                    ${navLink('architecture.html', 'architecture', 'Architecture')}
-                    ${navLink('benchmarks.html', 'benchmarks', 'Benchmarks')}
-                    ${navLink('performance.html', 'performance', 'Performance')}
-                    ${navLink('api-reference.html', 'api-reference', 'API Reference')}
                     ${navLink('downloads.html', 'downloads', 'Downloads')}
                     ${navLink('blog/index.html', 'blog', 'Blog')}
-                    ${navLink('news/index.html', 'news', 'News')}
+                    ${navLink('changelog.html', 'changelog', 'Changelog')}
                     ${navLink('roadmap.html', 'roadmap', 'Roadmap')}
                 </div>
                 <div class="nav-actions">
@@ -68,17 +63,17 @@
                     </div>
                     <div class="footer-col">
                         <h4>Documentation</h4>
-                        <a href="${prefix}getting-started.html">Getting Started</a>
+                        <a href="${prefix}docs/getting-started.html">Getting Started</a>
                         <a href="${prefix}docs/index.html">Documentation</a>
                         <a href="${prefix}architecture.html">Architecture</a>
-                        <a href="${prefix}api-reference.html">API Reference</a>
-                        <a href="${prefix}performance.html">Performance Guide</a>
+                        <a href="${prefix}docs/api-reference.html">API Reference</a>
+                        <a href="${prefix}docs/performance.html">Performance Guide</a>
                         <a href="${prefix}roadmap.html">Roadmap</a>
                     </div>
                     <div class="footer-col">
                         <h4>Community</h4>
                         <a href="${prefix}blog/index.html">Blog</a>
-                        <a href="${prefix}news/index.html">News</a>
+                        <a href="${prefix}changelog.html">Changelog</a>
                     </div>
                     <div class="footer-col">
                         <h4>Features</h4>
