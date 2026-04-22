@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Inside CSharpDB v3.3.0: Faster Durable Writes &amp; Easier Tuning — Blog — CSharpDB</title>
+    <meta name="description" content="A release-core benchmark walkthrough of CSharpDB v3.3.0 — 798K rows/sec durable ingest, 1.33M point lookups/sec, and a new storage-tuning surface for ADO.NET and EF Core.">
+    <link rel="canonical" href="https://csharpdb.com/blog/csharpdb-v3-3-0-release.html">
+    <meta property="og:title" content="Inside CSharpDB v3.3.0: Faster Durable Writes &amp; Easier Tuning">
+    <meta property="og:description" content="A release-core benchmark walkthrough of CSharpDB v3.3.0 — 798K rows/sec durable ingest, 1.33M point lookups/sec, and a new storage-tuning surface for ADO.NET and EF Core.">
+    <meta property="og:url" content="https://csharpdb.com/blog/csharpdb-v3-3-0-release.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Inside CSharpDB v3.3.0: Faster Durable Writes & Easier Tuning",
+        "description": "A release-core benchmark walkthrough of CSharpDB v3.3.0 — 798K rows/sec durable ingest, 1.33M point lookups/sec, and a new storage-tuning surface for ADO.NET and EF Core.",
+        "url": "https://csharpdb.com/blog/csharpdb-v3-3-0-release.html",
+        "datePublished": "2026-04-21",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-post-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 24px;
+            font-size: 0.92rem;
+        }
+        .blog-post-content th {
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .blog-post-content td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .blog-post-content tr:hover td { background: var(--bg-tertiary); }
+        .blog-post-content td code { font-size: 0.88rem; }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+        .hero-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin: 24px 0 32px;
+        }
+        .hero-stat {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px 20px;
+        }
+        .hero-stat-big {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        }
+        .hero-stat-label {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Inside CSharpDB v3.3.0: Faster Durable Writes & Easier Tuning',
+        description: 'A release-core benchmark walkthrough of CSharpDB v3.3.0 — 798K rows/sec durable ingest, 1.33M point lookups/sec, and a new storage-tuning surface for ADO.NET and EF Core.',
+        keywords: 'CSharpDB v3.3.0, durable write performance, InsertBatch benchmark, storage presets, embedded open mode, .NET database, ADO.NET tuning, EF Core tuning',
+        canonicalPath: 'blog/csharpdb-v3-3-0-release.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Inside CSharpDB v3.3.0: Faster Durable Writes &amp; Easier Tuning</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Release</span>
+                    <span>April 21, 2026</span>
+                    <span>&middot; 10 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB v3.3.0 shipped April 21, 2026. It is a durable-write release &mdash; the numbers below come straight from the balanced <code>--release-core</code> benchmark suite, promoted after a clean release guardrail compare (<code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>). Two themes drive the release:</p>
+                    <ol>
+                        <li><strong>Faster durable writes.</strong> Append-optimized index storage, hot-right-edge recovery, and focused write-path tuning push B10000 durable bulk ingest to <strong>798K rows/sec</strong> on the release runner &mdash; <strong>1.48&times;</strong> the matched SQLite WAL+FULL baseline on the same machine.</li>
+                        <li><strong>Easier embedded tuning.</strong> The storage-engine presets that already existed on <code>DatabaseOptions</code> are now exposed through <code>CSharpDB.Data</code> connection strings and through the <code>CSharpDB.EntityFrameworkCore</code> provider builder. Picking a write-heavy profile is now a one-line connection string change.</li>
+                    </ol>
+                    <p>The rest of this post walks through the promoted scorecard, the new tuning surface, and the code recipe that gets you to the headline 798K rows/sec number.</p>
+
+                    <h2>The Release-Core Scorecard</h2>
+                    <p>These are the promoted v3.3.0 numbers, captured with <code>--release-core --repeat 3 --repro</code> (priority=High, affinity=0xFF) on an Intel i9-11900K / Windows 10.0.26300 / .NET 10.0.6 runner. Every row is file-backed and durable unless the row says otherwise.</p>
+
+                    <div class="hero-stat-grid">
+                        <div class="hero-stat">
+                            <div class="hero-stat-big">798.25K</div>
+                            <div class="hero-stat-label">rows/sec &mdash; durable <code>InsertBatch B10000</code></div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-big">1.33M</div>
+                            <div class="hero-stat-label">ops/sec &mdash; SQL point lookup, warm</div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-big">10.77M</div>
+                            <div class="hero-stat-label">ops/sec &mdash; 8-reader concurrent <code>COUNT(*)</code></div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-big">1.04K</div>
+                            <div class="hero-stat-label">commits/sec &mdash; W8 durable, 250&mu;s window</div>
+                        </div>
+                    </div>
+
+                    <p>The detailed scorecard:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Area</th>
+                                <th>Metric</th>
+                                <th>Result</th>
+                                <th>Source CSV row</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>SQL durable write</td>
+                                <td>Single INSERT</td>
+                                <td>279.4 ops/sec</td>
+                                <td><code>master</code></td>
+                            </tr>
+                            <tr>
+                                <td>SQL durable write</td>
+                                <td>Batch x100</td>
+                                <td>26.71K rows/sec</td>
+                                <td><code>master</code></td>
+                            </tr>
+                            <tr>
+                                <td>Single-writer ingest</td>
+                                <td><code>InsertBatch B1000</code></td>
+                                <td>204.03K rows/sec</td>
+                                <td><code>batching</code></td>
+                            </tr>
+                            <tr>
+                                <td>Single-writer ingest</td>
+                                <td><code>InsertBatch B10000</code></td>
+                                <td><strong>798.25K rows/sec</strong></td>
+                                <td><code>batching</code></td>
+                            </tr>
+                            <tr>
+                                <td>SQL hot read</td>
+                                <td>Point lookup</td>
+                                <td>1.33M ops/sec</td>
+                                <td><code>master</code></td>
+                            </tr>
+                            <tr>
+                                <td>SQL concurrent read</td>
+                                <td>8 readers, burst x32</td>
+                                <td>10.77M COUNT(*) ops/sec</td>
+                                <td><code>master</code></td>
+                            </tr>
+                            <tr>
+                                <td>Collection hot read</td>
+                                <td>Point Get</td>
+                                <td>1.67M ops/sec</td>
+                                <td><code>master</code></td>
+                            </tr>
+                            <tr>
+                                <td>Concurrent durable write</td>
+                                <td>W8, 250&mu;s commit window</td>
+                                <td>1.04K commits/sec (3.98 commits/flush)</td>
+                                <td><code>concurrent</code></td>
+                            </tr>
+                            <tr>
+                                <td>Resident hot set</td>
+                                <td>Hybrid hot-set SQL burst</td>
+                                <td>535.39K ops/sec</td>
+                                <td><code>hotset</code></td>
+                            </tr>
+                            <tr>
+                                <td>Local SQLite reference</td>
+                                <td>WAL+FULL <code>B1000</code> prepared bulk</td>
+                                <td>192.06K rows/sec</td>
+                                <td><code>sqlite</code></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>The <code>master</code>, <code>batching</code>, <code>concurrent</code>, <code>hotset</code>, and <code>sqlite</code> artifacts map to specific timestamped median-of-3 CSV files pinned in <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/release-core-manifest.json"><code>release-core-manifest.json</code></a>. The full per-benchmark breakdown lives in the benchmark suite's <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/README.md">generated README</a>; this post stays focused on the rows that moved in v3.3.0.</p>
+
+                    <h2>What Shipped in v3.3.0</h2>
+                    <p>The release notes call out five changes that matter for users. The first three are internals that move the numbers; the last two are user-visible behavior/surface changes.</p>
+
+                    <h3>Append-Optimized Index Storage</h3>
+                    <p>Row-id chains and hashed payloads now have dedicated append-optimized codecs and overflow paths. Insert-maintenance on monotonic and append-heavy workloads benefits the most &mdash; this is where the bulk of the B10000 bulk-ingest gain comes from. The paths are internal; no API changes needed to opt in.</p>
+
+                    <h3>Hot Right-Edge Recovery</h3>
+                    <p>Indexed inserts that keep hitting the right edge of a B+tree (the common shape for monotonic primary keys) now recover faster after contention events. Combined with the shared routing-cache work from v3.0.0 and v3.2.0, monotonic PK-only workloads are the strongest path on the write side.</p>
+
+                    <h3>Trailing-Integer Composite Grouped Aggregates</h3>
+                    <p>The planner can now route grouped aggregates through a composite index when the grouping key is a prefix of the index and the trailing column is an integer. This is the first concrete user-visible piece of the phase-2 planner statistics work that began in v2.9.0.</p>
+
+                    <h3>Behavior Change: Multi-Column Index Metadata Defaults</h3>
+                    <p>Multi-column indexes created in v3.3.0 no longer receive trailing-integer hash options by default. If you were relying on the previous implicit behavior for a specific workload, add the option explicitly when creating the index. For the vast majority of callers this is invisible, but it is the one backwards-compatible-with-a-footnote change in the release &mdash; worth noting if you hand-tune index metadata.</p>
+
+                    <h3>ADO.NET and EF Core Storage Tuning Surface</h3>
+                    <p>The storage engine has long exposed presets through <code>StorageEngineOptionsBuilder</code>. Until v3.3.0, reaching them from <code>CSharpDB.Data</code> or the EF Core provider meant constructing <code>DatabaseOptions</code> by hand. Now there is a direct path through both surfaces. That is significant enough to get its own section.</p>
+
+                    <h2>The New Tuning Surface</h2>
+                    <p>Embedded users now have three entry points depending on how much control they want. All three are additive &mdash; nothing about existing code changes unless you opt in.</p>
+
+                    <h3>Connection-String Keywords (Simplest)</h3>
+                    <p>Two new keywords on the ADO.NET connection string: <code>Storage Preset</code> and <code>Embedded Open Mode</code>. Case-insensitive, parsed by <code>CSharpDbConnectionStringBuilder</code>, and flow through to the underlying engine when the connection opens.</p>
+                    <div class="code-block" data-title="Program.cs — preset via connection string">
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(
+    <span class="str">"Data Source=app.cdb;"</span> +
+    <span class="str">"Storage Preset=WriteOptimized;"</span> +
+    <span class="str">"Embedded Open Mode=Direct"</span>);
+
+<span class="kw">await</span> conn.OpenAsync();</code></pre>
+                    </div>
+
+                    <h3>EF Core Provider Builder</h3>
+                    <p>The EF Core provider gets <code>UseStoragePreset()</code> and <code>UseEmbeddedOpenMode()</code> extension methods. Both take the new <code>CSharpDbStoragePreset</code> and <code>CSharpDbEmbeddedOpenMode</code> enums, so the values are discoverable and compile-checked.</p>
+                    <div class="code-block" data-title="Startup.cs — preset via EF Core">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore;
+
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DbContextOptionsBuilder</span>&lt;<span class="tp">AppDbContext</span>&gt;()
+    .UseCSharpDb(<span class="str">"Data Source=app.cdb"</span>, csharpdb =&gt;
+    {
+        csharpdb.UseStoragePreset(<span class="tp">CSharpDbStoragePreset</span>.WriteOptimized);
+        csharpdb.UseEmbeddedOpenMode(<span class="tp">CSharpDbEmbeddedOpenMode</span>.Direct);
+    })
+    .Options;</code></pre>
+                    </div>
+
+                    <h3>Explicit DatabaseOptions (Full Control)</h3>
+                    <p>If the preset convenience surface does not cover your case, <code>CSharpDbConnection.DirectDatabaseOptions</code> and <code>HybridDatabaseOptions</code> accept the full engine options object. EF Core has the matching <code>UseDirectDatabaseOptions()</code> and <code>UseHybridDatabaseOptions()</code>. Explicit options always win over the connection-string keywords when both are present, which is the right precedence for the "I know exactly what I want" case.</p>
+
+                    <h3>Preset Decision Table</h3>
+                    <p>Five presets ship in v3.3.0. Use this table to pick a starting point; measure before adopting any non-default:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Preset</th>
+                                <th>Use when</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>WriteOptimized</code></td>
+                                <td>Durable file-backed ingest, long-lived write-heavy services, multi-writer disjoint keys</td>
+                            </tr>
+                            <tr>
+                                <td><code>LowLatencyDurableWrite</code></td>
+                                <td>Measure-first variant with deferred advisory planner-stat persistence</td>
+                            </tr>
+                            <tr>
+                                <td><code>DirectLookupOptimized</code></td>
+                                <td>Hot local file-backed lookup-heavy workloads</td>
+                            </tr>
+                            <tr>
+                                <td><code>DirectColdFileLookup</code></td>
+                                <td>Cold / cache-pressured direct file reads; memory-mapped clean-page path</td>
+                            </tr>
+                            <tr>
+                                <td><code>HybridFileCache</code></td>
+                                <td>Explicit bounded file-cache experiments</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>And three open modes:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Embedded Open Mode</th>
+                                <th>Semantics</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>Direct</code></td>
+                                <td>Standard file-backed open with full durability</td>
+                            </tr>
+                            <tr>
+                                <td><code>HybridIncrementalDurable</code></td>
+                                <td>Lazy-resident pages with durable backing file; on-demand loading</td>
+                            </tr>
+                            <tr>
+                                <td><code>HybridSnapshot</code></td>
+                                <td>Resident hot-set with checkpointed snapshot durability</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Pooling remains supported for file-backed direct opens, and the pool key is options-aware: separate explicit options object instances do not share a pool in v1, even if their contents are equivalent.</p>
+
+                    <h2>Getting to 798K rows/sec</h2>
+                    <p>The headline B10000 number is not a lab curiosity &mdash; it is a realistic configuration for any app that ingests rows in batches. Four levers combine to produce it; if you skip any of them, the rate drops roughly proportionally.</p>
+
+                    <ol>
+                        <li><strong>Use <code>InsertBatch</code>, not per-row SQL.</strong> The bulk path ships a whole batch as one multi-row engine call, collapsing per-row parse / plan / bind cost into a single operation.</li>
+                        <li><strong>Commit at B10000.</strong> Larger batches amortize the fsync cost. B1000 lands at 204K rows/sec; B10000 at 798K. B100000 would help less because at that point you are batching faster than the WAL frame chunk sizes help with.</li>
+                        <li><strong>Start from <code>UseWriteOptimizedPreset()</code>.</strong> This preset raises the checkpoint frame threshold and moves checkpoint work to a background slice, so the commit path stays tight during ingest.</li>
+                        <li><strong>Keep primary keys monotonic.</strong> Monotonic PKs keep the table B-tree growing on the right edge, reduce split-heavy locality loss, and hit the new hot-right-edge recovery path. Random keys are still materially slower on every storage engine; the gap just moves.</li>
+                    </ol>
+
+                    <p>End-to-end, that configuration looks like this:</p>
+                    <div class="code-block" data-title="Program.cs — B10000 durable ingest recipe">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.Primitives;
+
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"ingest.cdb"</span>, options);
+
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"""
+    CREATE TABLE IF NOT EXISTS bench (
+        id       INTEGER PRIMARY KEY,
+        value    INTEGER,
+        text_col TEXT,
+        category TEXT
+    )
+    """</span>);
+
+<span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"bench"</span>, initialCapacity: <span class="nm">10_000</span>);
+
+<span class="kw">for</span> (<span class="tp">int</span> block = <span class="nm">0</span>; block &lt; <span class="nm">100</span>; block++)
+{
+    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="nm">0</span>; i &lt; <span class="nm">10_000</span>; i++)
+    {
+        <span class="tp">int</span> id = (block * <span class="nm">10_000</span>) + i;
+        batch.AddRow(
+            <span class="tp">DbValue</span>.FromInteger(id),
+            <span class="tp">DbValue</span>.FromInteger(id),
+            <span class="tp">DbValue</span>.FromText(<span class="str">"durable_batch"</span>),
+            <span class="tp">DbValue</span>.FromText(<span class="str">"Alpha"</span>));
+    }
+
+    <span class="kw">await</span> batch.ExecuteAsync();
+}</code></pre>
+                    </div>
+
+                    <p>That is the same loop used in <code>DurableSqlBatchingBenchmark.cs</code> row <code>DurableSqlBatching_BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic_10s</code>, which is the direct source of the 798.25K number in the scorecard above.</p>
+
+                    <p>For ADO.NET users who do not want to drop to the engine API, the same loop via <code>CSharpDbConnection</code> with the new connection-string keyword lands in the same band:</p>
+
+                    <div class="code-block" data-title="Program.cs — same recipe via ADO.NET">
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(
+    <span class="str">"Data Source=ingest.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=Direct"</span>);
+
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="cm">// Prepared command, parameter reuse, explicit transaction batching —</span>
+<span class="cm">// the same ADO.NET fast path that works on SQLite also works here.</span></code></pre>
+                    </div>
+
+                    <h2>Durable Concurrent Writes</h2>
+                    <p>v3.3.0 does not retarget the concurrent-writer defaults, but the <code>--concurrent-write-diagnostics</code> row in the scorecard (1.04K commits/sec at W8 with a 250&mu;s commit window) shows what the existing opt-in knobs can do when combined. Two knobs matter, and both are still measure-first:</p>
+
+                    <ul>
+                        <li><strong><code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code></strong> &mdash; routes shared auto-commit inserts through isolated <code>WriteTransaction</code> state. Important for disjoint-key workloads; the wrong choice for hot right-edge loops.</li>
+                        <li><strong><code>UseDurableGroupCommit(...)</code></strong> &mdash; gives the flush leader a short window to coalesce overlapping commits into a single OS fsync. At W8 on the release runner, this collapses eight would-be fsyncs down to roughly two, hence the 3.98 commits/flush.</li>
+                    </ul>
+
+                    <p>Both remain expert-only: the single-writer default preset is still the right starting point if you do not know your concurrency shape. Section 5 of the <a href="../docs/performance.html">performance guide</a> has the full configuration story.</p>
+
+                    <h2>SQLite Comparison Highlights</h2>
+                    <p>Since this is a release-core run, every row appears in both the internal scorecard and the focused SQLite comparison:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Workload</th>
+                                <th>CSharpDB</th>
+                                <th>SQLite WAL+FULL</th>
+                                <th>Ratio</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Durable <code>B10000</code> bulk insert</td>
+                                <td>798.25K rows/sec</td>
+                                <td>539.56K rows/sec</td>
+                                <td><strong>1.48&times;</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Durable <code>B1000</code> bulk insert</td>
+                                <td>204.03K rows/sec</td>
+                                <td>192.06K rows/sec</td>
+                                <td>1.06&times;</td>
+                            </tr>
+                            <tr>
+                                <td>SQL point lookup (warm)</td>
+                                <td>1.33M ops/sec</td>
+                                <td>138.33K ops/sec</td>
+                                <td><strong>9.63&times;</strong></td>
+                            </tr>
+                            <tr>
+                                <td>8-reader <code>COUNT(*)</code> burst</td>
+                                <td>10.77M ops/sec</td>
+                                <td>109.99K ops/sec</td>
+                                <td><strong>97.95&times;</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Both sides run durable (SQLite uses <code>journal_mode=WAL; synchronous=FULL</code>, private cache, pooling disabled) and both sides reuse prepared work on the insert path. The full ratio table, latency percentiles, and scenario-to-source mapping live in <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md"><code>SQLITE_COMPARISON.md</code></a>. For the deeper decision guide &mdash; which API to pick for which workload &mdash; see the <a href="csharpdb-vs-sqlite-benchmark-guide.html">benchmark-driven guide</a>.</p>
+
+                    <h2>Reproducing the Numbers</h2>
+                    <p>Every row in this post reproduces with the same <code>--release-core</code> command the release uses:</p>
+                    <div class="code-block" data-title="Powershell — release-core suite">
+                        <pre><code>dotnet run -c Release `
+    --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --release-core --repeat 3 --repro</code></pre>
+                    </div>
+                    <p>Or target individual surfaces:</p>
+                    <div class="code-block" data-title="Powershell — individual benchmarks">
+                        <pre><code><span class="cm"># Durable ingest sweep (B1, B100, B1000, B10000)</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --durable-sql-batching --repeat 3 --repro
+
+<span class="cm"># Concurrent durable writes (W4/W8 with and without batch window)</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --concurrent-write-diagnostics --repeat 3 --repro
+
+<span class="cm"># Same-machine SQLite comparison</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --sqlite-compare --repeat 3 --repro</code></pre>
+                    </div>
+                    <p>Absolute numbers will vary with your CPU, disk, and filesystem. The ratios should be stable &mdash; if they move significantly, open an issue on the repo with the runner details and the release guardrail output.</p>
+
+                    <h2>Closing Thoughts</h2>
+                    <p>The two v3.3.0 themes are deliberately paired. The durable-write performance work makes <code>WriteOptimized</code> a meaningfully stronger default for ingest-heavy workloads, and the new connection-string surface means ADO.NET and EF Core users can reach for that preset without leaving their provider of choice. No new APIs are required on the write path itself &mdash; <code>PrepareInsertBatch</code> is still the bulk-load API, and the same four levers from the <a href="csharpdb-vs-sqlite-benchmark-guide.html">benchmark-driven guide</a> still get you to the headline number.</p>
+                    <p>What is <em>not</em> in v3.3.0 is just as important: no changes to default batch windows, no changes to default commit policy, and no promises around the hot insert auto-commit path (which still benefits most from explicit <code>WriteTransaction</code> use). Those remain workload-specific questions with workload-specific answers, and the benchmark suite is there to help you answer them for your own machine.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="csharpdb-vs-sqlite-benchmark-guide.html">Next: CSharpDB vs SQLite Benchmark Guide &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

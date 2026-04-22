@@ -1,66 +1,94 @@
 # What's New
 
-## v3.2.0
+## v3.3.0
 
-This release carries forward the `version3.2.0` branch from the April 15, 2026
-`v3.1.2` base through the current head, centering on the first embedded EF Core
-provider foundation, scalar aggregate lookup planning improvements, refreshed
-benchmark guardrails, and new guidance for programmatic insert performance.
+This release starts from `bf954f788cc4a4c5915af2a9a68b66bc7c06f126`
+(`Checkpoint hot-right-edge recovery and add plans 4/5`) and is current
+through `8d11653c81e690849f462cb376872d901eabfeb6`
+(`Refresh benchmark release docs and guardrails`).
 
-### Entity Framework Core and ADO.NET Foundation
+v3.3.0 focuses on durable write performance, storage tuning for embedded
+ADO.NET and EF Core usage, same-runner SQLite comparisons, and a cleaner
+release benchmark process. The main benchmark story is now promoted from the
+April 21, 2026 release-core run with guardrails passing at
+`PASS=185, WARN=0, SKIP=0, FAIL=0`.
 
-- Added `CSharpDB.EntityFrameworkCore`, an embedded-only EF Core 10 provider
-  built on top of `CSharpDB.Data`, including `UseCSharpDb(...)`, provider
-  options, design-time services, migrations/history/locking infrastructure,
-  relational connection services, query SQL generation, type mappings, and
-  update batching.
-- Added provider docs and a runnable `samples/efcore-provider` sample covering
-  `EnsureCreatedAsync()`, design-time context creation, migrations, navigation
-  loading, and the supported embedded runtime shapes.
-- Added package-local NuGet README and release/CI pack wiring so
-  `CSharpDB.EntityFrameworkCore` ships through the same package flow as the
-  existing provider/runtime packages.
-- Expanded the underlying ADO.NET command, parameter binding, and
-  prepared-statement plumbing needed by the provider foundation and added
-  focused data/provider tests.
+### Durable Write and Indexing Performance
 
-### Query Planning and Runtime Work
+- Added append-optimized index storage paths for row-id chains and hashed
+  payloads, including appendable payload codecs, overflow-store improvements,
+  and focused tests for the new insert-maintenance paths.
+- Optimized indexed insert maintenance for monotonic and append-heavy
+  workloads, including hot right-edge recovery, insert sequence context, and
+  expanded B-tree/index diagnostics for commit-path investigation.
+- Added trailing-integer support for composite grouped aggregate planning while
+  tightening SQL index metadata defaults so multi-column indexes no longer
+  receive trailing-integer hash options unless explicitly requested.
+- Expanded record encoding and serialization support used by the optimized
+  storage paths and added compatibility coverage for hashed index payloads,
+  append-only row-id chains, record encoding, collation metadata, and SQL index
+  behavior.
 
-- Optimized scalar aggregate lookup planning so simple indexed and
-  primary-key-backed `COUNT(...)` / `SUM(...)` lookup shapes can reuse
-  lightweight lookup plans instead of first materializing fuller operator
-  pipelines, reducing allocations and improving targeted microbenchmark rows.
-- Extended parser, tokenizer, query-result, and execution-planning support so
-  the embedded engine can handle the SQL and query shapes emitted by the new EF
-  Core surface.
-- Simplified WAL flush policy abstractions by removing
-  `FlushBufferedWritesAsync` from `IWalFlushPolicy` and aligning WAL test
-  assertions around the current commit/flush contract.
+### Embedded ADO.NET and EF Core Storage Tuning
 
-### Benchmarks, Guardrails, and Guidance
+- Added storage tuning presets for embedded ADO.NET and EF Core users,
+  including `CSharpDbStoragePreset`, embedded open modes, connection-string
+  builder support, and configuration resolution for shared file-backed usage.
+- Updated the EF Core provider option validation and relational connection
+  setup so storage mode and connection behavior are explicit for embedded
+  workloads.
+- Added comparative ADO.NET and EF Core smoke coverage plus embedded storage
+  tuning tests for the new configuration surface.
+- Updated package references across the CLI, EF Core sample/provider, tests,
+  and benchmark projects.
 
-- Refreshed the focused `ScalarAggregateLookupBenchmarks` baseline and perf
-  thresholds using the April 18, 2026 validation capture checked into
-  `tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724`.
-- Stabilized the benchmark guardrail workflow and scenario entry points,
-  including durable SQL batching coverage and the release compare script used
-  for targeted performance verification.
-- Added a benchmark-driven CSharpDB-versus-SQLite comparison guide to the
-  website and updated the sitemap to publish it.
+### Benchmarks and SQLite Comparisons
 
-### Docs, Samples, and Planning
+- Added durable SQLite comparison coverage, including SQLite C API helpers,
+  concurrent SQLite C API benchmarks, concurrent ADO.NET comparison
+  benchmarks, strict insert comparison rows, and EF Core comparison benchmarks.
+- Added CSharpDB-versus-SQLite performance guidance and blog content under
+  `docs/query-and-durable-write-performance`, with website and sitemap updates
+  for the new comparison material.
+- Replaced the older programmatic insert planning docs with the current
+  ADO.NET/EF storage tuning guide and release-core benchmark story.
 
-- Added the new `docs/programmatic-insert-performance` plan set, splitting the
-  earlier insert investigation into separate single-writer,
-  durability/residency, and concurrent disjoint-key writer plans aligned to the
-  current public API and benchmark harnesses.
-- Refreshed benchmark documentation, sample index content, and README badges to
-  reflect the current provider, benchmarking, and documentation surface.
+### Release Benchmark Process
+
+- Redesigned `tests/CSharpDB.Benchmarks/README.md` into a compact,
+  user-facing benchmark contract with a generated core scorecard, current
+  results, benchmark map, and run/promote instructions.
+- Added `BENCHMARK_CATALOG.md`, `HISTORY.md`, `SQLITE_COMPARISON.md`,
+  `release-core-manifest.json`, and
+  `scripts/Update-BenchmarkReadme.ps1` so published numbers come from an
+  explicit manifest and only the generated region is rewritten.
+- Added the `--release-core` benchmark command to run the balanced core suite:
+  master-table, durable SQL batching, concurrent durable writes, hybrid storage
+  mode, resident hot-set reads, cold open, and SQLite comparison.
+- Updated release guardrail comparison logic to support structural `ExtraInfo`
+  checks and row-specific tolerances for known volatile microbenchmark rows.
+
+### Docs, Package READMEs, and Website
+
+- Refreshed the root README with the current promoted performance numbers:
+  `1.67M` collection gets/sec, `10.77M` concurrent reader-burst reads/sec,
+  `798.25K` durable InsertBatch B10000 rows/sec, and `1.04K` concurrent
+  durable commits/sec.
+- Added or refreshed package-local READMEs for Admin, Forms, Reports, CLI,
+  MCP, Native, API, Data, Engine, EF Core, and the aggregate package surface.
+- Updated documentation routes, titles, sitemap entries, and website pages,
+  including moving public docs under the current `www/docs` structure and
+  removing unused legacy JavaScript files.
 
 ### Validation
 
-- Added EF Core foundation coverage across `tests/CSharpDB.Data.Tests`,
-  `tests/CSharpDB.EntityFrameworkCore.Tests`, `tests/CSharpDB.Tests`, and the
-  focused benchmark baseline/guardrail docs used by this branch.
-- Checked in the focused scalar aggregate benchmark baseline capture used by the
-  current perf threshold update.
+- `dotnet build .\CSharpDB.slnx -c Release --no-restore` completed
+  successfully.
+- `dotnet build .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-restore`
+  completed successfully during release prep.
+- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro`
+  completed and produced the promoted April 21, 2026 release-core artifacts.
+- Final release guardrail comparison passed with
+  `PASS=185, WARN=0, SKIP=0, FAIL=0`.
+- The benchmark README generator was run twice and verified stable on the
+  second dry run.

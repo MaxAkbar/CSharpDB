@@ -138,6 +138,56 @@
                             <span class="news-badge news-badge-release">Release</span>
                             <span class="news-date">April 2026</span>
                         </div>
+                        <h3>v3.3.0 — Durable Write Performance &amp; Embedded Storage Tuning</h3>
+                        <p>Focused on durable write throughput, a new storage-tuning surface for embedded users, and release-stable benchmark publishing. Promoted from the April 21, 2026 release-core run after a clean guardrail compare (<code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>):</p>
+                        <ul>
+                            <li><strong>Append-optimized indexed insert paths</strong> — Append-optimized row-id chains and hashed index payloads, overflow-store improvements, hot right-edge recovery, and expanded commit-path diagnostics. Promoted <code>InsertBatch B10000</code> durable ingest lands at <strong>798.25K rows/sec</strong> — 1.48&times; the matched SQLite WAL+FULL baseline on the same runner.</li>
+                            <li><strong>Trailing-integer composite grouped aggregates</strong> — The planner can now route grouped aggregates through a composite index when the grouping key prefixes the index and the trailing column is an integer.</li>
+                            <li><strong>SQL index metadata defaults</strong> — Multi-column indexes no longer receive trailing-integer hash options unless explicitly requested. Existing serialized options continue to resolve through the legacy compatibility path.</li>
+                            <li><strong>Embedded storage tuning for ADO.NET and EF Core</strong> — New <code>Storage Preset=</code> and <code>Embedded Open Mode=</code> connection-string keywords on <code>CSharpDb.Data</code>, matching <code>CSharpDbConnection.DirectDatabaseOptions</code> / <code>HybridDatabaseOptions</code>, and EF Core <code>UseStoragePreset()</code> / <code>UseEmbeddedOpenMode()</code>. Ships with five presets (<code>WriteOptimized</code>, <code>LowLatencyDurableWrite</code>, <code>DirectLookupOptimized</code>, <code>DirectColdFileLookup</code>, <code>HybridFileCache</code>) and three open modes (<code>Direct</code>, <code>HybridIncrementalDurable</code>, <code>HybridSnapshot</code>).</li>
+                            <li><strong>Same-runner SQLite comparison coverage</strong> — New SQLite C API, concurrent SQLite, concurrent ADO.NET, strict insert, and EF Core comparison harnesses. <code>--sqlite-compare</code>, <code>--concurrent-sqlite-capi-compare</code>, <code>--concurrent-adonet-compare</code>, and <code>--efcore-compare</code> commands; promoted comparison rows in <code>tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md</code>.</li>
+                            <li><strong>Release-stable benchmark publishing</strong> — Balanced <code>--release-core</code> suite (master, durable batching, concurrent writes, hybrid storage, hot-set reads, cold open, SQLite comparison), manifest-driven README generator, row-specific guardrail tolerances, and separate catalog/history/SQLite comparison files.</li>
+                            <li><strong>Refreshed package READMEs and website</strong> — Root README performance numbers updated (1.67M collection gets/sec, 10.77M concurrent reader-burst reads/sec, 798.25K durable <code>InsertBatch B10000</code> rows/sec, 1.04K concurrent durable commits/sec); package READMEs refreshed for Admin, Forms, Reports, CLI, MCP, Native, API, Data, Engine, EF Core, and the aggregate package surface.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
+                        <h3>v3.2.0 — Entity Framework Core 10 Provider &amp; Scalar Aggregate Optimization</h3>
+                        <p>Adds the first embedded EF Core provider, supporting planner/parser work, and a focused scalar aggregate optimization pass:</p>
+                        <ul>
+                            <li><strong><code>CSharpDB.EntityFrameworkCore</code> (v1)</strong> — First embedded EF Core 10 provider layered over <code>CSharpDB.Data</code>. Adds <code>UseCSharpDb(...)</code> configuration, design-time services, migrations/history/lock plumbing, relational connection services, SQL generation, type mapping, update batching, and database creation. Packaged and published alongside the existing NuGet set; runnable example at <code>samples/efcore-provider</code>.</li>
+                            <li><strong>Parser and planner support for EF-emitted shapes</strong> — Extended tokenizer, parser, query planner, and result handling plus ADO.NET command/parameter plumbing so the provider can execute the required EF query and command shapes cleanly.</li>
+                            <li><strong>Scalar aggregate lookup optimization</strong> — Simple indexed and primary-key-backed <code>COUNT(...)</code> and <code>SUM(...)</code> cases now reuse lightweight lookup plans instead of materializing full scans. Focused baseline refresh checked in at <code>tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724</code>.</li>
+                            <li><strong>Benchmark guardrail stabilization</strong> — Scenario selection, durable SQL batching coverage, and guardrail scripting hardened for repeat runs. Internal cleanup removed the unused <code>FlushBufferedWritesAsync</code> method from <code>IWalFlushPolicy</code> to align with the current commit/flush contract.</li>
+                            <li><strong>New docs</strong> — <code>docs/entity-framework-core.md</code>, <code>docs/ado-ef-storage-tuning/README.md</code>, the programmatic insert performance planning set, and a benchmark-driven CSharpDB-versus-SQLite guide.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
+                        <h3>v3.1.0 — Concurrent Writers, Daemon Hybrid Defaults &amp; Bulk Ingest Samples</h3>
+                        <p>Extends the initial phase-1 multi-writer work with richer transaction handling, commit-path optimization, transport integration, and new user-facing samples:</p>
+                        <ul>
+                            <li><strong>Concurrent insert execution (opt-in)</strong> — New <code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code> routes shared auto-commit inserts through isolated <code>WriteTransaction</code> state for disjoint-key workloads. Richer explicit <code>WriteTransaction</code> handling with logical conflict tracking, disjunctive and range predicate validation, and insert-side rebase/split recovery.</li>
+                            <li><strong>Durable write fan-in (phase 3/4)</strong> — Snapshot checkpoint retention tuning and shared auto-commit fan-in on top of the phase-1 multi-writer base. Split-aware conflict handling and leaf/interior rebase hardening reduce insert-path retry tails under concurrency. New insert fan-in and commit-path diagnostics.</li>
+                            <li><strong>Commit-path optimizations</strong> — Insert commit allocation hot paths, single-insert commit cost, collection secondary-index maintenance, and reader-session <code>COUNT(*)</code> all received focused optimization. WAL publication and flush staging were split into explicit stages with dedicated diagnostics and refreshed baselines.</li>
+                            <li><strong>ADO.NET through Client and hybrid daemon defaults</strong> — The ADO.NET provider now routes through <code>CSharpDB.Client</code> for remote sessions, and the daemon host defaults moved to the newer hybrid multi-writer hosting model.</li>
+                            <li><strong>Samples and tutorials</strong> — New Atlas Platform Showcase sample (schema, workbook queries, procedures, and reports), an API-first CSV bulk import sample and tutorial, and a multi-writer follow-up planning document linked from the roadmap.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
                         <h3>v3.0.0 — Source-Generated Collections &amp; Performance Recovery</h3>
                         <p>Source-generated collection models are now part of the engine, with a trim-safe generated collection API and focused write-path performance recovery:</p>
                         <ul>

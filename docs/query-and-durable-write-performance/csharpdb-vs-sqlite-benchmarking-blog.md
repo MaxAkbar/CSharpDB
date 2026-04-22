@@ -125,19 +125,27 @@ single-writer durable four-column bulk row:
 - file-backed durable mode
 - median-of-3 reruns on the same runner
 
-As of April 20, 2026, the latest matched rerun on this machine produced:
+As of April 21, 2026 (promoted from the release-core run with
+`PASS=185, WARN=0, SKIP=0, FAIL=0`), the latest matched rerun on this machine
+produced:
 
-| Scenario | Rows/sec |
-|---|---:|
-| CSharpDB `InsertBatch B1000` | `208,094` |
-| SQLite prepared bulk `B1000` | `200,092` |
-| CSharpDB `InsertBatch B10000` | `846,718` |
-| SQLite prepared bulk `B10000` | `566,977` |
+| Scenario | Rows/sec | P50 | P99 |
+|---|---:|---:|---:|
+| CSharpDB `InsertBatch B1000` | `204,028` | 4.1034 ms | 9.5599 ms |
+| SQLite prepared bulk `B1000` | `192,059` | 4.7479 ms | 18.1078 ms |
+| CSharpDB `InsertBatch B10000` | `798,254` | 8.7019 ms | 119.0664 ms |
+| SQLite prepared bulk `B10000` | `539,562` | 16.6275 ms | 43.3034 ms |
 
 That means, on this runner:
 
-- CSharpDB is about `104.0%` of SQLite at `B1000`.
-- CSharpDB is about `149.3%` of SQLite at `B10000`.
+- CSharpDB is about `106.2%` of SQLite at `B1000`.
+- CSharpDB is about `147.9%` of SQLite at `B10000`.
+
+Source artifacts:
+
+- [durable-sql-batching-20260421-214227-median-of-3.csv](/C:/Users/maxim/source/Code/CSharpDB/tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260421-214227-median-of-3.csv)
+- [sqlite-compare-20260421-222824-median-of-3.csv](/C:/Users/maxim/source/Code/CSharpDB/tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260421-222824-median-of-3.csv)
+- Full scorecard: [tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md](/C:/Users/maxim/source/Code/CSharpDB/tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md)
 
 The important part is not just that CSharpDB is ahead on this matched row. The
 important part is what that row actually proves:
