@@ -5577,7 +5577,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task InnerJoin_OnRightCompositeTrailingIntegerIndex_UsesTrailingIntegerLookupPath()
+    public async Task InnerJoin_OnRightCompositeTrailingIntegerIndex_UsesHashedLookupPath()
     {
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync(
@@ -5602,7 +5602,7 @@ public class IntegrationTests : IAsyncLifetime
 
         await using var result = await planner.ExecuteAsync(statement, ct);
         var rootOperator = Assert.IsType<HashedIndexNestedLoopJoinOperator>(GetRootOperator(result));
-        Assert.Equal("HashedTrailingInteger", GetPrivateField<object>(rootOperator, "_storageMode")?.ToString());
+        Assert.Equal("Hashed", GetPrivateField<object>(rootOperator, "_storageMode")?.ToString());
 
         var rows = (await result.ToListAsync(ct)).OrderBy(row => row[0].AsText).ToArray();
         Assert.Equal(3, rows.Length);
@@ -6920,7 +6920,7 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_MultiColumn_TrailingIntegerStorage_CoveredProjection_UsesTrailingIntegerSeekValue()
+    public async Task Index_MultiColumn_TrailingIntegerColumns_CoveredProjection_UsesFullCompositeSeekValue()
     {
         var ct = TestContext.Current.CancellationToken;
         _db.PreferSyncPointLookups = false;
@@ -6938,7 +6938,8 @@ public class IntegrationTests : IAsyncLifetime
         await using var result = await planner.ExecuteAsync(statement, ct);
         var rootOperator = Assert.IsType<HashedIndexProjectionLookupOperator>(GetRootOperator(result));
         long seekValue = GetPrivateField<long>(rootOperator, "_seekValue");
-        Assert.Equal(20L, seekValue);
+        long expectedSeekValue = IndexMaintenanceHelper.ComputeIndexKey([DbValue.FromText("A"), DbValue.FromInteger(20)]);
+        Assert.Equal(expectedSeekValue, seekValue);
 
         var rows = await result.ToListAsync(ct);
         var projected = rows

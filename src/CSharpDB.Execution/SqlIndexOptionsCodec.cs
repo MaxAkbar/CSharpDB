@@ -34,9 +34,7 @@ internal static class SqlIndexOptionsCodec
         ReadOnlySpan<string?> indexColumnCollations = default)
         => ShouldDefaultToOrderedTextStorage(schema, indexColumnIndices, indexColumnCollations)
             ? Serialize(new SqlIndexOptions { Storage = OrderedTextStorage })
-            : ShouldDefaultToTrailingIntegerHashedStorage(schema, indexColumnIndices)
-                ? Serialize(new SqlIndexOptions { Storage = HashedTrailingIntegerStorage })
-                : null;
+            : null;
 
     public static SqlIndexStorageMode Resolve(IndexSchema index, TableSchema schema)
     {
@@ -96,19 +94,6 @@ internal static class SqlIndexOptionsCodec
             ? schema.Columns[columnIndex].Collation
             : indexColumnCollations[0];
         return !CollationSupport.IsBinaryOrDefault(effectiveCollation);
-    }
-
-    private static bool ShouldDefaultToTrailingIntegerHashedStorage(
-        TableSchema schema,
-        ReadOnlySpan<int> indexColumnIndices)
-    {
-        if (indexColumnIndices.Length <= 1)
-            return false;
-
-        int trailingColumnIndex = indexColumnIndices[^1];
-        return trailingColumnIndex >= 0 &&
-               trailingColumnIndex < schema.Columns.Count &&
-               schema.Columns[trailingColumnIndex].Type == DbType.Integer;
     }
 
     private static SqlIndexOptions Deserialize(string? payload)

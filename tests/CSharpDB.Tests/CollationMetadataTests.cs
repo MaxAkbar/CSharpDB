@@ -96,7 +96,7 @@ public sealed class CollationMetadataTests
     }
 
     [Fact]
-    public async Task CreateIndex_OnCompositeTrailingInteger_PersistsTrailingIntegerStorageMetadata()
+    public async Task CreateIndex_OnCompositeTrailingInteger_UsesDefaultHashedStorage()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);
         await db.ExecuteAsync("CREATE TABLE users (id INTEGER PRIMARY KEY, category TEXT, score INTEGER)", Ct);
@@ -106,8 +106,7 @@ public sealed class CollationMetadataTests
         var index = Assert.Single(
             db.GetIndexes(),
             static item => string.Equals(item.IndexName, "idx_users_category_score", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(index.OptionsJson);
-        Assert.Contains("hashed_trailing_integer", index.OptionsJson!, StringComparison.Ordinal);
+        Assert.Null(index.OptionsJson);
     }
 
     [Fact]

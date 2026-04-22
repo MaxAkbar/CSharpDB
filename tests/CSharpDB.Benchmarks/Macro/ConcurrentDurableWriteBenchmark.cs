@@ -10,13 +10,15 @@ namespace CSharpDB.Benchmarks.Macro;
 
 /// <summary>
 /// Measures durable commit throughput when multiple in-process writer tasks share
-/// one Database instance and issue auto-commit inserts concurrently.
+/// one Database instance and issue the recommended concurrent auto-commit insert
+/// path against disjoint key ranges.
 /// This models engine-side write contention on a shared WAL/pager without
 /// adding cross-process transport overhead.
 /// </summary>
 public static class ConcurrentDurableWriteBenchmark
 {
-    private static int _nextId;
+    private const int ExplicitIdWriterRangeSpan = 1_000_000;
+    private static int[] _nextDisjointIds = [];
 
     private static readonly ConcurrentWriteScenario[] s_scenarios =
     [
@@ -56,8 +58,14 @@ public static class ConcurrentDurableWriteBenchmark
 
     private static async Task<BenchmarkResult> RunScenarioAsync(ConcurrentWriteScenario scenario)
     {
-        _nextId = 0;
-        var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
+        _nextDisjointIds = Enumerable.Range(0, scenario.WriterCount)
+            .Select(writerIndex => writerIndex * ExplicitIdWriterRangeSpan)
+            .ToArray();
+
+        var options = new DatabaseOptions
+        {
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder =>
         {
             builder.UsePagerOptions(new PagerOptions
             {
@@ -114,7 +122,7 @@ public static class ConcurrentDurableWriteBenchmark
             MeanMs = histogram.Mean,
             StdDevMs = histogram.StdDev,
             ExtraInfo =
-                $"writers={scenario.WriterCount}, checkpoint=FrameCount(4096)+Background(256), batchWindow={FormatBatchWindow(scenario.BatchWindow)}, walPrealloc={FormatPreallocationChunk(scenario.WalPreallocationChunkBytes)}, successfulCommits={stats.SuccessfulCommits}, busy={stats.BusyCount}, fatalErrors={stats.FatalErrorCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, {commitSummary}",
+                $"implicitInsertMode={ImplicitInsertExecutionMode.ConcurrentWriteTransactions}, keyPattern=DisjointWriterRange, writers={scenario.WriterCount}, checkpoint=FrameCount(4096)+Background(256), batchWindow={FormatBatchWindow(scenario.BatchWindow)}, walPrealloc={FormatPreallocationChunk(scenario.WalPreallocationChunkBytes)}, successfulCommits={stats.SuccessfulCommits}, busy={stats.BusyCount}, fatalErrors={stats.FatalErrorCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, preallocations={walDiagnostics.PreallocationCount}, preallocatedKiB={preallocatedKiB:F1}, {commitSummary}",
         };
 
         Console.WriteLine(
@@ -150,7 +158,7 @@ public static class ConcurrentDurableWriteBenchmark
 
                 while (Stopwatch.GetTimestamp() - startedAt < durationTicks)
                 {
-                    int id = Interlocked.Increment(ref _nextId);
+                    int id = Interlocked.Increment(ref _nextDisjointIds[localWriterIndex]);
                     string sql =
                         $"INSERT INTO bench (id, value, text_col, category) VALUES ({id}, {localWriterIndex}, 'durable', 'Alpha')";
                     var sw = Stopwatch.StartNew();

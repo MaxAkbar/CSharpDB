@@ -11,6 +11,17 @@ namespace CSharpDB.Benchmarks;
 
 public static class Program
 {
+    private static readonly string[] s_releaseCoreSuiteKeys =
+    [
+        "master-table",
+        "durable-sql-batching",
+        "concurrent-write-diagnostics",
+        "hybrid-storage-mode",
+        "hybrid-hot-set-read",
+        "hybrid-cold-open",
+        "sqlite-compare",
+    ];
+
     public static async Task Main(string[] args)
     {
         if (args.Length == 0)
@@ -244,6 +255,11 @@ public static class Program
                     thresholdsFileName: "perf-thresholds.json",
                     microHeading: "=== Release Micro Guardrails ===",
                     nonMicroHeading: "=== Release Non-Micro Guardrails ===");
+                return;
+
+            case "--release-core":
+                EnsureReproConfigured();
+                await RunReleaseCoreAsync(repeatCount);
                 return;
 
             case "--all":
@@ -509,7 +525,7 @@ public static class Program
 
     private static void RunAllMicroBenchmarks()
     {
-        RunMicroBenchmarksWithoutPrGuardrails([]);
+        RunMicroBenchmarksWithoutPrGuardrails(["--filter", "*"]);
     }
 
     private static void RunMicroBenchmarksWithoutPrGuardrails(string[] args)
@@ -525,7 +541,7 @@ public static class Program
             .ToArray();
 
         var switcher = BenchmarkSwitcher.FromTypes(benchmarkTypes);
-        switcher.Run(args);
+        switcher.Run(args.Length == 0 && !ContainsExplicitFilter(args) ? ["--filter", "*"] : args);
     }
 
     private static async Task RunBenchmarkPlanAsync(
@@ -828,6 +844,20 @@ public static class Program
         results.AddRange(await BTreeDepthBenchmark.RunAsync());
 
         return results;
+    }
+
+    private static async Task RunReleaseCoreAsync(int repeatCount)
+    {
+        Console.WriteLine("=== Release Core Benchmark Suite ===");
+        Console.WriteLine("Runs only the benchmark suites that feed the published README tables.");
+
+        for (int i = 0; i < s_releaseCoreSuiteKeys.Length; i++)
+        {
+            if (i > 0)
+                Console.WriteLine();
+
+            await RunSuiteByKeyAsync(s_releaseCoreSuiteKeys[i], repeatCount);
+        }
     }
 
     private static Task RunSuiteByKeyAsync(string suiteKey, int repeatCount)
@@ -1162,6 +1192,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-post-checkpoint  Run focused post-checkpoint hot reread benchmark");
         Console.WriteLine("  dotnet run -- --pr                 Run the fast PR guardrail subset from perf-thresholds-pr.json");
         Console.WriteLine("  dotnet run -- --release            Run the focused release guardrail subset from perf-thresholds.json");
+        Console.WriteLine("  dotnet run -- --release-core --repeat 3 --repro  Run only the suites that feed published README tables");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
         Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --efcore-compare --efcore-compare-hybrid-shared-connection --efcore-compare-auto-open-close --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
